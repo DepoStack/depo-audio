@@ -8,6 +8,7 @@ mod ffmpeg;
 mod helpers;
 mod models;
 mod persistence;
+mod safety;
 mod scoring;
 mod speakers;
 pub mod types;

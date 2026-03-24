@@ -13,14 +13,18 @@ use crate::types::{ConvertJob, FormatInfo, OutputFile, ProgressEvent};
 // ── Conversion orchestration ─────────────────────────────────────────────────
 
 pub(crate) async fn do_convert(app: &AppHandle, job: &ConvertJob) -> Result<Vec<OutputFile>, String> {
+    // Safety checks
+    let src = Path::new(&job.src_path);
+    crate::safety::check_file_safe(src)?;
+    if job.fade { crate::safety::validate_fade_dur(job.fade_dur)?; }
+    crate::safety::validate_rate(&job.rate)?;
+
     let fmt = detect_format_for_path(&job.src_path)
         .ok_or("Unrecognised file format")?;
 
     if fmt.handler == "rejected" {
         return Err(fmt.note.unwrap_or_else(|| "This format cannot be converted.".into()));
     }
-
-    let src = Path::new(&job.src_path);
     let (feed_path, is_temp) = if fmt.handler == "sgmca" {
         strip_sgmca_header(src)?
     } else {

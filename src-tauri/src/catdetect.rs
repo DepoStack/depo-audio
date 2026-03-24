@@ -78,9 +78,29 @@ pub(crate) fn detect_cat_software() -> Vec<CatSoftware> {
 }
 
 /// Scan a CAT software directory for importable audio jobs.
+/// Path is canonicalized and restricted to known safe locations.
 pub(crate) fn scan_cat_jobs(base_path: &str) -> Vec<CatJob> {
-    let base = Path::new(base_path);
-    if !base.exists() || !base.is_dir() {
+    let base = match Path::new(base_path).canonicalize() {
+        Ok(p) => p,
+        Err(_) => return Vec::new(),
+    };
+    if !base.is_dir() {
+        return Vec::new();
+    }
+
+    // Security: only allow scanning paths under user's home/documents or known CAT dirs
+    let allowed_roots: Vec<PathBuf> = {
+        let home = dirs_next::home_dir().unwrap_or_else(|| PathBuf::from("/"));
+        let docs = dirs_next::document_dir().unwrap_or_else(|| home.join("Documents"));
+        vec![
+            home.clone(),
+            docs,
+            PathBuf::from("C:\\"),  // Windows CAT software often installs at C:\
+        ]
+    };
+
+    let is_allowed = allowed_roots.iter().any(|root| base.starts_with(root));
+    if !is_allowed {
         return Vec::new();
     }
 

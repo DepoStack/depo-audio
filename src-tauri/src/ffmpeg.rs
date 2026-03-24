@@ -131,7 +131,10 @@ pub(crate) async fn run_ffmpeg(app: &AppHandle, args: Vec<String>, job_id: &str)
                         .filter(|l| !l.starts_with("ffmpeg version") && !l.starts_with("built") && !l.starts_with("lib") && !l.starts_with("configuration:"))
                         .collect();
                     let msg = lines.iter().rev().take(4).cloned().collect::<Vec<_>>().into_iter().rev().collect::<Vec<_>>().join(" | ");
-                    return Err(msg.chars().take(300).collect());
+                    // Sanitize: strip file paths from error messages
+                    let sanitized = msg.replace(|c: char| c == '/' || c == '\\', "_")
+                        .chars().take(300).collect::<String>();
+                    return Err(sanitized);
                 }
                 return Ok(());
             }

@@ -37,6 +37,7 @@ pub(crate) async fn analyze_audio(
     path: &str,
 ) -> Result<AnalysisResult, String> {
     let feed = Path::new(path);
+    crate::safety::check_file_safe(feed)?;
     let input_codec: Vec<String> = vec![];
 
     // Probe basic metadata

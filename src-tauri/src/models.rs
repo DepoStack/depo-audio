@@ -21,15 +21,16 @@ pub(crate) fn model_path(app: &AppHandle, filename: &str) -> Result<PathBuf, Str
     if path.exists() {
         Ok(path)
     } else {
-        Err(format!("Model not found: {}", path.display()))
+        Err(format!("Model not found: {}", filename))
     }
 }
 
 /// Load an ONNX session from a model file.
 pub(crate) fn load_session(path: &PathBuf) -> Result<Session, String> {
+    let name = crate::safety::safe_display(path);
     Session::builder()
         .and_then(|mut b| b.commit_from_file(path))
-        .map_err(|e| format!("Failed to load ONNX model {}: {}", path.display(), e))
+        .map_err(|e| format!("Failed to load model {}: {}", name, e))
 }
 
 // ── Model availability check ────────────────────────────────────────────────
