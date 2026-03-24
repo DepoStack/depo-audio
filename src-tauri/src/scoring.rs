@@ -1,0 +1,122 @@
+use std::path::Path;
+
+use tauri::AppHandle;
+use tauri_plugin_shell::ShellExt;
+
+use crate::models;
+
+// ── DNSMOS quality scoring ──────────────────────────────────────────────────
+//
+// Uses Microsoft's DNSMOS (Deep Noise Suppression Mean Opinion Score) model
+// to rate speech quality on a 1–5 scale. Shows users how much their audio
+// improved after processing.
+//
+// Outputs three scores:
+//   - SIG: speech signal quality (1-5)
+//   - BAK: background noise quality (1-5, higher = less noise)
+//   - OVR: overall quality (1-5)
+
+/// Quality scores from DNSMOS analysis.
+#[derive(Debug, serde::Serialize, serde::Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct QualityScore {
+    /// Speech signal quality (1-5)
+    pub sig: f32,
+    /// Background noise quality (1-5, higher = cleaner)
+    pub bak: f32,
+    /// Overall quality (1-5)
+    pub ovr: f32,
+}
+
+/// Score audio quality using the DNSMOS model.
+/// Input should be 16kHz mono WAV audio.
+pub(crate) async fn score_quality(
+    app: &AppHandle,
+    audio_path: &Path,
+) -> Result<QualityScore, String> {
+    let model_path = models::model_path(app, "dnsmos_sig_bak_ovr.onnx")?;
+    let session = models::load_session(&model_path)?;
+
+    // Decode to 16kHz mono for DNSMOS
+    let tmp = std::env::temp_dir().join(format!(
+        "depoaudio_score_{}.wav",
+        uuid::Uuid::new_v4().to_string().replace('-', "")
+    ));
+
+    let args: Vec<String> = vec![
+        "-i".into(), audio_path.to_string_lossy().to_string(),
+        "-af".into(), "aresample=16000".into(),
+        "-ac".into(), "1".into(),
+        "-acodec".into(), "pcm_f32le".into(),
+        "-y".into(), tmp.to_string_lossy().to_string(),
+    ];
+
+    let output = app
+        .shell()
+        .sidecar(crate::helpers::ffmpeg_bin_name())
+        .map_err(|e| e.to_string())?
+        .args(args)
+        .output()
+        .await
+        .map_err(|e| e.to_string())?;
+
+    if output.status.code() != Some(0) {
+        return Err("Failed to decode audio for quality scoring".into());
+    }
+
+    // Read the 16kHz mono WAV
+    let reader = hound::WavReader::open(&tmp)
+        .map_err(|e| format!("Failed to open WAV: {}", e))?;
+
+    let samples: Vec<f32> = reader
+        .into_samples::<f32>()
+        .filter_map(|s| s.ok())
+        .collect();
+
+    let _ = std::fs::remove_file(&tmp);
+
+    if samples.is_empty() {
+        return Err("No audio samples for quality scoring".into());
+    }
+
+    // DNSMOS expects a fixed-length input. Use first 9.01 seconds (144160 samples at 16kHz)
+    // or pad with zeros if shorter.
+    let target_len = 144160;
+    let mut input_samples = samples;
+    if input_samples.len() > target_len {
+        input_samples.truncate(target_len);
+    } else {
+        input_samples.resize(target_len, 0.0);
+    }
+
+    // Create input tensor [1, target_len]
+    let input = ndarray::Array2::from_shape_vec((1, target_len), input_samples)
+        .map_err(|e| format!("Tensor error: {}", e))?;
+
+    let outputs = session
+        .run(ort::inputs!["input_1" => input.view()])
+        .map_err(|e| format!("DNSMOS inference failed: {}", e))?;
+
+    // Output is [1, 3] with [SIG, BAK, OVR] scores
+    let scores = outputs
+        .values()
+        .next()
+        .and_then(|v| v.try_extract_tensor::<f32>().ok())
+        .ok_or("Failed to extract DNSMOS output")?;
+
+    let scores_slice = scores.as_slice().ok_or("Cannot read DNSMOS scores")?;
+
+    if scores_slice.len() >= 3 {
+        Ok(QualityScore {
+            sig: scores_slice[0].clamp(1.0, 5.0),
+            bak: scores_slice[1].clamp(1.0, 5.0),
+            ovr: scores_slice[2].clamp(1.0, 5.0),
+        })
+    } else if scores_slice.len() == 1 {
+        // Some DNSMOS variants output a single OVR score
+        let ovr = scores_slice[0].clamp(1.0, 5.0);
+        Ok(QualityScore { sig: ovr, bak: ovr, ovr })
+    } else {
+        Err("Unexpected DNSMOS output shape".into())
+    }
+}

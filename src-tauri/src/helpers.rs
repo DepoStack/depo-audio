@@ -22,9 +22,6 @@ pub(crate) fn get_formats() -> Vec<FormatInfo> {
         FormatInfo { key: "digitalcat".into(), name: "DigitalCAT Audio".into(), vendor: "Stenovations".into(),
             status: "experimental".into(), handler: "passthrough".into(), channels: None,
             note: Some("No public spec — conversion may fail. Please report results on GitHub.".into()) },
-        FormatInfo { key: "dcr".into(), name: "Liberty Court Recorder".into(), vendor: "High Criteria / BIS Digital".into(),
-            status: "guidance".into(), handler: "guidance".into(), channels: Some("1\u{2013}32".into()),
-            note: Some("DCR files require the free Liberty Court Player to export. Open in Liberty Court Player \u{2192} File \u{2192} Export \u{2192} WAV, then drop the WAV files here.".into()) },
         FormatInfo { key: "bwf".into(), name: "Broadcast WAV".into(), vendor: "CourtSmart / Various".into(),
             status: "supported".into(), handler: "passthrough".into(), channels: None, note: None },
         FormatInfo { key: "generic".into(), name: "WAV · MP3 · FLAC · WMA · M4A · OGG · Opus + more".into(),
@@ -45,7 +42,6 @@ pub(crate) fn detect_format_for_path(path: &str) -> Option<FormatInfo> {
         "sgmca"                                            => fmts.into_iter().find(|f| f.key == "sgmca"),
         "trm" | "ftr"                                      => fmts.into_iter().find(|f| f.key == "ftr"),
         "aes"                                              => fmts.into_iter().find(|f| f.key == "aes"),
-        "dcr"                                              => fmts.into_iter().find(|f| f.key == "dcr"),
         "dm"                                               => fmts.into_iter().find(|f| f.key == "digitalcat"),
         "bwf"                                              => fmts.into_iter().find(|f| f.key == "bwf"),
         "wav"|"mp3"|"flac"|"wma"|"m4a"|"aac"|"ogg"|"opus"|"aif"|"aiff" => fmts.into_iter().find(|f| f.key == "generic"),
@@ -111,12 +107,11 @@ pub(crate) fn strip_sgmca_header(src: &Path) -> Result<(PathBuf, bool), String> 
 
 // ── Output format helpers ─────────────────────────────────────────────────────
 
-pub(crate) fn output_args(format: &str, rate: &str, mp3_bitrate: Option<&str>) -> Vec<String> {
+pub(crate) fn output_args(format: &str, rate: &str) -> Vec<String> {
     match format {
-        "mp3"  => vec!["-acodec".into(), "libmp3lame".into(), "-b:a".into(), mp3_bitrate.unwrap_or("192k").into(),  "-ar".into(), rate.into()],
+        "mp3"  => vec!["-acodec".into(), "libmp3lame".into(), "-b:a".into(), "192k".into(),  "-ar".into(), rate.into()],
         "flac" => vec!["-c:a".into(), "flac".into(), "-ar".into(), rate.into()],
         "opus" => vec!["-c:a".into(), "libopus".into(), "-b:a".into(), "64k".into(), "-vbr".into(), "on".into(), "-ar".into(), "48000".into()],
-        "m4a"  => vec!["-acodec".into(), "aac".into(), "-b:a".into(), "128k".into(), "-ar".into(), rate.into()],
         _      => vec!["-acodec".into(), "pcm_s16le".into(), "-ar".into(), rate.into()],
     }
 }
@@ -126,7 +121,6 @@ pub(crate) fn output_ext(format: &str) -> &'static str {
         "mp3"  => ".mp3",
         "flac" => ".flac",
         "opus" => ".opus",
-        "m4a"  => ".m4a",
         _      => ".wav",
     }
 }

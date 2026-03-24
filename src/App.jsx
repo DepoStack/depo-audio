@@ -1,156 +1,136 @@
 import { useState, useEffect } from 'react'
 import { invoke } from '@tauri-apps/api/core'
-import { open as openDialog } from '@tauri-apps/plugin-dialog'
 import { basename } from './utils'
 
 import useTheme from './hooks/useTheme'
 import usePreferences from './hooks/usePreferences'
 import useFileDrop from './hooks/useFileDrop'
 import useConversion from './hooks/useConversion'
-import useUpdater from './hooks/useUpdater'
-import usePlayer from './hooks/usePlayer'
-import usePreview from './hooks/usePreview'
 
-import ErrorBoundary from './components/common/ErrorBoundary'
 import { LogoSvg } from './components/common/Icons'
-import UpdateBanner from './components/common/UpdateBanner'
-import PlayerBar from './components/common/PlayerBar'
-import QueuePanel from './components/common/QueuePanel'
 import ConvertTab from './components/Convert/ConvertTab'
 import LibraryTab from './components/Library/LibraryTab'
+import PlayerTab from './components/Player/PlayerTab'
 
 export default function App() {
   const [tab, setTab] = useState('convert')
 
   // Custom hooks
   const { themePref, themeLabel, cycleTheme } = useTheme()
-  const prefs = usePreferences()
-  const fileDrop = useFileDrop()
-  const conversion = useConversion()
-  const updater = useUpdater()
-  const player = usePlayer()
-  const preview = usePreview()
 
-  const openFiles = async () => {
-    const selected = await openDialog({
-      multiple: true,
-      filters: [{ name: 'Audio', extensions: ['wav','mp3','flac','opus','ogg','m4a','aac','wma','aif','aiff','sgmca','trm','ftr','bwf','dcr'] }],
-    })
-    if (!selected) return
-    const paths = Array.isArray(selected) ? selected : [selected]
-    const files = paths.map(p => ({ path: p, name: p.split(/[\/]/).pop() }))
-    player.playAll(files)
-  }
+  const prefs = usePreferences()
+  const {
+    mode, setMode, formatOut, setFormatOut, labels, setLabels,
+    chanVols, setChanVols, outDir, setOutDir, rate, setRate,
+    normalize, setNormalize, trim, setTrim, fade, setFade,
+    fadeDur, setFadeDur, hpf, setHpf,
+    denoise, setDenoise, denoiseQuality, setDenoiseQuality,
+    autoLevel, setAutoLevel, declip, setDeclip, enhance, setEnhance,
+  } = prefs
+
+  const fileDrop = useFileDrop()
+  const {
+    files, setFiles, dragOver, caseName, setCaseName,
+    onDragOver, onDragLeave, onDrop, browseFiles, browseOutDir,
+    removeFile, clearAll,
+  } = fileDrop
+
+  const conversion = useConversion()
+  const { jobs, setJobs, converting, doneCount, failCount } = conversion
+
+  // System capabilities (hardware-aware recommendations)
+  const [capabilities, setCapabilities] = useState(null)
+  useEffect(() => {
+    invoke('system_capabilities_cmd').then(setCapabilities).catch(() => {})
+  }, [])
 
   // Library state
   const [cases, setCases]     = useState([])
-  const [libLoading, setLibLoading] = useState(false)
   const [libSearch, setLibSearch] = useState('')
 
   // Load library when switching to library tab
   useEffect(() => {
     if (tab === 'library') {
-      setLibLoading(true)
-      invoke('library_get')
-        .then(setCases)
-        .catch(e => console.error('Failed to load library:', e))
-        .finally(() => setLibLoading(false))
+      invoke('library_get').then(setCases).catch(() => {})
     }
   }, [tab])
 
-  // Auto-resize channel labels/volumes when file channel counts change
-  useEffect(() => {
-    if (!fileDrop.files.length) return
-    const maxCh = Math.max(...fileDrop.files.map(f => f.channels || 4))
-    prefs.resizeForChannels(maxCh)
-  }, [fileDrop.files])
-
   const handleStartConversion = () => {
     conversion.startConversion({
-      files: fileDrop.files, outDir: prefs.outDir, mode: prefs.mode,
-      formatOut: prefs.formatOut, rate: prefs.rate,
-      labels: prefs.labels, chanVols: prefs.chanVols,
-      normalize: prefs.normalize, trim: prefs.trim,
-      fade: prefs.fade, fadeDur: prefs.fadeDur, hpf: prefs.hpf, mp3Bitrate: prefs.mp3Bitrate,
-      caseName: fileDrop.caseName, setCases,
+      files, outDir, mode, formatOut, rate,
+      labels, chanVols, normalize, trim, fade, fadeDur, hpf,
+      denoise, denoiseQuality, autoLevel, declip, enhance,
+      caseName, setCases,
     })
   }
 
   return (
-    <ErrorBoundary>
     <div className="app">
-      {/* ── Update Banner */}
-      {updater.visible && (
-        <UpdateBanner
-          update={updater.update}
-          downloading={updater.downloading}
-          progress={updater.progress}
-          onInstall={updater.installUpdate}
-          onSkip={updater.skipVersion}
-          onDismiss={updater.dismiss}
-        />
-      )}
-
       {/* ── Topbar */}
       <header className="topbar">
         <div className="topbar-brand">
           <LogoSvg />
           <div className="topbar-text">
             <span className="topbar-title">DepoAudio</span>
-            <span className="topbar-tagline">Court Recording Converter</span>
+            <span className="topbar-tagline">Audio Converter &amp; Enhancer</span>
           </div>
         </div>
-        <nav className="topbar-tabs" role="tablist" aria-label="Main navigation">
-          <button role="tab" aria-selected={tab==='convert'} className={`tab-btn${tab==='convert'?' tab-btn--active':''}`} onClick={() => setTab('convert')}>Convert</button>
-          <button role="tab" aria-selected={tab==='library'} className={`tab-btn${tab==='library'?' tab-btn--active':''}`} onClick={() => setTab('library')}>
+        <div className="topbar-tabs">
+          <button className={`tab-btn${tab==='convert'?' tab-btn--active':''}`} onClick={() => setTab('convert')}>Convert</button>
+          <button className={`tab-btn${tab==='player'?' tab-btn--active':''}`} onClick={() => setTab('player')}>Player</button>
+          <button className={`tab-btn${tab==='library'?' tab-btn--active':''}`} onClick={() => setTab('library')}>
             Library {cases.filter(c=>!c.archived).length > 0 && <span className="tab-badge">{cases.filter(c=>!c.archived).length}</span>}
           </button>
-        </nav>
+        </div>
         <div className="topbar-right">
-          <button className="topbar-open-btn" title="Open audio files" onClick={openFiles} aria-label="Open audio files for playback">
-            <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true">
-              <path d="M2 3h4l1.5 1.5H12a1 1 0 0 1 1 1V11a1 1 0 0 1-1 1H2a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1z" stroke="currentColor" strokeWidth="1.2"/>
-            </svg>
-          </button>
-          <button className="theme-btn" title={`Theme: ${themePref}`} onClick={cycleTheme} aria-label={`Switch theme, currently ${themePref}`}>{themeLabel}</button>
+          <button className="theme-btn" title={`Theme: ${themePref}`} onClick={cycleTheme}>{themeLabel}</button>
         </div>
       </header>
 
       {tab === 'convert' && (
         <ConvertTab
-          prefs={prefs}
-          fileDrop={fileDrop}
-          conversion={conversion}
+          mode={mode} setMode={setMode}
+          formatOut={formatOut} setFormatOut={setFormatOut}
+          labels={labels} setLabels={setLabels}
+          chanVols={chanVols} setChanVols={setChanVols}
+          outDir={outDir} setOutDir={setOutDir}
+          rate={rate} setRate={setRate}
+          normalize={normalize} setNormalize={setNormalize}
+          trim={trim} setTrim={setTrim}
+          fade={fade} setFade={setFade}
+          fadeDur={fadeDur} setFadeDur={setFadeDur}
+          hpf={hpf} setHpf={setHpf}
+          denoise={denoise} setDenoise={setDenoise}
+          denoiseQuality={denoiseQuality} setDenoiseQuality={setDenoiseQuality}
+          autoLevel={autoLevel} setAutoLevel={setAutoLevel}
+          declip={declip} setDeclip={setDeclip}
+          enhance={enhance} setEnhance={setEnhance}
+          capabilities={capabilities}
+          files={files} dragOver={dragOver}
+          caseName={caseName} setCaseName={setCaseName}
+          onDragOver={onDragOver} onDragLeave={onDragLeave} onDrop={onDrop}
+          browseFiles={browseFiles} browseOutDir={browseOutDir}
+          removeFile={removeFile} clearAll={clearAll}
+          jobs={jobs} converting={converting}
           startConversion={handleStartConversion}
-          player={player}
-          preview={preview}
+          doneCount={doneCount} failCount={failCount}
         />
       )}
+
+      {tab === 'player' && <PlayerTab />}
 
       {tab === 'library' && (
         <LibraryTab
           cases={cases} setCases={setCases}
           search={libSearch} setSearch={setLibSearch}
-          labels={prefs.labels}
-          player={player}
-          loading={libLoading}
+          labels={labels}
           onReexport={(srcPath, srcCaseName) => {
-            fileDrop.setFiles([{path:srcPath, name:basename(srcPath), fmt:null}])
-            fileDrop.setCaseName(srcCaseName || '')
+            setFiles([{path:srcPath, name:basename(srcPath), fmt:null}])
+            setCaseName(srcCaseName || '')
             setTab('convert')
           }}
         />
       )}
-
-      {/* Global audio element */}
-      <audio ref={player.audioRef} preload="metadata" {...player.handlers} />
-
-      {/* Queue panel (slides up above player bar) */}
-      <QueuePanel player={player} />
-
-      {/* Persistent player bar */}
-      <PlayerBar player={player} />
     </div>
-    </ErrorBoundary>
   )
 }

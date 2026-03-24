@@ -1,10 +1,10 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 
 export default function usePreferences() {
   const [mode, setMode]           = useState('stereo')
   const [formatOut, setFormatOut] = useState('wav')
-  const [labels, setLabels]       = useState(['Reporter','Witness','Attorney 1','Attorney 2'])
+  const [labels, setLabels]       = useState(['Speaker 1','Speaker 2','Speaker 3','Speaker 4'])
   const [chanVols, setChanVols]   = useState([1,1,1,1])
   const [outDir, setOutDir]       = useState('')
   const [rate, setRate]           = useState('48000')
@@ -13,7 +13,11 @@ export default function usePreferences() {
   const [fade, setFade]           = useState(false)
   const [fadeDur, setFadeDur]     = useState(0.5)
   const [hpf, setHpf]             = useState(false)
-  const [mp3Bitrate, setMp3Bitrate] = useState('192k')
+  const [denoise, setDenoise]     = useState(false)
+  const [denoiseQuality, setDenoiseQuality] = useState('fast')
+  const [autoLevel, setAutoLevel] = useState(false)
+  const [declip, setDeclip]       = useState(false)
+  const [enhance, setEnhance]     = useState(false)
   const [prefsReady, setPrefsReady] = useState(false)
 
   // Load prefs on mount
@@ -27,7 +31,8 @@ export default function usePreferences() {
       if (p.chanVols?.length) setChanVols(p.chanVols)
       setNormalize(!!p.normalize); setTrim(!!p.trim)
       setFade(!!p.fade); setFadeDur(p.fadeDur || 0.5); setHpf(!!p.hpf)
-      if (p.mp3Bitrate) setMp3Bitrate(p.mp3Bitrate)
+      setDenoise(!!p.denoise); setDenoiseQuality(p.denoiseQuality || 'fast'); setAutoLevel(!!p.autoLevel)
+      setDeclip(!!p.declip); setEnhance(!!p.enhance)
       setPrefsReady(true)
     }).catch(() => setPrefsReady(true))
   }, [])
@@ -35,21 +40,8 @@ export default function usePreferences() {
   // Persist prefs on change
   useEffect(() => {
     if (!prefsReady) return
-    invoke('prefs_set', { patch: { mode, format: formatOut, rate, outDir, labels, chanVols, normalize, trim, fade, fadeDur, hpf, mp3Bitrate } })
-  }, [mode, formatOut, rate, outDir, labels, chanVols, normalize, trim, fade, fadeDur, hpf, mp3Bitrate, prefsReady])
-
-  const resizeForChannels = useCallback((n) => {
-    setLabels(prev => {
-      if (prev.length === n) return prev
-      if (n > prev.length) return [...prev, ...Array.from({ length: n - prev.length }, (_, i) => `Channel ${prev.length + i + 1}`)]
-      return prev.slice(0, n)
-    })
-    setChanVols(prev => {
-      if (prev.length === n) return prev
-      if (n > prev.length) return [...prev, ...Array(n - prev.length).fill(1.0)]
-      return prev.slice(0, n)
-    })
-  }, [])
+    invoke('prefs_set', { patch: { mode, format: formatOut, rate, outDir, labels, chanVols, normalize, trim, fade, fadeDur, hpf, denoise, denoiseQuality, autoLevel, declip, enhance } })
+  }, [mode, formatOut, rate, outDir, labels, chanVols, normalize, trim, fade, fadeDur, hpf, denoise, denoiseQuality, autoLevel, declip, enhance, prefsReady])
 
   return {
     mode, setMode,
@@ -63,8 +55,11 @@ export default function usePreferences() {
     fade, setFade,
     fadeDur, setFadeDur,
     hpf, setHpf,
-    mp3Bitrate, setMp3Bitrate,
-    resizeForChannels,
+    denoise, setDenoise,
+    denoiseQuality, setDenoiseQuality,
+    autoLevel, setAutoLevel,
+    declip, setDeclip,
+    enhance, setEnhance,
     prefsReady,
   }
 }

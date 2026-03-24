@@ -1,19 +1,12 @@
-<!DOCTYPE html>
-<html lang="en" data-theme="dark">
+<!doctype html>
+<html lang="en">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>DepoAudio</title>
-    <script>
-      try {
-        const t = localStorage.getItem('depoaudio-theme') || 'dark'
-        document.documentElement.setAttribute('data-theme', t === 'light' ? 'light' : 'dark')
-        document.documentElement.style.background = t === 'light' ? '#f5f0e8' : '#0d1117'
-      } catch(e) {}
-    </script>
-    <link rel="preconnect" href="https://fonts.googleapis.com" crossorigin />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <link href="https://fonts.googleapis.com/css2?family=Crimson+Pro:wght@400;600&family=DM+Mono:wght@400;500&family=DM+Sans:wght@400;500;600&display=swap" rel="stylesheet" />
+    <link href="https://fonts.googleapis.com/css2?family=Crimson+Pro:ital,wght@0,400;0,600;1,400&family=DM+Mono:wght@400&family=DM+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
+    <title>DepoAudio</title>
   </head>
   <body>
     <div id="root"></div>

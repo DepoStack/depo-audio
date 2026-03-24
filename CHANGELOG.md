@@ -1,5 +1,36 @@
 # Changelog
 
+## [0.6.0] - 2026-03-24
+
+### Added
+- **Smart Audio Cleanup** — new AI Enhance panel that scans audio and auto-detects issues (noise, level imbalance, clipping, narrow bandwidth)
+- **Remove Background Noise** — neural noise suppression via nnnoiseless (RNNoise, fast) or DeepFilterNet3 ONNX (best quality)
+- **Balance Speaker Volume** — turn-aware auto-leveling using Pipecat Smart Turn v3 ONNX model + ebur128 loudness analysis
+- **Fix Clipped Audio** — FFmpeg adeclip filter, auto-enabled when clipping detected
+- **Improve Audio Clarity** — FlashSR ONNX neural bandwidth extension for phone recordings (16kHz to 48kHz)
+- **Quality Scoring** — DNSMOS model rates audio quality on a 1-5 scale before and after processing
+- **Speaker Count Detection** — pyannote speaker segmentation detects how many speakers are present
+- **Hardware-Aware Recommendations** — detects CPU cores, RAM, and Apple Silicon to recommend optimal processing settings
+- **Global Audio Player** (new tab) — play any audio file without conversion, with color-coded speaker tracks and editable labels
+- **Court Software Detection** — scans for installed Case CATalyst, FTR Gold, Eclipse, DigitalCAT, CourtSmart and lists available jobs for import
+- **Denoise Quality Selector** — choose between "Fast" (RNNoise) and "Best quality" (DeepFilterNet3) per conversion
+- **Phase-Aware Progress** — shows "Listening to audio...", "Cleaning up audio...", "Converting..." during AI processing stages
+
+### Changed
+- App tagline updated to "Audio Converter & Enhancer" to reflect broader use
+- Default channel labels changed to "Speaker 1-4" (editable, no longer court-specific)
+- Drop zone now lists standard formats first (WAV, MP3, FLAC, Opus) before court formats
+- Three-tab layout: Convert | Player | Library
+- Processing chain preview includes AI steps (Denoise, Enhance, De-clip, Auto-Level)
+- Channel Mix sliders auto-disabled and show "auto" when Balance Speaker Volume is on
+
+### Architecture
+- New two-step conversion pipeline: Rust AI processing (denoise, enhance) writes temp WAV, then FFmpeg handles DSP + format conversion
+- ONNX Runtime integration via `ort` crate for running AI models natively in Rust
+- `nnnoiseless` crate for pure-Rust RNNoise noise suppression
+- Bundled ONNX models (~57MB): Smart Turn v3, FlashSR, DeepFilterNet3, DNSMOS, speaker segmentation + embedding
+- Dynamic channel handling throughout (mono, stereo, multi-channel)
+
 ## [0.5.0] - 2026-03-21
 
 ### Added

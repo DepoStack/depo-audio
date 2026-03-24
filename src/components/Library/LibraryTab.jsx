@@ -3,14 +3,33 @@ import { invoke } from '@tauri-apps/api/core'
 import { CH_COLORS } from '../../constants'
 import LibraryFile from './LibraryFile'
 import ImportModal from './ImportModal'
-import Spinner from '../common/Spinner'
 
-export default function LibraryTab({ cases, setCases, search, setSearch, labels, player, loading, onReexport }) {
+export default function LibraryTab({ cases, setCases, search, setSearch, labels, onReexport }) {
   const [showArchived, setShowArchived] = useState(false)
   const [expandedCases, setExpandedCases]   = useState({})
   const [editingCase, setEditingCase]       = useState(null)
   const [editName, setEditName]             = useState('')
   const [importModal, setImportModal]       = useState(false)
+  const [catSoftware, setCatSoftware]       = useState(null)
+  const [catJobs, setCatJobs]               = useState([])
+  const [scanningCat, setScanningCat]       = useState(false)
+
+  const detectSoftware = async () => {
+    setScanningCat(true)
+    try {
+      const sw = await invoke('detect_cat_software_cmd')
+      setCatSoftware(sw)
+      // Auto-scan jobs from first detected software
+      if (sw.length > 0) {
+        const jobs = await invoke('scan_cat_jobs_cmd', { path: sw[0].path })
+        setCatJobs(jobs)
+      }
+    } catch (e) {
+      console.error('CAT detection failed:', e)
+      setCatSoftware([])
+    }
+    setScanningCat(false)
+  }
 
   const filtered = cases
     .filter(c => showArchived ? c.archived : !c.archived)
@@ -69,16 +88,48 @@ export default function LibraryTab({ cases, setCases, search, setSearch, labels,
           </svg>
           Import Audio
         </button>
+        <button className="btn btn--sm" onClick={detectSoftware} disabled={scanningCat}>
+          {scanningCat ? 'Scanning…' : 'Detect Software'}
+        </button>
       </div>
 
-      {loading && (
-        <div className="lib-empty">
-          <Spinner />
-          <p className="lib-empty-title">Loading library…</p>
+      {/* CAT Software Detection Results */}
+      {catSoftware !== null && (
+        <div className="cat-detect-section">
+          {catSoftware.length === 0 ? (
+            <p className="cat-empty">No court reporting software found on this machine.</p>
+          ) : (
+            <>
+              <div className="cat-found">
+                {catSoftware.map((sw, i) => (
+                  <div key={i} className="cat-sw-chip" onClick={async () => {
+                    const jobs = await invoke('scan_cat_jobs_cmd', { path: sw.path })
+                    setCatJobs(jobs)
+                  }}>
+                    <span className="cat-sw-name">{sw.name}</span>
+                    <span className="cat-sw-count">{sw.jobCount} file{sw.jobCount !== 1 ? 's' : ''}</span>
+                  </div>
+                ))}
+              </div>
+              {catJobs.length > 0 && (
+                <div className="cat-jobs">
+                  <span className="cat-jobs-label">Available for import:</span>
+                  {catJobs.slice(0, 20).map((job, i) => (
+                    <div key={i} className="cat-job-row" onClick={() => onReexport(job.files[0]?.path, job.name)}>
+                      <span className="cat-job-name">{job.name}</span>
+                      <span className="cat-job-sw">{job.software}</span>
+                      <span className="cat-job-files">{job.files.length} file{job.files.length !== 1 ? 's' : ''}</span>
+                      <span className="cat-job-date">{job.dateModified}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </>
+          )}
         </div>
       )}
 
-      {!loading && filtered.length === 0 && !importModal && (
+      {filtered.length === 0 && !importModal && (
         <div className="lib-empty">
           <svg width="48" height="48" viewBox="0 0 48 48" fill="none" className="lib-empty-icon">
             <rect x="8" y="12" width="32" height="28" rx="3" stroke="currentColor" strokeWidth="1.5"/>
@@ -115,9 +166,9 @@ export default function LibraryTab({ cases, setCases, search, setSearch, labels,
                 </span>
               </div>
               <div className="lib-case-actions" onClick={e => e.stopPropagation()}>
-                <button className="lib-action-btn" title="Rename" aria-label={`Rename ${c.name}`} onClick={() => { setEditingCase(c.id); setEditName(c.name) }}>✎</button>
-                <button className="lib-action-btn" title={c.archived?'Unarchive':'Archive'} aria-label={c.archived ? `Unarchive ${c.name}` : `Archive ${c.name}`} onClick={() => archiveCase(c.id, !c.archived)}>{c.archived ? '↩' : '⊙'}</button>
-                <button className="lib-action-btn lib-action-btn--del" title="Delete" aria-label={`Delete ${c.name}`} onClick={() => deleteCase(c.id)}>✕</button>
+                <button className="lib-action-btn" title="Rename" onClick={() => { setEditingCase(c.id); setEditName(c.name) }}>✎</button>
+                <button className="lib-action-btn" title={c.archived?'Unarchive':'Archive'} onClick={() => archiveCase(c.id, !c.archived)}>{c.archived ? '↩' : '⊙'}</button>
+                <button className="lib-action-btn lib-action-btn--del" title="Delete" onClick={() => deleteCase(c.id)}>✕</button>
               </div>
             </div>
 
@@ -129,12 +180,8 @@ export default function LibraryTab({ cases, setCases, search, setSearch, labels,
                       <span className="lib-session-date">{s.date}</span>
                       <span className="lib-session-src" title={s.sourceFile}>{s.sourceName}</span>
                       <div className="lib-session-actions">
-                        <button className="lib-action-btn" title="Play all files in session" onClick={() => {
-                          const allFiles = s.participants.flatMap(p => p.files.map(f => ({ path: f.path, name: f.path.split(/[\\/]/).pop(), format: f.format, size: f.size })))
-                          if (player && allFiles.length) player.playAll(allFiles)
-                        }} aria-label="Play all files in this session">▶</button>
                         <button className="lib-action-btn" title="Re-export source" onClick={() => onReexport(s.sourceFile, c.name)}>⟳ Re-export</button>
-                        <button className="lib-action-btn lib-action-btn--del" title="Remove session" aria-label="Remove session" onClick={() => deleteSession(c.id, s.id)}>✕</button>
+                        <button className="lib-action-btn lib-action-btn--del" title="Remove session" onClick={() => deleteSession(c.id, s.id)}>✕</button>
                       </div>
                     </div>
                     <div className="lib-participants">
@@ -143,7 +190,7 @@ export default function LibraryTab({ cases, setCases, search, setSearch, labels,
                           <span className="lib-participant-dot" style={{background: CH_COLORS[pi%4]}} />
                           <span className="lib-participant-label">{p.label}</span>
                           <div className="lib-participant-files">
-                            {p.files.map((f, fi) => <LibraryFile key={fi} file={f} player={player} />)}
+                            {p.files.map((f, fi) => <LibraryFile key={fi} file={f} />)}
                           </div>
                         </div>
                       ))}

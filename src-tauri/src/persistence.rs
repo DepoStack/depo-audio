@@ -32,11 +32,7 @@ pub(crate) fn save_library(app: &AppHandle, lib: &Library) {
     let path = lib_path(app);
     if let Some(parent) = path.parent() { let _ = fs::create_dir_all(parent); }
     if let Ok(json) = serde_json::to_string_pretty(lib) {
-        // Atomic write: write to temp file then rename to prevent corruption
-        let tmp = path.with_extension("json.tmp");
-        if fs::write(&tmp, &json).is_ok() {
-            let _ = fs::rename(&tmp, &path);
-        }
+        let _ = fs::write(path, json);
     }
 }
 

@@ -6,8 +6,13 @@ use tauri::{AppHandle, Emitter, State};
 use tauri_plugin_opener::OpenerExt;
 use uuid::Uuid;
 
+use crate::analysis;
+use crate::catdetect;
 use crate::conversion::do_convert;
 use crate::helpers::{detect_format_for_path, get_formats, infer_case_name};
+use crate::models;
+use crate::scoring;
+use crate::speakers;
 use crate::persistence::{lib_path, load_library, prefs_path, save_library, save_to_library};
 use crate::types::*;
 
@@ -26,6 +31,62 @@ pub fn detect_format(path: String) -> Option<FormatInfo> {
 #[tauri::command]
 pub fn infer_case_name_cmd(filename: String) -> String {
     infer_case_name(&filename)
+}
+
+// ── Analysis command ─────────────────────────────────────────────────────────
+
+#[tauri::command]
+pub async fn analyze_audio_cmd(
+    app: AppHandle,
+    path: String,
+) -> Result<crate::types::AnalysisResult, String> {
+    analysis::analyze_audio(&app, &path).await
+}
+
+// ── Quality scoring command ──────────────────────────────────────────────────
+
+#[tauri::command]
+pub async fn score_quality_cmd(
+    app: AppHandle,
+    path: String,
+) -> Result<scoring::QualityScore, String> {
+    scoring::score_quality(&app, std::path::Path::new(&path)).await
+}
+
+// ── Speaker detection command ───────────────────────────────────────────────
+
+#[tauri::command]
+pub async fn detect_speakers_cmd(
+    app: AppHandle,
+    path: String,
+) -> Result<speakers::SpeakerInfo, String> {
+    speakers::detect_speakers(&app, std::path::Path::new(&path)).await
+}
+
+// ── Model availability command ──────────────────────────────────────────────
+
+#[tauri::command]
+pub fn available_models_cmd(app: AppHandle) -> Vec<String> {
+    models::available_models(&app)
+}
+
+// ── System capabilities command ──────────────────────────────────────────────
+
+#[tauri::command]
+pub fn system_capabilities_cmd(app: AppHandle) -> models::SystemCapabilities {
+    models::detect_capabilities(&app)
+}
+
+// ── CAT software detection commands ──────────────────────────────────────────
+
+#[tauri::command]
+pub fn detect_cat_software_cmd() -> Vec<catdetect::CatSoftware> {
+    catdetect::detect_cat_software()
+}
+
+#[tauri::command]
+pub fn scan_cat_jobs_cmd(path: String) -> Vec<catdetect::CatJob> {
+    catdetect::scan_cat_jobs(&path)
 }
 
 // ── Convert command ───────────────────────────────────────────────────────────
@@ -157,11 +218,7 @@ pub fn prefs_set(app: AppHandle, state: State<'_, AppState>, patch: serde_json::
     let path = prefs_path(&app);
     if let Some(parent) = path.parent() { let _ = fs::create_dir_all(parent); }
     if let Ok(json) = serde_json::to_string_pretty(&*prefs) {
-        // Atomic write: temp file + rename
-        let tmp = path.with_extension("json.tmp");
-        if fs::write(&tmp, &json).is_ok() {
-            let _ = fs::rename(&tmp, &path);
-        }
+        let _ = fs::write(path, json);
     }
     true
 }
@@ -173,44 +230,4 @@ pub fn show_in_folder(app: AppHandle, path: String) -> Result<(), String> {
     app.opener()
         .reveal_item_in_dir(&path)
         .map_err(|e| e.to_string())
-}
-
-
-// ── Probe commands ───────────────────────────────────────────────────────
-
-#[tauri::command]
-pub async fn probe_duration_cmd(app: AppHandle, path: String) -> Option<f64> {
-    let fmt = detect_format_for_path(&path);
-    let input_codec: Vec<String> = match fmt.as_ref().map(|f| f.handler.as_str()) {
-        Some("ftr") => vec!["-acodec".into(), "aac".into()],
-        _ => vec![],
-    };
-    let feed = std::path::Path::new(&path);
-    crate::ffmpeg::probe_duration(&app, feed, &input_codec).await
-}
-
-#[tauri::command]
-pub async fn probe_channels_cmd(app: AppHandle, path: String) -> u32 {
-    let fmt = detect_format_for_path(&path);
-    let input_codec: Vec<String> = match fmt.as_ref().map(|f| f.handler.as_str()) {
-        Some("ftr") => vec!["-acodec".into(), "aac".into()],
-        _ => vec![],
-    };
-    let feed = std::path::Path::new(&path);
-    crate::ffmpeg::probe_channels(&app, feed, &input_codec).await
-}
-
-// ── Preview commands ──────────────────────────────────────────────────────────
-
-#[tauri::command]
-pub async fn generate_preview(
-    app: AppHandle,
-    req: crate::preview::PreviewRequest,
-) -> Result<String, String> {
-    crate::preview::generate_preview(&app, &req).await
-}
-
-#[tauri::command]
-pub fn cleanup_previews() -> u32 {
-    crate::preview::cleanup_previews()
 }

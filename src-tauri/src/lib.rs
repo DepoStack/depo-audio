@@ -1,9 +1,15 @@
+mod analysis;
+mod catdetect;
 mod commands;
 mod conversion;
+mod denoise;
+mod enhance;
 mod ffmpeg;
 mod helpers;
+mod models;
 mod persistence;
-mod preview;
+mod scoring;
+mod speakers;
 pub mod types;
 
 use types::AppState;
@@ -15,12 +21,18 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_opener::init())
-        .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(AppState::default())
         .invoke_handler(tauri::generate_handler![
             commands::get_formats_list,
             commands::detect_format,
             commands::infer_case_name_cmd,
+            commands::analyze_audio_cmd,
+            commands::score_quality_cmd,
+            commands::detect_speakers_cmd,
+            commands::available_models_cmd,
+            commands::system_capabilities_cmd,
+            commands::detect_cat_software_cmd,
+            commands::scan_cat_jobs_cmd,
             commands::convert,
             commands::show_in_folder,
             commands::library_get,
@@ -31,10 +43,6 @@ pub fn run() {
             commands::library_import_file,
             commands::prefs_get,
             commands::prefs_set,
-            commands::probe_duration_cmd,
-            commands::probe_channels_cmd,
-            commands::generate_preview,
-            commands::cleanup_previews,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
