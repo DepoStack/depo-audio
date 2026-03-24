@@ -28,7 +28,7 @@ pub(crate) fn model_path(app: &AppHandle, filename: &str) -> Result<PathBuf, Str
 /// Load an ONNX session from a model file.
 pub(crate) fn load_session(path: &PathBuf) -> Result<Session, String> {
     Session::builder()
-        .and_then(|b| b.with_model_from_file(path))
+        .and_then(|mut b| b.commit_from_file(path))
         .map_err(|e| format!("Failed to load ONNX model {}: {}", path.display(), e))
 }
 

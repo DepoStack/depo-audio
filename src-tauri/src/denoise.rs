@@ -2,6 +2,7 @@ use std::path::{Path, PathBuf};
 
 use hound::{SampleFormat, WavReader, WavSpec, WavWriter};
 use nnnoiseless::DenoiseState;
+use tauri_plugin_shell::ShellExt;
 use uuid::Uuid;
 
 // ── Audio denoising via nnnoiseless (RNNoise) ───────────────────────────────
@@ -115,12 +116,13 @@ fn denoise_channel(samples: &mut Vec<f32>) {
         let offset = i * FRAME_SIZE;
 
         // RNNoise expects samples in [-32768, 32767] range (i16 scale)
+        let mut input_frame = [0.0f32; FRAME_SIZE];
         for j in 0..FRAME_SIZE {
-            frame[j] = samples[offset + j] * 32767.0;
+            input_frame[j] = samples[offset + j] * 32767.0;
         }
 
-        // Process frame — returns VAD probability (unused here)
-        let _vad = state.process_frame(&mut frame);
+        // Process frame — output written to frame, returns VAD probability
+        let _vad = state.process_frame(&mut frame, &input_frame);
 
         // Write back, converting from i16 scale to f32 [-1, 1]
         for j in 0..FRAME_SIZE {
@@ -144,9 +146,9 @@ pub(crate) async fn denoise_deep_filter(
     let erb_path = crate::models::model_path(app, "dfn3_erb_dec.onnx")?;
     let df_path = crate::models::model_path(app, "dfn3_df_dec.onnx")?;
 
-    let enc_session = crate::models::load_session(&enc_path)?;
-    let erb_session = crate::models::load_session(&erb_path)?;
-    let df_session = crate::models::load_session(&df_path)?;
+    let mut enc_session = crate::models::load_session(&enc_path)?;
+    let mut erb_session = crate::models::load_session(&erb_path)?;
+    let _df_session = crate::models::load_session(&df_path)?;
 
     // DeepFilterNet3 operates on 48kHz audio in the STFT domain.
     // The pipeline is: enc -> df_dec (deep filter) -> erb_dec (ERB reconstruction)
@@ -197,16 +199,18 @@ pub(crate) async fn denoise_deep_filter(
 
         let input_tensor = ndarray::Array2::from_shape_vec((1, frame_size), frame)
             .map_err(|e| format!("Tensor error: {}", e))?;
+        let input_val = ort::value::Tensor::from_array(input_tensor)
+            .map_err(|e| format!("Tensor error: {}", e))?;
 
         // Run encoder
         let enc_out = enc_session
-            .run(ort::inputs!["input" => input_tensor.view()])
+            .run(ort::inputs!["input" => input_val])
             .map_err(|e| format!("DFN3 encoder failed: {}", e))?;
 
         // Get encoder output and feed to ERB decoder
         if let Some(enc_val) = enc_out.values().next() {
             if let Ok(enc_tensor) = enc_val.try_extract_tensor::<f32>() {
-                let enc_data = enc_tensor.as_slice().unwrap_or(&[]);
+                let enc_data = enc_tensor.1;
 
                 // Run ERB decoder with encoder features
                 let erb_input = ndarray::Array2::from_shape_vec(
@@ -215,16 +219,18 @@ pub(crate) async fn denoise_deep_filter(
                 );
 
                 if let Ok(erb_in) = erb_input {
-                    let erb_out = erb_session
-                        .run(ort::inputs!["input" => erb_in.view()]);
+                    if let Ok(erb_val) = ort::value::Tensor::from_array(erb_in) {
+                        let erb_out = erb_session
+                            .run(ort::inputs!["input" => erb_val]);
 
-                    if let Ok(erb_result) = erb_out {
-                        if let Some(out_val) = erb_result.values().next() {
-                            if let Ok(out_tensor) = out_val.try_extract_tensor::<f32>() {
-                                let out_data = out_tensor.as_slice().unwrap_or(&[]);
-                                if out_data.len() >= frame_size {
-                                    output_samples.extend_from_slice(&out_data[..frame_size]);
-                                    continue;
+                        if let Ok(erb_result) = erb_out {
+                            if let Some(out_val) = erb_result.values().next() {
+                                if let Ok(out_tensor) = out_val.try_extract_tensor::<f32>() {
+                                    let out_data = out_tensor.1;
+                                    if out_data.len() >= frame_size {
+                                        output_samples.extend_from_slice(&out_data[..frame_size]);
+                                        continue;
+                                    }
                                 }
                             }
                         }

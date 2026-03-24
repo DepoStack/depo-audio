@@ -46,7 +46,7 @@ pub(crate) async fn detect_speech(
     audio_path: &Path,
 ) -> Result<VadResult, String> {
     let model_path = models::model_path(app, "silero_vad.onnx")?;
-    let session = models::load_session(&model_path)?;
+    let mut session = models::load_session(&model_path)?;
 
     // Decode to 16kHz mono WAV
     let tmp = std::env::temp_dir().join(format!(
@@ -113,11 +113,19 @@ pub(crate) async fn detect_speech(
             .map_err(|e| format!("Tensor error: {}", e))?;
 
         // Run inference with state
+        let input_val = ort::value::Tensor::from_array(input)
+            .map_err(|e| format!("Tensor error: {}", e))?;
+        let sr_val = ort::value::Tensor::from_array(sr.clone())
+            .map_err(|e| format!("Tensor error: {}", e))?;
+        let h_val = ort::value::Tensor::from_array(h.clone())
+            .map_err(|e| format!("Tensor error: {}", e))?;
+        let c_val = ort::value::Tensor::from_array(c.clone())
+            .map_err(|e| format!("Tensor error: {}", e))?;
         let result = session.run(ort::inputs![
-            "input" => input.view(),
-            "sr" => sr.view(),
-            "h" => h.view(),
-            "c" => c.view()
+            "input" => input_val,
+            "sr" => sr_val,
+            "h" => h_val,
+            "c" => c_val
         ]);
 
         match result {
@@ -125,9 +133,7 @@ pub(crate) async fn detect_speech(
                 // Extract probability
                 if let Some(prob_val) = outputs.get("output") {
                     if let Ok(prob_tensor) = prob_val.try_extract_tensor::<f32>() {
-                        let prob = prob_tensor.as_slice()
-                            .and_then(|s| s.first().copied())
-                            .unwrap_or(0.0);
+                        let prob = prob_tensor.1.first().copied().unwrap_or(0.0);
                         probabilities.push(prob);
                     }
                 }
@@ -135,19 +141,17 @@ pub(crate) async fn detect_speech(
                 // Update hidden states for next chunk
                 if let Some(hn) = outputs.get("hn") {
                     if let Ok(hn_tensor) = hn.try_extract_tensor::<f32>() {
-                        if let Some(slice) = hn_tensor.as_slice() {
-                            if slice.len() == h.len() {
-                                h.as_slice_mut().unwrap().copy_from_slice(slice);
-                            }
+                        let slice: &[f32] = hn_tensor.1;
+                        if slice.len() == h.len() {
+                            h.as_slice_mut().unwrap().copy_from_slice(slice);
                         }
                     }
                 }
                 if let Some(cn) = outputs.get("cn") {
                     if let Ok(cn_tensor) = cn.try_extract_tensor::<f32>() {
-                        if let Some(slice) = cn_tensor.as_slice() {
-                            if slice.len() == c.len() {
-                                c.as_slice_mut().unwrap().copy_from_slice(slice);
-                            }
+                        let slice: &[f32] = cn_tensor.1;
+                        if slice.len() == c.len() {
+                            c.as_slice_mut().unwrap().copy_from_slice(slice);
                         }
                     }
                 }

@@ -36,7 +36,7 @@ async fn enhance_with_flashsr(
     input: &Path,
     model_path: &PathBuf,
 ) -> Result<PathBuf, String> {
-    let session = models::load_session(model_path)?;
+    let mut session = models::load_session(model_path)?;
 
     // Decode input to 16kHz mono f32 WAV
     let tmp_in = std::env::temp_dir().join(format!(
@@ -83,21 +83,22 @@ async fn enhance_with_flashsr(
     let input_len = samples.len();
     let input_tensor = ndarray::Array2::from_shape_vec((1, input_len), samples)
         .map_err(|e| format!("Tensor error: {}", e))?;
+    let input_val = ort::value::Tensor::from_array(input_tensor)
+        .map_err(|e| format!("Tensor error: {}", e))?;
 
     let outputs = session
-        .run(ort::inputs!["input" => input_tensor.view()])
+        .run(ort::inputs!["input" => input_val])
         .map_err(|e| format!("FlashSR inference failed: {}", e))?;
 
-    let output_tensor = outputs
+    let first_output = outputs
         .values()
         .next()
-        .and_then(|v| v.try_extract_tensor::<f32>().ok())
-        .ok_or("Failed to extract FlashSR output")?;
+        .ok_or("No FlashSR output")?;
+    let output_tensor = first_output
+        .try_extract_tensor::<f32>()
+        .map_err(|e| format!("Failed to extract FlashSR output: {}", e))?;
 
-    let output_samples: Vec<f32> = output_tensor
-        .as_slice()
-        .ok_or("Cannot read FlashSR output")?
-        .to_vec();
+    let output_samples: Vec<f32> = output_tensor.1.to_vec();
 
     // Write 48kHz output WAV
     let tmp_out = std::env::temp_dir().join(format!(

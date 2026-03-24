@@ -33,7 +33,7 @@ pub(crate) async fn detect_speakers(
 ) -> Result<SpeakerInfo, String> {
     // Check model availability
     let seg_path = models::model_path(app, "speaker_seg_int8.onnx")?;
-    let seg_session = models::load_session(&seg_path)?;
+    let mut seg_session = models::load_session(&seg_path)?;
 
     let has_embed = models::model_path(app, "speaker_embed.onnx").is_ok();
 
@@ -86,23 +86,27 @@ pub(crate) async fn detect_speakers(
         (1, 1, num_samples),
         samples.clone(),
     ).map_err(|e| format!("Tensor error: {}", e))?;
+    let input_val = ort::value::Tensor::from_array(input)
+        .map_err(|e| format!("Tensor error: {}", e))?;
 
     let seg_outputs = seg_session
-        .run(ort::inputs!["input" => input.view()])
+        .run(ort::inputs!["input" => input_val])
         .map_err(|e| format!("Segmentation inference failed: {}", e))?;
 
     // Parse segmentation output to count active speaker slots
-    let seg_tensor = seg_outputs
+    let first_output = seg_outputs
         .values()
         .next()
-        .and_then(|v| v.try_extract_tensor::<f32>().ok())
-        .ok_or("Failed to extract segmentation output")?;
+        .ok_or("No segmentation output")?;
+    let seg_tensor = first_output
+        .try_extract_tensor::<f32>()
+        .map_err(|e| format!("Failed to extract segmentation output: {}", e))?;
 
-    let seg_shape = seg_tensor.shape();
+    let seg_shape = seg_tensor.0;
     // Output shape is typically [1, num_frames, max_speakers]
-    let num_speakers_slots = if seg_shape.len() == 3 { seg_shape[2] } else { 3 };
-    let num_frames = if seg_shape.len() == 3 { seg_shape[1] } else { 1 };
-    let seg_data = seg_tensor.as_slice().ok_or("Cannot read segmentation data")?;
+    let num_speakers_slots = if seg_shape.len() == 3 { seg_shape[2] as usize } else { 3usize };
+    let num_frames = if seg_shape.len() == 3 { seg_shape[1] as usize } else { 1usize };
+    let seg_data = seg_tensor.1;
 
     // Count how many speaker slots have significant activity (> 10% of frames active)
     let threshold = 0.5f32;

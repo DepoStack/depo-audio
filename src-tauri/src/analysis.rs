@@ -311,7 +311,7 @@ async fn detect_turns(
     app: &AppHandle,
     feed: &Path,
     channels: u32,
-    duration: f64,
+    _duration: f64,
 ) -> Vec<TurnSegment> {
     // Try loading the Smart Turn model — if not available, return empty
     let model_path = match crate::models::model_path(app, "smart-turn-v3-int8.onnx") {
@@ -319,7 +319,7 @@ async fn detect_turns(
         Err(_) => return Vec::new(),
     };
 
-    let session = match crate::models::load_session(&model_path) {
+    let mut session = match crate::models::load_session(&model_path) {
         Ok(s) => s,
         Err(_) => return Vec::new(),
     };
@@ -373,13 +373,17 @@ async fn detect_turns(
                 ).ok();
 
                 let prob = if let Some(input_arr) = input {
-                    match session.run(ort::inputs!["input" => input_arr.view()]) {
-                        Ok(outputs) => {
-                            outputs.get("output")
-                                .and_then(|v| v.try_extract_tensor::<f32>().ok())
-                                .and_then(|t| t.as_slice().map(|s| s.get(0).copied()))
-                                .flatten()
-                                .unwrap_or(0.0)
+                    match ort::value::Tensor::from_array(input_arr) {
+                        Ok(tensor) => {
+                            match session.run(ort::inputs!["input" => tensor]) {
+                                Ok(outputs) => {
+                                    outputs.get("output")
+                                        .and_then(|v| v.try_extract_tensor::<f32>().ok())
+                                        .and_then(|t| t.1.get(0).copied())
+                                        .unwrap_or(0.0)
+                                }
+                                Err(_) => 0.0,
+                            }
                         }
                         Err(_) => 0.0,
                     }

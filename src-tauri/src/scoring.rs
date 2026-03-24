@@ -35,7 +35,7 @@ pub(crate) async fn score_quality(
     audio_path: &Path,
 ) -> Result<QualityScore, String> {
     let model_path = models::model_path(app, "dnsmos_sig_bak_ovr.onnx")?;
-    let session = models::load_session(&model_path)?;
+    let mut session = models::load_session(&model_path)?;
 
     // Decode to 16kHz mono for DNSMOS
     let tmp = std::env::temp_dir().join(format!(
@@ -92,19 +92,23 @@ pub(crate) async fn score_quality(
     // Create input tensor [1, target_len]
     let input = ndarray::Array2::from_shape_vec((1, target_len), input_samples)
         .map_err(|e| format!("Tensor error: {}", e))?;
+    let input_val = ort::value::Tensor::from_array(input)
+        .map_err(|e| format!("Tensor error: {}", e))?;
 
     let outputs = session
-        .run(ort::inputs!["input_1" => input.view()])
+        .run(ort::inputs!["input_1" => input_val])
         .map_err(|e| format!("DNSMOS inference failed: {}", e))?;
 
     // Output is [1, 3] with [SIG, BAK, OVR] scores
-    let scores = outputs
+    let first_output = outputs
         .values()
         .next()
-        .and_then(|v| v.try_extract_tensor::<f32>().ok())
-        .ok_or("Failed to extract DNSMOS output")?;
+        .ok_or("No DNSMOS output")?;
+    let scores = first_output
+        .try_extract_tensor::<f32>()
+        .map_err(|e| format!("Failed to extract DNSMOS output: {}", e))?;
 
-    let scores_slice = scores.as_slice().ok_or("Cannot read DNSMOS scores")?;
+    let scores_slice = scores.1;
 
     if scores_slice.len() >= 3 {
         Ok(QualityScore {

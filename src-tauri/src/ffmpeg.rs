@@ -122,7 +122,7 @@ pub(crate) async fn run_ffmpeg(app: &AppHandle, args: Vec<String>, job_id: &str)
                     let m: f64 = cap[2].parse().unwrap_or(0.0);
                     let s: f64 = cap[3].parse().unwrap_or(0.0);
                     let secs = h * 3600.0 + m * 60.0 + s;
-                    let _ = app.emit("convert:progress", ProgressEvent { id: job_id.to_string(), seconds: secs });
+                    let _ = app.emit("convert:progress", ProgressEvent { id: job_id.to_string(), seconds: secs, phase: None });
                 }
             }
             CommandEvent::Terminated(status) => {

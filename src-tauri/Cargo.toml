@@ -28,6 +28,6 @@ dirs-next = "2.0"
 
 # AI audio processing
 nnnoiseless = "0.5"
-ort = { version = "2", features = ["load-dynamic"] }
+ort = "2.0.0-rc.12"
 hound = "3.5"
-ndarray = "0.16"
+ndarray = "0.17"
