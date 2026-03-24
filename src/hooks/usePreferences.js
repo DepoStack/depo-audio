@@ -18,6 +18,7 @@ export default function usePreferences() {
   const [autoLevel, setAutoLevel] = useState(false)
   const [declip, setDeclip]       = useState(false)
   const [enhance, setEnhance]     = useState(false)
+  const [dereverb, setDereverb]   = useState(false)
   const [prefsReady, setPrefsReady] = useState(false)
 
   // Load prefs on mount
@@ -32,7 +33,7 @@ export default function usePreferences() {
       setNormalize(!!p.normalize); setTrim(!!p.trim)
       setFade(!!p.fade); setFadeDur(p.fadeDur || 0.5); setHpf(!!p.hpf)
       setDenoise(!!p.denoise); setDenoiseQuality(p.denoiseQuality || 'fast'); setAutoLevel(!!p.autoLevel)
-      setDeclip(!!p.declip); setEnhance(!!p.enhance)
+      setDeclip(!!p.declip); setEnhance(!!p.enhance); setDereverb(!!p.dereverb)
       setPrefsReady(true)
     }).catch(() => setPrefsReady(true))
   }, [])
@@ -40,8 +41,8 @@ export default function usePreferences() {
   // Persist prefs on change
   useEffect(() => {
     if (!prefsReady) return
-    invoke('prefs_set', { patch: { mode, format: formatOut, rate, outDir, labels, chanVols, normalize, trim, fade, fadeDur, hpf, denoise, denoiseQuality, autoLevel, declip, enhance } })
-  }, [mode, formatOut, rate, outDir, labels, chanVols, normalize, trim, fade, fadeDur, hpf, denoise, denoiseQuality, autoLevel, declip, enhance, prefsReady])
+    invoke('prefs_set', { patch: { mode, format: formatOut, rate, outDir, labels, chanVols, normalize, trim, fade, fadeDur, hpf, denoise, denoiseQuality, autoLevel, declip, enhance, dereverb } })
+  }, [mode, formatOut, rate, outDir, labels, chanVols, normalize, trim, fade, fadeDur, hpf, denoise, denoiseQuality, autoLevel, declip, enhance, dereverb, prefsReady])
 
   return {
     mode, setMode,
@@ -60,6 +61,7 @@ export default function usePreferences() {
     autoLevel, setAutoLevel,
     declip, setDeclip,
     enhance, setEnhance,
+    dereverb, setDereverb,
     prefsReady,
   }
 }

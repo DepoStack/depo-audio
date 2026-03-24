@@ -1,6 +1,7 @@
 mod analysis;
 mod catdetect;
 mod commands;
+mod dereverb;
 mod conversion;
 mod denoise;
 mod enhance;

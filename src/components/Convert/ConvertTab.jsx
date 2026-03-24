@@ -15,7 +15,7 @@ export default function ConvertTab({
   fadeDur, setFadeDur, hpf, setHpf,
   denoise, setDenoise, denoiseQuality, setDenoiseQuality,
   autoLevel, setAutoLevel, declip, setDeclip, enhance, setEnhance,
-  capabilities,
+  dereverb, setDereverb, capabilities,
   // Files
   files, dragOver, caseName, setCaseName,
   onDragOver, onDragLeave, onDrop, browseFiles, browseOutDir,
@@ -24,7 +24,7 @@ export default function ConvertTab({
   jobs, converting, startConversion, doneCount, failCount,
 }) {
   const anyProc = normalize || trim || fade || hpf
-  const anyAi = denoise || autoLevel || declip || enhance
+  const anyAi = denoise || autoLevel || declip || enhance || dereverb
   const [analysis, setAnalysis] = useState(null)
   const [scanning, setScanning] = useState(false)
 
@@ -212,6 +212,16 @@ export default function ConvertTab({
                 </div>
                 <Toggle checked={enhance} onChange={setEnhance} />
               </label>
+
+              <label className="proc-item proc-item--ai">
+                <div className="proc-item-info">
+                  <span className="proc-name">Reduce Room Echo</span>
+                  <span className="proc-desc">
+                    Removes reverb and echo from recordings made in large rooms or hallways
+                  </span>
+                </div>
+                <Toggle checked={dereverb} onChange={setDereverb} />
+              </label>
             </div>
 
             {/* Processing pipeline preview */}
@@ -220,6 +230,7 @@ export default function ConvertTab({
                 <span className="proc-chain-label">CLEANUP</span>
                 <div className="proc-chain-steps">
                   {denoise   && <><span className="proc-chip proc-chip--ai">Denoise</span><span className="proc-chain-arrow">→</span></>}
+                  {dereverb  && <><span className="proc-chip proc-chip--ai">De-reverb</span><span className="proc-chain-arrow">→</span></>}
                   {enhance   && <><span className="proc-chip proc-chip--ai">Enhance</span><span className="proc-chain-arrow">→</span></>}
                   {declip    && <><span className="proc-chip proc-chip--ai">De-clip</span><span className="proc-chain-arrow">→</span></>}
                   {autoLevel && <span className="proc-chip proc-chip--ai">Auto-Level</span>}
@@ -287,6 +298,7 @@ export default function ConvertTab({
               {(anyProc || anyAi) ? (
                 <div className="proc-chain-steps">
                   {denoise   && <><span className="proc-chip proc-chip--ai">Denoise</span><span className="proc-chain-arrow">→</span></>}
+                  {dereverb  && <><span className="proc-chip proc-chip--ai">De-reverb</span><span className="proc-chain-arrow">→</span></>}
                   {enhance   && <><span className="proc-chip proc-chip--ai">Enhance</span><span className="proc-chain-arrow">→</span></>}
                   {declip    && <><span className="proc-chip proc-chip--ai">De-clip</span><span className="proc-chain-arrow">→</span></>}
                   {hpf       && <><span className="proc-chip proc-chip--on">HPF 80Hz</span><span className="proc-chain-arrow">→</span></>}

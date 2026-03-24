@@ -27,6 +27,7 @@ export default function App() {
     fadeDur, setFadeDur, hpf, setHpf,
     denoise, setDenoise, denoiseQuality, setDenoiseQuality,
     autoLevel, setAutoLevel, declip, setDeclip, enhance, setEnhance,
+    dereverb, setDereverb,
   } = prefs
 
   const fileDrop = useFileDrop()
@@ -60,7 +61,7 @@ export default function App() {
     conversion.startConversion({
       files, outDir, mode, formatOut, rate,
       labels, chanVols, normalize, trim, fade, fadeDur, hpf,
-      denoise, denoiseQuality, autoLevel, declip, enhance,
+      denoise, denoiseQuality, autoLevel, declip, enhance, dereverb,
       caseName, setCases,
     })
   }
@@ -107,6 +108,7 @@ export default function App() {
             autoLevel={autoLevel} setAutoLevel={setAutoLevel}
             declip={declip} setDeclip={setDeclip}
             enhance={enhance} setEnhance={setEnhance}
+            dereverb={dereverb} setDereverb={setDereverb}
             capabilities={capabilities}
             files={files} dragOver={dragOver}
             caseName={caseName} setCaseName={setCaseName}

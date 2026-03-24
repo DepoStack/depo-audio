@@ -5,6 +5,7 @@ use tauri::{AppHandle, Emitter};
 
 use crate::analysis::analyze_audio;
 use crate::denoise::{decode_to_wav_48k, denoise_deep_filter, denoise_wav};
+use crate::dereverb;
 use crate::enhance::enhance_bandwidth;
 use crate::ffmpeg::{build_proc_filters_with_gain, probe_channels, run_ffmpeg};
 use crate::helpers::{basename, detect_format_for_path, output_args, output_ext, safe_label, strip_sgmca_header, unique_path};
@@ -62,7 +63,7 @@ async fn do_convert_inner(app: &AppHandle, job: &ConvertJob, feed: &Path, fmt: &
     let mut ai_temps: Vec<PathBuf> = Vec::new();
     let mut channel_gains: Option<Vec<f64>> = None;
 
-    let has_ai = job.denoise || job.auto_level || job.declip || job.enhance;
+    let has_ai = job.denoise || job.auto_level || job.declip || job.enhance || job.dereverb;
 
     if has_ai {
         // Phase: Analyzing
@@ -112,6 +113,17 @@ async fn do_convert_inner(app: &AppHandle, job: &ConvertJob, feed: &Path, fmt: &
                     }
                     Err(_) => { ai_feed = decoded; }
                 }
+            }
+        }
+
+        // De-reverberation: reduce room echo (if DCCRN+ model available)
+        if job.dereverb {
+            match dereverb::dereverb(app, &ai_feed).await {
+                Ok(dereverbbed) => {
+                    ai_temps.push(dereverbbed.clone());
+                    ai_feed = dereverbbed;
+                }
+                Err(_) => {} // Fall through if model not available
             }
         }
 

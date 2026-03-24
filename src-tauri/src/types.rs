@@ -44,6 +44,8 @@ pub struct ConvertJob {
     pub declip: bool,
     #[serde(default)]
     pub enhance: bool,
+    #[serde(default)]
+    pub dereverb: bool,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -196,6 +198,8 @@ pub struct Prefs {
     pub declip: bool,
     #[serde(default)]
     pub enhance: bool,
+    #[serde(default)]
+    pub dereverb: bool,
 }
 
 impl Default for Prefs {
@@ -218,6 +222,7 @@ impl Default for Prefs {
             auto_level: false,
             declip: false,
             enhance: false,
+            dereverb: false,
         }
     }
 }

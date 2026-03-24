@@ -8,7 +8,7 @@ export default function useConversion() {
   const [jobs, setJobs]             = useState({})
   const [converting, setConverting] = useState(false)
 
-  const startConversion = useCallback(async ({ files, outDir, mode, formatOut, rate, labels, chanVols, normalize, trim, fade, fadeDur, hpf, denoise, denoiseQuality, autoLevel, declip, enhance, caseName, setCases }) => {
+  const startConversion = useCallback(async ({ files, outDir, mode, formatOut, rate, labels, chanVols, normalize, trim, fade, fadeDur, hpf, denoise, denoiseQuality, autoLevel, declip, enhance, dereverb, caseName, setCases }) => {
     if (converting || !files.length) return
     setConverting(true)
     setJobs(Object.fromEntries(files.map(f => [f.path, { status:'queued', outputs:[], error:null }])))
@@ -51,7 +51,7 @@ export default function useConversion() {
           id, srcPath: file.path, outDir: resolved, mode,
           format: formatOut, rate: formatOut === 'opus' ? '48000' : rate,
           labels, chanVols, normalize, trim, fade, fadeDur, hpf,
-          denoise, denoiseQuality, autoLevel, declip, enhance,
+          denoise, denoiseQuality, autoLevel, declip, enhance, dereverb,
           caseName: caseName || null
         }}).catch(e => {
           setJobs(prev => ({ ...prev, [file.path]: { ...prev[file.path], status:'error', error: String(e) } }))
