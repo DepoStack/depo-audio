@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import { open as openDialog } from '@tauri-apps/plugin-dialog'
+import * as Dialog from '@radix-ui/react-dialog'
 import { basename } from '../../utils'
 import Spinner from '../common/Spinner'
 
@@ -50,12 +51,14 @@ export default function ImportModal({ defaultLabels, existingCases, onDone, onCl
   }
 
   return (
-    <div className="modal-overlay" onClick={e => { if (e.target === e.currentTarget) onClose() }}>
-      <div className="modal">
-        <div className="modal-head">
-          <span className="modal-title">Import Audio to Library</span>
-          <button className="modal-close" onClick={onClose}>×</button>
-        </div>
+    <Dialog.Root open onOpenChange={open => { if (!open) onClose() }}>
+      <Dialog.Portal>
+        <Dialog.Overlay className="modal-overlay" />
+        <Dialog.Content className="modal" onPointerDownOutside={onClose}>
+          <div className="modal-head">
+            <Dialog.Title className="modal-title">Import Audio to Library</Dialog.Title>
+            <Dialog.Close className="modal-close">×</Dialog.Close>
+          </div>
         <p className="modal-sub">Add already-converted or existing audio files directly to your library — no conversion needed.</p>
 
         {/* File picker */}
@@ -125,12 +128,15 @@ export default function ImportModal({ defaultLabels, existingCases, onDone, onCl
         {error && <p className="modal-error">{error}</p>}
 
         <div className="modal-actions">
-          <button className="ghost-btn" onClick={onClose} disabled={saving}>Cancel</button>
+          <Dialog.Close asChild>
+            <button className="ghost-btn" disabled={saving}>Cancel</button>
+          </Dialog.Close>
           <button className="btn btn--primary" onClick={handleSave} disabled={saving}>
             {saving ? <><Spinner />Saving…</> : `Import ${selectedFiles.length > 0 ? selectedFiles.length + ' file' + (selectedFiles.length !== 1 ? 's' : '') : ''}`}
           </button>
         </div>
-      </div>
-    </div>
+      </Dialog.Content>
+    </Dialog.Portal>
+    </Dialog.Root>
   )
 }

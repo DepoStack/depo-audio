@@ -9,6 +9,7 @@ use uuid::Uuid;
 use crate::analysis;
 use crate::catdetect;
 use crate::conversion::do_convert;
+use crate::vad;
 use crate::helpers::{detect_format_for_path, get_formats, infer_case_name};
 use crate::models;
 use crate::scoring;
@@ -75,6 +76,16 @@ pub fn available_models_cmd(app: AppHandle) -> Vec<String> {
 #[tauri::command]
 pub fn system_capabilities_cmd(app: AppHandle) -> models::SystemCapabilities {
     models::detect_capabilities(&app)
+}
+
+// ── VAD command ─────────────────────────────────────────────────────────────
+
+#[tauri::command]
+pub async fn detect_speech_cmd(
+    app: AppHandle,
+    path: String,
+) -> Result<vad::VadResult, String> {
+    vad::detect_speech(&app, std::path::Path::new(&path)).await
 }
 
 // ── CAT software detection commands ──────────────────────────────────────────

@@ -97,6 +97,9 @@ pub struct AnalysisResult {
     pub quality_score: Option<QualityScoreResult>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub speaker_count: Option<u32>,
+    /// Ratio of speech to total duration (0.0 - 1.0), from VAD analysis.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub speech_ratio: Option<f64>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]

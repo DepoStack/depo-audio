@@ -150,6 +150,11 @@ export default function ConvertTab({
                     {analysis.turns.length} turn{analysis.turns.length !== 1 ? 's' : ''} found
                   </span>
                 )}
+                {analysis.speechRatio != null && (
+                  <span className="ai-result-chip">
+                    {Math.round(analysis.speechRatio * 100)}% speech
+                  </span>
+                )}
               </div>
             )}
 

@@ -1,13 +1,13 @@
+import * as Switch from '@radix-ui/react-switch'
+
 export default function Toggle({ checked, onChange }) {
   return (
-    <button
-      type="button"
-      role="switch"
-      aria-checked={checked}
-      className={`toggle${checked ? ' toggle--on' : ''}`}
-      onClick={() => onChange(!checked)}
+    <Switch.Root
+      className="toggle"
+      checked={checked}
+      onCheckedChange={onChange}
     >
-      <span className="toggle-thumb" />
-    </button>
+      <Switch.Thumb className="toggle-thumb" />
+    </Switch.Root>
   )
 }

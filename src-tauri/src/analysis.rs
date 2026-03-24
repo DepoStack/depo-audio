@@ -122,6 +122,17 @@ pub(crate) async fn analyze_audio(
         ));
     }
 
+    // Voice activity detection (if VAD model available)
+    let vad_result = crate::vad::detect_speech(app, std::path::Path::new(path)).await.ok();
+    if let Some(ref vad) = vad_result {
+        if vad.speech_ratio < 0.3 && duration > 10.0 {
+            recommendations.push(format!(
+                "Only {:.0}% of this recording contains speech — consider trimming silence",
+                vad.speech_ratio * 100.0
+            ));
+        }
+    }
+
     // Quality scoring (if DNSMOS model available)
     let quality_score = match crate::scoring::score_quality(app, std::path::Path::new(path)).await {
         Ok(qs) => Some(crate::types::QualityScoreResult { sig: qs.sig, bak: qs.bak, ovr: qs.ovr }),
@@ -149,6 +160,7 @@ pub(crate) async fn analyze_audio(
         recommendations,
         quality_score,
         speaker_count,
+        speech_ratio: vad_result.map(|v| v.speech_ratio),
     })
 }
 

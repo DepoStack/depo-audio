@@ -11,6 +11,7 @@ mod persistence;
 mod scoring;
 mod speakers;
 pub mod types;
+mod vad;
 
 use types::AppState;
 
@@ -31,6 +32,7 @@ pub fn run() {
             commands::detect_speakers_cmd,
             commands::available_models_cmd,
             commands::system_capabilities_cmd,
+            commands::detect_speech_cmd,
             commands::detect_cat_software_cmd,
             commands::scan_cat_jobs_cmd,
             commands::convert,

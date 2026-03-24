@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react'
 import { invoke } from '@tauri-apps/api/core'
+import * as Tabs from '@radix-ui/react-tabs'
 import { basename } from './utils'
 
 import useTheme from './hooks/useTheme'
@@ -65,7 +66,7 @@ export default function App() {
   }
 
   return (
-    <div className="app">
+    <Tabs.Root value={tab} onValueChange={setTab} className="app">
       {/* ── Topbar */}
       <header className="topbar">
         <div className="topbar-brand">
@@ -75,51 +76,55 @@ export default function App() {
             <span className="topbar-tagline">Audio Converter &amp; Enhancer</span>
           </div>
         </div>
-        <div className="topbar-tabs">
-          <button className={`tab-btn${tab==='convert'?' tab-btn--active':''}`} onClick={() => setTab('convert')}>Convert</button>
-          <button className={`tab-btn${tab==='player'?' tab-btn--active':''}`} onClick={() => setTab('player')}>Player</button>
-          <button className={`tab-btn${tab==='library'?' tab-btn--active':''}`} onClick={() => setTab('library')}>
+        <Tabs.List className="topbar-tabs" aria-label="Main navigation">
+          <Tabs.Trigger value="convert" className="tab-btn">Convert</Tabs.Trigger>
+          <Tabs.Trigger value="player" className="tab-btn">Player</Tabs.Trigger>
+          <Tabs.Trigger value="library" className="tab-btn">
             Library {cases.filter(c=>!c.archived).length > 0 && <span className="tab-badge">{cases.filter(c=>!c.archived).length}</span>}
-          </button>
-        </div>
+          </Tabs.Trigger>
+        </Tabs.List>
         <div className="topbar-right">
           <button className="theme-btn" title={`Theme: ${themePref}`} onClick={cycleTheme}>{themeLabel}</button>
         </div>
       </header>
 
-      {tab === 'convert' && (
-        <ConvertTab
-          mode={mode} setMode={setMode}
-          formatOut={formatOut} setFormatOut={setFormatOut}
-          labels={labels} setLabels={setLabels}
-          chanVols={chanVols} setChanVols={setChanVols}
-          outDir={outDir} setOutDir={setOutDir}
-          rate={rate} setRate={setRate}
-          normalize={normalize} setNormalize={setNormalize}
-          trim={trim} setTrim={setTrim}
-          fade={fade} setFade={setFade}
-          fadeDur={fadeDur} setFadeDur={setFadeDur}
-          hpf={hpf} setHpf={setHpf}
-          denoise={denoise} setDenoise={setDenoise}
-          denoiseQuality={denoiseQuality} setDenoiseQuality={setDenoiseQuality}
-          autoLevel={autoLevel} setAutoLevel={setAutoLevel}
-          declip={declip} setDeclip={setDeclip}
-          enhance={enhance} setEnhance={setEnhance}
-          capabilities={capabilities}
-          files={files} dragOver={dragOver}
-          caseName={caseName} setCaseName={setCaseName}
-          onDragOver={onDragOver} onDragLeave={onDragLeave} onDrop={onDrop}
-          browseFiles={browseFiles} browseOutDir={browseOutDir}
-          removeFile={removeFile} clearAll={clearAll}
-          jobs={jobs} converting={converting}
-          startConversion={handleStartConversion}
-          doneCount={doneCount} failCount={failCount}
-        />
-      )}
+      <Tabs.Content value="convert" className="tab-content" forceMount={tab === 'convert' ? true : undefined}>
+        {tab === 'convert' && (
+          <ConvertTab
+            mode={mode} setMode={setMode}
+            formatOut={formatOut} setFormatOut={setFormatOut}
+            labels={labels} setLabels={setLabels}
+            chanVols={chanVols} setChanVols={setChanVols}
+            outDir={outDir} setOutDir={setOutDir}
+            rate={rate} setRate={setRate}
+            normalize={normalize} setNormalize={setNormalize}
+            trim={trim} setTrim={setTrim}
+            fade={fade} setFade={setFade}
+            fadeDur={fadeDur} setFadeDur={setFadeDur}
+            hpf={hpf} setHpf={setHpf}
+            denoise={denoise} setDenoise={setDenoise}
+            denoiseQuality={denoiseQuality} setDenoiseQuality={setDenoiseQuality}
+            autoLevel={autoLevel} setAutoLevel={setAutoLevel}
+            declip={declip} setDeclip={setDeclip}
+            enhance={enhance} setEnhance={setEnhance}
+            capabilities={capabilities}
+            files={files} dragOver={dragOver}
+            caseName={caseName} setCaseName={setCaseName}
+            onDragOver={onDragOver} onDragLeave={onDragLeave} onDrop={onDrop}
+            browseFiles={browseFiles} browseOutDir={browseOutDir}
+            removeFile={removeFile} clearAll={clearAll}
+            jobs={jobs} converting={converting}
+            startConversion={handleStartConversion}
+            doneCount={doneCount} failCount={failCount}
+          />
+        )}
+      </Tabs.Content>
 
-      {tab === 'player' && <PlayerTab />}
+      <Tabs.Content value="player" className="tab-content">
+        <PlayerTab />
+      </Tabs.Content>
 
-      {tab === 'library' && (
+      <Tabs.Content value="library" className="tab-content">
         <LibraryTab
           cases={cases} setCases={setCases}
           search={libSearch} setSearch={setLibSearch}
@@ -130,7 +135,7 @@ export default function App() {
             setTab('convert')
           }}
         />
-      )}
-    </div>
+      </Tabs.Content>
+    </Tabs.Root>
   )
 }
