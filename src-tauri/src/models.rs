@@ -28,8 +28,7 @@ pub(crate) fn model_path(app: &AppHandle, filename: &str) -> Result<PathBuf, Str
 /// Maximum time (ms) for a single model inference call.
 const INFERENCE_TIMEOUT_MS: i32 = 30_000; // 30 seconds
 
-/// Load an ONNX session from a model file with optional integrity check.
-/// Sessions are configured with an inference timeout to prevent hangs.
+/// Load an ONNX session with hardware acceleration and optional integrity check.
 pub(crate) fn load_session(path: &PathBuf) -> Result<Session, String> {
     let name = crate::safety::safe_display(path);
 
@@ -38,9 +37,31 @@ pub(crate) fn load_session(path: &PathBuf) -> Result<Session, String> {
         verify_model_hash(path, expected_hash)?;
     }
 
-    Session::builder()
-        .and_then(|mut b| b.commit_from_file(path))
-        .map_err(|e| format!("Failed to load model {}: {}", name, e))
+    let result = Session::builder().and_then(|mut b| {
+        // Try hardware acceleration. with_execution_providers consumes the builder,
+        // so we only call it if we have a provider to add.
+        #[cfg(target_os = "macos")]
+        {
+            b = match b.with_execution_providers([
+                ort::execution_providers::CoreMLExecutionProvider::default().build(),
+            ]) {
+                Ok(builder) => builder,
+                Err(_) => Session::builder()?, // Fallback: new CPU-only builder
+            };
+        }
+        #[cfg(target_os = "windows")]
+        {
+            b = match b.with_execution_providers([
+                ort::execution_providers::DirectMLExecutionProvider::default().build(),
+            ]) {
+                Ok(builder) => builder,
+                Err(_) => Session::builder()?,
+            };
+        }
+        b.commit_from_file(path)
+    });
+
+    result.map_err(|e| format!("Failed to load model {}: {}", name, e))
 }
 
 /// SHA256 hashes of known bundled models.

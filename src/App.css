@@ -434,6 +434,8 @@ body{
 .playlist-remove{color:var(--sub);opacity:0;transition:opacity .1s,color .1s;flex-shrink:0}
 .playlist-row:hover .playlist-remove{opacity:1}
 .playlist-remove:hover{color:var(--red)}
+.playlist-row--dragging{opacity:.4}
+.playlist-row--dragover{border-top:2px solid var(--gold);margin-top:-2px}
 .player-add-btn{align-self:flex-start;margin-top:6px}
 
 /* ── CAT Software Detection ───────────────────────────────────────────────── */
@@ -502,3 +504,22 @@ body{
 .waveform-loading{width:40px;height:3px;background:var(--border);border-radius:2px;position:relative;overflow:hidden}
 .waveform-loading::after{content:'';position:absolute;left:-40px;width:40px;height:100%;background:var(--gold);border-radius:2px;animation:waveload 1.2s ease-in-out infinite}
 @keyframes waveload{0%{left:-40px}100%{left:100%}}
+
+/* ── Compare Player ───────────────────────────────────────────────────────── */
+.compare-player{display:flex;flex-direction:column;gap:8px;padding:12px 0}
+.compare-toggle{display:flex;gap:2px;background:var(--panel2);border-radius:6px;padding:2px;align-self:center}
+.compare-btn{flex:1;padding:5px 16px;border-radius:4px;font-size:12px;font-weight:600;color:var(--sub);transition:background .1s,color .1s;min-width:100px;text-align:center}
+.compare-btn--active{background:var(--panel);color:var(--text2)}
+.compare-btn--processed{color:var(--green)}
+.compare-controls{display:flex;align-items:center;justify-content:center;gap:12px}
+.compare-time{font-family:'DM Mono',monospace;font-size:11px;color:var(--sub);min-width:40px;text-align:center}
+.compare-hint{font-size:10.5px;color:var(--sub);text-align:center}
+
+/* ── Bookmarks ────────────────────────────────────────────────────────────── */
+.bookmark-list{display:flex;align-items:center;gap:6px;flex-wrap:wrap;padding:4px 0}
+.bookmark-list-label{font-family:'DM Mono',monospace;font-size:9px;letter-spacing:1px;text-transform:uppercase;color:var(--sub);margin-right:2px}
+.bookmark-item{display:flex;align-items:center;gap:2px}
+.bookmark-jump{font-family:'DM Mono',monospace;font-size:10px;padding:2px 8px;border-radius:10px;background:rgba(196,78,78,.1);border:1px solid rgba(196,78,78,.2);color:var(--red);transition:background .1s}
+.bookmark-jump:hover{background:rgba(196,78,78,.2)}
+.bookmark-remove{font-size:12px;color:var(--sub);transition:color .1s;padding:0 2px}
+.bookmark-remove:hover{color:var(--red)}

@@ -17,6 +17,8 @@ export default function PlayerTab() {
   const [currentTime, setCurrentTime] = useState(0)
   const [duration, setDuration] = useState(0)
   const [dragOver, setDragOver] = useState(false)
+  const [bookmarks, setBookmarks] = useState([])
+  const [dragIdx, setDragIdx] = useState(null) // playlist drag-reorder
   const audioRef = useRef(null)
 
   // Browse for files
@@ -135,7 +137,7 @@ export default function PlayerTab() {
                   onEnded={() => { setPlaying(false); skip(1) }}
                 />
 
-                {/* Waveform visualization */}
+                {/* Waveform visualization with bookmarks */}
                 <Waveform
                   audioSrc={audioSrc}
                   color={activeTrack.color}
@@ -143,6 +145,7 @@ export default function PlayerTab() {
                   duration={duration}
                   height={56}
                   onSeek={t => { if (audioRef.current) audioRef.current.currentTime = t }}
+                  markers={bookmarks.filter(b => b.trackPath === activeTrack?.path)}
                 />
 
                 <div className="player-controls">
@@ -161,10 +164,41 @@ export default function PlayerTab() {
                     </button>
                   </div>
                   <span className="player-timestamp">{fmtTime(duration)}</span>
+                  <button className="player-btn" title="Add bookmark at current position"
+                    onClick={() => {
+                      if (!activeTrack || !currentTime) return
+                      setBookmarks(prev => [...prev, {
+                        time: currentTime,
+                        label: `${fmtTime(currentTime)}`,
+                        color: '#c44e4e',
+                        trackPath: activeTrack.path,
+                      }])
+                    }}>
+                    <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M3 2h8v10l-4-2.5L3 12V2z" stroke="currentColor" strokeWidth="1.3" fill="none"/></svg>
+                  </button>
                 </div>
               </div>
             ) : (
               <p className="player-empty">No file loaded — drop audio files or click Browse below.</p>
+            )}
+
+            {/* Bookmarks for active track */}
+            {activeTrack && bookmarks.filter(b => b.trackPath === activeTrack.path).length > 0 && (
+              <div className="bookmark-list">
+                <span className="bookmark-list-label">BOOKMARKS</span>
+                {bookmarks.filter(b => b.trackPath === activeTrack.path).map((b, i) => (
+                  <div key={i} className="bookmark-item">
+                    <button className="bookmark-jump" onClick={() => { if (audioRef.current) audioRef.current.currentTime = b.time }}>
+                      {b.label}
+                    </button>
+                    <button className="bookmark-remove" onClick={() => setBookmarks(prev => prev.filter((_, j) => {
+                      // Count only bookmarks for this track
+                      const trackBookmarks = prev.filter(bb => bb.trackPath === activeTrack.path)
+                      return trackBookmarks[i] !== prev[j] || prev[j].trackPath !== activeTrack.path
+                    }))}>×</button>
+                  </div>
+                ))}
+              </div>
             )}
           </section>
 
@@ -188,7 +222,24 @@ export default function PlayerTab() {
               <div className="player-playlist">
                 {tracks.map((t, i) => (
                   <div key={t.path}
-                    className={`playlist-row${activeTrack?.path === t.path ? ' playlist-row--active' : ''}`}
+                    className={`playlist-row${activeTrack?.path === t.path ? ' playlist-row--active' : ''}${dragIdx === i ? ' playlist-row--dragging' : ''}`}
+                    draggable
+                    onDragStart={() => setDragIdx(i)}
+                    onDragOver={e => { e.preventDefault(); e.currentTarget.classList.add('playlist-row--dragover') }}
+                    onDragLeave={e => e.currentTarget.classList.remove('playlist-row--dragover')}
+                    onDrop={e => {
+                      e.currentTarget.classList.remove('playlist-row--dragover')
+                      if (dragIdx !== null && dragIdx !== i) {
+                        setTracks(prev => {
+                          const next = [...prev]
+                          const [moved] = next.splice(dragIdx, 1)
+                          next.splice(i, 0, moved)
+                          return next
+                        })
+                      }
+                      setDragIdx(null)
+                    }}
+                    onDragEnd={() => setDragIdx(null)}
                     onClick={() => setActiveTrack(t)}>
                     <span className="playlist-dot" style={{background: t.color}} />
                     <span className="playlist-num">{i + 1}</span>
