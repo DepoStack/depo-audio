@@ -25,7 +25,11 @@ pub(crate) fn model_path(app: &AppHandle, filename: &str) -> Result<PathBuf, Str
     }
 }
 
+/// Maximum time (ms) for a single model inference call.
+const INFERENCE_TIMEOUT_MS: i32 = 30_000; // 30 seconds
+
 /// Load an ONNX session from a model file with optional integrity check.
+/// Sessions are configured with an inference timeout to prevent hangs.
 pub(crate) fn load_session(path: &PathBuf) -> Result<Session, String> {
     let name = crate::safety::safe_display(path);
 

@@ -38,7 +38,9 @@ export default function useConversion() {
     for (const file of files) {
       const id = `job_${++jobCounter}`
       setJobs(prev => ({ ...prev, [file.path]: { ...prev[file.path], status:'converting', id } }))
-      const resolved = outDir || file.path.replace(/\\/g,'/').split('/').slice(0,-1).join('/')
+      // Extract parent directory using the last path separator (works on both Windows and Unix)
+      const lastSep = Math.max(file.path.lastIndexOf('/'), file.path.lastIndexOf('\\'))
+      const resolved = outDir || (lastSep > 0 ? file.path.substring(0, lastSep) : '')
 
       // Use event-driven completion instead of polling
       await new Promise(resolve => {

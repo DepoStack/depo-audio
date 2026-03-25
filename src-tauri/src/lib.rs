@@ -27,6 +27,7 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .manage(AppState::default())
         .invoke_handler(tauri::generate_handler![
+            commands::health_check,
             commands::get_formats_list,
             commands::detect_format,
             commands::infer_case_name_cmd,

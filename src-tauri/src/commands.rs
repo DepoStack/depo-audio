@@ -4,6 +4,7 @@ use std::path::Path;
 use chrono::Utc;
 use tauri::{AppHandle, Emitter, State};
 use tauri_plugin_opener::OpenerExt;
+use tauri_plugin_shell::ShellExt;
 use uuid::Uuid;
 
 use crate::analysis;
@@ -17,6 +18,33 @@ use crate::scoring;
 use crate::speakers;
 use crate::persistence::{lib_path, load_library, prefs_path, save_library, save_to_library};
 use crate::types::*;
+
+// ── Health check ─────────────────────────────────────────────────────────────
+
+#[tauri::command]
+pub async fn health_check(app: AppHandle) -> Result<serde_json::Value, String> {
+    // Check FFmpeg sidecar availability
+    let ffmpeg_ok = app.shell()
+        .sidecar(crate::helpers::ffmpeg_bin_name())
+        .and_then(|s| Ok(s.args(["-version"])))
+        .is_ok();
+
+    let ffprobe_ok = app.shell()
+        .sidecar(crate::helpers::ffprobe_bin_name())
+        .and_then(|s| Ok(s.args(["-version"])))
+        .is_ok();
+
+    let models = models::available_models(&app);
+    let caps = models::detect_capabilities(&app);
+
+    Ok(serde_json::json!({
+        "ffmpeg": ffmpeg_ok,
+        "ffprobe": ffprobe_ok,
+        "models": models,
+        "accelerator": caps.accelerator,
+        "tier": caps.tier,
+    }))
+}
 
 // ── Format commands ───────────────────────────────────────────────────────────
 
@@ -147,9 +175,13 @@ pub async fn convert(
 
 #[tauri::command]
 pub fn library_get(app: AppHandle, state: State<'_, AppState>) -> Vec<Case> {
-    let lib = load_library(&app);
-    *state.library.lock().unwrap() = lib.clone();
-    lib.cases
+    let mut lib = state.library.lock().unwrap();
+    // Load from disk only if in-memory state is empty (first call)
+    if lib.cases.is_empty() {
+        let loaded = load_library(&app);
+        *lib = loaded;
+    }
+    lib.cases.clone()
 }
 
 #[tauri::command]
