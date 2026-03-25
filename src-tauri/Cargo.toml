@@ -30,6 +30,6 @@ fs2 = "0.4"
 
 # AI audio processing
 nnnoiseless = "0.5"
-ort = "2.0.0-rc.12"
+ort = { version = "2.0.0-rc.12", features = ["load-dynamic"] }
 hound = "3.5"
 ndarray = "0.17"
