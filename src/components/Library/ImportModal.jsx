@@ -1,9 +1,13 @@
 import { useState } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import { open as openDialog } from '@tauri-apps/plugin-dialog'
-import * as Dialog from '@radix-ui/react-dialog'
+import { Loader2, X } from 'lucide-react'
+import { cn } from '../../lib/utils'
 import { basename } from '../../utils'
-import Spinner from '../common/Spinner'
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogClose } from '../ui/dialog'
+import { Button } from '../ui/button'
+import { Input } from '../ui/input'
+import { Label } from '../ui/label'
 
 export default function ImportModal({ defaultLabels, existingCases, onDone, onClose }) {
   const [selectedFiles, setSelectedFiles] = useState([])
@@ -51,31 +55,43 @@ export default function ImportModal({ defaultLabels, existingCases, onDone, onCl
   }
 
   return (
-    <Dialog.Root open onOpenChange={open => { if (!open) onClose() }}>
-      <Dialog.Portal>
-        <Dialog.Overlay className="modal-overlay" />
-        <Dialog.Content className="modal" onPointerDownOutside={onClose}>
-          <div className="modal-head">
-            <Dialog.Title className="modal-title">Import Audio to Library</Dialog.Title>
-            <Dialog.Close className="modal-close">×</Dialog.Close>
-          </div>
-        <p className="modal-sub">Add already-converted or existing audio files directly to your library — no conversion needed.</p>
+    <Dialog open onOpenChange={open => { if (!open) onClose() }}>
+      <DialogContent onPointerDownOutside={onClose}>
+        <DialogHeader>
+          <DialogTitle>Import Audio to Library</DialogTitle>
+          <DialogClose asChild>
+            <button className="text-[hsl(var(--sub))] hover:text-foreground transition-colors">
+              <X size={16} />
+            </button>
+          </DialogClose>
+        </DialogHeader>
+
+        <p className="px-5 pt-2.5 text-xs text-[hsl(var(--sub))] leading-relaxed">
+          Add already-converted or existing audio files directly to your library — no conversion needed.
+        </p>
 
         {/* File picker */}
-        <div className="modal-field">
-          <label className="modal-label">FILES</label>
-          <div className="modal-file-row">
-            <button className="btn btn--sm" onClick={browsePick}>Browse files…</button>
+        <div className="px-5 pt-3.5">
+          <Label>FILES</Label>
+          <div className="flex items-center gap-2.5 mt-1.5">
+            <Button size="sm" onClick={browsePick}>Browse files…</Button>
             {selectedFiles.length > 0 && (
-              <span className="modal-file-count">{selectedFiles.length} file{selectedFiles.length !== 1 ? 's' : ''} selected</span>
+              <span className="text-[11px] text-[hsl(var(--sub))]">
+                {selectedFiles.length} file{selectedFiles.length !== 1 ? 's' : ''} selected
+              </span>
             )}
           </div>
           {selectedFiles.length > 0 && (
-            <div className="modal-file-list">
+            <div className="mt-2 flex flex-col gap-0.5 max-h-[100px] overflow-y-auto">
               {selectedFiles.map((p, i) => (
-                <div key={i} className="modal-file-item">
-                  <span className="modal-file-name">{basename(p)}</span>
-                  <button className="modal-file-remove" onClick={() => setSelectedFiles(f => f.filter((_,j) => j !== i))}>×</button>
+                <div key={i} className="flex items-center justify-between px-2.5 py-1 bg-secondary rounded-md text-[11px] text-[hsl(var(--text2))]">
+                  <span className="truncate min-w-0">{basename(p)}</span>
+                  <button
+                    className="text-[hsl(var(--sub))] hover:text-destructive transition-colors shrink-0 ml-2"
+                    onClick={() => setSelectedFiles(f => f.filter((_, j) => j !== i))}
+                  >
+                    <X size={12} />
+                  </button>
                 </div>
               ))}
             </div>
@@ -83,60 +99,110 @@ export default function ImportModal({ defaultLabels, existingCases, onDone, onCl
         </div>
 
         {/* Case */}
-        <div className="modal-field">
-          <label className="modal-label">CASE NAME</label>
-          <div className="modal-case-row">
+        <div className="px-5 pt-3.5">
+          <Label>CASE NAME</Label>
+          <div className="mt-1.5">
             {existingCases.length > 0 && (
-              <div className="modal-case-tabs">
-                <button className={`modal-case-tab${caseInputMode==='existing'?' active':''}`} onClick={() => setCaseInputMode('existing')}>Existing case</button>
-                <button className={`modal-case-tab${caseInputMode==='new'?' active':''}`} onClick={() => setCaseInputMode('new')}>New case</button>
+              <div className="flex gap-0.5 bg-secondary rounded-md p-0.5 mb-2">
+                <button
+                  className={cn(
+                    'flex-1 px-3 py-1.5 rounded-md text-xs font-semibold transition-colors',
+                    caseInputMode === 'existing'
+                      ? 'bg-[hsl(var(--gold-dim))] text-primary'
+                      : 'text-[hsl(var(--sub))] hover:text-[hsl(var(--text2))]'
+                  )}
+                  onClick={() => setCaseInputMode('existing')}
+                >
+                  Existing case
+                </button>
+                <button
+                  className={cn(
+                    'flex-1 px-3 py-1.5 rounded-md text-xs font-semibold transition-colors',
+                    caseInputMode === 'new'
+                      ? 'bg-[hsl(var(--gold-dim))] text-primary'
+                      : 'text-[hsl(var(--sub))] hover:text-[hsl(var(--text2))]'
+                  )}
+                  onClick={() => setCaseInputMode('new')}
+                >
+                  New case
+                </button>
               </div>
             )}
             {(caseInputMode === 'existing' && existingCases.length > 0) ? (
-              <select className="opt-select" value={caseName} onChange={e => setCaseName(e.target.value)}>
+              <select
+                className="flex h-8 w-full rounded-lg border border-border bg-card px-2.5 py-1.5 text-xs text-foreground transition-colors focus:outline-none focus:border-primary"
+                value={caseName}
+                onChange={e => setCaseName(e.target.value)}
+              >
                 <option value="">— select a case —</option>
                 {existingCases.map(n => <option key={n} value={n}>{n}</option>)}
               </select>
             ) : (
-              <input className="opt-input" value={caseName} placeholder="e.g. Smith v. Metro Transit"
+              <Input value={caseName} placeholder="e.g. Smith v. Metro Transit"
                 onChange={e => setCaseName(e.target.value)} />
             )}
           </div>
         </div>
 
         {/* Speaker label */}
-        <div className="modal-field">
-          <label className="modal-label">SPEAKER / PARTICIPANT</label>
-          <div className="modal-label-row">
-            <div className="modal-label-chips">
+        <div className="px-5 pt-3.5">
+          <Label>SPEAKER / PARTICIPANT</Label>
+          <div className="mt-1.5">
+            <div className="flex flex-wrap gap-1.5">
               {defaultLabels.map(l => (
-                <button key={l} className={`modal-chip${label===l?' modal-chip--active':''}`}
-                  onClick={() => { setLabel(l); setCustomLabel('') }}>{l}</button>
+                <Button
+                  key={l}
+                  variant="outline"
+                  size="sm"
+                  className={cn(
+                    'rounded-full',
+                    label === l && 'bg-[hsl(var(--gold-dim))] text-primary border-primary/30'
+                  )}
+                  onClick={() => { setLabel(l); setCustomLabel('') }}
+                >
+                  {l}
+                </Button>
               ))}
-              <button className={`modal-chip${label==='__custom__'?' modal-chip--active':''}`}
-                onClick={() => setLabel('__custom__')}>Custom…</button>
+              <Button
+                variant="outline"
+                size="sm"
+                className={cn(
+                  'rounded-full',
+                  label === '__custom__' && 'bg-[hsl(var(--gold-dim))] text-primary border-primary/30'
+                )}
+                onClick={() => setLabel('__custom__')}
+              >
+                Custom…
+              </Button>
             </div>
             {label === '__custom__' && (
-              <input className="opt-input" style={{marginTop:8}} value={customLabel}
+              <Input className="mt-2" value={customLabel}
                 placeholder="Enter speaker name or role…"
                 onChange={e => setCustomLabel(e.target.value)} />
             )}
           </div>
-          <p className="modal-field-note">All selected files will be filed under this label. Import multiple times for multiple speakers.</p>
+          <p className="mt-1.5 text-[10px] text-[hsl(var(--sub))] leading-relaxed">
+            All selected files will be filed under this label. Import multiple times for multiple speakers.
+          </p>
         </div>
 
-        {error && <p className="modal-error">{error}</p>}
+        {error && (
+          <p className="mx-5 mt-2.5 px-3 py-2 bg-destructive/10 border border-destructive/20 rounded-md text-xs text-destructive">
+            {error}
+          </p>
+        )}
 
-        <div className="modal-actions">
-          <Dialog.Close asChild>
-            <button className="ghost-btn" disabled={saving}>Cancel</button>
-          </Dialog.Close>
-          <button className="btn btn--primary" onClick={handleSave} disabled={saving}>
-            {saving ? <><Spinner />Saving…</> : `Import ${selectedFiles.length > 0 ? selectedFiles.length + ' file' + (selectedFiles.length !== 1 ? 's' : '') : ''}`}
-          </button>
-        </div>
-      </Dialog.Content>
-    </Dialog.Portal>
-    </Dialog.Root>
+        <DialogFooter>
+          <DialogClose asChild>
+            <Button variant="ghost" disabled={saving}>Cancel</Button>
+          </DialogClose>
+          <Button variant="primary" onClick={handleSave} disabled={saving}>
+            {saving
+              ? <><Loader2 className="h-3.5 w-3.5 animate-spin" />Saving…</>
+              : `Import ${selectedFiles.length > 0 ? selectedFiles.length + ' file' + (selectedFiles.length !== 1 ? 's' : '') : ''}`}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   )
 }

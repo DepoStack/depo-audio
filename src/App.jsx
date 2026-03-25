@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import { invoke } from '@tauri-apps/api/core'
-import * as Tabs from '@radix-ui/react-tabs'
+import { Sun, Moon, Monitor } from 'lucide-react'
 import { basename } from './utils'
 
 import useTheme from './hooks/useTheme'
@@ -9,10 +9,19 @@ import useFileDrop from './hooks/useFileDrop'
 import useConversion from './hooks/useConversion'
 
 import { LogoSvg } from './components/common/Icons'
+import { Tabs, TabsList, TabsTrigger, TabsContent } from './components/ui/tabs'
+import { Badge } from './components/ui/badge'
+import { Button } from './components/ui/button'
 import ConvertTab from './components/Convert/ConvertTab'
 import LibraryTab from './components/Library/LibraryTab'
 import PlayerTab from './components/Player/PlayerTab'
 import MergeTab from './components/Merge/MergeTab'
+
+const themeIcons = {
+  light: Sun,
+  dark: Moon,
+  system: Monitor,
+}
 
 export default function App() {
   const [tab, setTab] = useState('convert')
@@ -67,31 +76,39 @@ export default function App() {
     })
   }
 
+  const ThemeIcon = themeIcons[themeLabel] || Monitor
+  const libCount = cases.filter(c => !c.archived).length
+
   return (
-    <Tabs.Root value={tab} onValueChange={setTab} className="app">
+    <Tabs value={tab} onValueChange={setTab} className="flex flex-col h-screen overflow-hidden">
       {/* ── Topbar */}
-      <header className="topbar">
-        <div className="topbar-brand">
+      <header
+        className="h-[var(--topbar-h)] shrink-0 bg-[hsl(var(--surface))] border-b border-border grid grid-cols-[1fr_auto_1fr] items-center px-5 select-none"
+        data-tauri-drag-region
+      >
+        <div className="flex items-center gap-2.5">
           <LogoSvg />
-          <div className="topbar-text">
-            <span className="topbar-title">DepoAudio</span>
-            <span className="topbar-tagline">Audio Converter &amp; Enhancer</span>
+          <div className="flex flex-col leading-none">
+            <span className="font-serif text-[17px] font-semibold text-gold-hi">DepoAudio</span>
+            <span className="text-[10px] text-[hsl(var(--sub))] tracking-wider">Audio Converter &amp; Enhancer</span>
           </div>
         </div>
-        <Tabs.List className="topbar-tabs" aria-label="Main navigation">
-          <Tabs.Trigger value="convert" className="tab-btn">Convert</Tabs.Trigger>
-          <Tabs.Trigger value="player" className="tab-btn">Player</Tabs.Trigger>
-          <Tabs.Trigger value="merge" className="tab-btn">Merge</Tabs.Trigger>
-          <Tabs.Trigger value="library" className="tab-btn">
-            Library {cases.filter(c=>!c.archived).length > 0 && <span className="tab-badge">{cases.filter(c=>!c.archived).length}</span>}
-          </Tabs.Trigger>
-        </Tabs.List>
-        <div className="topbar-right">
-          <button className="theme-btn" title={`Theme: ${themePref}`} onClick={cycleTheme}>{themeLabel}</button>
+        <TabsList aria-label="Main navigation">
+          <TabsTrigger value="convert">Convert</TabsTrigger>
+          <TabsTrigger value="player">Player</TabsTrigger>
+          <TabsTrigger value="merge">Merge</TabsTrigger>
+          <TabsTrigger value="library">
+            Library {libCount > 0 && <Badge variant="gold">{libCount}</Badge>}
+          </TabsTrigger>
+        </TabsList>
+        <div className="flex justify-end">
+          <Button variant="ghost" size="icon" title={`Theme: ${themePref}`} onClick={cycleTheme}>
+            <ThemeIcon size={16} />
+          </Button>
         </div>
       </header>
 
-      <Tabs.Content value="convert" className="tab-content" forceMount={tab === 'convert' ? true : undefined}>
+      <TabsContent value="convert" forceMount={tab === 'convert' ? true : undefined}>
         {tab === 'convert' && (
           <ConvertTab
             mode={mode} setMode={setMode}
@@ -122,17 +139,17 @@ export default function App() {
             doneCount={doneCount} failCount={failCount}
           />
         )}
-      </Tabs.Content>
+      </TabsContent>
 
-      <Tabs.Content value="player" className="tab-content">
+      <TabsContent value="player">
         <PlayerTab />
-      </Tabs.Content>
+      </TabsContent>
 
-      <Tabs.Content value="merge" className="tab-content">
+      <TabsContent value="merge">
         <MergeTab />
-      </Tabs.Content>
+      </TabsContent>
 
-      <Tabs.Content value="library" className="tab-content">
+      <TabsContent value="library">
         <LibraryTab
           cases={cases} setCases={setCases}
           search={libSearch} setSearch={setLibSearch}
@@ -143,7 +160,7 @@ export default function App() {
             setTab('convert')
           }}
         />
-      </Tabs.Content>
-    </Tabs.Root>
+      </TabsContent>
+    </Tabs>
   )
 }

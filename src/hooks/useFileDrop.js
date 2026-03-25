@@ -20,9 +20,7 @@ export default function useFileDrop() {
     for (const p of filtered) {
       if (filesRef.current.some(f => f.path === p)) continue
       const fmt = await invoke('detect_format', { path: p }).catch(() => null)
-      const duration = await invoke('probe_duration_cmd', { path: p }).catch(() => null)
-      const channels = await invoke('probe_channels_cmd', { path: p }).catch(() => 4)
-      next.push({ path: p, name: basename(p), fmt, duration, channels })
+      next.push({ path: p, name: basename(p), fmt })
       if (!caseNameRef.current && next.length === 1) {
         const detected = await invoke('infer_case_name_cmd', { filename: basename(p) }).catch(() => '')
         setCaseName(detected)
@@ -56,7 +54,7 @@ export default function useFileDrop() {
 
   const browseFiles = async () => {
     const selected = await openDialog({ multiple: true, filters: [
-      { name: 'Audio', extensions: ['sgmca','trm','ftr','bwf','dm','dcr','wav','mp3','flac','wma','m4a','aac','ogg','opus','aif','aiff'] },
+      { name: 'Audio', extensions: ['sgmca','trm','ftr','bwf','dm','wav','mp3','flac','wma','m4a','aac','ogg','opus','aif','aiff'] },
       { name: 'All Files', extensions: ['*'] }
     ]}).catch(() => null)
     if (selected) await addFiles(Array.isArray(selected) ? selected : [selected])

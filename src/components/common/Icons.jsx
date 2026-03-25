@@ -3,7 +3,7 @@ import { CH_COLORS } from '../../constants'
 export function ModeIcon({ id, active }) {
   const color = active ? 'var(--gold)' : 'var(--sub)'
   if (id === 'stereo') return (
-    <div className="mode-card-icon" style={{background: active ? 'var(--gold-dim)' : '', borderColor: active ? 'var(--gold)' : ''}}>
+    <div className="w-9 h-9 rounded-lg bg-card border border-border/60 flex items-center justify-center shrink-0 transition-colors" style={{background: active ? 'var(--gold-dim)' : '', borderColor: active ? 'var(--gold)' : ''}}>
       <svg width="22" height="16" viewBox="0 0 22 16" fill="none">
         <rect x="0" y="7" width="3" height="2" rx="1" fill={color} opacity=".4"/>
         <rect x="4.5" y="4" width="3" height="8" rx="1.5" fill={color} opacity=".65"/>
@@ -14,7 +14,7 @@ export function ModeIcon({ id, active }) {
     </div>
   )
   if (id === 'keep') return (
-    <div className="mode-card-icon" style={{background: active ? 'var(--gold-dim)' : '', borderColor: active ? 'var(--gold)' : ''}}>
+    <div className="w-9 h-9 rounded-lg bg-card border border-border/60 flex items-center justify-center shrink-0 transition-colors" style={{background: active ? 'var(--gold-dim)' : '', borderColor: active ? 'var(--gold)' : ''}}>
       <svg width="22" height="16" viewBox="0 0 22 16" fill="none">
         <rect x="0" y="3" width="3.5" height="10" rx="1.75" fill={color} opacity=".5"/>
         <rect x="4.5" y="0" width="3.5" height="16" rx="1.75" fill={color}/>
@@ -26,7 +26,7 @@ export function ModeIcon({ id, active }) {
   )
   const cs = active ? CH_COLORS : ['var(--sub)','var(--sub)','var(--sub)','var(--sub)']
   return (
-    <div className="mode-card-icon" style={{background: active ? 'var(--gold-dim)' : '', borderColor: active ? 'var(--gold)' : ''}}>
+    <div className="w-9 h-9 rounded-lg bg-card border border-border/60 flex items-center justify-center shrink-0 transition-colors" style={{background: active ? 'var(--gold-dim)' : '', borderColor: active ? 'var(--gold)' : ''}}>
       <svg width="22" height="16" viewBox="0 0 22 16" fill="none">
         <rect x="0" y="3" width="4" height="10" rx="2" fill={cs[0]} opacity={active?1:.5}/>
         <rect x="5.5" y="0" width="4" height="16" rx="2" fill={cs[1]} opacity={active?1:.9}/>
@@ -39,7 +39,7 @@ export function ModeIcon({ id, active }) {
 
 export function WaveformIcon() {
   return (
-    <svg width="52" height="32" viewBox="0 0 52 32" fill="none" className="drop-wave">
+    <svg width="52" height="32" viewBox="0 0 52 32" fill="none" className="mb-1">
       {[[0,14,4,4],[5,10,4,12],[10,5,4,22],[15,1,4,30],[20,4,4,24],[25,8,4,16],[30,5,4,22],[35,10,4,12],[40,13,4,6],[45,15,4,2]].map(([x,y,w,h],i) => (
         <rect key={i} x={x} y={y} width={w} height={h} rx={w/2} fill="var(--gold)" opacity={[.2,.35,.5,.65,.8,1,.8,.65,.45,.25][i]}/>
       ))}

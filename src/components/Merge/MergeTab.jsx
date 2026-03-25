@@ -1,10 +1,15 @@
 import { useState } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import { open } from '@tauri-apps/plugin-dialog'
+import { Loader2, X, Plus } from 'lucide-react'
+import { cn } from '../../lib/utils'
 import { FORMATS_OUT, CH_COLORS } from '../../constants'
-import Toggle from '../common/Toggle'
-import Spinner from '../common/Spinner'
 import { fmtSize, fmtTime } from '../../utils'
+import { Button } from '../ui/button'
+import { Card, CardHeader, CardTitle, CardContent } from '../ui/card'
+import { Input } from '../ui/input'
+import { Label } from '../ui/label'
+import { Badge } from '../ui/badge'
 
 export default function MergeTab() {
   const [sources, setSources] = useState([])
@@ -89,127 +94,191 @@ export default function MergeTab() {
 
   return (
     <>
-      <div className="main-scroll">
-        <div className="content">
+      <div className="flex-1 overflow-y-auto overflow-x-hidden">
+        <div className="max-w-[920px] mx-auto px-7 py-5 flex flex-col gap-3.5">
 
           {/* ── Source Files ──────────────────────────────── */}
-          <section className="panel">
-            <div className="panel-head">
-              <span className="panel-label">RECORDINGS TO MERGE</span>
-              <button className="btn btn--sm" onClick={browseFiles}>Add Files</button>
-            </div>
+          <Card>
+            <CardHeader>
+              <CardTitle>RECORDINGS TO MERGE</CardTitle>
+              <Button size="sm" onClick={browseFiles}>Add Files</Button>
+            </CardHeader>
 
             {sources.length === 0 ? (
-              <div className="merge-empty" onClick={browseFiles}>
-                <p className="merge-empty-title">Add two or more recordings of the same event</p>
-                <p className="merge-empty-sub">DepoAudio will sync them automatically and combine the clearest parts into one clean file.</p>
+              <div
+                className="border-2 border-dashed border-border rounded-lg m-3 p-8 text-center cursor-pointer transition-colors hover:border-primary"
+                onClick={browseFiles}
+              >
+                <p className="text-sm text-foreground mb-1">Add two or more recordings of the same event</p>
+                <p className="text-[11px] text-[hsl(var(--sub))]">
+                  DepoAudio will sync them automatically and combine the clearest parts into one clean file.
+                </p>
               </div>
             ) : (
-              <div className="merge-sources">
+              <div className="p-2">
                 {sources.map((s, i) => (
-                  <div key={i} className="merge-source-row">
-                    <span className="merge-source-dot" style={{background: CH_COLORS[i % 4]}} />
-                    <span className="merge-source-num">{i === 0 ? 'Reference' : `Source ${i + 1}`}</span>
-                    <span className="merge-source-name" title={s.path}>{s.name}</span>
+                  <div key={i} className="group flex items-center gap-2.5 px-3 py-2 rounded-md transition-colors hover:bg-secondary/50">
+                    <span className="w-2 h-2 rounded-full shrink-0" style={{ background: CH_COLORS[i % 4] }} />
+                    <span className="font-mono text-[10px] text-[hsl(var(--sub))] min-w-[65px]">
+                      {i === 0 ? 'Reference' : `Source ${i + 1}`}
+                    </span>
+                    <span className="flex-1 text-xs text-foreground truncate min-w-0" title={s.path}>
+                      {s.name}
+                    </span>
                     {syncResults[i - 1] && i > 0 && (
-                      <span className={`merge-sync-badge${syncResults[i-1].isSameEvent ? ' merge-sync-badge--ok' : ' merge-sync-badge--warn'}`}>
-                        {syncResults[i-1].isSameEvent
-                          ? `${syncResults[i-1].offsetSeconds > 0 ? '+' : ''}${syncResults[i-1].offsetSeconds.toFixed(1)}s offset`
+                      <Badge variant={syncResults[i - 1].isSameEvent ? 'done' : 'error'}>
+                        {syncResults[i - 1].isSameEvent
+                          ? `${syncResults[i - 1].offsetSeconds > 0 ? '+' : ''}${syncResults[i - 1].offsetSeconds.toFixed(1)}s offset`
                           : 'May not match'}
-                      </span>
+                      </Badge>
                     )}
-                    <button className="merge-source-remove" onClick={() => removeSource(i)}>
-                      <svg width="9" height="9" viewBox="0 0 9 9"><path d="M1 1l7 7M8 1L1 8" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/></svg>
+                    <button
+                      className="text-[hsl(var(--sub))] opacity-0 group-hover:opacity-100 transition-opacity hover:text-destructive shrink-0"
+                      onClick={() => removeSource(i)}
+                    >
+                      <X size={9} />
                     </button>
                   </div>
                 ))}
               </div>
             )}
-          </section>
+          </Card>
 
           {/* ── Merge Options ────────────────────────────── */}
           {sources.length >= 2 && (
-            <section className="panel panel--tight">
-              <div className="panel-head"><span className="panel-label">MERGE OPTIONS</span></div>
+            <Card>
+              <CardHeader>
+                <CardTitle>MERGE OPTIONS</CardTitle>
+              </CardHeader>
 
-              <div className="merge-strategy">
-                <label className="merge-strategy-option">
-                  <input type="radio" name="strategy" value="best_quality" checked={strategy === 'best_quality'}
-                    onChange={() => setStrategy('best_quality')} />
-                  <div>
-                    <span className="merge-strategy-name">Best quality</span>
-                    <span className="merge-strategy-desc">Picks the clearest source for each moment — fills gaps automatically</span>
-                  </div>
-                </label>
-                <label className="merge-strategy-option">
-                  <input type="radio" name="strategy" value="mix_all" checked={strategy === 'mix_all'}
-                    onChange={() => setStrategy('mix_all')} />
-                  <div>
-                    <span className="merge-strategy-name">Mix all together</span>
-                    <span className="merge-strategy-desc">Blends all sources equally — louder but keeps everything</span>
-                  </div>
-                </label>
-              </div>
+              <CardContent className="p-4">
+                <div className="flex flex-col gap-3">
+                  <label className="flex items-start gap-3 px-3 py-2.5 rounded-md cursor-pointer transition-colors hover:bg-secondary/50">
+                    <input
+                      type="radio"
+                      name="strategy"
+                      value="best_quality"
+                      checked={strategy === 'best_quality'}
+                      onChange={() => setStrategy('best_quality')}
+                      className="mt-0.5 accent-primary"
+                    />
+                    <div className="flex flex-col">
+                      <span className="text-xs font-semibold text-foreground">Best quality</span>
+                      <span className="text-[11px] text-[hsl(var(--sub))]">
+                        Picks the clearest source for each moment — fills gaps automatically
+                      </span>
+                    </div>
+                  </label>
+                  <label className="flex items-start gap-3 px-3 py-2.5 rounded-md cursor-pointer transition-colors hover:bg-secondary/50">
+                    <input
+                      type="radio"
+                      name="strategy"
+                      value="mix_all"
+                      checked={strategy === 'mix_all'}
+                      onChange={() => setStrategy('mix_all')}
+                      className="mt-0.5 accent-primary"
+                    />
+                    <div className="flex flex-col">
+                      <span className="text-xs font-semibold text-foreground">Mix all together</span>
+                      <span className="text-[11px] text-[hsl(var(--sub))]">
+                        Blends all sources equally — louder but keeps everything
+                      </span>
+                    </div>
+                  </label>
+                </div>
 
-              <div className="opts-row" style={{paddingTop: 8}}>
-                <div className="opt-block opt-block--grow">
-                  <label className="opt-label">OUTPUT NAME</label>
-                  <input className="opt-input" value={outName} placeholder="merged"
-                    onChange={e => setOutName(e.target.value)} />
-                </div>
-                <div className="opt-block">
-                  <label className="opt-label">FORMAT</label>
-                  <div className="format-tabs">
-                    {FORMATS_OUT.map(f => (
-                      <button key={f.id} title={f.desc}
-                        className={`fmt-tab${format===f.id?' fmt-tab--active':''}`}
-                        onClick={() => setFormat(f.id)}>{f.label}</button>
-                    ))}
+                <div className="flex items-end gap-3 pt-3 border-t border-border/40 mt-3">
+                  <div className="flex-1">
+                    <Label className="mb-1.5 block">OUTPUT NAME</Label>
+                    <Input value={outName} placeholder="merged" onChange={e => setOutName(e.target.value)} />
+                  </div>
+                  <div>
+                    <Label className="mb-1.5 block">FORMAT</Label>
+                    <div className="flex gap-0.5 bg-secondary rounded-md p-0.5">
+                      {FORMATS_OUT.map(f => (
+                        <button
+                          key={f.id}
+                          title={f.desc}
+                          className={cn(
+                            'px-3 py-1.5 rounded-md text-xs font-semibold transition-colors',
+                            format === f.id
+                              ? 'bg-[hsl(var(--gold-dim))] text-primary'
+                              : 'text-[hsl(var(--sub))] hover:text-[hsl(var(--text2))]'
+                          )}
+                          onClick={() => setFormat(f.id)}
+                        >
+                          {f.label}
+                        </button>
+                      ))}
+                    </div>
                   </div>
                 </div>
-              </div>
-            </section>
+              </CardContent>
+            </Card>
           )}
 
           {/* ── Sync & Result ────────────────────────────── */}
           {result && (
-            <section className="panel merge-result">
-              <div className="panel-head"><span className="panel-label">MERGED OUTPUT</span></div>
-              <div className="merge-result-info">
-                <span className="merge-result-name">{result.outputName}</span>
-                <span className="merge-result-meta">
+            <Card className="border-success/30">
+              <CardHeader>
+                <CardTitle>MERGED OUTPUT</CardTitle>
+              </CardHeader>
+              <CardContent className="px-4 py-3">
+                <span className="text-sm font-semibold text-foreground block">{result.outputName}</span>
+                <span className="text-[11px] text-[hsl(var(--sub))] block mt-0.5">
                   {fmtTime(result.duration)} · {fmtSize(result.outputSize)} · {result.sourcesUsed} sources
                 </span>
                 {result.syncOffsets.length > 1 && (
-                  <span className="merge-result-offsets">
+                  <span className="text-[11px] text-[hsl(var(--sub))] block mt-0.5">
                     Sync offsets: {result.syncOffsets.slice(1).map(o => `${o > 0 ? '+' : ''}${o.toFixed(1)}s`).join(', ')}
                   </span>
                 )}
-              </div>
-            </section>
+              </CardContent>
+            </Card>
           )}
 
-          {error && <p className="merge-error">{error}</p>}
+          {error && (
+            <p className="px-3 py-2 bg-destructive/10 border border-destructive/20 rounded-md text-xs text-destructive">
+              {error}
+            </p>
+          )}
 
         </div>
       </div>
 
-      <footer className="bottombar">
-        <div className="bottombar-status">
-          {syncing && <span className="status-pill status-pill--active"><span className="status-dot"/>Detecting sync…</span>}
-          {merging && <span className="status-pill status-pill--active"><span className="status-dot"/>Merging…</span>}
-          {result && !merging && <span className="status-pill status-pill--done">Merge complete</span>}
-        </div>
-        <div style={{display:'flex', gap: 8}}>
-          {sources.length >= 2 && !merging && (
-            <button className="btn btn--sm" onClick={handleSync} disabled={syncing}>
-              {syncing ? <><Spinner />Syncing…</> : 'Check Sync'}
-            </button>
+      <footer className="shrink-0 flex items-center justify-between px-6 py-3 border-t border-border bg-[hsl(var(--surface))]">
+        <div className="flex items-center gap-2">
+          {syncing && (
+            <span className="flex items-center gap-1.5 px-2.5 py-1 bg-[hsl(var(--blue)/0.1)] text-[hsl(var(--blue))] text-[11px] font-mono rounded-full">
+              <span className="w-1.5 h-1.5 rounded-full bg-[hsl(var(--blue))] animate-dot-pulse" />
+              Detecting sync…
+            </span>
           )}
-          <button className={`btn btn--primary${merging || sources.length < 2 ? ' btn--disabled' : ''}`}
-            onClick={handleMerge} disabled={merging || sources.length < 2}>
-            {merging ? <><Spinner />Merging…</> : 'Merge'}
-          </button>
+          {merging && (
+            <span className="flex items-center gap-1.5 px-2.5 py-1 bg-[hsl(var(--blue)/0.1)] text-[hsl(var(--blue))] text-[11px] font-mono rounded-full">
+              <span className="w-1.5 h-1.5 rounded-full bg-[hsl(var(--blue))] animate-dot-pulse" />
+              Merging…
+            </span>
+          )}
+          {result && !merging && (
+            <span className="flex items-center gap-1.5 px-2.5 py-1 bg-success/10 text-success text-[11px] font-mono rounded-full">
+              Merge complete
+            </span>
+          )}
+        </div>
+        <div className="flex gap-2">
+          {sources.length >= 2 && !merging && (
+            <Button size="sm" onClick={handleSync} disabled={syncing}>
+              {syncing ? <><Loader2 className="h-3.5 w-3.5 animate-spin" />Syncing…</> : 'Check Sync'}
+            </Button>
+          )}
+          <Button
+            variant="primary"
+            onClick={handleMerge}
+            disabled={merging || sources.length < 2}
+          >
+            {merging ? <><Loader2 className="h-3.5 w-3.5 animate-spin" />Merging…</> : 'Merge'}
+          </Button>
         </div>
       </footer>
     </>

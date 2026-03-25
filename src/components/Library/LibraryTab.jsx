@@ -1,6 +1,12 @@
 import { useState } from 'react'
 import { invoke } from '@tauri-apps/api/core'
+import { Search, Download, ChevronDown, ChevronRight, Pencil, Archive, RotateCcw, X, Briefcase } from 'lucide-react'
+import { cn } from '../../lib/utils'
 import { CH_COLORS } from '../../constants'
+import { Button } from '../ui/button'
+import { Input } from '../ui/input'
+import { Badge } from '../ui/badge'
+import { Card, CardHeader, CardTitle } from '../ui/card'
 import LibraryFile from './LibraryFile'
 import ImportModal from './ImportModal'
 
@@ -69,57 +75,76 @@ export default function LibraryTab({ cases, setCases, search, setSearch, labels,
   }
 
   return (
-    <div className="lib-wrap">
-      <div className="lib-toolbar">
-        <div className="lib-search-wrap">
-          <svg width="14" height="14" viewBox="0 0 14 14" fill="none" className="lib-search-icon">
-            <circle cx="6" cy="6" r="4.5" stroke="currentColor" strokeWidth="1.3"/>
-            <line x1="9.5" y1="9.5" x2="13" y2="13" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round"/>
-          </svg>
-          <input className="lib-search" placeholder="Search cases, participants…" value={search} onChange={e => setSearch(e.target.value)} />
-          {search && <button className="lib-search-clear" onClick={() => setSearch('')}>×</button>}
+    <div className="flex-1 overflow-y-auto flex flex-col min-h-0">
+      <div className="flex items-center gap-2.5 px-6 py-3.5 border-b border-border bg-[hsl(var(--surface))] shrink-0">
+        <div className="flex-1 max-w-[400px] relative flex items-center">
+          <Search size={14} className="absolute left-2.5 text-[hsl(var(--sub))]" />
+          <Input
+            className="pl-8 pr-8"
+            placeholder="Search cases, participants…"
+            value={search}
+            onChange={e => setSearch(e.target.value)}
+          />
+          {search && (
+            <button
+              className="absolute right-2 text-sm text-[hsl(var(--sub))] hover:text-foreground transition-colors"
+              onClick={() => setSearch('')}
+            >
+              <X size={14} />
+            </button>
+          )}
         </div>
-        <button className={`ghost-btn${showArchived?' ghost-btn--active':''}`} onClick={() => setShowArchived(p => !p)}>
+        <Button
+          variant="ghost"
+          className={cn(showArchived && 'bg-card text-foreground')}
+          onClick={() => setShowArchived(p => !p)}
+        >
           {showArchived ? 'Hide archived' : 'Show archived'}
-        </button>
-        <button className="btn btn--sm lib-import-btn" onClick={() => setImportModal(true)}>
-          <svg width="12" height="12" viewBox="0 0 12 12" fill="none" style={{flexShrink:0}}>
-            <path d="M6 1v7M3 5l3 3 3-3M1 10h10" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
-          </svg>
+        </Button>
+        <Button size="sm" onClick={() => setImportModal(true)}>
+          <Download size={12} className="shrink-0" />
           Import Audio
-        </button>
-        <button className="btn btn--sm" onClick={detectSoftware} disabled={scanningCat}>
+        </Button>
+        <Button size="sm" onClick={detectSoftware} disabled={scanningCat}>
           {scanningCat ? 'Scanning…' : 'Detect Software'}
-        </button>
+        </Button>
       </div>
 
       {/* CAT Software Detection Results */}
       {catSoftware !== null && (
-        <div className="cat-detect-section">
+        <div className="px-6 py-3 border-b border-border">
           {catSoftware.length === 0 ? (
-            <p className="cat-empty">No court reporting software found on this machine.</p>
+            <p className="text-xs text-[hsl(var(--sub))]">No court reporting software found on this machine.</p>
           ) : (
             <>
-              <div className="cat-found">
+              <div className="flex flex-wrap gap-2">
                 {catSoftware.map((sw, i) => (
-                  <div key={i} className="cat-sw-chip" onClick={async () => {
-                    const jobs = await invoke('scan_cat_jobs_cmd', { path: sw.path })
-                    setCatJobs(jobs)
-                  }}>
-                    <span className="cat-sw-name">{sw.name}</span>
-                    <span className="cat-sw-count">{sw.jobCount} file{sw.jobCount !== 1 ? 's' : ''}</span>
-                  </div>
+                  <button
+                    key={i}
+                    className="flex items-center gap-2 px-3 py-1.5 bg-secondary rounded-md text-xs hover:bg-secondary/80 transition-colors"
+                    onClick={async () => {
+                      const jobs = await invoke('scan_cat_jobs_cmd', { path: sw.path })
+                      setCatJobs(jobs)
+                    }}
+                  >
+                    <span className="font-semibold text-foreground">{sw.name}</span>
+                    <span className="text-[hsl(var(--sub))]">{sw.jobCount} file{sw.jobCount !== 1 ? 's' : ''}</span>
+                  </button>
                 ))}
               </div>
               {catJobs.length > 0 && (
-                <div className="cat-jobs">
-                  <span className="cat-jobs-label">Available for import:</span>
+                <div className="mt-2 flex flex-col gap-0.5">
+                  <span className="font-mono text-[9.5px] uppercase tracking-wider text-[hsl(var(--sub))] mb-1">Available for import:</span>
                   {catJobs.slice(0, 20).map((job, i) => (
-                    <div key={i} className="cat-job-row" onClick={() => onReexport(job.files[0]?.path, job.name)}>
-                      <span className="cat-job-name">{job.name}</span>
-                      <span className="cat-job-sw">{job.software}</span>
-                      <span className="cat-job-files">{job.files.length} file{job.files.length !== 1 ? 's' : ''}</span>
-                      <span className="cat-job-date">{job.dateModified}</span>
+                    <div
+                      key={i}
+                      className="flex items-center gap-3 px-3 py-2 rounded-md cursor-pointer transition-colors hover:bg-secondary/50 text-xs"
+                      onClick={() => onReexport(job.files[0]?.path, job.name)}
+                    >
+                      <span className="font-semibold text-foreground flex-1 min-w-0 truncate">{job.name}</span>
+                      <span className="text-[hsl(var(--sub))] shrink-0">{job.software}</span>
+                      <span className="text-[hsl(var(--sub))] shrink-0">{job.files.length} file{job.files.length !== 1 ? 's' : ''}</span>
+                      <span className="text-[hsl(var(--sub))] shrink-0 font-mono text-[10px]">{job.dateModified}</span>
                     </div>
                   ))}
                 </div>
@@ -130,66 +155,117 @@ export default function LibraryTab({ cases, setCases, search, setSearch, labels,
       )}
 
       {filtered.length === 0 && !importModal && (
-        <div className="lib-empty">
-          <svg width="48" height="48" viewBox="0 0 48 48" fill="none" className="lib-empty-icon">
-            <rect x="8" y="12" width="32" height="28" rx="3" stroke="currentColor" strokeWidth="1.5"/>
-            <path d="M8 20h32" stroke="currentColor" strokeWidth="1.5"/>
-            <path d="M18 12V8a2 2 0 012-2h8a2 2 0 012 2v4" stroke="currentColor" strokeWidth="1.5"/>
-          </svg>
-          <p className="lib-empty-title">{search ? 'No matches' : cases.length === 0 ? 'No cases yet' : 'No cases to show'}</p>
-          <p className="lib-empty-sub">
+        <div className="flex flex-col items-center justify-center flex-1 gap-2.5 p-16 text-center">
+          <Briefcase size={48} className="text-[hsl(var(--sub))] opacity-40" />
+          <p className="text-sm font-semibold text-foreground">
+            {search ? 'No matches' : cases.length === 0 ? 'No cases yet' : 'No cases to show'}
+          </p>
+          <p className="text-xs text-[hsl(var(--sub))]">
             {search ? 'Try a different search' : 'Convert a recording or use Import Audio to add files directly'}
           </p>
         </div>
       )}
 
-      <div className="lib-list">
+      <div className="flex flex-col gap-1.5 px-6 py-4 flex-1">
         {filtered.map(c => (
-          <div key={c.id} className={`lib-case${c.archived?' lib-case--archived':''}`}>
-            <div className="lib-case-header" onClick={() => toggleCase(c.id)}>
-              <div className="lib-case-chevron">{expandedCases[c.id] ? '▾' : '▸'}</div>
-              <div className="lib-case-info">
+          <Card key={c.id} className={cn(c.archived && 'opacity-60')}>
+            <div
+              className="flex items-center gap-2.5 px-4 py-3 cursor-pointer transition-colors hover:bg-secondary/50"
+              onClick={() => toggleCase(c.id)}
+            >
+              {expandedCases[c.id]
+                ? <ChevronDown size={12} className="text-[hsl(var(--sub))] shrink-0" />
+                : <ChevronRight size={12} className="text-[hsl(var(--sub))] shrink-0" />}
+              <div className="flex flex-col flex-1 min-w-0">
                 {editingCase === c.id ? (
-                  <div className="lib-rename-row" onClick={e => e.stopPropagation()}>
-                    <input className="lib-rename-input" value={editName} autoFocus
+                  <div className="flex items-center gap-2" onClick={e => e.stopPropagation()}>
+                    <Input
+                      className="h-7 text-sm"
+                      value={editName}
+                      autoFocus
                       onChange={e => setEditName(e.target.value)}
-                      onKeyDown={e => { if (e.key === 'Enter') renameCase(c.id); if (e.key === 'Escape') setEditingCase(null) }} />
-                    <button className="btn btn--sm" onClick={() => renameCase(c.id)}>Save</button>
-                    <button className="ghost-btn" onClick={() => setEditingCase(null)}>Cancel</button>
+                      onKeyDown={e => { if (e.key === 'Enter') renameCase(c.id); if (e.key === 'Escape') setEditingCase(null) }}
+                    />
+                    <Button size="sm" onClick={() => renameCase(c.id)}>Save</Button>
+                    <Button variant="ghost" size="sm" onClick={() => setEditingCase(null)}>Cancel</Button>
                   </div>
                 ) : (
-                  <span className="lib-case-name">{c.name}</span>
+                  <span className="text-sm font-semibold text-foreground font-serif">{c.name}</span>
                 )}
-                <span className="lib-case-meta">
-                  {c.sessions.length} session{c.sessions.length!==1?'s':''} · {new Date(c.createdAt).toLocaleDateString()}
-                  {c.archived && <span className="lib-archived-tag">archived</span>}
+                <span className="text-[11px] text-[hsl(var(--sub))] flex items-center gap-2">
+                  {c.sessions.length} session{c.sessions.length !== 1 ? 's' : ''} · {new Date(c.createdAt).toLocaleDateString()}
+                  {c.archived && <Badge variant="warning">archived</Badge>}
                 </span>
               </div>
-              <div className="lib-case-actions" onClick={e => e.stopPropagation()}>
-                <button className="lib-action-btn" title="Rename" onClick={() => { setEditingCase(c.id); setEditName(c.name) }}>✎</button>
-                <button className="lib-action-btn" title={c.archived?'Unarchive':'Archive'} onClick={() => archiveCase(c.id, !c.archived)}>{c.archived ? '↩' : '⊙'}</button>
-                <button className="lib-action-btn lib-action-btn--del" title="Delete" onClick={() => deleteCase(c.id)}>✕</button>
+              <div className="flex items-center gap-1 shrink-0" onClick={e => e.stopPropagation()}>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="h-7 w-7"
+                  title="Rename"
+                  onClick={() => { setEditingCase(c.id); setEditName(c.name) }}
+                >
+                  <Pencil size={12} />
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="h-7 w-7"
+                  title={c.archived ? 'Unarchive' : 'Archive'}
+                  onClick={() => archiveCase(c.id, !c.archived)}
+                >
+                  {c.archived ? <RotateCcw size={12} /> : <Archive size={12} />}
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="h-7 w-7 hover:text-destructive"
+                  title="Delete"
+                  onClick={() => deleteCase(c.id)}
+                >
+                  <X size={12} />
+                </Button>
               </div>
             </div>
 
             {expandedCases[c.id] && (
-              <div className="lib-sessions">
+              <div className="border-t border-border/60">
                 {c.sessions.map(s => (
-                  <div key={s.id} className="lib-session">
-                    <div className="lib-session-header">
-                      <span className="lib-session-date">{s.date}</span>
-                      <span className="lib-session-src" title={s.sourceFile}>{s.sourceName}</span>
-                      <div className="lib-session-actions">
-                        <button className="lib-action-btn" title="Re-export source" onClick={() => onReexport(s.sourceFile, c.name)}>⟳ Re-export</button>
-                        <button className="lib-action-btn lib-action-btn--del" title="Remove session" onClick={() => deleteSession(c.id, s.id)}>✕</button>
+                  <div key={s.id} className="px-4 py-3 border-b border-border/40 last:border-b-0">
+                    <div className="flex items-center gap-2.5 mb-2">
+                      <Badge variant="active">{s.date}</Badge>
+                      <span className="text-[11px] text-[hsl(var(--text2))] truncate" title={s.sourceFile}>
+                        {s.sourceName}
+                      </span>
+                      <div className="flex items-center gap-1 ml-auto shrink-0">
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="h-6 text-[10px]"
+                          title="Re-export source"
+                          onClick={() => onReexport(s.sourceFile, c.name)}
+                        >
+                          <RotateCcw size={10} /> Re-export
+                        </Button>
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="h-6 w-6 hover:text-destructive"
+                          title="Remove session"
+                          onClick={() => deleteSession(c.id, s.id)}
+                        >
+                          <X size={10} />
+                        </Button>
                       </div>
                     </div>
-                    <div className="lib-participants">
+                    <div className="flex flex-col gap-2">
                       {s.participants.map((p, pi) => (
-                        <div key={pi} className="lib-participant">
-                          <span className="lib-participant-dot" style={{background: CH_COLORS[pi%4]}} />
-                          <span className="lib-participant-label">{p.label}</span>
-                          <div className="lib-participant-files">
+                        <div key={pi} className="flex flex-col gap-1">
+                          <div className="flex items-center gap-2">
+                            <span className="w-2 h-2 rounded-full shrink-0" style={{ background: CH_COLORS[pi % 4] }} />
+                            <span className="text-[11px] font-semibold text-[hsl(var(--text2))]">{p.label}</span>
+                          </div>
+                          <div className="flex flex-col gap-1 ml-4">
                             {p.files.map((f, fi) => <LibraryFile key={fi} file={f} />)}
                           </div>
                         </div>
@@ -199,7 +275,7 @@ export default function LibraryTab({ cases, setCases, search, setSearch, labels,
                 ))}
               </div>
             )}
-          </div>
+          </Card>
         ))}
       </div>
 

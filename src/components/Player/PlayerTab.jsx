@@ -1,8 +1,12 @@
 import { useState, useRef, useEffect } from 'react'
 import { invoke, convertFileSrc } from '@tauri-apps/api/core'
 import { open } from '@tauri-apps/plugin-dialog'
+import { Play, Pause, SkipBack, SkipForward, Bookmark, X, Plus } from 'lucide-react'
+import { cn } from '../../lib/utils'
 import { CH_COLORS } from '../../constants'
 import { fmtTime, fmtSize } from '../../utils'
+import { Button } from '../ui/button'
+import { Card, CardHeader, CardTitle } from '../ui/card'
 import Waveform from '../common/Waveform'
 
 // ── Global Audio Player ─────────────────────────────────────────────────────
@@ -112,22 +116,22 @@ export default function PlayerTab() {
 
   return (
     <>
-      <div className="main-scroll">
-        <div className="content">
+      <div className="flex-1 overflow-y-auto overflow-x-hidden">
+        <div className="max-w-[920px] mx-auto px-7 py-5 flex flex-col gap-3.5">
 
           {/* ── Now Playing ─────────────────────────────────── */}
-          <section className="panel player-panel">
-            <div className="panel-head">
-              <span className="panel-label">NOW PLAYING</span>
-            </div>
+          <Card>
+            <CardHeader>
+              <CardTitle>NOW PLAYING</CardTitle>
+            </CardHeader>
 
             {activeTrack ? (
-              <div className="player-main">
-                <div className="player-info">
-                  <span className="player-dot" style={{background: activeTrack.color}} />
-                  <div className="player-meta">
-                    <span className="player-track-name">{activeTrack.name}</span>
-                    <span className="player-track-label">{activeTrack.label}</span>
+              <div className="flex flex-col gap-3 px-4 py-3">
+                <div className="flex items-center gap-3">
+                  <span className="w-2.5 h-2.5 rounded-full shrink-0" style={{ background: activeTrack.color }} />
+                  <div className="flex flex-col min-w-0">
+                    <span className="text-sm font-semibold text-foreground">{activeTrack.name}</span>
+                    <span className="text-[11px] text-[hsl(var(--text2))] font-mono">{activeTrack.label}</span>
                   </div>
                 </div>
 
@@ -148,23 +152,37 @@ export default function PlayerTab() {
                   markers={bookmarks.filter(b => b.trackPath === activeTrack?.path)}
                 />
 
-                <div className="player-controls">
-                  <span className="player-timestamp">{fmtTime(currentTime)}</span>
-                  <div className="player-btns">
-                    <button className="player-btn" onClick={() => skip(-1)} title="Previous">
-                      <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M3 3v8M12 3L5 7l7 4V3z" fill="currentColor"/></svg>
+                <div className="flex items-center justify-between">
+                  <span className="font-mono text-[11px] text-[hsl(var(--sub))] min-w-[45px]">{fmtTime(currentTime)}</span>
+                  <div className="flex items-center gap-2">
+                    <button
+                      className="w-8 h-8 rounded-full flex items-center justify-center text-[hsl(var(--text2))] transition-colors hover:bg-secondary hover:text-foreground"
+                      onClick={() => skip(-1)}
+                      title="Previous"
+                    >
+                      <SkipBack size={14} fill="currentColor" />
                     </button>
-                    <button className="player-btn player-btn--play" onClick={toggle} title={playing ? 'Pause' : 'Play'}>
+                    <button
+                      className="w-11 h-11 bg-primary text-white rounded-full flex items-center justify-center transition-colors hover:bg-gold-hi"
+                      onClick={toggle}
+                      title={playing ? 'Pause' : 'Play'}
+                    >
                       {playing
-                        ? <svg width="16" height="16" viewBox="0 0 16 16"><rect x="3" y="2" width="4" height="12" rx="1" fill="currentColor"/><rect x="9" y="2" width="4" height="12" rx="1" fill="currentColor"/></svg>
-                        : <svg width="16" height="16" viewBox="0 0 16 16"><path d="M4 2.5l10 5.5-10 5.5V2.5z" fill="currentColor"/></svg>}
+                        ? <Pause size={16} fill="currentColor" />
+                        : <Play size={16} fill="currentColor" />}
                     </button>
-                    <button className="player-btn" onClick={() => skip(1)} title="Next">
-                      <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M11 3v8M2 3l7 4-7 4V3z" fill="currentColor"/></svg>
+                    <button
+                      className="w-8 h-8 rounded-full flex items-center justify-center text-[hsl(var(--text2))] transition-colors hover:bg-secondary hover:text-foreground"
+                      onClick={() => skip(1)}
+                      title="Next"
+                    >
+                      <SkipForward size={14} fill="currentColor" />
                     </button>
                   </div>
-                  <span className="player-timestamp">{fmtTime(duration)}</span>
-                  <button className="player-btn" title="Add bookmark at current position"
+                  <span className="font-mono text-[11px] text-[hsl(var(--sub))] min-w-[45px] text-right">{fmtTime(duration)}</span>
+                  <button
+                    className="w-8 h-8 rounded-full flex items-center justify-center text-[hsl(var(--text2))] transition-colors hover:bg-secondary hover:text-foreground"
+                    title="Add bookmark at current position"
                     onClick={() => {
                       if (!activeTrack || !currentTime) return
                       setBookmarks(prev => [...prev, {
@@ -173,62 +191,84 @@ export default function PlayerTab() {
                         color: '#c44e4e',
                         trackPath: activeTrack.path,
                       }])
-                    }}>
-                    <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M3 2h8v10l-4-2.5L3 12V2z" stroke="currentColor" strokeWidth="1.3" fill="none"/></svg>
+                    }}
+                  >
+                    <Bookmark size={14} />
                   </button>
                 </div>
               </div>
             ) : (
-              <p className="player-empty">No file loaded — drop audio files or click Browse below.</p>
+              <p className="text-[13px] text-[hsl(var(--sub))] text-center py-5">
+                No file loaded — drop audio files or click Browse below.
+              </p>
             )}
 
             {/* Bookmarks for active track */}
             {activeTrack && bookmarks.filter(b => b.trackPath === activeTrack.path).length > 0 && (
-              <div className="bookmark-list">
-                <span className="bookmark-list-label">BOOKMARKS</span>
-                {bookmarks.filter(b => b.trackPath === activeTrack.path).map((b, i) => (
-                  <div key={i} className="bookmark-item">
-                    <button className="bookmark-jump" onClick={() => { if (audioRef.current) audioRef.current.currentTime = b.time }}>
-                      {b.label}
-                    </button>
-                    <button className="bookmark-remove" onClick={() => setBookmarks(prev => prev.filter((_, j) => {
-                      // Count only bookmarks for this track
-                      const trackBookmarks = prev.filter(bb => bb.trackPath === activeTrack.path)
-                      return trackBookmarks[i] !== prev[j] || prev[j].trackPath !== activeTrack.path
-                    }))}>×</button>
-                  </div>
-                ))}
+              <div className="px-4 py-2 border-t border-border/60">
+                <span className="font-mono text-[9.5px] font-medium tracking-[1.2px] uppercase text-[hsl(var(--sub))] block mb-1.5">BOOKMARKS</span>
+                <div className="flex flex-wrap gap-1.5">
+                  {bookmarks.filter(b => b.trackPath === activeTrack.path).map((b, i) => (
+                    <div key={i} className="flex items-center gap-1 px-2 py-0.5 bg-secondary rounded-md text-xs">
+                      <button
+                        className="font-mono text-[11px] text-foreground hover:text-primary transition-colors"
+                        onClick={() => { if (audioRef.current) audioRef.current.currentTime = b.time }}
+                      >
+                        {b.label}
+                      </button>
+                      <button
+                        className="text-[hsl(var(--sub))] hover:text-destructive transition-colors"
+                        onClick={() => setBookmarks(prev => prev.filter((_, j) => {
+                          const trackBookmarks = prev.filter(bb => bb.trackPath === activeTrack.path)
+                          return trackBookmarks[i] !== prev[j] || prev[j].trackPath !== activeTrack.path
+                        }))}
+                      >
+                        <X size={10} />
+                      </button>
+                    </div>
+                  ))}
+                </div>
               </div>
             )}
-          </section>
+          </Card>
 
           {/* ── Playlist ────────────────────────────────────── */}
-          <section className="panel panel--tight">
-            <div className="panel-head">
-              <span className="panel-label">PLAYLIST</span>
-              <button className="btn btn--sm" onClick={browseFiles}>Browse</button>
-            </div>
+          <Card>
+            <CardHeader>
+              <CardTitle>PLAYLIST</CardTitle>
+              <Button size="sm" onClick={browseFiles}>Browse</Button>
+            </CardHeader>
 
             {tracks.length === 0 ? (
-              <div className={`player-dropzone${dragOver ? ' player-dropzone--over' : ''}`}
+              <div
+                className={cn(
+                  'border-2 border-dashed border-border rounded-lg m-3 p-8 text-center cursor-pointer transition-colors hover:border-primary',
+                  dragOver && 'border-primary bg-primary/5'
+                )}
                 onDragOver={e => { e.preventDefault(); setDragOver(true) }}
                 onDragLeave={() => setDragOver(false)}
                 onDrop={handleDrop}
-                onClick={browseFiles}>
-                <p className="player-drop-text">Drop audio files here to listen</p>
-                <p className="player-drop-sub">WAV · MP3 · FLAC · Opus · M4A · OGG and more</p>
+                onClick={browseFiles}
+              >
+                <p className="text-sm text-foreground mb-1">Drop audio files here to listen</p>
+                <p className="text-[11px] text-[hsl(var(--sub))]">WAV · MP3 · FLAC · Opus · M4A · OGG and more</p>
               </div>
             ) : (
-              <div className="player-playlist">
+              <div className="p-2">
                 {tracks.map((t, i) => (
-                  <div key={t.path}
-                    className={`playlist-row${activeTrack?.path === t.path ? ' playlist-row--active' : ''}${dragIdx === i ? ' playlist-row--dragging' : ''}`}
+                  <div
+                    key={t.path}
+                    className={cn(
+                      'group flex items-center gap-2.5 px-3 py-2 rounded-md cursor-pointer transition-colors hover:bg-secondary/50',
+                      activeTrack?.path === t.path && 'bg-secondary border-l-[3px] border-l-primary',
+                      dragIdx === i && 'opacity-50'
+                    )}
                     draggable
                     onDragStart={() => setDragIdx(i)}
-                    onDragOver={e => { e.preventDefault(); e.currentTarget.classList.add('playlist-row--dragover') }}
-                    onDragLeave={e => e.currentTarget.classList.remove('playlist-row--dragover')}
+                    onDragOver={e => { e.preventDefault(); e.currentTarget.classList.add('bg-secondary/30') }}
+                    onDragLeave={e => e.currentTarget.classList.remove('bg-secondary/30')}
                     onDrop={e => {
-                      e.currentTarget.classList.remove('playlist-row--dragover')
+                      e.currentTarget.classList.remove('bg-secondary/30')
                       if (dragIdx !== null && dragIdx !== i) {
                         setTracks(prev => {
                           const next = [...prev]
@@ -240,27 +280,39 @@ export default function PlayerTab() {
                       setDragIdx(null)
                     }}
                     onDragEnd={() => setDragIdx(null)}
-                    onClick={() => setActiveTrack(t)}>
-                    <span className="playlist-dot" style={{background: t.color}} />
-                    <span className="playlist-num">{i + 1}</span>
-                    <div className="playlist-info">
-                      <span className="playlist-name">{t.name}</span>
-                      <input className="playlist-label" value={t.label} placeholder="Speaker name"
+                    onClick={() => setActiveTrack(t)}
+                  >
+                    <span className="w-2 h-2 rounded-full shrink-0" style={{ background: t.color }} />
+                    <span className="font-mono text-[10px] text-[hsl(var(--sub))] shrink-0">{i + 1}</span>
+                    <div className="flex flex-col flex-1 min-w-0">
+                      <span className="text-xs text-foreground truncate">{t.name}</span>
+                      <input
+                        className="text-[10px] text-[hsl(var(--text2))] bg-transparent border-none p-0 font-mono w-[120px] focus:text-primary focus:outline-none"
+                        value={t.label}
+                        placeholder="Speaker name"
                         onClick={e => e.stopPropagation()}
-                        onChange={e => setTracks(prev => prev.map((tr, j) => j === i ? {...tr, label: e.target.value} : tr))} />
+                        onChange={e => setTracks(prev => prev.map((tr, j) => j === i ? {...tr, label: e.target.value} : tr))}
+                      />
                     </div>
                     {activeTrack?.path === t.path && playing && (
-                      <span className="playlist-playing">▶</span>
+                      <span className="text-primary text-xs shrink-0">
+                        <Play size={10} fill="currentColor" />
+                      </span>
                     )}
-                    <button className="playlist-remove" onClick={e => { e.stopPropagation(); removeTrack(t.path) }}>
-                      <svg width="9" height="9" viewBox="0 0 9 9"><path d="M1 1l7 7M8 1L1 8" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/></svg>
+                    <button
+                      className="text-[hsl(var(--sub))] opacity-0 group-hover:opacity-100 transition-opacity hover:text-destructive shrink-0"
+                      onClick={e => { e.stopPropagation(); removeTrack(t.path) }}
+                    >
+                      <X size={9} />
                     </button>
                   </div>
                 ))}
-                <button className="btn btn--sm player-add-btn" onClick={browseFiles}>+ Add files</button>
+                <Button size="sm" className="mt-2 ml-1" onClick={browseFiles}>
+                  <Plus size={12} /> Add files
+                </Button>
               </div>
             )}
-          </section>
+          </Card>
 
         </div>
       </div>

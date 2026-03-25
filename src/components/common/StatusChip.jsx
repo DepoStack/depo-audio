@@ -1,5 +1,13 @@
+import { Badge } from '../ui/badge'
+
 export default function StatusChip({ status }) {
-  const map = { waiting:['chip','Waiting'], queued:['chip','Queued'], converting:['chip chip--active','● Processing'], done:['chip chip--done','✓ Done'], error:['chip chip--error','✗ Failed'] }
-  const [cls, label] = map[status] || map.waiting
-  return <span className={cls}>{label}</span>
+  const map = {
+    waiting: ['default', 'Waiting'],
+    queued: ['default', 'Queued'],
+    converting: ['active', '● Processing'],
+    done: ['done', '✓ Done'],
+    error: ['error', '✗ Failed'],
+  }
+  const [variant, label] = map[status] || map.waiting
+  return <Badge variant={variant}>{label}</Badge>
 }

@@ -1,6 +1,8 @@
 import { useState, useRef } from 'react'
 import { convertFileSrc } from '@tauri-apps/api/core'
 import { fmtTime } from '../../utils'
+import { Play, Pause } from 'lucide-react'
+import { Button } from '../ui/button'
 import Waveform from './Waveform'
 
 // ── Before/After comparison player ──────────────────────────────────────────
@@ -57,7 +59,7 @@ export default function ComparePlayer({ originalPath, processedPath, originalLab
   }
 
   return (
-    <div className="compare-player">
+    <div className="flex flex-col gap-2 py-3">
       {/* Hidden audio elements */}
       <audio ref={originalRef} src={originalSrc} preload="metadata"
         onLoadedMetadata={e => { if (!duration) setDuration(e.target.duration) }}
@@ -69,15 +71,17 @@ export default function ComparePlayer({ originalPath, processedPath, originalLab
         onEnded={() => setPlaying(false)} />
 
       {/* A/B toggle */}
-      <div className="compare-toggle">
-        <button className={`compare-btn${activeSource === 'original' ? ' compare-btn--active' : ''}`}
+      <div className="flex gap-0.5 bg-secondary rounded-md p-0.5 self-center">
+        <Button variant="ghost" size="sm"
+          className={activeSource === 'original' ? 'bg-card text-foreground shadow-sm' : ''}
           onClick={() => switchSource('original')}>
           {originalLabel}
-        </button>
-        <button className={`compare-btn${activeSource === 'processed' ? ' compare-btn--active compare-btn--processed' : ''}`}
+        </Button>
+        <Button variant="ghost" size="sm"
+          className={activeSource === 'processed' ? 'bg-[hsl(var(--success)/0.12)] text-success shadow-sm' : ''}
           onClick={() => switchSource('processed')}>
           {processedLabel}
-        </button>
+        </Button>
       </div>
 
       {/* Waveform */}
@@ -91,17 +95,18 @@ export default function ComparePlayer({ originalPath, processedPath, originalLab
       />
 
       {/* Controls */}
-      <div className="compare-controls">
-        <span className="compare-time">{fmtTime(currentTime)}</span>
-        <button className="player-btn player-btn--play" onClick={toggle} style={{width:36, height:36}}>
+      <div className="flex items-center justify-center gap-3">
+        <span className="font-mono text-[11px] text-[hsl(var(--sub))] min-w-[40px] text-center">{fmtTime(currentTime)}</span>
+        <button className="w-9 h-9 rounded-full bg-[hsl(var(--gold-dim))] border border-primary/30 text-primary flex items-center justify-center shrink-0 transition-colors hover:bg-primary/20 hover:border-primary"
+          onClick={toggle}>
           {playing
-            ? <svg width="14" height="14" viewBox="0 0 16 16"><rect x="3" y="2" width="4" height="12" rx="1" fill="currentColor"/><rect x="9" y="2" width="4" height="12" rx="1" fill="currentColor"/></svg>
-            : <svg width="14" height="14" viewBox="0 0 16 16"><path d="M4 2.5l10 5.5-10 5.5V2.5z" fill="currentColor"/></svg>}
+            ? <Pause size={14} />
+            : <Play size={14} />}
         </button>
-        <span className="compare-time">{fmtTime(duration)}</span>
+        <span className="font-mono text-[11px] text-[hsl(var(--sub))] min-w-[40px] text-center">{fmtTime(duration)}</span>
       </div>
 
-      <p className="compare-hint">
+      <p className="text-[11px] text-[hsl(var(--sub))] text-center">
         {activeSource === 'original' ? 'Listening to the original' : 'Listening to the processed version'}
         {' — '}click the other button to compare
       </p>

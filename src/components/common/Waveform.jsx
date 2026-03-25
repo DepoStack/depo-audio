@@ -153,17 +153,19 @@ export default function Waveform({
   }
 
   return (
-    <div ref={containerRef} className="waveform-container" style={{ height }}>
+    <div ref={containerRef} className="w-full rounded overflow-hidden bg-secondary cursor-pointer" style={{ height }}>
       {peaks ? (
         <canvas
           ref={canvasRef}
-          className="waveform-canvas"
+          className="block"
           style={{ width: '100%', height }}
           onClick={handleClick}
         />
       ) : (
-        <div className="waveform-placeholder" style={{ height }}>
-          <div className="waveform-loading" />
+        <div className="flex items-center justify-center" style={{ height }}>
+          <div className="w-full h-0.5 bg-primary/30 rounded-full overflow-hidden">
+            <div className="h-full w-1/3 bg-primary rounded-full animate-[loading_1.2s_ease-in-out_infinite]" />
+          </div>
         </div>
       )}
     </div>
