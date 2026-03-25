@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import { MODES, FORMATS_OUT, CH_COLORS } from '../../constants'
+import { PRESETS } from '../../presets'
 import Toggle from '../common/Toggle'
 import Spinner from '../common/Spinner'
 import { ModeIcon, WaveformIcon } from '../common/Icons'
@@ -32,13 +33,38 @@ export default function ConvertTab({
     if (!files.length || scanning) return
     setScanning(true)
     try {
-      const result = await invoke('analyze_audio_cmd', { path: files[0].path })
-      setAnalysis(result)
-      // Auto-enable recommended features
-      if (result.needsDenoise) setDenoise(true)
-      if (result.needsLeveling) setAutoLevel(true)
-      if (result.hasClipping) setDeclip(true)
-      if (result.isNarrowband) setEnhance(true)
+      // Scan all files and aggregate results
+      const results = []
+      for (const file of files) {
+        try {
+          const result = await invoke('analyze_audio_cmd', { path: file.path })
+          results.push(result)
+        } catch (e) {
+          // Skip files that fail analysis
+        }
+      }
+
+      if (results.length > 0) {
+        // Aggregate: use worst-case across all files
+        const aggregated = {
+          ...results[0],
+          needsDenoise: results.some(r => r.needsDenoise),
+          needsLeveling: results.some(r => r.needsLeveling),
+          hasClipping: results.some(r => r.hasClipping),
+          isNarrowband: results.some(r => r.isNarrowband),
+          recommendations: [...new Set(results.flatMap(r => r.recommendations || []))],
+          qualityScore: results[0].qualityScore,
+          speakerCount: Math.max(...results.map(r => r.speakerCount || 0)) || null,
+          speechRatio: results.reduce((sum, r) => sum + (r.speechRatio || 0), 0) / results.length,
+        }
+        setAnalysis(aggregated)
+
+        // Auto-enable recommended features
+        if (aggregated.needsDenoise) setDenoise(true)
+        if (aggregated.needsLeveling) setAutoLevel(true)
+        if (aggregated.hasClipping) setDeclip(true)
+        if (aggregated.isNarrowband) setEnhance(true)
+      }
     } catch (e) {
       console.error('Scan failed:', e)
     }
@@ -49,6 +75,25 @@ export default function ConvertTab({
     <>
       <div className="main-scroll">
         <div className="content">
+
+          {/* ── PRESETS ──────────────────────────────────────────────────── */}
+          <div className="preset-bar">
+            <span className="preset-label">PRESET</span>
+            {PRESETS.map(p => (
+              <button key={p.id} className="preset-chip" title={p.desc}
+                onClick={() => {
+                  const s = p.settings
+                  setMode(s.mode); setFormatOut(s.format); setRate(s.rate)
+                  setNormalize(s.normalize); setTrim(s.trim); setFade(s.fade)
+                  setFadeDur(s.fadeDur); setHpf(s.hpf)
+                  setDenoise(s.denoise); setDenoiseQuality(s.denoiseQuality)
+                  setAutoLevel(s.autoLevel); setDeclip(s.declip)
+                  setEnhance(s.enhance); setDereverb(s.dereverb)
+                }}>
+                {p.name}
+              </button>
+            ))}
+          </div>
 
           {/* ── OUTPUT MODE ──────────────────────────────────────────────── */}
           <section className="panel">
@@ -121,7 +166,7 @@ export default function ConvertTab({
               <span className="panel-label">SMART AUDIO CLEANUP</span>
               <button className="btn btn--sm btn--scan" onClick={handleScan}
                 disabled={!files.length || scanning || converting}>
-                {scanning ? 'Scanning…' : 'Scan'}
+                {scanning ? `Scanning${files.length > 1 ? ` (${files.length} files)` : ''}…` : `Scan${files.length > 1 ? ` All (${files.length})` : ''}`}
               </button>
             </div>
 

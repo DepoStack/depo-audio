@@ -488,3 +488,17 @@ body{
 .merge-result-meta{font-family:'DM Mono',monospace;font-size:11px;color:var(--text2)}
 .merge-result-offsets{font-family:'DM Mono',monospace;font-size:10px;color:var(--sub)}
 .merge-error{font-size:12px;color:var(--red);padding:8px 12px;background:rgba(196,78,78,.08);border-radius:6px;margin:8px 0}
+
+/* ── Presets ───────────────────────────────────────────────────────────────── */
+.preset-bar{display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-bottom:8px}
+.preset-label{font-family:'DM Mono',monospace;font-size:9.5px;letter-spacing:1px;text-transform:uppercase;color:var(--sub);margin-right:4px}
+.preset-chip{font-size:11px;padding:4px 12px;border-radius:14px;border:1px solid var(--border);color:var(--text2);transition:border-color .12s,background .12s,color .12s}
+.preset-chip:hover{border-color:var(--gold);color:var(--gold);background:var(--gold-dim)}
+
+/* ── Waveform ─────────────────────────────────────────────────────────────── */
+.waveform-container{width:100%;border-radius:4px;overflow:hidden;background:var(--panel2);cursor:pointer}
+.waveform-canvas{display:block}
+.waveform-placeholder{display:flex;align-items:center;justify-content:center}
+.waveform-loading{width:40px;height:3px;background:var(--border);border-radius:2px;position:relative;overflow:hidden}
+.waveform-loading::after{content:'';position:absolute;left:-40px;width:40px;height:100%;background:var(--gold);border-radius:2px;animation:waveload 1.2s ease-in-out infinite}
+@keyframes waveload{0%{left:-40px}100%{left:100%}}

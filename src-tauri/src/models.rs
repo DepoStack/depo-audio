@@ -46,13 +46,17 @@ pub(crate) fn load_session(path: &PathBuf) -> Result<Session, String> {
 /// SHA256 hashes of known bundled models.
 /// Add hashes here after downloading models to verify integrity.
 fn known_model_hash(filename: &str) -> Option<&'static str> {
-    // To generate: shasum -a 256 <model_file>
-    // These are verified at build time and should be updated when models change.
     match filename {
-        // Hashes can be populated after verifying bundled models:
-        // "silero_vad.onnx" => Some("abc123..."),
-        // "smart-turn-v3-int8.onnx" => Some("def456..."),
-        _ => None, // Skip verification for models without known hashes
+        "silero_vad.onnx"          => Some("a4a068cd6cf1ea8355b84327595838ca748ec29a25bc91fc82e6c299ccdc5808"),
+        "smart-turn-v3-int8.onnx"  => Some("3d072c8fb04446955a365b533686e7e06015ad09929bb824b910c72ff89f5be1"),
+        "flashsr.onnx"             => Some("e255c76b227f16f7f392cc43677c38bd2c5aa129f042a2ba3eb03fb29e470c7a"),
+        "dfn3_enc.onnx"            => Some("7c5399d3da8a50ebef1c1a0ae421b33376aa5e45d0e92df16da7e83c9c131916"),
+        "dfn3_erb_dec.onnx"        => Some("ab669a1d10afe20911728b33053a452071042317a90581092b325da7b2f9d895"),
+        "dfn3_df_dec.onnx"         => Some("23114ce3b0f6464b763ee62f7bb8aab6b2a129a21eabd5bcfe59413db05f278a"),
+        "dnsmos_sig_bak_ovr.onnx"  => Some("81c57ef0f69a2aa9a25dc878fba7534c9278de2769ecf5c221382d36929c5b5b"),
+        "speaker_seg_int8.onnx"    => Some("d582f4b4c6b48205de7e0643c57df0df5615a3c176189be3fc461e9d18827b5d"),
+        "speaker_embed.onnx"       => Some("1a331345f04805badbb495c775a6ddffcdd1a732567d5ec8b3d5749e3c7a5e4b"),
+        _ => None,
     }
 }
 

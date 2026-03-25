@@ -3,6 +3,7 @@ import { invoke, convertFileSrc } from '@tauri-apps/api/core'
 import { open } from '@tauri-apps/plugin-dialog'
 import { CH_COLORS } from '../../constants'
 import { fmtTime, fmtSize } from '../../utils'
+import Waveform from '../common/Waveform'
 
 // ── Global Audio Player ─────────────────────────────────────────────────────
 //
@@ -134,15 +135,15 @@ export default function PlayerTab() {
                   onEnded={() => { setPlaying(false); skip(1) }}
                 />
 
-                {/* Waveform-style seek bar */}
-                <div className="player-seekbar" onClick={seek}>
-                  <div className="player-seekbar-fill"
-                    style={{
-                      width: duration ? `${(currentTime/duration)*100}%` : '0%',
-                      background: activeTrack.color,
-                    }}
-                  />
-                </div>
+                {/* Waveform visualization */}
+                <Waveform
+                  audioSrc={audioSrc}
+                  color={activeTrack.color}
+                  currentTime={currentTime}
+                  duration={duration}
+                  height={56}
+                  onSeek={t => { if (audioRef.current) audioRef.current.currentTime = t }}
+                />
 
                 <div className="player-controls">
                   <span className="player-timestamp">{fmtTime(currentTime)}</span>
