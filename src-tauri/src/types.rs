@@ -268,6 +268,27 @@ pub struct Prefs {
     pub enhance: bool,
     #[serde(default)]
     pub dereverb: bool,
+    // Advanced settings
+    #[serde(default = "default_hpf_cutoff")]
+    pub hpf_cutoff: f64,
+    #[serde(default = "default_normalize_lufs")]
+    pub normalize_lufs: f64,
+    #[serde(default = "default_normalize_tp")]
+    pub normalize_tp: f64,
+    #[serde(default = "default_silence_thresh")]
+    pub silence_thresh: f64,
+    #[serde(default = "default_fade_dur_setting")]
+    pub default_fade_dur: f64,
+    #[serde(default = "default_ffmpeg_timeout")]
+    pub ffmpeg_timeout: u32,
+    #[serde(default = "default_max_scan_depth")]
+    pub max_scan_depth: u32,
+    #[serde(default = "default_max_file_size_gb")]
+    pub max_file_size_gb: f64,
+    #[serde(default = "default_output_format")]
+    pub default_output_format: String,
+    #[serde(default = "default_output_mode")]
+    pub default_output_mode: String,
 }
 
 impl Default for Prefs {
@@ -291,11 +312,31 @@ impl Default for Prefs {
             declip: false,
             enhance: false,
             dereverb: false,
+            hpf_cutoff: 80.0,
+            normalize_lufs: -16.0,
+            normalize_tp: -1.5,
+            silence_thresh: -50.0,
+            default_fade_dur: 0.5,
+            ffmpeg_timeout: 300,
+            max_scan_depth: 5,
+            max_file_size_gb: 2.0,
+            default_output_format: "wav".into(),
+            default_output_mode: "stereo".into(),
         }
     }
 }
 
 fn default_denoise_quality() -> String { "fast".into() }
+fn default_hpf_cutoff() -> f64 { 80.0 }
+fn default_normalize_lufs() -> f64 { -16.0 }
+fn default_normalize_tp() -> f64 { -1.5 }
+fn default_silence_thresh() -> f64 { -50.0 }
+fn default_fade_dur_setting() -> f64 { 0.5 }
+fn default_ffmpeg_timeout() -> u32 { 300 }
+fn default_max_scan_depth() -> u32 { 5 }
+fn default_max_file_size_gb() -> f64 { 2.0 }
+fn default_output_format() -> String { "wav".into() }
+fn default_output_mode() -> String { "stereo".into() }
 
 // ── App state ─────────────────────────────────────────────────────────────────
 

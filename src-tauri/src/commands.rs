@@ -107,6 +107,23 @@ pub fn system_capabilities_cmd(app: AppHandle) -> models::SystemCapabilities {
     models::detect_capabilities(&app)
 }
 
+// ── Model management commands ──────────────────────────────────────────────
+
+#[tauri::command]
+pub fn model_catalog_cmd(app: AppHandle) -> Vec<models::ModelInfo> {
+    models::model_catalog(&app)
+}
+
+#[tauri::command]
+pub async fn download_model_cmd(app: AppHandle, filename: String) -> Result<String, String> {
+    models::download_model(&app, &filename).await
+}
+
+#[tauri::command]
+pub fn delete_model_cmd(app: AppHandle, filename: String) -> Result<(), String> {
+    models::delete_model(&app, &filename)
+}
+
 // ── VAD command ─────────────────────────────────────────────────────────────
 
 #[tauri::command]

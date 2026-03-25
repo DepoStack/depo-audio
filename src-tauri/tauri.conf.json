@@ -35,8 +35,11 @@
       "icons/128x128.png",
       "icons/128x128@2x.png",
       "icons/icon.icns",
-      "icons/icon.ico"
+      "icons/icon.ico",
+      "icons/icon.png"
     ],
+    "category": "public.app-category.music",
+    "copyright": "2025 Andrew Mayes",
     "resources": [
       "resources/models/*"
     ],
@@ -46,7 +49,9 @@
     ],
     "macOS": {
       "minimumSystemVersion": "12.0",
-      "entitlements": null
+      "entitlements": "entitlements.plist",
+      "signingIdentity": null,
+      "frameworks": []
     },
     "windows": {
       "wix": {

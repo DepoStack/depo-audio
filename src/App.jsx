@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import { invoke } from '@tauri-apps/api/core'
-import { Sun, Moon, Monitor } from 'lucide-react'
+import { Sun, Moon, Monitor, Settings } from 'lucide-react'
 import { basename } from './utils'
 
 import useTheme from './hooks/useTheme'
@@ -16,6 +16,7 @@ import ConvertTab from './components/Convert/ConvertTab'
 import LibraryTab from './components/Library/LibraryTab'
 import PlayerTab from './components/Player/PlayerTab'
 import MergeTab from './components/Merge/MergeTab'
+import SettingsPanel from './components/SettingsPanel'
 
 const themeIcons = {
   light: Sun,
@@ -27,7 +28,8 @@ export default function App() {
   const [tab, setTab] = useState('convert')
 
   // Custom hooks
-  const { themePref, themeLabel, cycleTheme } = useTheme()
+  const { themePref, themeLabel, cycleTheme, setThemeDirect } = useTheme()
+  const [settingsOpen, setSettingsOpen] = useState(false)
 
   const prefs = usePreferences()
   const {
@@ -101,7 +103,10 @@ export default function App() {
             Library {libCount > 0 && <Badge variant="gold">{libCount}</Badge>}
           </TabsTrigger>
         </TabsList>
-        <div className="flex justify-end">
+        <div className="flex justify-end gap-1">
+          <Button variant="ghost" size="icon" title="Settings" onClick={() => setSettingsOpen(true)}>
+            <Settings size={16} />
+          </Button>
           <Button variant="ghost" size="icon" title={`Theme: ${themePref}`} onClick={cycleTheme}>
             <ThemeIcon size={16} />
           </Button>
@@ -161,6 +166,12 @@ export default function App() {
           }}
         />
       </TabsContent>
+
+      <SettingsPanel
+        open={settingsOpen}
+        onOpenChange={setSettingsOpen}
+        prefs={{ ...prefs, themePref, cycleThemeTo: setThemeDirect }}
+      />
     </Tabs>
   )
 }

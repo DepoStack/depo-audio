@@ -133,6 +133,140 @@ pub(crate) fn available_models(app: &AppHandle) -> Vec<String> {
         .collect()
 }
 
+// ── Model catalog ───────────────────────────────────────────────────────────
+
+/// Metadata for each downloadable model.
+#[derive(Debug, serde::Serialize, serde::Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelInfo {
+    pub filename: String,
+    pub display_name: String,
+    pub description: String,
+    pub size_mb: f64,
+    pub feature: String,
+    pub required: bool,
+    pub installed: bool,
+    pub recommended: bool,
+    pub download_url: String,
+}
+
+/// Full model catalog with install status and recommendations.
+pub(crate) fn model_catalog(app: &AppHandle) -> Vec<ModelInfo> {
+    let caps = detect_capabilities(app);
+
+    let catalog = vec![
+        ("silero_vad.onnx", "Silero VAD", "Voice activity detection — identifies speech vs silence", 1.6, "Speech Detection", true,
+         "https://github.com/snakers4/silero-vad/raw/master/files/silero_vad.onnx"),
+        ("smart-turn-v3-int8.onnx", "Smart Turn v3", "Detects speaker turns in court recordings", 8.0, "Turn Detection", false,
+         "https://huggingface.co/depoaudio/smart-turn-v3/resolve/main/smart-turn-v3-int8.onnx"),
+        ("dfn3_enc.onnx", "DeepFilterNet3 Encoder", "High-quality noise removal encoder", 3.2, "Noise Removal (Best)", false,
+         "https://huggingface.co/DeepFilterNet/DeepFilterNet3/resolve/main/enc.onnx"),
+        ("dfn3_erb_dec.onnx", "DeepFilterNet3 ERB Decoder", "High-quality noise removal ERB decoder", 5.8, "Noise Removal (Best)", false,
+         "https://huggingface.co/DeepFilterNet/DeepFilterNet3/resolve/main/erb_dec.onnx"),
+        ("dfn3_df_dec.onnx", "DeepFilterNet3 DF Decoder", "High-quality noise removal DF decoder", 4.5, "Noise Removal (Best)", false,
+         "https://huggingface.co/DeepFilterNet/DeepFilterNet3/resolve/main/df_dec.onnx"),
+        ("flashsr.onnx", "FlashSR", "Neural bandwidth extension for phone/narrow-band audio", 12.0, "Clarity Enhancement", false,
+         "https://huggingface.co/depoaudio/flashsr/resolve/main/flashsr.onnx"),
+        ("dnsmos_sig_bak_ovr.onnx", "DNSMOS", "Audio quality scoring (1-5 scale)", 1.8, "Quality Scoring", false,
+         "https://huggingface.co/depoaudio/dnsmos/resolve/main/sig_bak_ovr.onnx"),
+        ("speaker_seg_int8.onnx", "Speaker Segmentation", "Detects when different speakers are talking", 5.2, "Speaker Detection", false,
+         "https://huggingface.co/pyannote/segmentation-3.0/resolve/main/pytorch_model_int8.onnx"),
+        ("speaker_embed.onnx", "Speaker Embedding", "Creates voice fingerprints for speaker identification", 18.0, "Speaker Detection", false,
+         "https://huggingface.co/pyannote/wespeaker-voxceleb-resnet34-LM/resolve/main/speaker_embed.onnx"),
+    ];
+
+    catalog.into_iter().map(|(filename, name, desc, size, feature, required, url)| {
+        let installed = model_path(app, filename).is_ok();
+        let recommended = match feature {
+            "Speech Detection" => true,
+            "Noise Removal (Best)" => caps.tier == "high",
+            "Turn Detection" => true,
+            "Clarity Enhancement" => caps.tier != "low",
+            "Quality Scoring" => true,
+            "Speaker Detection" => caps.tier != "low",
+            _ => false,
+        };
+        ModelInfo {
+            filename: filename.to_string(),
+            display_name: name.to_string(),
+            description: desc.to_string(),
+            size_mb: size,
+            feature: feature.to_string(),
+            required,
+            installed,
+            recommended,
+            download_url: url.to_string(),
+        }
+    }).collect()
+}
+
+/// Download a model from its URL to the models directory.
+pub(crate) async fn download_model(app: &AppHandle, filename: &str) -> Result<String, String> {
+    let catalog = model_catalog(app);
+    let info = catalog.iter()
+        .find(|m| m.filename == filename)
+        .ok_or_else(|| format!("Unknown model: {}", filename))?;
+
+    let resource_dir = app.path().resource_dir()
+        .map_err(|e| format!("Cannot resolve resource dir: {}", e))?;
+    let models_dir = resource_dir.join("resources").join("models");
+    std::fs::create_dir_all(&models_dir)
+        .map_err(|e| format!("Cannot create models dir: {}", e))?;
+
+    let dest = models_dir.join(filename);
+
+    // Download using reqwest (already a transitive dep via tauri-plugin-updater)
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(600))
+        .build()
+        .map_err(|e| format!("HTTP client error: {}", e))?;
+
+    let resp = client.get(&info.download_url)
+        .send()
+        .await
+        .map_err(|e| format!("Download failed: {}", e))?;
+
+    if !resp.status().is_success() {
+        return Err(format!("Download failed: HTTP {}", resp.status()));
+    }
+
+    let bytes = resp.bytes().await
+        .map_err(|e| format!("Download read error: {}", e))?;
+
+    // Write to temp file first, then rename (atomic)
+    let tmp = dest.with_extension("tmp");
+    std::fs::write(&tmp, &bytes)
+        .map_err(|e| format!("Write error: {}", e))?;
+
+    // Verify hash if known
+    if let Some(expected) = known_model_hash(filename) {
+        if let Err(e) = verify_model_hash(&tmp, expected) {
+            let _ = std::fs::remove_file(&tmp);
+            return Err(format!("Downloaded model failed integrity check: {}", e));
+        }
+    }
+
+    std::fs::rename(&tmp, &dest)
+        .map_err(|e| format!("Cannot move model into place: {}", e))?;
+
+    Ok(format!("Downloaded {} ({:.1} MB)", info.display_name, info.size_mb))
+}
+
+/// Delete a downloaded model.
+pub(crate) fn delete_model(app: &AppHandle, filename: &str) -> Result<(), String> {
+    // Don't allow deleting required models
+    let catalog = model_catalog(app);
+    if let Some(info) = catalog.iter().find(|m| m.filename == filename) {
+        if info.required {
+            return Err("Cannot delete required model".into());
+        }
+    }
+
+    let path = model_path(app, filename)?;
+    std::fs::remove_file(&path)
+        .map_err(|e| format!("Cannot delete model: {}", e))
+}
+
 // ── Hardware-aware recommendations ──────────────────────────────────────────
 
 /// System capabilities for recommending which AI features to enable.

@@ -19,6 +19,17 @@ export default function usePreferences() {
   const [declip, setDeclip]       = useState(false)
   const [enhance, setEnhance]     = useState(false)
   const [dereverb, setDereverb]   = useState(false)
+  // Advanced settings
+  const [hpfCutoff, setHpfCutoff]               = useState(80)
+  const [normalizeLufs, setNormalizeLufs]       = useState(-16)
+  const [normalizeTp, setNormalizeTp]           = useState(-1.5)
+  const [silenceThresh, setSilenceThresh]       = useState(-50)
+  const [defaultFadeDur, setDefaultFadeDur]     = useState(0.5)
+  const [ffmpegTimeout, setFfmpegTimeout]       = useState(300)
+  const [maxScanDepth, setMaxScanDepth]         = useState(5)
+  const [maxFileSizeGb, setMaxFileSizeGb]       = useState(2)
+  const [defaultOutputFormat, setDefaultOutputFormat] = useState('wav')
+  const [defaultOutputMode, setDefaultOutputMode]     = useState('stereo')
   const [prefsReady, setPrefsReady] = useState(false)
 
   // Load prefs on mount
@@ -34,6 +45,17 @@ export default function usePreferences() {
       setFade(!!p.fade); setFadeDur(p.fadeDur || 0.5); setHpf(!!p.hpf)
       setDenoise(!!p.denoise); setDenoiseQuality(p.denoiseQuality || 'fast'); setAutoLevel(!!p.autoLevel)
       setDeclip(!!p.declip); setEnhance(!!p.enhance); setDereverb(!!p.dereverb)
+      // Advanced settings
+      if (p.hpfCutoff != null) setHpfCutoff(p.hpfCutoff)
+      if (p.normalizeLufs != null) setNormalizeLufs(p.normalizeLufs)
+      if (p.normalizeTp != null) setNormalizeTp(p.normalizeTp)
+      if (p.silenceThresh != null) setSilenceThresh(p.silenceThresh)
+      if (p.defaultFadeDur != null) setDefaultFadeDur(p.defaultFadeDur)
+      if (p.ffmpegTimeout != null) setFfmpegTimeout(p.ffmpegTimeout)
+      if (p.maxScanDepth != null) setMaxScanDepth(p.maxScanDepth)
+      if (p.maxFileSizeGb != null) setMaxFileSizeGb(p.maxFileSizeGb)
+      if (p.defaultOutputFormat) setDefaultOutputFormat(p.defaultOutputFormat)
+      if (p.defaultOutputMode) setDefaultOutputMode(p.defaultOutputMode)
       setPrefsReady(true)
     }).catch(() => setPrefsReady(true))
   }, [])
@@ -42,10 +64,19 @@ export default function usePreferences() {
   useEffect(() => {
     if (!prefsReady) return
     const timer = setTimeout(() => {
-      invoke('prefs_set', { patch: { mode, format: formatOut, rate, outDir, labels, chanVols, normalize, trim, fade, fadeDur, hpf, denoise, denoiseQuality, autoLevel, declip, enhance, dereverb } })
+      invoke('prefs_set', { patch: {
+        mode, format: formatOut, rate, outDir, labels, chanVols, normalize, trim, fade, fadeDur, hpf,
+        denoise, denoiseQuality, autoLevel, declip, enhance, dereverb,
+        hpfCutoff, normalizeLufs, normalizeTp, silenceThresh, defaultFadeDur,
+        ffmpegTimeout, maxScanDepth, maxFileSizeGb, defaultOutputFormat, defaultOutputMode,
+      } })
     }, 500)
     return () => clearTimeout(timer)
-  }, [mode, formatOut, rate, outDir, labels, chanVols, normalize, trim, fade, fadeDur, hpf, denoise, denoiseQuality, autoLevel, declip, enhance, dereverb, prefsReady])
+  }, [mode, formatOut, rate, outDir, labels, chanVols, normalize, trim, fade, fadeDur, hpf,
+      denoise, denoiseQuality, autoLevel, declip, enhance, dereverb,
+      hpfCutoff, normalizeLufs, normalizeTp, silenceThresh, defaultFadeDur,
+      ffmpegTimeout, maxScanDepth, maxFileSizeGb, defaultOutputFormat, defaultOutputMode,
+      prefsReady])
 
   return {
     mode, setMode,
@@ -65,6 +96,16 @@ export default function usePreferences() {
     declip, setDeclip,
     enhance, setEnhance,
     dereverb, setDereverb,
+    hpfCutoff, setHpfCutoff,
+    normalizeLufs, setNormalizeLufs,
+    normalizeTp, setNormalizeTp,
+    silenceThresh, setSilenceThresh,
+    defaultFadeDur, setDefaultFadeDur,
+    ffmpegTimeout, setFfmpegTimeout,
+    maxScanDepth, setMaxScanDepth,
+    maxFileSizeGb, setMaxFileSizeGb,
+    defaultOutputFormat, setDefaultOutputFormat,
+    defaultOutputMode, setDefaultOutputMode,
     prefsReady,
   }
 }

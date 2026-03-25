@@ -28,6 +28,9 @@ dirs-next = "2.0"
 sha2 = "0.10"
 fs2 = "0.4"
 
+# HTTP client for model downloads
+reqwest = { version = "0.12", features = ["rustls-tls"], default-features = false }
+
 # AI audio processing
 nnnoiseless = { version = "0.5", default-features = false, features = ["dasp"] }
 ort = { version = "2.0.0-rc.12", features = ["load-dynamic"] }

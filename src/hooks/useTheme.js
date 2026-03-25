@@ -11,7 +11,12 @@ export default function useTheme() {
     invoke('prefs_set', { patch: { theme: next } }).catch(() => {})
   }, [theme, setNextTheme])
 
+  const setThemeDirect = useCallback((value) => {
+    setNextTheme(value)
+    invoke('prefs_set', { patch: { theme: value } }).catch(() => {})
+  }, [setNextTheme])
+
   const themeLabel = theme === 'system' ? 'system' : theme === 'dark' ? 'dark' : 'light'
 
-  return { theme: resolvedTheme || 'dark', themePref: theme, themeLabel, cycleTheme }
+  return { theme: resolvedTheme || 'dark', themePref: theme, themeLabel, cycleTheme, setThemeDirect }
 }
