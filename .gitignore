@@ -5,6 +5,7 @@ dist/
 # Rust / Tauri
 src-tauri/target/
 src-tauri/binaries/
+src-tauri/resources/onnxruntime/
 src-tauri/gen/
 
 # Env

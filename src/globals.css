@@ -178,6 +178,13 @@
   margin-left: 0.25em;
 }
 
+.settings-hint {
+  font-size: 10px;
+  color: hsl(var(--sub));
+  line-height: 1.4;
+  margin: 0;
+}
+
 .settings-input {
   height: 30px;
   font-size: 12px;

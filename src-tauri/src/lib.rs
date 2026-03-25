@@ -16,7 +16,30 @@ mod speakers;
 pub mod types;
 mod vad;
 
+use tauri::Manager;
 use types::AppState;
+
+/// Set ORT_DYLIB_PATH to the bundled ONNX Runtime library so AI features work
+/// without requiring users to install onnxruntime separately.
+fn setup_onnx_runtime(app: &tauri::AppHandle) {
+    if std::env::var("ORT_DYLIB_PATH").is_ok() {
+        return; // Already set (e.g. by developer)
+    }
+    if let Ok(resource_dir) = app.path().resource_dir() {
+        let ort_dir = resource_dir.join("resources").join("onnxruntime");
+        #[cfg(target_os = "macos")]
+        let lib_name = "libonnxruntime.dylib";
+        #[cfg(target_os = "windows")]
+        let lib_name = "onnxruntime.dll";
+        #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+        let lib_name = "libonnxruntime.so";
+
+        let lib_path = ort_dir.join(lib_name);
+        if lib_path.exists() {
+            std::env::set_var("ORT_DYLIB_PATH", &lib_path);
+        }
+    }
+}
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -26,6 +49,10 @@ pub fn run() {
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_opener::init())
         .manage(AppState::default())
+        .setup(|app| {
+            setup_onnx_runtime(app.handle());
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             commands::health_check,
             commands::get_formats_list,

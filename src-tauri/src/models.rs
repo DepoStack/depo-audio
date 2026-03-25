@@ -154,25 +154,27 @@ pub struct ModelInfo {
 pub(crate) fn model_catalog(app: &AppHandle) -> Vec<ModelInfo> {
     let caps = detect_capabilities(app);
 
+    const BASE_URL: &str = "https://github.com/mayes/depo-audio/releases/download/models-v1";
+
     let catalog = vec![
         ("silero_vad.onnx", "Silero VAD", "Voice activity detection — identifies speech vs silence", 1.6, "Speech Detection", true,
-         "https://github.com/snakers4/silero-vad/raw/master/files/silero_vad.onnx"),
+         format!("{}/silero_vad.onnx", BASE_URL)),
         ("smart-turn-v3-int8.onnx", "Smart Turn v3", "Detects speaker turns in court recordings", 8.0, "Turn Detection", false,
-         "https://huggingface.co/depoaudio/smart-turn-v3/resolve/main/smart-turn-v3-int8.onnx"),
+         format!("{}/smart-turn-v3-int8.onnx", BASE_URL)),
         ("dfn3_enc.onnx", "DeepFilterNet3 Encoder", "High-quality noise removal encoder", 3.2, "Noise Removal (Best)", false,
-         "https://huggingface.co/DeepFilterNet/DeepFilterNet3/resolve/main/enc.onnx"),
+         format!("{}/dfn3_enc.onnx", BASE_URL)),
         ("dfn3_erb_dec.onnx", "DeepFilterNet3 ERB Decoder", "High-quality noise removal ERB decoder", 5.8, "Noise Removal (Best)", false,
-         "https://huggingface.co/DeepFilterNet/DeepFilterNet3/resolve/main/erb_dec.onnx"),
+         format!("{}/dfn3_erb_dec.onnx", BASE_URL)),
         ("dfn3_df_dec.onnx", "DeepFilterNet3 DF Decoder", "High-quality noise removal DF decoder", 4.5, "Noise Removal (Best)", false,
-         "https://huggingface.co/DeepFilterNet/DeepFilterNet3/resolve/main/df_dec.onnx"),
+         format!("{}/dfn3_df_dec.onnx", BASE_URL)),
         ("flashsr.onnx", "FlashSR", "Neural bandwidth extension for phone/narrow-band audio", 12.0, "Clarity Enhancement", false,
-         "https://huggingface.co/depoaudio/flashsr/resolve/main/flashsr.onnx"),
+         format!("{}/flashsr.onnx", BASE_URL)),
         ("dnsmos_sig_bak_ovr.onnx", "DNSMOS", "Audio quality scoring (1-5 scale)", 1.8, "Quality Scoring", false,
-         "https://huggingface.co/depoaudio/dnsmos/resolve/main/sig_bak_ovr.onnx"),
+         format!("{}/dnsmos_sig_bak_ovr.onnx", BASE_URL)),
         ("speaker_seg_int8.onnx", "Speaker Segmentation", "Detects when different speakers are talking", 5.2, "Speaker Detection", false,
-         "https://huggingface.co/pyannote/segmentation-3.0/resolve/main/pytorch_model_int8.onnx"),
+         format!("{}/speaker_seg_int8.onnx", BASE_URL)),
         ("speaker_embed.onnx", "Speaker Embedding", "Creates voice fingerprints for speaker identification", 18.0, "Speaker Detection", false,
-         "https://huggingface.co/pyannote/wespeaker-voxceleb-resnet34-LM/resolve/main/speaker_embed.onnx"),
+         format!("{}/speaker_embed.onnx", BASE_URL)),
     ];
 
     catalog.into_iter().map(|(filename, name, desc, size, feature, required, url)| {

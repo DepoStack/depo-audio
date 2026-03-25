@@ -5,6 +5,9 @@ on:
     tags: ['v*']
   workflow_dispatch:
 
+env:
+  ORT_VERSION: "1.21.1"
+
 jobs:
   release:
     permissions:
@@ -17,12 +20,21 @@ jobs:
           - platform: macos-latest
             args: '--target aarch64-apple-darwin'
             rust-target: aarch64-apple-darwin
+            ort-url: 'https://github.com/microsoft/onnxruntime/releases/download/v1.21.1/onnxruntime-osx-arm64-1.21.1.tgz'
+            ort-lib: 'libonnxruntime.1.21.1.dylib'
+            ort-dest: 'libonnxruntime.dylib'
           - platform: macos-latest
             args: '--target x86_64-apple-darwin'
             rust-target: x86_64-apple-darwin
+            ort-url: 'https://github.com/microsoft/onnxruntime/releases/download/v1.21.1/onnxruntime-osx-x86_64-1.21.1.tgz'
+            ort-lib: 'libonnxruntime.1.21.1.dylib'
+            ort-dest: 'libonnxruntime.dylib'
           - platform: windows-latest
             args: ''
             rust-target: x86_64-pc-windows-msvc
+            ort-url: 'https://github.com/microsoft/onnxruntime/releases/download/v1.21.1/onnxruntime-win-x64-1.21.1.zip'
+            ort-lib: 'onnxruntime.dll'
+            ort-dest: 'onnxruntime.dll'
 
     runs-on: ${{ matrix.platform }}
 
@@ -51,6 +63,7 @@ jobs:
       - name: Create binaries directory
         run: mkdir -p src-tauri/binaries
 
+      # ── FFmpeg sidecars ─────────────────────────────────────────────────
       - name: Install FFmpeg (macOS)
         if: runner.os == 'macOS'
         run: |
@@ -85,12 +98,34 @@ jobs:
         shell: pwsh
         run: Get-ChildItem src-tauri/binaries/
 
-      # ── Disable macOS signing when no certificate is configured ────────────
+      # ── ONNX Runtime ────────────────────────────────────────────────────
+      - name: Download ONNX Runtime (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          mkdir -p src-tauri/resources/onnxruntime
+          curl -sL "${{ matrix.ort-url }}" -o ort.tgz
+          tar xzf ort.tgz
+          ORT_DIR=$(ls -d onnxruntime-*)
+          cp "$ORT_DIR/lib/${{ matrix.ort-lib }}" "src-tauri/resources/onnxruntime/${{ matrix.ort-dest }}"
+          ls -lh src-tauri/resources/onnxruntime/
+
+      - name: Download ONNX Runtime (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path src-tauri/resources/onnxruntime | Out-Null
+          Invoke-WebRequest "${{ matrix.ort-url }}" -OutFile ort.zip
+          Expand-Archive ort.zip -DestinationPath ort_tmp -Force
+          $dll = Get-ChildItem ort_tmp -Recurse -Filter "${{ matrix.ort-lib }}" | Select-Object -First 1
+          Copy-Item $dll.FullName "src-tauri/resources/onnxruntime/${{ matrix.ort-dest }}"
+          Get-ChildItem src-tauri/resources/onnxruntime/
+
+      # ── Disable macOS signing when no certificate is configured ────────
       - name: Disable macOS code signing (unsigned build)
         if: runner.os == 'macOS'
         run: echo "APPLE_SIGNING_IDENTITY=-" >> $GITHUB_ENV
 
-      # ── Build & release ────────────────────────────────────────────────────
+      # ── Build & release ────────────────────────────────────────────────
       - name: Build and release
         uses: tauri-apps/tauri-action@v0
         env:

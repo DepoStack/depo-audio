@@ -14,31 +14,57 @@ import {
 // ── Default values ────────────────────────────────────────────────────────────
 
 const DEFAULTS = {
-  // Audio Processing
   hpfCutoff: 80,
   normalizeLufs: -16,
   normalizeTp: -1.5,
   silenceThresh: -50,
   defaultFadeDur: 0.5,
-  // Performance
   ffmpegTimeout: 300,
   maxScanDepth: 5,
-  // Security
   maxFileSizeGb: 2,
-  // Appearance
   defaultOutputFormat: 'wav',
   defaultOutputMode: 'stereo',
 }
 
+// ── Settings presets ──────────────────────────────────────────────────────────
+
+const SETTINGS_PRESETS = [
+  {
+    id: 'recommended',
+    name: 'Recommended',
+    desc: 'Best for most court recordings',
+    values: { ...DEFAULTS },
+  },
+  {
+    id: 'high-quality',
+    name: 'High Quality',
+    desc: 'Louder output, tighter silence trim',
+    values: { ...DEFAULTS, normalizeLufs: -14, normalizeTp: -1.0, silenceThresh: -40 },
+  },
+  {
+    id: 'gentle',
+    name: 'Gentle',
+    desc: 'Minimal processing, preserve original character',
+    values: { ...DEFAULTS, hpfCutoff: 40, normalizeLufs: -18, normalizeTp: -2.0, silenceThresh: -60, defaultFadeDur: 0.3 },
+  },
+  {
+    id: 'broadcast',
+    name: 'Broadcast',
+    desc: 'Matches broadcast loudness standards',
+    values: { ...DEFAULTS, normalizeLufs: -23, normalizeTp: -1.0, hpfCutoff: 80 },
+  },
+]
+
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-function NumberField({ label, unit, value, setValue, min, max, step = 1, defaultVal }) {
+function NumberField({ label, hint, unit, value, setValue, min, max, step = 1, defaultVal }) {
   return (
     <div className="settings-field">
       <Label className="settings-label">
         {label}
         {unit && <span className="settings-unit">({unit})</span>}
       </Label>
+      {hint && <p className="settings-hint">{hint}</p>}
       <Input
         type="number"
         className="settings-input"
@@ -56,10 +82,11 @@ function NumberField({ label, unit, value, setValue, min, max, step = 1, default
   )
 }
 
-function SelectField({ label, value, setValue, options }) {
+function SelectField({ label, hint, value, setValue, options }) {
   return (
     <div className="settings-field">
       <Label className="settings-label">{label}</Label>
+      {hint && <p className="settings-hint">{hint}</p>}
       <Select value={value} onValueChange={setValue}>
         <SelectTrigger className="settings-select">
           <SelectValue />
@@ -109,7 +136,6 @@ function ModelManager() {
       setModels(catalog)
       setCaps(capabilities)
     } catch {
-      // Not in Tauri context (dev mode)
       setModels([])
     }
   }, [])
@@ -139,7 +165,6 @@ function ModelManager() {
     }
   }
 
-  // Group by feature
   const groups = {}
   models.forEach(m => {
     if (!groups[m.feature]) groups[m.feature] = []
@@ -239,16 +264,16 @@ export default function SettingsPanel({ open, onOpenChange, prefs }) {
     defaultOutputMode, setDefaultOutputMode,
   } = prefs
 
-  // Also pull theme from useTheme if passed, but theme is managed separately
-  // via the cycleTheme in the header. We show it read-only or let it be set here.
-
-  const resetAudio = () => {
-    setHpfCutoff(DEFAULTS.hpfCutoff)
-    setNormalizeLufs(DEFAULTS.normalizeLufs)
-    setNormalizeTp(DEFAULTS.normalizeTp)
-    setSilenceThresh(DEFAULTS.silenceThresh)
-    setDefaultFadeDur(DEFAULTS.defaultFadeDur)
+  const applyPreset = (preset) => {
+    const v = preset.values
+    setHpfCutoff(v.hpfCutoff)
+    setNormalizeLufs(v.normalizeLufs)
+    setNormalizeTp(v.normalizeTp)
+    setSilenceThresh(v.silenceThresh)
+    setDefaultFadeDur(v.defaultFadeDur)
   }
+
+  const resetAudio = () => applyPreset(SETTINGS_PRESETS[0])
 
   const resetPerformance = () => {
     setFfmpegTimeout(DEFAULTS.ffmpegTimeout)
@@ -280,32 +305,51 @@ export default function SettingsPanel({ open, onOpenChange, prefs }) {
             <ModelManager />
           </section>
 
+          {/* ── Audio Presets ──────────────────────────────────── */}
+          <section className="settings-section">
+            <h3 className="settings-section-title">Quick Setup</h3>
+            <p className="settings-hint mb-2">Choose a preset to configure audio settings, or customize below.</p>
+            <div className="flex gap-1.5 flex-wrap">
+              {SETTINGS_PRESETS.map(p => (
+                <Button key={p.id} variant="outline" size="sm" className="rounded-full"
+                  title={p.desc} onClick={() => applyPreset(p)}>
+                  {p.name}
+                </Button>
+              ))}
+            </div>
+          </section>
+
           {/* ── Audio Processing ──────────────────────────────── */}
           <section className="settings-section">
             <SectionHeader title="Audio Processing" onReset={resetAudio} />
             <div className="settings-grid">
               <NumberField
-                label="HPF Cutoff Frequency" unit="Hz"
+                label="Low-Frequency Cutoff" unit="Hz"
+                hint="Removes rumble and handling noise below this frequency"
                 value={hpfCutoff} setValue={setHpfCutoff}
                 min={20} max={500} step={1} defaultVal={DEFAULTS.hpfCutoff}
               />
               <NumberField
-                label="Normalize Target" unit="LUFS"
+                label="Target Volume Level" unit="LUFS"
+                hint="How loud the output should be. Lower = quieter. Standard is -16"
                 value={normalizeLufs} setValue={setNormalizeLufs}
                 min={-24} max={-6} step={0.5} defaultVal={DEFAULTS.normalizeLufs}
               />
               <NumberField
-                label="Normalize True Peak" unit="dB"
+                label="Peak Limit" unit="dB"
+                hint="Prevents distortion on the loudest moments"
                 value={normalizeTp} setValue={setNormalizeTp}
                 min={-6} max={0} step={0.1} defaultVal={DEFAULTS.normalizeTp}
               />
               <NumberField
-                label="Silence Threshold" unit="dB"
+                label="Silence Detection" unit="dB"
+                hint="Audio quieter than this is treated as silence for trimming"
                 value={silenceThresh} setValue={setSilenceThresh}
                 min={-70} max={-20} step={1} defaultVal={DEFAULTS.silenceThresh}
               />
               <NumberField
-                label="Default Fade Duration" unit="s"
+                label="Fade Duration" unit="seconds"
+                hint="How long the fade in/out lasts at the start and end"
                 value={defaultFadeDur} setValue={setDefaultFadeDur}
                 min={0.1} max={5.0} step={0.1} defaultVal={DEFAULTS.defaultFadeDur}
               />
@@ -317,12 +361,14 @@ export default function SettingsPanel({ open, onOpenChange, prefs }) {
             <SectionHeader title="Performance" onReset={resetPerformance} />
             <div className="settings-grid">
               <NumberField
-                label="FFmpeg Timeout" unit="seconds"
+                label="Processing Timeout" unit="seconds"
+                hint="Max time allowed per file before canceling"
                 value={ffmpegTimeout} setValue={setFfmpegTimeout}
                 min={60} max={3600} step={10} defaultVal={DEFAULTS.ffmpegTimeout}
               />
               <NumberField
-                label="Max Scan Depth" unit="directories"
+                label="Folder Scan Depth" unit="levels"
+                hint="How many folder levels deep to search for recordings"
                 value={maxScanDepth} setValue={setMaxScanDepth}
                 min={1} max={20} step={1} defaultVal={DEFAULTS.maxScanDepth}
               />
@@ -331,50 +377,53 @@ export default function SettingsPanel({ open, onOpenChange, prefs }) {
 
           {/* ── Security ──────────────────────────────────────── */}
           <section className="settings-section">
-            <SectionHeader title="Security" onReset={resetSecurity} />
+            <SectionHeader title="Limits" onReset={resetSecurity} />
             <div className="settings-grid">
               <NumberField
                 label="Max File Size" unit="GB"
+                hint="Files larger than this will be rejected"
                 value={maxFileSizeGb} setValue={setMaxFileSizeGb}
                 min={0.5} max={10} step={0.5} defaultVal={DEFAULTS.maxFileSizeGb}
               />
             </div>
           </section>
 
-          {/* ── Appearance ────────────────────────────────────── */}
+          {/* ── Defaults ──────────────────────────────────────── */}
           <section className="settings-section">
-            <SectionHeader title="Appearance" onReset={resetAppearance} />
+            <SectionHeader title="Defaults" onReset={resetAppearance} />
             <div className="settings-grid">
               <SelectField
                 label="Theme"
                 value={prefs.themePref || 'system'}
                 setValue={v => prefs.cycleThemeTo?.(v)}
                 options={[
-                  { value: 'system', label: 'System' },
+                  { value: 'system', label: 'Match System' },
                   { value: 'dark', label: 'Dark' },
                   { value: 'light', label: 'Light' },
                 ]}
               />
               <SelectField
                 label="Default Output Format"
+                hint="Format used when you first open the app"
                 value={defaultOutputFormat}
                 setValue={setDefaultOutputFormat}
                 options={[
-                  { value: 'wav', label: 'WAV' },
-                  { value: 'mp3', label: 'MP3' },
-                  { value: 'flac', label: 'FLAC' },
-                  { value: 'opus', label: 'Opus' },
-                  { value: 'm4a', label: 'M4A' },
+                  { value: 'wav', label: 'WAV (lossless)' },
+                  { value: 'mp3', label: 'MP3 (smaller, universal)' },
+                  { value: 'flac', label: 'FLAC (lossless, compressed)' },
+                  { value: 'opus', label: 'Opus (smallest, voice-optimized)' },
+                  { value: 'm4a', label: 'M4A (Apple devices)' },
                 ]}
               />
               <SelectField
                 label="Default Output Mode"
+                hint="Channel layout used when you first open the app"
                 value={defaultOutputMode}
                 setValue={setDefaultOutputMode}
                 options={[
-                  { value: 'stereo', label: 'Stereo' },
-                  { value: 'keep', label: 'Keep Original' },
-                  { value: 'split', label: 'Split Channels' },
+                  { value: 'stereo', label: 'Mix to Stereo' },
+                  { value: 'keep', label: 'Keep Original Channels' },
+                  { value: 'split', label: 'Split by Speaker' },
                 ]}
               />
             </div>

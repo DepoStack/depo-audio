@@ -41,7 +41,8 @@
     "category": "public.app-category.music",
     "copyright": "2025 Andrew Mayes",
     "resources": [
-      "resources/models/*"
+      "resources/models/*",
+      "resources/onnxruntime/*"
     ],
     "externalBin": [
       "binaries/ffmpeg",
