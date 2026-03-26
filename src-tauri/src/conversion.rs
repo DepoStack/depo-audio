@@ -18,7 +18,8 @@ use crate::types::{AudioBuffer, ConvertJob, FormatInfo, OutputFile, ProgressEven
 pub(crate) async fn do_convert(app: &AppHandle, job: &ConvertJob) -> Result<Vec<OutputFile>, String> {
     // Safety checks
     let src = Path::new(&job.src_path);
-    crate::safety::check_file_safe(src)?;
+    let max_bytes = (job.max_file_size_gb * 1024.0 * 1024.0 * 1024.0) as u64;
+    crate::safety::check_file_safe_with_limit(src, max_bytes)?;
     if job.fade { crate::safety::validate_fade_dur(job.fade_dur)?; }
     crate::safety::validate_rate(&job.rate)?;
 

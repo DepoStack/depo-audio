@@ -9,6 +9,11 @@ const MAX_AUDIO_SIZE: u64 = 2 * 1024 * 1024 * 1024;
 
 /// Check that a file exists and is within the size limit before processing.
 pub(crate) fn check_file_safe(path: &Path) -> Result<(), String> {
+    check_file_safe_with_limit(path, MAX_AUDIO_SIZE)
+}
+
+/// Check with a custom size limit (in bytes).
+pub(crate) fn check_file_safe_with_limit(path: &Path, max_size: u64) -> Result<(), String> {
     if !path.exists() {
         return Err("File not found".into());
     }
@@ -24,10 +29,11 @@ pub(crate) fn check_file_safe(path: &Path) -> Result<(), String> {
         return Err("File is empty".into());
     }
 
-    if size > MAX_AUDIO_SIZE {
+    if size > max_size {
         return Err(format!(
-            "File is too large ({:.1} GB). Maximum supported size is 2 GB.",
-            size as f64 / (1024.0 * 1024.0 * 1024.0)
+            "File is too large ({:.1} GB). Maximum supported size is {:.1} GB.",
+            size as f64 / (1024.0 * 1024.0 * 1024.0),
+            max_size as f64 / (1024.0 * 1024.0 * 1024.0),
         ));
     }
 

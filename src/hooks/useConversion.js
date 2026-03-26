@@ -9,7 +9,7 @@ export default function useConversion() {
   const [converting, setConverting] = useState(false)
   const convertingRef = useRef(false)
 
-  const startConversion = useCallback(async ({ files, outDir, mode, formatOut, rate, labels, chanVols, normalize, trim, fade, fadeDur, hpf, denoise, denoiseQuality, autoLevel, declip, enhance, dereverb, caseName, setCases }) => {
+  const startConversion = useCallback(async ({ files, outDir, mode, formatOut, rate, labels, chanVols, normalize, trim, fade, fadeDur, hpf, denoise, denoiseQuality, autoLevel, declip, enhance, dereverb, hpfCutoff, normalizeLufs, normalizeTp, silenceThresh, ffmpegTimeout, maxFileSizeGb, caseName, setCases }) => {
     if (convertingRef.current || !files.length) return
     convertingRef.current = true
     setConverting(true)
@@ -61,6 +61,9 @@ export default function useConversion() {
           format: formatOut, rate: formatOut === 'opus' ? '48000' : rate,
           labels, chanVols, normalize, trim, fade, fadeDur, hpf,
           denoise, denoiseQuality, autoLevel, declip, enhance, dereverb,
+          hpfCutoff: hpfCutoff || 80, normalizeLufs: normalizeLufs || -16,
+          normalizeTp: normalizeTp || -1.5, silenceThresh: silenceThresh || -50,
+          ffmpegTimeout: ffmpegTimeout || 300, maxFileSizeGb: maxFileSizeGb || 2,
           caseName: caseName || null
         }}).catch(e => {
           setJobs(prev => ({ ...prev, [file.path]: { ...prev[file.path], status:'error', error: String(e) } }))

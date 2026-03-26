@@ -73,7 +73,7 @@ pub(crate) async fn build_proc_filters_with_gain(
     if opts.declip    { filters.push("adeclip=w=55:o=50".into()); }
 
     // High-pass filter removes low-frequency noise (HVAC, handling, rumble)
-    if opts.hpf       { filters.push("highpass=f=80".into()); }
+    if opts.hpf       { filters.push(format!("highpass=f={}", opts.hpf_cutoff as u32)); }
 
     // Auto-level gain injection (from analysis-computed per-channel gain)
     if let Some(gain) = auto_gain {
@@ -83,10 +83,10 @@ pub(crate) async fn build_proc_filters_with_gain(
     }
 
     // Loudness normalization for consistent output level
-    if opts.normalize { filters.push("loudnorm=I=-16:TP=-1.5:LRA=11".into()); }
+    if opts.normalize { filters.push(format!("loudnorm=I={}:TP={}:LRA=11", opts.normalize_lufs, opts.normalize_tp)); }
 
     // Silence trimming removes dead air at start/end
-    if opts.trim      { filters.push("silenceremove=start_periods=1:start_duration=0.3:start_threshold=-50dB:stop_periods=-1:stop_duration=0.3:stop_threshold=-50dB".into()); }
+    if opts.trim      { filters.push(format!("silenceremove=start_periods=1:start_duration=0.3:start_threshold={}dB:stop_periods=-1:stop_duration=0.3:stop_threshold={}dB", opts.silence_thresh, opts.silence_thresh)); }
 
     // Fade in/out for smooth start and end
     if opts.fade {
@@ -102,10 +102,14 @@ pub(crate) async fn build_proc_filters_with_gain(
 
 // ── Run FFmpeg sidecar ────────────────────────────────────────────────────────
 
-/// Maximum time allowed for a single FFmpeg process before it is killed (5 minutes).
-const FFMPEG_TIMEOUT_SECS: u64 = 300;
+/// Default maximum time allowed for a single FFmpeg process before it is killed.
+const DEFAULT_FFMPEG_TIMEOUT_SECS: u64 = 300;
 
 pub(crate) async fn run_ffmpeg(app: &AppHandle, args: Vec<String>, job_id: &str) -> Result<(), String> {
+    run_ffmpeg_with_timeout(app, args, job_id, DEFAULT_FFMPEG_TIMEOUT_SECS).await
+}
+
+pub(crate) async fn run_ffmpeg_with_timeout(app: &AppHandle, args: Vec<String>, job_id: &str, timeout_secs: u64) -> Result<(), String> {
     let (mut rx, child) = app
         .shell()
         .sidecar(ffmpeg_bin_name())
@@ -117,7 +121,7 @@ pub(crate) async fn run_ffmpeg(app: &AppHandle, args: Vec<String>, job_id: &str)
     let mut stderr_acc = String::new();
     let time_re = time_regex();
     let started = std::time::Instant::now();
-    let timeout = std::time::Duration::from_secs(FFMPEG_TIMEOUT_SECS);
+    let timeout = std::time::Duration::from_secs(timeout_secs);
 
     while let Some(event) = rx.recv().await {
         // Check for timeout on each event

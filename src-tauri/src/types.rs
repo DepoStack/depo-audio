@@ -114,6 +114,19 @@ pub struct ConvertJob {
     pub enhance: bool,
     #[serde(default)]
     pub dereverb: bool,
+    // Advanced processing settings (from Settings panel)
+    #[serde(default = "default_hpf_cutoff")]
+    pub hpf_cutoff: f64,
+    #[serde(default = "default_normalize_lufs")]
+    pub normalize_lufs: f64,
+    #[serde(default = "default_normalize_tp")]
+    pub normalize_tp: f64,
+    #[serde(default = "default_silence_thresh")]
+    pub silence_thresh: f64,
+    #[serde(default = "default_ffmpeg_timeout")]
+    pub ffmpeg_timeout: u32,
+    #[serde(default = "default_max_file_size_gb")]
+    pub max_file_size_gb: f64,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]

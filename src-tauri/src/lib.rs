@@ -61,7 +61,6 @@ pub fn run() {
             commands::analyze_audio_cmd,
             commands::score_quality_cmd,
             commands::detect_speakers_cmd,
-            commands::available_models_cmd,
             commands::system_capabilities_cmd,
             commands::model_catalog_cmd,
             commands::download_model_cmd,

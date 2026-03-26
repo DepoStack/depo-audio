@@ -93,13 +93,6 @@ pub async fn detect_speakers_cmd(
     speakers::detect_speakers(&app, std::path::Path::new(&path)).await
 }
 
-// ── Model availability command ──────────────────────────────────────────────
-
-#[tauri::command]
-pub fn available_models_cmd(app: AppHandle) -> Vec<String> {
-    models::available_models(&app)
-}
-
 // ── System capabilities command ──────────────────────────────────────────────
 
 #[tauri::command]
