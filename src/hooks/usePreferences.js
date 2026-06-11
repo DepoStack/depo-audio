@@ -35,14 +35,18 @@ export default function usePreferences() {
   // Load prefs on mount
   useEffect(() => {
     invoke('prefs_get').then(p => {
-      if (p.mode)      setMode(p.mode)
-      if (p.format)    setFormatOut(p.format)
+      // The "Default Output ..." settings promise to control what the app
+      // opens with, so they win over the last-used values
+      const startMode = p.defaultOutputMode || p.mode
+      const startFormat = p.defaultOutputFormat || p.format
+      if (startMode)   setMode(startMode)
+      if (startFormat) setFormatOut(startFormat)
       if (p.rate)      setRate(p.rate)
       if (p.outDir !== undefined) setOutDir(p.outDir)
       if (p.labels?.length) setLabels(p.labels)
       if (p.chanVols?.length) setChanVols(p.chanVols)
       setNormalize(!!p.normalize); setTrim(!!p.trim)
-      setFade(!!p.fade); setFadeDur(p.fadeDur || 0.5); setHpf(!!p.hpf)
+      setFade(!!p.fade); setFadeDur(p.defaultFadeDur ?? p.fadeDur ?? 0.5); setHpf(!!p.hpf)
       setDenoise(!!p.denoise); setDenoiseQuality(p.denoiseQuality || 'fast'); setAutoLevel(!!p.autoLevel)
       setDeclip(!!p.declip); setEnhance(!!p.enhance); setDereverb(!!p.dereverb)
       // Advanced settings

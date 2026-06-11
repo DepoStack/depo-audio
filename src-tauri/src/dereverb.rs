@@ -1,5 +1,6 @@
 use tauri::AppHandle;
 
+use crate::helpers::resample_linear;
 use crate::models;
 use crate::types::AudioBuffer;
 
@@ -18,8 +19,10 @@ use crate::types::AudioBuffer;
 // See scripts/export_dccrn.py for model export instructions.
 
 /// Apply de-reverberation to an AudioBuffer in-place.
-/// The DCCRN+ model expects 16kHz mono input, so this function
-/// temporarily downmixes/resamples internally if needed.
+/// The DCCRN+ model expects 16kHz mono input, so each channel is resampled,
+/// processed independently, and resampled back. Channels are never downmixed:
+/// in multi-channel court recordings each channel is a separate speaker mic,
+/// and mixing them would destroy per-speaker separation.
 pub(crate) fn dereverb_buffer(
     app: &AppHandle,
     buf: &mut AudioBuffer,
@@ -27,42 +30,24 @@ pub(crate) fn dereverb_buffer(
     let model_path = models::model_path(app, "dccrn_plus.onnx")?;
     let mut session = models::load_session(&model_path)?;
 
-    // DCCRN+ expects 16kHz mono — work on a mono downmix at the original rate,
-    // then apply the model. For simplicity, operate on the first channel or mono mix.
-    let original_channels = buf.channels;
     let original_rate = buf.sample_rate;
+    let channel_bufs = buf.channels_split();
+    let mut processed = Vec::with_capacity(channel_bufs.len());
+    for ch_samples in &channel_bufs {
+        processed.push(dereverb_channel(&mut session, ch_samples, original_rate)?);
+    }
+    *buf = AudioBuffer::from_channels(&processed, original_rate);
 
-    // Mix down to mono if multi-channel
-    let mono_samples: Vec<f32> = if original_channels == 1 {
-        buf.samples.clone()
-    } else {
-        let ch = original_channels as usize;
-        let frames = buf.samples.len() / ch;
-        (0..frames)
-            .map(|f| {
-                let sum: f32 = (0..ch).map(|c| buf.samples[f * ch + c]).sum();
-                sum / ch as f32
-            })
-            .collect()
-    };
+    Ok(())
+}
 
-    // Simple resample to 16kHz if needed (linear interpolation)
-    let samples_16k: Vec<f32> = if original_rate == 16000 {
-        mono_samples.clone()
-    } else {
-        let ratio = 16000.0 / original_rate as f64;
-        let out_len = (mono_samples.len() as f64 * ratio) as usize;
-        (0..out_len)
-            .map(|i| {
-                let src_pos = i as f64 / ratio;
-                let idx = src_pos as usize;
-                let frac = src_pos - idx as f64;
-                let s0 = mono_samples.get(idx).copied().unwrap_or(0.0);
-                let s1 = mono_samples.get(idx + 1).copied().unwrap_or(s0);
-                s0 + (s1 - s0) * frac as f32
-            })
-            .collect()
-    };
+/// Run one mono channel through DCCRN+, returning samples at the input rate.
+fn dereverb_channel(
+    session: &mut ort::session::Session,
+    samples: &[f32],
+    original_rate: u32,
+) -> Result<Vec<f32>, String> {
+    let samples_16k = resample_linear(samples, original_rate, 16000);
 
     if samples_16k.is_empty() {
         return Err("Empty audio for de-reverb".into());
@@ -131,39 +116,5 @@ pub(crate) fn dereverb_buffer(
     }
 
     // Resample back to original rate if needed
-    let resampled: Vec<f32> = if original_rate == 16000 {
-        output_samples
-    } else {
-        let ratio = original_rate as f64 / 16000.0;
-        let out_len = (output_samples.len() as f64 * ratio) as usize;
-        (0..out_len)
-            .map(|i| {
-                let src_pos = i as f64 / ratio;
-                let idx = src_pos as usize;
-                let frac = src_pos - idx as f64;
-                let s0 = output_samples.get(idx).copied().unwrap_or(0.0);
-                let s1 = output_samples.get(idx + 1).copied().unwrap_or(s0);
-                s0 + (s1 - s0) * frac as f32
-            })
-            .collect()
-    };
-
-    // Write back — mono result replicated to all channels
-    if original_channels == 1 {
-        buf.samples = resampled;
-    } else {
-        let ch = original_channels as usize;
-        let frames = resampled.len();
-        let mut interleaved = Vec::with_capacity(frames * ch);
-        for f in 0..frames {
-            for _ in 0..ch {
-                interleaved.push(resampled[f]);
-            }
-        }
-        buf.samples = interleaved;
-    }
-    buf.channels = original_channels;
-    buf.sample_rate = original_rate;
-
-    Ok(())
+    Ok(resample_linear(&output_samples, 16000, original_rate))
 }

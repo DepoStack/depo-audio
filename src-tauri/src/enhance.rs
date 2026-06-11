@@ -1,3 +1,4 @@
+use crate::helpers::resample_linear;
 use crate::models;
 use crate::types::AudioBuffer;
 
@@ -8,7 +9,10 @@ use crate::types::AudioBuffer;
 // FFmpeg SoX high-quality resampler.
 
 /// Bandwidth extension on an AudioBuffer using FlashSR.
-/// FlashSR expects 16kHz mono input and produces 48kHz output.
+/// FlashSR expects 16kHz mono input and produces 48kHz output, so each
+/// channel is processed independently. Channels are never downmixed: in
+/// multi-channel court recordings each channel is a separate speaker mic,
+/// and mixing them would destroy per-speaker separation.
 /// If the model is not available, this is a no-op (returns Ok).
 pub(crate) fn enhance_buffer(
     app: &tauri::AppHandle,
@@ -20,40 +24,24 @@ pub(crate) fn enhance_buffer(
     };
     let mut session = models::load_session(&model_path)?;
 
-    let original_channels = buf.channels;
     let original_rate = buf.sample_rate;
+    let channel_bufs = buf.channels_split();
+    let mut processed = Vec::with_capacity(channel_bufs.len());
+    for ch_samples in &channel_bufs {
+        processed.push(enhance_channel(&mut session, ch_samples, original_rate)?);
+    }
+    *buf = AudioBuffer::from_channels(&processed, 48000);
 
-    // FlashSR expects 16kHz mono — mix down and resample
-    let mono_samples: Vec<f32> = if original_channels == 1 {
-        buf.samples.clone()
-    } else {
-        let ch = original_channels as usize;
-        let frames = buf.samples.len() / ch;
-        (0..frames)
-            .map(|f| {
-                let sum: f32 = (0..ch).map(|c| buf.samples[f * ch + c]).sum();
-                sum / ch as f32
-            })
-            .collect()
-    };
+    Ok(())
+}
 
-    // Resample to 16kHz if needed
-    let samples_16k: Vec<f32> = if original_rate == 16000 {
-        mono_samples
-    } else {
-        let ratio = 16000.0 / original_rate as f64;
-        let out_len = (mono_samples.len() as f64 * ratio) as usize;
-        (0..out_len)
-            .map(|i| {
-                let src_pos = i as f64 / ratio;
-                let idx = src_pos as usize;
-                let frac = src_pos - idx as f64;
-                let s0 = mono_samples.get(idx).copied().unwrap_or(0.0);
-                let s1 = mono_samples.get(idx + 1).copied().unwrap_or(s0);
-                s0 + (s1 - s0) * frac as f32
-            })
-            .collect()
-    };
+/// Run one mono channel through FlashSR, returning 48kHz samples.
+fn enhance_channel(
+    session: &mut ort::session::Session,
+    samples: &[f32],
+    original_rate: u32,
+) -> Result<Vec<f32>, String> {
+    let samples_16k = resample_linear(samples, original_rate, 16000);
 
     if samples_16k.is_empty() {
         return Err("Empty audio for FlashSR".into());
@@ -77,25 +65,5 @@ pub(crate) fn enhance_buffer(
         .try_extract_tensor::<f32>()
         .map_err(|e| format!("Failed to extract FlashSR output: {}", e))?;
 
-    let output_48k: Vec<f32> = output_tensor.1.to_vec();
-
-    // FlashSR outputs 48kHz mono — replicate to all original channels
-    if original_channels == 1 {
-        buf.samples = output_48k;
-    } else {
-        let ch = original_channels as usize;
-        let frames = output_48k.len();
-        let mut interleaved = Vec::with_capacity(frames * ch);
-        for f in 0..frames {
-            for _ in 0..ch {
-                interleaved.push(output_48k[f]);
-            }
-        }
-        buf.samples = interleaved;
-    }
-    buf.channels = original_channels;
-    buf.sample_rate = 48000;
-
-    Ok(())
+    Ok(output_tensor.1.to_vec())
 }
-

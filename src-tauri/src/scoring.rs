@@ -37,11 +37,11 @@ pub(crate) async fn score_quality(
     let model_path = models::model_path(app, "dnsmos_sig_bak_ovr.onnx")?;
     let mut session = models::load_session(&model_path)?;
 
-    // Decode to 16kHz mono for DNSMOS
-    let tmp = std::env::temp_dir().join(format!(
+    // Decode to 16kHz mono for DNSMOS (drop guard cleans up on every exit path)
+    let tmp = crate::safety::TempFile::new(std::env::temp_dir().join(format!(
         "depoaudio_score_{}.wav",
         uuid::Uuid::new_v4().to_string().replace('-', "")
-    ));
+    )));
 
     let args: Vec<String> = vec![
         "-i".into(), audio_path.to_string_lossy().to_string(),
@@ -74,7 +74,7 @@ pub(crate) async fn score_quality(
         .map(|s| s as f32 / 32768.0)
         .collect();
 
-    let _ = std::fs::remove_file(&tmp);
+    drop(tmp);
 
     if samples.is_empty() {
         return Err("No audio samples for quality scoring".into());

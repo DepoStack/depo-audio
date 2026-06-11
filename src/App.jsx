@@ -1,4 +1,4 @@
-import { useState, useEffect, lazy, Suspense } from 'react'
+import { useState, useEffect, useRef, lazy, Suspense } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import { Sun, Moon, Monitor, Settings } from 'lucide-react'
 import { basename } from './utils'
@@ -36,7 +36,10 @@ export default function App() {
   const prefs = usePreferencesContext()
   const { labels, outDir } = prefs
 
-  const fileDrop = useFileDrop()
+  // While the Player tab is mounted it registers its own drop handler here,
+  // so native drops land in the playlist instead of the convert queue
+  const dropOverrideRef = useRef(null)
+  const fileDrop = useFileDrop(dropOverrideRef)
   const {
     files, setFiles, dragOver, caseName, setCaseName,
     onDragOver, onDragLeave, onDrop, browseFiles, browseOutDir,
@@ -56,7 +59,10 @@ export default function App() {
   const [cases, setCases]     = useState([])
   const [libSearch, setLibSearch] = useState('')
 
-  // Load library when switching to library tab
+  // Load library on startup (header badge count) and when opening the tab
+  useEffect(() => {
+    invoke('library_get').then(setCases).catch(() => {})
+  }, [])
   useEffect(() => {
     if (tab === 'library') {
       invoke('library_get').then(setCases).catch(() => {})
@@ -123,7 +129,7 @@ export default function App() {
 
       <TabsContent value="player">
         <Suspense fallback={<div className="flex items-center justify-center py-12"><Spinner className="h-5 w-5" /></div>}>
-          <PlayerTab />
+          <PlayerTab dropHandlerRef={dropOverrideRef} />
         </Suspense>
       </TabsContent>
 

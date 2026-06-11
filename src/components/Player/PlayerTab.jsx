@@ -1,10 +1,10 @@
 import { useState, useRef, useEffect } from 'react'
-import { invoke, convertFileSrc } from '@tauri-apps/api/core'
+import { convertFileSrc } from '@tauri-apps/api/core'
 import { open } from '@tauri-apps/plugin-dialog'
 import { Play, Pause, SkipBack, SkipForward, Bookmark, X, Plus } from 'lucide-react'
 import { cn } from '../../lib/utils'
 import { CH_COLORS } from '../../constants'
-import { fmtTime, fmtSize } from '../../utils'
+import { fmtTime } from '../../utils'
 import { Button } from '../ui/button'
 import { Card, CardHeader, CardTitle } from '../ui/card'
 import Waveform from '../common/Waveform'
@@ -14,7 +14,7 @@ import Waveform from '../common/Waveform'
 // Play any audio file directly — no conversion needed. Supports multi-channel
 // files with color-coded speaker tracks. Drop files or browse to start.
 
-export default function PlayerTab() {
+export default function PlayerTab({ dropHandlerRef }) {
   const [tracks, setTracks] = useState([])       // { path, name, size, channels, duration, color }
   const [activeTrack, setActiveTrack] = useState(null)
   const [playing, setPlaying] = useState(false)
@@ -24,6 +24,7 @@ export default function PlayerTab() {
   const [bookmarks, setBookmarks] = useState([])
   const [dragIdx, setDragIdx] = useState(null) // playlist drag-reorder
   const audioRef = useRef(null)
+  const autoAdvanceRef = useRef(false) // play next track once it loads
 
   // Browse for files
   const browseFiles = async () => {
@@ -36,7 +37,9 @@ export default function PlayerTab() {
         const paths = Array.isArray(selected) ? selected : [selected]
         addFiles(paths)
       }
-    } catch {}
+    } catch {
+      // Dialog dismissed or unavailable — nothing to add
+    }
   }
 
   // Add files to playlist
@@ -65,6 +68,14 @@ export default function PlayerTab() {
     // Tauri drag-drop handled via event listener in App
   }
 
+  // Claim native drops for the playlist while this tab is mounted.
+  // No dependency array: re-register every render so addFiles sees fresh state.
+  useEffect(() => {
+    if (!dropHandlerRef) return undefined
+    dropHandlerRef.current = addFiles
+    return () => { dropHandlerRef.current = null }
+  })
+
   // Play / pause
   const toggle = () => {
     const a = audioRef.current
@@ -87,13 +98,6 @@ export default function PlayerTab() {
     setCurrentTime(0)
   }
 
-  // Seek
-  const seek = (e) => {
-    if (!audioRef.current || !duration) return
-    const r = e.currentTarget.getBoundingClientRect()
-    audioRef.current.currentTime = ((e.clientX - r.left) / r.width) * duration
-  }
-
   // Remove track
   const removeTrack = (path) => {
     setTracks(prev => prev.filter(t => t.path !== path))
@@ -103,13 +107,18 @@ export default function PlayerTab() {
     }
   }
 
-  // Auto-play on track change
+  // Reload on track change; keep playing if we got here by auto-advance
   useEffect(() => {
     if (activeTrack && audioRef.current) {
       audioRef.current.load()
       setCurrentTime(0)
       setDuration(0)
+      if (autoAdvanceRef.current) {
+        autoAdvanceRef.current = false
+        audioRef.current.play().then(() => setPlaying(true)).catch(() => {})
+      }
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeTrack?.path])
 
   const audioSrc = activeTrack ? convertFileSrc(activeTrack.path) : ''
@@ -138,7 +147,15 @@ export default function PlayerTab() {
                 <audio ref={audioRef} src={audioSrc} preload="metadata"
                   onLoadedMetadata={e => setDuration(e.target.duration)}
                   onTimeUpdate={e => setCurrentTime(e.target.currentTime)}
-                  onEnded={() => { setPlaying(false); skip(1) }}
+                  onEnded={() => {
+                    setPlaying(false)
+                    // Continue through the playlist; stop after the last track
+                    const idx = tracks.findIndex(t => t.path === activeTrack.path)
+                    if (idx >= 0 && idx < tracks.length - 1) {
+                      autoAdvanceRef.current = true
+                      skip(1)
+                    }
+                  }}
                 />
 
                 {/* Waveform visualization with bookmarks */}

@@ -16,14 +16,15 @@ fn time_regex() -> &'static Regex {
 
 // ── Probe helpers ─────────────────────────────────────────────────────────────
 
-pub(crate) async fn probe_duration(app: &AppHandle, feed: &Path, input_codec: &[String]) -> Option<f64> {
-    let mut args = input_codec.to_vec();
-    args.extend(vec![
+// Note: ffprobe auto-detects codecs and does not accept ffmpeg input options
+// like -acodec, so the probe helpers take no input codec arguments.
+pub(crate) async fn probe_duration(app: &AppHandle, feed: &Path) -> Option<f64> {
+    let args: Vec<String> = vec![
         "-v".into(), "quiet".into(),
         "-print_format".into(), "json".into(),
         "-show_format".into(),
         feed.to_string_lossy().to_string(),
-    ]);
+    ];
     let output = app.shell().sidecar(ffprobe_bin_name()).ok()?
         .args(args).output().await.ok()?;
     let text = String::from_utf8_lossy(&output.stdout);
@@ -31,15 +32,14 @@ pub(crate) async fn probe_duration(app: &AppHandle, feed: &Path, input_codec: &[
     v["format"]["duration"].as_str()?.parse::<f64>().ok()
 }
 
-pub(crate) async fn probe_channels(app: &AppHandle, feed: &Path, input_codec: &[String]) -> u32 {
-    let mut args = input_codec.to_vec();
-    args.extend(vec![
+pub(crate) async fn probe_channels(app: &AppHandle, feed: &Path) -> u32 {
+    let args: Vec<String> = vec![
         "-v".into(), "quiet".into(),
         "-print_format".into(), "json".into(),
         "-show_streams".into(),
         "-select_streams".into(), "a:0".into(),
         feed.to_string_lossy().to_string(),
-    ]);
+    ];
     let ok = app.shell().sidecar(ffprobe_bin_name())
         .and_then(|s| Ok(s.args(args)))
         .ok();
@@ -64,7 +64,6 @@ pub(crate) async fn build_proc_filters_with_gain(
     app: &AppHandle,
     opts: &ConvertJob,
     feed: &Path,
-    input_codec: &[String],
     auto_gain: Option<f64>,
 ) -> Vec<String> {
     let mut filters = Vec::new();
@@ -90,7 +89,7 @@ pub(crate) async fn build_proc_filters_with_gain(
 
     // Fade in/out for smooth start and end
     if opts.fade {
-        let dur = probe_duration(app, feed, input_codec).await;
+        let dur = probe_duration(app, feed).await;
         filters.push(format!("afade=t=in:d={}", opts.fade_dur));
         if let Some(d) = dur {
             let start = (d - opts.fade_dur).max(0.0);
@@ -102,12 +101,8 @@ pub(crate) async fn build_proc_filters_with_gain(
 
 // ── Run FFmpeg sidecar ────────────────────────────────────────────────────────
 
-/// Default maximum time allowed for a single FFmpeg process before it is killed.
-const DEFAULT_FFMPEG_TIMEOUT_SECS: u64 = 300;
-
-pub(crate) async fn run_ffmpeg(app: &AppHandle, args: Vec<String>, job_id: &str) -> Result<(), String> {
-    run_ffmpeg_with_timeout(app, args, job_id, DEFAULT_FFMPEG_TIMEOUT_SECS).await
-}
+/// Minimum allowed FFmpeg timeout, guarding against bogus persisted settings.
+const MIN_FFMPEG_TIMEOUT_SECS: u64 = 30;
 
 pub(crate) async fn run_ffmpeg_with_timeout(app: &AppHandle, args: Vec<String>, job_id: &str, timeout_secs: u64) -> Result<(), String> {
     let (mut rx, child) = app
@@ -120,15 +115,27 @@ pub(crate) async fn run_ffmpeg_with_timeout(app: &AppHandle, args: Vec<String>, 
 
     let mut stderr_acc = String::new();
     let time_re = time_regex();
+    let timeout_secs = timeout_secs.max(MIN_FFMPEG_TIMEOUT_SECS);
     let started = std::time::Instant::now();
     let timeout = std::time::Duration::from_secs(timeout_secs);
 
-    while let Some(event) = rx.recv().await {
-        // Check for timeout on each event
-        if started.elapsed() > timeout {
-            let _ = child.kill();
-            return Err("FFmpeg process timed out after 5 minutes and was killed".into());
-        }
+    loop {
+        // Bound the wait so a silently wedged FFmpeg is still killed
+        let remaining = match timeout.checked_sub(started.elapsed()) {
+            Some(r) => r,
+            None => {
+                let _ = child.kill();
+                return Err(format!("FFmpeg process timed out after {timeout_secs} seconds and was killed"));
+            }
+        };
+        let event = match tokio::time::timeout(remaining, rx.recv()).await {
+            Ok(Some(event)) => event,
+            Ok(None) => break,
+            Err(_) => {
+                let _ = child.kill();
+                return Err(format!("FFmpeg process timed out after {timeout_secs} seconds and was killed"));
+            }
+        };
 
         match event {
             CommandEvent::Stderr(bytes) => {

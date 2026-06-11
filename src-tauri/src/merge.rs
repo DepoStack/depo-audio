@@ -122,12 +122,27 @@ pub(crate) async fn detect_sync(
         }
     }
 
-    let offset_seconds = best_offset as f64 / sample_rate as f64;
+    // cross_correlate matches a[i] against b[i + offset], so a positive
+    // best_offset means B's content occurs *earlier* than A's. Negate to get
+    // the documented semantics: positive = source B starts later.
+    let offset_seconds = -(best_offset as f64) / sample_rate as f64;
 
-    // Confidence based on normalized correlation strength
+    // Confidence from normalized cross-correlation: corr / (|a| * |b|), with
+    // |b| measured over the overlapping window at the best offset.
     let energy_a: f64 = segment_a.iter().map(|&s| (s as f64) * (s as f64)).sum();
-    let confidence = if energy_a > 0.0 {
-        (best_corr / energy_a.sqrt()).min(1.0).max(0.0)
+    let energy_b: f64 = (0..search_len)
+        .filter_map(|i| {
+            let idx = i as i64 + best_offset;
+            if idx >= 0 && (idx as usize) < samples_b.len() {
+                let v = samples_b[idx as usize] as f64;
+                Some(v * v)
+            } else {
+                None
+            }
+        })
+        .sum();
+    let confidence = if energy_a > 0.0 && energy_b > 0.0 {
+        (best_corr / (energy_a.sqrt() * energy_b.sqrt())).min(1.0).max(0.0)
     } else {
         0.0
     };
@@ -427,4 +442,32 @@ fn write_wav(path: &Path, samples: &[f32], rate: u32) -> Result<(), String> {
     }
     writer.finalize().map_err(|e| format!("Finalize error: {}", e))?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cross_correlate_offset_sign_convention() {
+        // Construct B containing A's content delayed by 100 samples:
+        // b[i + 100] = a[i], i.e. recorder B started 100 samples EARLIER.
+        let mut a = vec![0.0f32; 400];
+        a[10] = 1.0;
+        a[50] = -0.5;
+        a[200] = 0.8;
+        let mut b = vec![0.0f32; 600];
+        for (i, &v) in a.iter().enumerate() {
+            b[i + 100] = v;
+        }
+
+        // The correlation peak must be at offset = +100 (a[i] vs b[i + offset]),
+        // which detect_sync negates so that positive offset_seconds means
+        // "source B starts later".
+        let at_plus = cross_correlate(&a, &b, 100, a.len());
+        let at_zero = cross_correlate(&a, &b, 0, a.len());
+        let at_minus = cross_correlate(&a, &b, -100, a.len());
+        assert!(at_plus > at_zero, "peak should be at +100, not 0");
+        assert!(at_plus > at_minus, "peak should be at +100, not -100");
+    }
 }

@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import { MODES, FORMATS_OUT, CH_COLORS } from '../../constants'
 import { PRESETS } from '../../presets'
@@ -39,8 +39,13 @@ export default function ConvertTab({
   const [scanProgress, setScanProgress] = useState({ current: 0, total: 0, fileName: '' })
   const [showAllProcessing, setShowAllProcessing] = useState(false)
 
-  // Clear analysis when files change
-  useEffect(() => { setAnalysis(null); setShowAllProcessing(false) }, [files])
+  // Clear analysis when files change (reset during render, not in an effect)
+  const [prevFiles, setPrevFiles] = useState(files)
+  if (files !== prevFiles) {
+    setPrevFiles(files)
+    setAnalysis(null)
+    setShowAllProcessing(false)
+  }
 
   const handleScan = async () => {
     if (!files.length || scanning) return
@@ -63,6 +68,9 @@ export default function ConvertTab({
 
       if (results.length > 0) {
         // Aggregate: use worst-case across all files
+        // speechRatio is absent when the VAD model isn't installed — average
+        // only real values so a missing model doesn't read as "0% speech"
+        const speechRatios = results.filter(r => r.speechRatio != null).map(r => r.speechRatio)
         const aggregated = {
           ...results[0],
           needsDenoise: results.some(r => r.needsDenoise),
@@ -72,7 +80,9 @@ export default function ConvertTab({
           recommendations: [...new Set(results.flatMap(r => r.recommendations || []))],
           qualityScore: results[0].qualityScore,
           speakerCount: Math.max(...results.map(r => r.speakerCount || 0)) || null,
-          speechRatio: results.reduce((sum, r) => sum + (r.speechRatio || 0), 0) / results.length,
+          speechRatio: speechRatios.length
+            ? speechRatios.reduce((sum, r) => sum + r, 0) / speechRatios.length
+            : null,
         }
         setAnalysis(aggregated)
 

@@ -22,7 +22,6 @@ export default function ComparePlayer({ originalPath, processedPath, originalLab
   const processedSrc = convertFileSrc(processedPath)
 
   const activeRef = activeSource === 'original' ? originalRef : processedRef
-  const inactiveRef = activeSource === 'original' ? processedRef : originalRef
 
   const toggle = () => {
     const a = activeRef.current

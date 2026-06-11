@@ -47,25 +47,35 @@ export default function useConversion() {
       // Use event-driven completion instead of polling
       await new Promise(resolve => {
         let settled = false
-        const settle = () => { if (!settled) { settled = true; resolve() } }
+        let unDone, unErr
+        const settle = () => {
+          if (settled) return
+          settled = true
+          // Always remove both listeners, whichever event settled the job
+          unDone.then(fn => fn()).catch(() => {})
+          unErr.then(fn => fn()).catch(() => {})
+          resolve()
+        }
 
-        const unDone = listen('convert:done', ({ payload }) => {
-          if (payload.id === id) { unDone.then(fn => fn()); settle() }
+        unDone = listen('convert:done', ({ payload }) => {
+          if (payload.id === id) settle()
         })
-        const unErr = listen('convert:error', ({ payload }) => {
-          if (payload.id === id) { unErr.then(fn => fn()); settle() }
+        unErr = listen('convert:error', ({ payload }) => {
+          if (payload.id === id) settle()
         })
 
-        invoke('convert', { job: {
+        // Wait for both listeners to register before dispatching, so an
+        // instantly-failing job can't emit before we're listening
+        Promise.all([unDone, unErr]).then(() => invoke('convert', { job: {
           id, srcPath: file.path, outDir: resolved, mode,
           format: formatOut, rate: formatOut === 'opus' ? '48000' : rate,
           labels, chanVols, normalize, trim, fade, fadeDur, hpf,
           denoise, denoiseQuality, autoLevel, declip, enhance, dereverb,
-          hpfCutoff: hpfCutoff || 80, normalizeLufs: normalizeLufs || -16,
-          normalizeTp: normalizeTp || -1.5, silenceThresh: silenceThresh || -50,
-          ffmpegTimeout: ffmpegTimeout || 300, maxFileSizeGb: maxFileSizeGb || 2,
+          hpfCutoff: hpfCutoff ?? 80, normalizeLufs: normalizeLufs ?? -16,
+          normalizeTp: normalizeTp ?? -1.5, silenceThresh: silenceThresh ?? -50,
+          ffmpegTimeout: ffmpegTimeout ?? 300, maxFileSizeGb: maxFileSizeGb ?? 2,
           caseName: caseName || null
-        }}).catch(e => {
+        }})).catch(e => {
           setJobs(prev => ({ ...prev, [file.path]: { ...prev[file.path], status:'error', error: String(e) } }))
           settle()
         })

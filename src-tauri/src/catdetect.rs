@@ -54,14 +54,14 @@ struct CatProfile {
 }
 
 /// Detect installed court reporting software and their audio files.
-pub(crate) fn detect_cat_software() -> Vec<CatSoftware> {
+pub(crate) fn detect_cat_software(max_depth: usize) -> Vec<CatSoftware> {
     let profiles = build_profiles();
     let mut found = Vec::new();
 
     for profile in &profiles {
         for search_path in &profile.search_paths {
             if search_path.exists() && search_path.is_dir() {
-                let job_count = count_audio_files(search_path, profile.extensions, 0);
+                let job_count = count_audio_files(search_path, profile.extensions, 0, max_depth);
                 if job_count > 0 {
                     found.push(CatSoftware {
                         name: profile.name.into(),
@@ -240,11 +240,8 @@ fn build_profiles() -> Vec<CatProfile> {
     ]
 }
 
-/// Max recursion depth for directory traversal to prevent runaway scanning.
-const MAX_SCAN_DEPTH: usize = 5;
-
-fn count_audio_files(dir: &Path, extensions: &[&str], depth: usize) -> usize {
-    if depth >= MAX_SCAN_DEPTH {
+fn count_audio_files(dir: &Path, extensions: &[&str], depth: usize, max_depth: usize) -> usize {
+    if depth >= max_depth {
         return 0;
     }
     let mut count = 0;
@@ -258,7 +255,7 @@ fn count_audio_files(dir: &Path, extensions: &[&str], depth: usize) -> usize {
                     }
                 }
             } else if path.is_dir() {
-                count += count_audio_files(&path, extensions, depth + 1);
+                count += count_audio_files(&path, extensions, depth + 1, max_depth);
             }
         }
     }

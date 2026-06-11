@@ -4,7 +4,7 @@ import { listen } from '@tauri-apps/api/event'
 import { open as openDialog } from '@tauri-apps/plugin-dialog'
 import { basename } from '../utils'
 
-export default function useFileDrop() {
+export default function useFileDrop(dropOverrideRef) {
   const [files, setFiles]       = useState([])
   const [dragOver, setDragOver] = useState(false)
   const [caseName, setCaseName] = useState('')
@@ -40,13 +40,17 @@ export default function useFileDrop() {
 
   // Tauri native drag-drop
   useEffect(() => {
-    let unlisten
-    listen('tauri://drag-drop', (event) => {
+    const unlisten = listen('tauri://drag-drop', (event) => {
       setDragOver(false)
-      if (event.payload?.paths?.length) addFiles(event.payload.paths)
-    }).then(u => { unlisten = u })
-    return () => { if (unlisten) unlisten() }
-  }, [addFiles])
+      if (!event.payload?.paths?.length) return
+      // A mounted tab (e.g. Player) may claim drops for itself
+      if (dropOverrideRef?.current) dropOverrideRef.current(event.payload.paths)
+      else addFiles(event.payload.paths)
+    })
+    // Resolve the promise in cleanup so a listener registered after a fast
+    // unmount (e.g. StrictMode double-mount) is still removed
+    return () => { unlisten.then(fn => fn()) }
+  }, [addFiles, dropOverrideRef])
 
   const onDragOver  = (e) => { e.preventDefault(); setDragOver(true) }
   const onDragLeave = () => setDragOver(false)

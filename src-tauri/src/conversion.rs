@@ -9,7 +9,7 @@ use crate::analysis::analyze_audio;
 use crate::denoise::{decode_to_wav_48k, denoise_buffer, denoise_deep_filter};
 use crate::dereverb;
 use crate::enhance::enhance_buffer;
-use crate::ffmpeg::{build_proc_filters_with_gain, probe_channels, run_ffmpeg};
+use crate::ffmpeg::{build_proc_filters_with_gain, probe_channels, run_ffmpeg_with_timeout};
 use crate::helpers::{basename, detect_format_for_path, output_args, output_ext, safe_label, strip_sgmca_header, unique_path};
 use crate::types::{AudioBuffer, ConvertJob, FormatInfo, OutputFile, ProgressEvent};
 
@@ -150,7 +150,7 @@ async fn do_convert_inner(app: &AppHandle, job: &ConvertJob, feed: &Path, fmt: &
     });
 
     let proc = build_proc_filters_with_gain(
-        app, job, effective_feed, &input_codec,
+        app, job, effective_feed,
         if job.auto_level && job.mode != "stereo" { default_gain } else { None },
     ).await;
 
@@ -162,7 +162,7 @@ async fn do_convert_inner(app: &AppHandle, job: &ConvertJob, feed: &Path, fmt: &
     match job.mode.as_str() {
         "stereo" => {
             let dst = unique_path(&out_dir.join(format!("{}{}", base, ext)));
-            let num_ch = probe_channels(app, effective_feed, &input_codec).await;
+            let num_ch = probe_channels(app, effective_feed).await;
             if num_ch == 0 {
                 return Err("Cannot create stereo mix: input has 0 audio channels".into());
             }
@@ -191,7 +191,7 @@ async fn do_convert_inner(app: &AppHandle, job: &ConvertJob, feed: &Path, fmt: &
             args.extend(["-af".into(), all.join(",")]);
             args.extend(out_codec.clone());
             args.extend(["-y".into(), dst.to_string_lossy().to_string()]);
-            run_ffmpeg(app, args, &job.id).await?;
+            run_ffmpeg_with_timeout(app, args, &job.id, job.ffmpeg_timeout as u64).await?;
             output_paths.push(dst);
         }
 
@@ -203,12 +203,12 @@ async fn do_convert_inner(app: &AppHandle, job: &ConvertJob, feed: &Path, fmt: &
             }
             args.extend(out_codec.clone());
             args.extend(["-y".into(), dst.to_string_lossy().to_string()]);
-            run_ffmpeg(app, args, &job.id).await?;
+            run_ffmpeg_with_timeout(app, args, &job.id, job.ffmpeg_timeout as u64).await?;
             output_paths.push(dst);
         }
 
         "split" => {
-            let num_ch = probe_channels(app, effective_feed, &input_codec).await;
+            let num_ch = probe_channels(app, effective_feed).await;
             let labels: Vec<String> = (0..num_ch as usize).map(|i| {
                 let raw = job.labels.get(i).map(|s| s.as_str()).unwrap_or("");
                 let sl = safe_label(raw);
@@ -218,33 +218,24 @@ async fn do_convert_inner(app: &AppHandle, job: &ConvertJob, feed: &Path, fmt: &
                 .map(|l| unique_path(&out_dir.join(format!("{}_{}{}", base, l, ext))))
                 .collect();
 
+            // Use asplit + pan=mono per channel instead of channelsplit:
+            // channelsplit requires the actual channel layout (defaulting to
+            // stereo), which breaks mono and 4-channel court recordings.
             let mut args = ffmpeg_args.clone();
-            if !proc.is_empty() {
-                let sp_tags: Vec<String> = (0..num_ch as usize).map(|i| format!("sp{}", i)).collect();
-                let _op_tags: Vec<String> = (0..num_ch as usize).map(|i| format!("op{}", i)).collect();
-                let split_str = format!("[0:a]channelsplit[{}]", sp_tags.join("]["));
-                let chain: Vec<String> = (0..num_ch as usize)
-                    .map(|i| format!("[sp{}]{}[op{}]", i, proc.join(","), i))
-                    .collect();
-                let fc = std::iter::once(split_str).chain(chain).collect::<Vec<_>>().join(";");
-                args.extend(["-filter_complex".into(), fc]);
-                for (i, dst) in dsts.iter().enumerate() {
-                    args.extend(["-map".into(), format!("[op{}]", i)]);
-                    args.extend(out_codec.clone());
-                    args.push(dst.to_string_lossy().to_string());
-                }
-            } else {
-                let tags: Vec<String> = (0..num_ch as usize).map(|i| format!("ch{}", i)).collect();
-                let fc = format!("[0:a]channelsplit[{}]", tags.join("]["));
-                args.extend(["-filter_complex".into(), fc]);
-                for (i, dst) in dsts.iter().enumerate() {
-                    args.extend(["-map".into(), format!("[ch{}]", i)]);
-                    args.extend(out_codec.clone());
-                    args.push(dst.to_string_lossy().to_string());
-                }
+            let sp_tags: Vec<String> = (0..num_ch as usize).map(|i| format!("sp{}", i)).collect();
+            let split_str = format!("[0:a]asplit={}[{}]", num_ch, sp_tags.join("]["));
+            let per_ch_proc = if proc.is_empty() { String::new() } else { format!(",{}", proc.join(",")) };
+            let chain: Vec<String> = (0..num_ch as usize)
+                .map(|i| format!("[sp{}]pan=mono|c0=c{}{}[op{}]", i, i, per_ch_proc, i))
+                .collect();
+            let fc = std::iter::once(split_str).chain(chain).collect::<Vec<_>>().join(";");
+            args.extend(["-filter_complex".into(), fc, "-y".into()]);
+            for (i, dst) in dsts.iter().enumerate() {
+                args.extend(["-map".into(), format!("[op{}]", i)]);
+                args.extend(out_codec.clone());
+                args.push(dst.to_string_lossy().to_string());
             }
-            args.push("-y".into());
-            run_ffmpeg(app, args, &job.id).await?;
+            run_ffmpeg_with_timeout(app, args, &job.id, job.ffmpeg_timeout as u64).await?;
             output_paths.extend(dsts);
         }
 

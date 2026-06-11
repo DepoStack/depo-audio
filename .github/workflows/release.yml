@@ -58,7 +58,7 @@ jobs:
           workspaces: './src-tauri -> target'
 
       - name: Install frontend deps
-        run: npm ci --legacy-peer-deps
+        run: npm ci
 
       - name: Create binaries directory
         run: mkdir -p src-tauri/binaries

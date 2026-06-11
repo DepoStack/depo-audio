@@ -19,7 +19,6 @@ export default function ImportModal({ defaultLabels, existingCases, onDone, onCl
   const [caseInputMode, setCaseInputMode] = useState('existing')
 
   const labelValue = label === '__custom__' ? customLabel : label
-  const allLabels  = [...defaultLabels, '__custom__']
 
   const browsePick = async () => {
     const selected = await openDialog({ multiple: true, filters: [

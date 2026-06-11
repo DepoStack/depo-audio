@@ -20,10 +20,16 @@ impl AudioBuffer {
             .map_err(|e| format!("WAV read error: {}", e))?;
         let spec = reader.spec();
         let samples: Vec<f32> = match spec.sample_format {
-            hound::SampleFormat::Int => reader
-                .into_samples::<i32>()
-                .map(|s| s.unwrap_or(0) as f32 / i32::MAX as f32)
-                .collect(),
+            hound::SampleFormat::Int => {
+                // hound yields unshifted integers (a 16-bit sample stays in
+                // ±32768), so scale by 2^(bits-1) — i32::MAX would attenuate
+                // 16-bit PCM by ~96 dB into near-silence
+                let scale = (1i64 << (spec.bits_per_sample - 1)) as f32;
+                reader
+                    .into_samples::<i32>()
+                    .map(|s| s.unwrap_or(0) as f32 / scale)
+                    .collect()
+            }
             hound::SampleFormat::Float => reader
                 .into_samples::<f32>()
                 .map(|s| s.unwrap_or(0.0))

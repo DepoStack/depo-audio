@@ -38,11 +38,10 @@ pub(crate) async fn analyze_audio(
 ) -> Result<AnalysisResult, String> {
     let feed = Path::new(path);
     crate::safety::check_file_safe(feed)?;
-    let input_codec: Vec<String> = vec![];
 
     // Probe basic metadata
-    let channels = probe_channels(app, feed, &input_codec).await;
-    let duration = probe_duration(app, feed, &input_codec).await.unwrap_or(0.0);
+    let channels = probe_channels(app, feed).await;
+    let duration = probe_duration(app, feed).await.unwrap_or(0.0);
     let sample_rate = probe_sample_rate(app, feed).await.unwrap_or(48000);
 
     // Run loudness + peak analysis per channel
@@ -275,7 +274,9 @@ async fn analyze_single_channel(
 // ── Noise floor estimation ──────────────────────────────────────────────────
 
 async fn estimate_noise_floor(app: &AppHandle, feed: &Path) -> f64 {
-    // Use astats to get overall RMS level — a rough noise floor proxy.
+    // Use astats' measured noise floor. The overall RMS level would include
+    // speech and sits far above any sensible noise threshold, which made
+    // denoising look "recommended" for virtually every normal recording.
     let args: Vec<String> = vec![
         "-i".into(), feed.to_string_lossy().to_string(),
         "-af".into(), "astats=metadata=1".into(),
@@ -285,16 +286,18 @@ async fn estimate_noise_floor(app: &AppHandle, feed: &Path) -> f64 {
     if let Ok(cmd) = app.shell().sidecar(crate::helpers::ffmpeg_bin_name()) {
         if let Ok(out) = cmd.args(args).output().await {
             let stderr = String::from_utf8_lossy(&out.stderr);
-            let rms_re = Regex::new(r"RMS level dB:\s+(-?\d+\.?\d*)").unwrap();
-            if let Some(cap) = rms_re.captures(&stderr) {
-                if let Ok(rms) = cap[1].parse::<f64>() {
-                    return rms;
+            let noise_re = Regex::new(r"Noise floor dB:\s+(-?\d+\.?\d*)").unwrap();
+            // Use the last match: astats prints per-channel sections first,
+            // then the Overall section.
+            if let Some(cap) = noise_re.captures_iter(&stderr).last() {
+                if let Ok(floor) = cap[1].parse::<f64>() {
+                    return floor;
                 }
             }
         }
     }
 
-    -60.0 // Assume quiet if analysis fails
+    -60.0 // Assume quiet if analysis fails (or floor is -inf, i.e. silence)
 }
 
 // ── Sample rate probing ─────────────────────────────────────────────────────

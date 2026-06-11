@@ -101,27 +101,42 @@ pub(crate) async fn denoise_deep_filter(
     // For now, we use a simplified approach: process the full signal through
     // the encoder and decoders in one pass.
 
-    // Decode input to 48kHz mono
+    // Decode input to 48kHz, preserving channels
     let decoded = decode_to_wav_48k(app, input).await?;
-    let reader = hound::WavReader::open(&decoded)
-        .map_err(|e| format!("WAV read error: {}", e))?;
-    let spec = reader.spec();
-    let samples: Vec<f32> = match spec.sample_format {
-        hound::SampleFormat::Int => reader
-            .into_samples::<i32>()
-            .map(|s| s.unwrap_or(0) as f32 / i32::MAX as f32)
-            .collect(),
-        hound::SampleFormat::Float => reader
-            .into_samples::<f32>()
-            .map(|s| s.unwrap_or(0.0))
-            .collect(),
-    };
+    let read_result = AudioBuffer::from_wav(&decoded);
     let _ = std::fs::remove_file(&decoded);
+    let buf = read_result?;
 
-    if samples.is_empty() {
+    if buf.samples.is_empty() {
         return Err("Empty audio for DeepFilterNet3".into());
     }
 
+    // Process each channel independently — the frame loop assumes a mono
+    // sample stream, so running it over interleaved samples would straddle
+    // channel boundaries.
+    let channel_bufs = buf.channels_split();
+    let mut processed = Vec::with_capacity(channel_bufs.len());
+    for ch_samples in &channel_bufs {
+        processed.push(dfn3_process_channel(&mut enc_session, &mut erb_session, ch_samples)?);
+    }
+    let out_buf = AudioBuffer::from_channels(&processed, 48000);
+
+    // Write output
+    let tmp = std::env::temp_dir().join(format!(
+        "depoaudio_dfn3_{}.wav",
+        Uuid::new_v4().to_string().replace('-', "")
+    ));
+    out_buf.to_wav(&tmp)?;
+
+    Ok(tmp)
+}
+
+/// Run one mono channel through the DFN3 encoder → ERB decoder pipeline.
+fn dfn3_process_channel(
+    enc_session: &mut ort::session::Session,
+    erb_session: &mut ort::session::Session,
+    samples: &[f32],
+) -> Result<Vec<f32>, String> {
     // DeepFilterNet3 processes frames of 480 samples (10ms at 48kHz)
     // For simplicity, process in chunks and concatenate
     let frame_size = 480usize;
@@ -179,36 +194,13 @@ pub(crate) async fn denoise_deep_filter(
         output_samples.extend_from_slice(&samples[start..start + frame_size]);
     }
 
-    // Handle remaining samples — zero-pad to a full frame to avoid unprocessed tail
+    // Pass through any remaining tail samples (less than one frame)
     let remaining = samples.len() - (num_frames * frame_size);
     if remaining > 0 {
-        let mut final_frame = vec![0.0f32; frame_size];
-        final_frame[..remaining].copy_from_slice(&samples[num_frames * frame_size..]);
-        // Only keep the actual remaining samples from the output
-        output_samples.extend_from_slice(&final_frame[..remaining]);
+        output_samples.extend_from_slice(&samples[num_frames * frame_size..]);
     }
 
-    // Write output
-    let tmp = std::env::temp_dir().join(format!(
-        "depoaudio_dfn3_{}.wav",
-        Uuid::new_v4().to_string().replace('-', "")
-    ));
-
-    let out_spec = hound::WavSpec {
-        channels: spec.channels,
-        sample_rate: 48000,
-        bits_per_sample: 32,
-        sample_format: hound::SampleFormat::Float,
-    };
-
-    let mut writer = hound::WavWriter::create(&tmp, out_spec)
-        .map_err(|e| format!("WAV write error: {}", e))?;
-    for &s in &output_samples {
-        writer.write_sample(s).map_err(|e| format!("Write error: {}", e))?;
-    }
-    writer.finalize().map_err(|e| format!("Finalize error: {}", e))?;
-
-    Ok(tmp)
+    Ok(output_samples)
 }
 
 /// Decode any audio file to a 48 kHz WAV using FFmpeg, suitable for denoising.

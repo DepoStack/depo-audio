@@ -58,6 +58,23 @@ const SETTINGS_PRESETS = [
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 function NumberField({ label, hint, unit, value, setValue, min, max, step = 1, defaultVal }) {
+  // Hold the raw text locally so intermediate keystrokes ("-", "1" on the way
+  // to "150") aren't reverted by the controlled input; clamp on blur
+  const [text, setText] = useState(String(value))
+  const [prevValue, setPrevValue] = useState(value)
+  if (value !== prevValue) {
+    setPrevValue(value)
+    setText(String(value))
+  }
+
+  const commit = () => {
+    const v = parseFloat(text)
+    if (isNaN(v)) { setText(String(value)); return }
+    const clamped = Math.min(max, Math.max(min, v))
+    setValue(clamped)
+    setText(String(clamped))
+  }
+
   return (
     <div className="settings-field">
       <Label className="settings-label">
@@ -68,15 +85,17 @@ function NumberField({ label, hint, unit, value, setValue, min, max, step = 1, d
       <Input
         type="number"
         className="settings-input"
-        value={value}
+        value={text}
         min={min}
         max={max}
         step={step}
         placeholder={String(defaultVal)}
         onChange={e => {
+          setText(e.target.value)
           const v = parseFloat(e.target.value)
           if (!isNaN(v) && v >= min && v <= max) setValue(v)
         }}
+        onBlur={commit}
       />
     </div>
   )
@@ -127,17 +146,16 @@ function ModelManager() {
   const [downloading, setDownloading] = useState({})
   const [error, setError] = useState(null)
 
-  const loadModels = useCallback(async () => {
-    try {
-      const [catalog, capabilities] = await Promise.all([
-        invoke('model_catalog_cmd'),
-        invoke('system_capabilities_cmd'),
-      ])
+  const loadModels = useCallback(() => {
+    return Promise.all([
+      invoke('model_catalog_cmd'),
+      invoke('system_capabilities_cmd'),
+    ]).then(([catalog, capabilities]) => {
       setModels(catalog)
       setCaps(capabilities)
-    } catch {
+    }).catch(() => {
       setModels([])
-    }
+    })
   }, [])
 
   useEffect(() => { loadModels() }, [loadModels])

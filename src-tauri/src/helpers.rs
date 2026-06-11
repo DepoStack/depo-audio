@@ -195,6 +195,25 @@ pub(crate) fn basename(path: &str) -> String {
     Path::new(path).file_name().and_then(|n| n.to_str()).unwrap_or(path).to_string()
 }
 
+/// Resample a mono sample buffer with linear interpolation.
+pub(crate) fn resample_linear(samples: &[f32], from_rate: u32, to_rate: u32) -> Vec<f32> {
+    if from_rate == to_rate {
+        return samples.to_vec();
+    }
+    let ratio = to_rate as f64 / from_rate as f64;
+    let out_len = (samples.len() as f64 * ratio) as usize;
+    (0..out_len)
+        .map(|i| {
+            let src_pos = i as f64 / ratio;
+            let idx = src_pos as usize;
+            let frac = src_pos - idx as f64;
+            let s0 = samples.get(idx).copied().unwrap_or(0.0);
+            let s1 = samples.get(idx + 1).copied().unwrap_or(s0);
+            s0 + (s1 - s0) * frac as f32
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

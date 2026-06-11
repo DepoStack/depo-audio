@@ -29,10 +29,11 @@ export default function Waveform({
     let cancelled = false
 
     const extractPeaks = async () => {
+      let audioCtx = null
       try {
         const response = await fetch(audioSrc)
         const buffer = await response.arrayBuffer()
-        const audioCtx = new (window.AudioContext || window.webkitAudioContext)()
+        audioCtx = new (window.AudioContext || window.webkitAudioContext)()
         const decoded = await audioCtx.decodeAudioData(buffer)
 
         if (cancelled) return
@@ -54,10 +55,13 @@ export default function Waveform({
         }
 
         setPeaks(peakData)
-        audioCtx.close()
-      } catch (e) {
+      } catch {
         // Fallback: empty waveform if decode fails
         setPeaks(null)
+      } finally {
+        // Close on every path — leaked contexts hit the browser's cap and
+        // permanently break waveform rendering
+        if (audioCtx) audioCtx.close().catch(() => {})
       }
     }
 

@@ -3,14 +3,16 @@ import { invoke } from '@tauri-apps/api/core'
 import { Search, Download, ChevronDown, ChevronRight, Pencil, Archive, RotateCcw, X, Briefcase } from 'lucide-react'
 import { cn } from '../../lib/utils'
 import { CH_COLORS } from '../../constants'
+import { usePreferencesContext } from '../../hooks/PreferencesContext'
 import { Button } from '../ui/button'
 import { Input } from '../ui/input'
 import { Badge } from '../ui/badge'
-import { Card, CardHeader, CardTitle } from '../ui/card'
+import { Card } from '../ui/card'
 import LibraryFile from './LibraryFile'
 import ImportModal from './ImportModal'
 
 export default function LibraryTab({ cases, setCases, search, setSearch, labels, onReexport }) {
+  const { maxScanDepth } = usePreferencesContext()
   const [showArchived, setShowArchived] = useState(false)
   const [expandedCases, setExpandedCases]   = useState({})
   const [editingCase, setEditingCase]       = useState(null)
@@ -23,7 +25,7 @@ export default function LibraryTab({ cases, setCases, search, setSearch, labels,
   const detectSoftware = async () => {
     setScanningCat(true)
     try {
-      const sw = await invoke('detect_cat_software_cmd')
+      const sw = await invoke('detect_cat_software_cmd', { maxDepth: maxScanDepth })
       setCatSoftware(sw)
       // Auto-scan jobs from first detected software
       if (sw.length > 0) {
@@ -147,7 +149,7 @@ export default function LibraryTab({ cases, setCases, search, setSearch, labels,
                     <div
                       key={i}
                       className="flex items-center gap-3 px-3 py-2 rounded-md cursor-pointer transition-colors hover:bg-secondary/50 text-xs"
-                      onClick={() => onReexport(job.files[0]?.path, job.name)}
+                      onClick={() => { if (job.files.length) onReexport(job.files[0].path, job.name) }}
                     >
                       <span className="font-semibold text-foreground flex-1 min-w-0 truncate">{job.name}</span>
                       <span className="text-[hsl(var(--sub))] shrink-0">{job.software}</span>

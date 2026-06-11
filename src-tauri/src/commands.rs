@@ -16,23 +16,24 @@ use crate::helpers::{detect_format_for_path, get_formats, infer_case_name};
 use crate::models;
 use crate::scoring;
 use crate::speakers;
-use crate::persistence::{lib_path, load_library, prefs_path, save_library, save_to_library};
+use crate::persistence::{load_library, prefs_path, save_library, save_to_library};
 use crate::types::*;
 
 // ── Health check ─────────────────────────────────────────────────────────────
 
+async fn sidecar_runs(app: &AppHandle, bin: &str) -> bool {
+    match app.shell().sidecar(bin) {
+        Ok(cmd) => matches!(cmd.args(["-version"]).output().await, Ok(out) if out.status.success()),
+        Err(_) => false,
+    }
+}
+
 #[tauri::command]
 pub async fn health_check(app: AppHandle) -> Result<serde_json::Value, String> {
-    // Check FFmpeg sidecar availability
-    let ffmpeg_ok = app.shell()
-        .sidecar(crate::helpers::ffmpeg_bin_name())
-        .and_then(|s| Ok(s.args(["-version"])))
-        .is_ok();
-
-    let ffprobe_ok = app.shell()
-        .sidecar(crate::helpers::ffprobe_bin_name())
-        .and_then(|s| Ok(s.args(["-version"])))
-        .is_ok();
+    // Actually execute the sidecars — constructing the command alone does not
+    // verify the binary exists or runs.
+    let ffmpeg_ok = sidecar_runs(&app, crate::helpers::ffmpeg_bin_name()).await;
+    let ffprobe_ok = sidecar_runs(&app, crate::helpers::ffprobe_bin_name()).await;
 
     let models = models::available_models(&app);
     let caps = models::detect_capabilities(&app);
@@ -130,8 +131,10 @@ pub async fn detect_speech_cmd(
 // ── CAT software detection commands ──────────────────────────────────────────
 
 #[tauri::command]
-pub fn detect_cat_software_cmd() -> Vec<catdetect::CatSoftware> {
-    catdetect::detect_cat_software()
+pub fn detect_cat_software_cmd(max_depth: Option<u32>) -> Vec<catdetect::CatSoftware> {
+    // Honor the user's "Folder Scan Depth" setting, bounded to sane limits
+    let depth = max_depth.unwrap_or(5).clamp(1, 20) as usize;
+    catdetect::detect_cat_software(depth)
 }
 
 #[tauri::command]
@@ -250,7 +253,6 @@ pub fn library_import_file(
     if sanitized_name.is_empty() { return Err("Case name contains only invalid characters".into()); }
 
     let mut lib = state.library.lock().map_err(|e| e.to_string())?;
-    let lib_path = lib_path(&app);
     let size = fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
     let ext = Path::new(&path).extension().and_then(|e| e.to_str()).unwrap_or("wav").to_lowercase();
     let source_name = Path::new(&path).file_name().and_then(|n| n.to_str()).unwrap_or("imported").to_string();
@@ -268,8 +270,7 @@ pub fn library_import_file(
         source_name,
         participants: vec![Participant { label: label_trimmed.clone(), files: vec![LibFile { path, format: ext, size }] }],
     });
-    if let Some(parent) = lib_path.parent() { let _ = fs::create_dir_all(parent); }
-    if let Ok(json) = serde_json::to_string_pretty(&*lib) { fs::write(&lib_path, json).map_err(|e| e.to_string())?; }
+    save_library(&app, &lib);
     Ok(())
 }
 

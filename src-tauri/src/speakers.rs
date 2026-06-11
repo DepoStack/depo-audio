@@ -37,11 +37,11 @@ pub(crate) async fn detect_speakers(
 
     let has_embed = models::model_path(app, "speaker_embed.onnx").is_ok();
 
-    // Decode to 16kHz mono WAV
-    let tmp = std::env::temp_dir().join(format!(
+    // Decode to 16kHz mono WAV (drop guard cleans up on every exit path)
+    let tmp = crate::safety::TempFile::new(std::env::temp_dir().join(format!(
         "depoaudio_spk_{}.wav",
         uuid::Uuid::new_v4().to_string().replace('-', "")
-    ));
+    )));
 
     let args: Vec<String> = vec![
         "-i".into(), audio_path.to_string_lossy().to_string(),
@@ -74,7 +74,7 @@ pub(crate) async fn detect_speakers(
         .map(|s| s as f32 / 32768.0)
         .collect();
 
-    let _ = std::fs::remove_file(&tmp);
+    drop(tmp);
 
     if samples.is_empty() {
         return Ok(SpeakerInfo { count: 1, full_analysis: false });

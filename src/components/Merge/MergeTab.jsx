@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import { open } from '@tauri-apps/plugin-dialog'
-import { Loader2, X, Plus } from 'lucide-react'
+import { Loader2, X } from 'lucide-react'
 import { cn } from '../../lib/utils'
 import { FORMATS_OUT, CH_COLORS } from '../../constants'
 import { fmtSize, fmtTime } from '../../utils'
@@ -13,10 +13,11 @@ import { Badge } from '../ui/badge'
 
 export default function MergeTab() {
   const [sources, setSources] = useState([])
-  const [outDir, setOutDir] = useState('')
+  // Merge output goes next to the first source; sample rate is fixed at 48kHz
+  const outDir = ''
+  const rate = '48000'
   const [outName, setOutName] = useState('')
   const [format, setFormat] = useState('wav')
-  const [rate, setRate] = useState('48000')
   const [strategy, setStrategy] = useState('best_quality')
   const [syncing, setSyncing] = useState(false)
   const [merging, setMerging] = useState(false)
@@ -40,7 +41,9 @@ export default function MergeTab() {
         setResult(null)
         setError('')
       }
-    } catch {}
+    } catch {
+      // Dialog dismissed or unavailable — nothing to add
+    }
   }
 
   const removeSource = (idx) => {

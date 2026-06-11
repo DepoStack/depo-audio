@@ -1,5 +1,31 @@
 # Changelog
 
+## [Unreleased]
+
+### Fixed
+- **Split mode works for mono and 4-channel files** — the FFmpeg `channelsplit` filter defaulted to a stereo layout, so splitting any non-stereo input (including 4-channel SGMCA court recordings) failed. Now uses a layout-agnostic `asplit` + `pan` graph.
+- **Merge sync alignment** — the detected sync offset had an inverted sign, misaligning merged tracks by twice the true offset. Sync confidence is now properly normalized so loud unrelated recordings no longer classify as "same event".
+- **Per-speaker separation preserved** — de-reverb, bandwidth extension (FlashSR), and DeepFilterNet3 denoising now process each channel independently instead of downmixing everything to mono and replicating it across channels.
+- **FTR probing** — ffprobe was being passed an ffmpeg-only `-acodec` option, so duration and channel count probing always failed for FTR files (fade-out was silently skipped; channel count fell back to 4).
+- **FFmpeg timeout** — a silently wedged FFmpeg process is now actually killed when the timeout elapses, and the "FFmpeg Timeout" setting is honored (it previously had no effect).
+- **Noise detection** — "Background noise detected" was based on overall RMS (including speech), recommending denoising for nearly every recording. Now uses the measured noise floor from astats.
+- **Health check** — startup health check now actually runs the FFmpeg/FFprobe binaries instead of only constructing the command.
+- **Library saves are atomic** — library.json is written to a temp file and renamed, so a crash mid-write can no longer corrupt or empty the library. Imports now go through the same path.
+- **16/24-bit WAV decoding** — integer WAVs fed into the AI pipeline were scaled by the wrong constant (~96 dB attenuation, effectively silence).
+- **Player tab drag & drop** — dropping audio onto the Player tab now adds it to the playlist instead of silently queueing it in the Convert tab.
+- **Playlist auto-advance** — when a track ends, the next one now plays automatically (stops at end of playlist).
+- **Scan with missing VAD model** — scanning without the VAD model installed no longer reports "0% speech" and force-enables Trim Silence.
+- **Settings number fields** — values can now be typed normally; previously most keystrokes were rejected (e.g. typing a negative dB value was impossible).
+- **Default Output Format/Mode/Fade Duration settings** — these now actually control what the app opens with; previously they were saved but never applied. "Folder Scan Depth" is now honored when detecting court software.
+- **Event listener leaks** — conversion completion listeners and waveform AudioContexts are no longer leaked; repeated use no longer breaks waveform rendering.
+- **Temp file cleanup** — VAD/scoring/speaker-detection temp WAVs are cleaned up on error paths via drop guards.
+- **Peak limit of 0 dB** — a configured 0 dB peak limit is no longer silently replaced with the default −1.5.
+- **Library badge** — case count now shows on startup instead of after first opening the Library tab.
+
+### Changed
+- CI installs dependencies with plain `npm ci` — the eslint peer-dependency conflict was fixed by upgrading `eslint-plugin-react-hooks`, so `--legacy-peer-deps` is gone.
+- Dependency refresh (in-range updates for Radix UI, Tauri plugins, React, Vite tooling).
+
 ## [0.7.0] - 2026-03-24
 
 ### Added
