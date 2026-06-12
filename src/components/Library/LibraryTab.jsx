@@ -1,6 +1,6 @@
 import { useState, useMemo } from 'react'
 import { invoke } from '@tauri-apps/api/core'
-import { Search, Download, ChevronDown, ChevronRight, Pencil, Archive, RotateCcw, X, Briefcase } from 'lucide-react'
+import { Search, Download, ChevronDown, ChevronRight, Pencil, Archive, RotateCcw, X, Briefcase, Loader2 } from 'lucide-react'
 import { cn } from '../../lib/utils'
 import { CH_COLORS } from '../../constants'
 import { usePreferencesContext } from '../../hooks/PreferencesContext'
@@ -116,7 +116,7 @@ export default function LibraryTab({ cases, setCases, search, setSearch, labels,
           Import Audio
         </Button>
         <Button size="sm" onClick={detectSoftware} disabled={scanningCat}>
-          {scanningCat ? 'Scanning…' : 'Detect Software'}
+          {scanningCat ? <><Loader2 className="h-3 w-3 animate-spin" />Scanning…</> : 'Detect Software'}
         </Button>
       </div>
 

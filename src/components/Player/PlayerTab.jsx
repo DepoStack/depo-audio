@@ -22,7 +22,13 @@ export default function PlayerTab({ dropHandlerRef }) {
   const [currentTime, setCurrentTime] = useState(0)
   const [duration, setDuration] = useState(0)
   const [dragOver, setDragOver] = useState(false)
-  const [bookmarks, setBookmarks] = useState([])
+  // Bookmarks persist across sessions
+  const [bookmarks, setBookmarks] = useState(() => {
+    try { return JSON.parse(localStorage.getItem('player-bookmarks') || '[]') } catch { return [] }
+  })
+  useEffect(() => {
+    try { localStorage.setItem('player-bookmarks', JSON.stringify(bookmarks)) } catch { /* storage full or unavailable */ }
+  }, [bookmarks])
   const [dragIdx, setDragIdx] = useState(null) // playlist drag-reorder
   const audioRef = useRef(null)
   const autoAdvanceRef = useRef(false) // play next track once it loads

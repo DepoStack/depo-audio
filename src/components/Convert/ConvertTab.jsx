@@ -132,22 +132,34 @@ export default function ConvertTab({
           )}
 
           {/* ── PRESETS ──────────────────────────────────────────────────── */}
+          {/* Highlight the preset the current settings match, so users can
+              see which preset is active and when they've diverged from it */}
           <div className="flex items-center gap-1.5 flex-wrap mb-2">
             <Label>PRESET</Label>
-            {PRESETS.map(p => (
-              <Button key={p.id} variant="outline" size="sm" className="rounded-full" title={p.desc}
-                onClick={() => {
-                  const s = p.settings
-                  setMode(s.mode); setFormatOut(s.format); setRate(s.rate)
-                  setNormalize(s.normalize); setTrim(s.trim); setFade(s.fade)
-                  setFadeDur(s.fadeDur); setHpf(s.hpf)
-                  setDenoise(s.denoise); setDenoiseQuality(s.denoiseQuality)
-                  setAutoLevel(s.autoLevel); setDeclip(s.declip)
-                  setEnhance(s.enhance); setDereverb(s.dereverb)
-                }}>
-                {p.name}
-              </Button>
-            ))}
+            {PRESETS.map(p => {
+              const s = p.settings
+              const active = mode === s.mode && formatOut === s.format && rate === s.rate
+                && normalize === s.normalize && trim === s.trim && fade === s.fade
+                && fadeDur === s.fadeDur && hpf === s.hpf
+                && denoise === s.denoise && denoiseQuality === s.denoiseQuality
+                && autoLevel === s.autoLevel && declip === s.declip
+                && enhance === s.enhance && dereverb === s.dereverb
+              return (
+                <Button key={p.id} variant="outline" size="sm" title={p.desc}
+                  aria-pressed={active}
+                  className={`rounded-full ${active ? 'border-primary bg-[hsl(var(--gold-dim))] text-primary' : ''}`}
+                  onClick={() => {
+                    setMode(s.mode); setFormatOut(s.format); setRate(s.rate)
+                    setNormalize(s.normalize); setTrim(s.trim); setFade(s.fade)
+                    setFadeDur(s.fadeDur); setHpf(s.hpf)
+                    setDenoise(s.denoise); setDenoiseQuality(s.denoiseQuality)
+                    setAutoLevel(s.autoLevel); setDeclip(s.declip)
+                    setEnhance(s.enhance); setDereverb(s.dereverb)
+                  }}>
+                  {p.name}
+                </Button>
+              )
+            })}
           </div>
 
           {/* ── OUTPUT MODE ──────────────────────────────────────────────── */}

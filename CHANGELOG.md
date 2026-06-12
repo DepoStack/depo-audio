@@ -1,6 +1,16 @@
 # Changelog
 
-## [Unreleased]
+## [0.8.0] - 2026-06-12
+
+### Improved
+- **Convert tab leads with the file drop zone** — it was previously at the bottom of the page, below every setting.
+- **Readability** — muted hint text now meets WCAG AA contrast in both dark and light themes.
+- **Settings dialog close button** — it existed but rendered invisible; it now shows a proper ×.
+- **Contextual channels card** — the channel labels/mix card only appears once files are queued, and not in "Keep Original" mode where it has no effect.
+- **Player & Merge empty states** — the Player opens with a single focused drop zone; the Merge tab explains its three-step flow (add recordings → auto-sync → one clean file).
+- **Active preset highlight** — the Convert tab highlights which preset matches the current settings, and clears it when you diverge.
+- **Bookmarks persist** — player bookmarks survive app restarts.
+- **Keyboard & screen-reader support** — drop zones are keyboard-operable; icon buttons, toggles, and sliders have accessible names; toggle groups expose pressed state.
 
 ### Fixed
 - **Split mode works for mono and 4-channel files** — the FFmpeg `channelsplit` filter defaulted to a stereo layout, so splitting any non-stereo input (including 4-channel SGMCA court recordings) failed. Now uses a layout-agnostic `asplit` + `pan` graph.
