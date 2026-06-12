@@ -86,7 +86,8 @@ fn known_model_hash(filename: &str) -> Option<&'static str> {
         "dfn3_enc.onnx"            => Some("7c5399d3da8a50ebef1c1a0ae421b33376aa5e45d0e92df16da7e83c9c131916"),
         "dfn3_erb_dec.onnx"        => Some("ab669a1d10afe20911728b33053a452071042317a90581092b325da7b2f9d895"),
         "dfn3_df_dec.onnx"         => Some("23114ce3b0f6464b763ee62f7bb8aab6b2a129a21eabd5bcfe59413db05f278a"),
-        "dnsmos_sig_bak_ovr.onnx"  => Some("81c57ef0f69a2aa9a25dc878fba7534c9278de2769ecf5c221382d36929c5b5b"),
+        // dnsmos_sig_bak_ovr.onnx: no hash — the previously committed file
+        // was an HTML error page; re-add the hash when a real asset exists
         "speaker_seg_int8.onnx"    => Some("d582f4b4c6b48205de7e0643c57df0df5615a3c176189be3fc461e9d18827b5d"),
         "speaker_embed.onnx"       => Some("1a331345f04805badbb495c775a6ddffcdd1a732567d5ec8b3d5749e3c7a5e4b"),
         _ => None,
@@ -247,6 +248,14 @@ pub(crate) async fn download_model(app: &AppHandle, filename: &str) -> Result<St
     let bytes = resp.bytes().await
         .map_err(|e| format!("Download read error: {}", e))?;
 
+    // Guard against saving an error page as a "model" (it has happened):
+    // ONNX files are protobuf, never text
+    let looks_textual = bytes.starts_with(b"<") || bytes.starts_with(b"{")
+        || bytes.starts_with(b"Not Found");
+    if bytes.len() < 10_000 || looks_textual {
+        return Err("Download did not return a valid model file".into());
+    }
+
     // Write to temp file first, then rename (atomic)
     let tmp = dest.with_extension("tmp");
     std::fs::write(&tmp, &bytes)
@@ -303,6 +312,9 @@ pub struct SystemCapabilities {
     pub recommend_speaker_detection: bool,
     /// Whether bandwidth extension is recommended.
     pub recommend_enhance: bool,
+    /// Whether the optional DCCRN+ de-reverb model is installed.
+    /// It is not bundled or downloadable — see scripts/export_dccrn.py.
+    pub dereverb_available: bool,
     /// General performance tier: "low", "mid", "high".
     pub tier: String,
 }
@@ -344,6 +356,8 @@ pub(crate) fn detect_capabilities(app: &AppHandle) -> SystemCapabilities {
 
     let recommend_enhance = available_models(app).contains(&"flashsr.onnx".to_string());
 
+    let dereverb_available = model_path(app, "dccrn_plus.onnx").is_ok();
+
     SystemCapabilities {
         cpu_cores,
         ram_mb,
@@ -353,6 +367,7 @@ pub(crate) fn detect_capabilities(app: &AppHandle) -> SystemCapabilities {
         recommended_denoise: recommended_denoise.into(),
         recommend_speaker_detection,
         recommend_enhance,
+        dereverb_available,
         tier: tier.into(),
     }
 }

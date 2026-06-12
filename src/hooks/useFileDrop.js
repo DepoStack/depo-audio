@@ -58,7 +58,8 @@ export default function useFileDrop(dropOverrideRef) {
 
   const browseFiles = async () => {
     const selected = await openDialog({ multiple: true, filters: [
-      { name: 'Audio', extensions: ['mp3','wav','flac','m4a','aac','ogg','opus','wma','aif','aiff','sgmca','trm','ftr','bwf','dm'] },
+      { name: 'Audio', extensions: ['mp3','wav','flac','m4a','aac','ogg','opus','wma','aif','aiff','caf','amr','3ga','sgmca','trm','ftr','bwf','dm'] },
+      { name: 'Video (audio extracted)', extensions: ['mp4','mov','mkv','avi','webm','m4v','3gp'] },
       { name: 'All Files', extensions: ['*'] }
     ]}).catch(() => null)
     if (selected) await addFiles(Array.isArray(selected) ? selected : [selected])

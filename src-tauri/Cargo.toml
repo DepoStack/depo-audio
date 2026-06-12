@@ -36,3 +36,4 @@ nnnoiseless = { version = "0.5", default-features = false, features = ["dasp"] }
 ort = { version = "2.0.0-rc.12", features = ["load-dynamic"] }
 hound = "3.5"
 ndarray = "0.17"
+rustfft = "6"

@@ -29,7 +29,10 @@ export default function MergeTab() {
     try {
       const selected = await open({
         multiple: true,
-        filters: [{ name: 'Audio', extensions: ['wav','mp3','flac','opus','ogg','m4a','aac','wma','aif','aiff','sgmca','trm','ftr','bwf'] }],
+        filters: [
+          { name: 'Audio', extensions: ['wav','mp3','flac','opus','ogg','m4a','aac','wma','aif','aiff','caf','amr','sgmca','trm','ftr','bwf'] },
+          { name: 'Video (audio extracted)', extensions: ['mp4','mov','mkv','avi','webm'] },
+        ],
       })
       if (selected) {
         const paths = Array.isArray(selected) ? selected : [selected]

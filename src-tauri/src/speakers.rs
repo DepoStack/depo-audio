@@ -91,7 +91,7 @@ pub(crate) async fn detect_speakers(
         .map_err(|e| format!("Tensor error: {}", e))?;
 
     let seg_outputs = seg_session
-        .run(ort::inputs!["input" => input_val])
+        .run(ort::inputs!["x" => input_val])
         .map_err(|e| format!("Segmentation inference failed: {}", e))?;
 
     // Parse segmentation output to count active speaker slots
@@ -104,29 +104,37 @@ pub(crate) async fn detect_speakers(
         .map_err(|e| format!("Failed to extract segmentation output: {}", e))?;
 
     let seg_shape = seg_tensor.0;
-    // Output shape is typically [1, num_frames, max_speakers]
-    let num_speakers_slots = if seg_shape.len() == 3 { seg_shape[2] as usize } else { 3usize };
+    // Output is [1, num_frames, 7]: log-probabilities over the pyannote
+    // powerset classes {none, S1, S2, S3, S1+S2, S1+S3, S2+S3}. Decode by
+    // per-frame argmax, then count speakers with sustained activity.
+    let num_classes = if seg_shape.len() == 3 { seg_shape[2] as usize } else { 7usize };
     let num_frames = if seg_shape.len() == 3 { seg_shape[1] as usize } else { 1usize };
     let seg_data = seg_tensor.1;
 
-    // Count how many speaker slots have significant activity (> 10% of frames active)
-    let threshold = 0.5f32;
-    let min_activity_ratio = 0.1;
-    let mut active_speakers = 0u32;
+    const POWERSET: [&[usize]; 7] = [&[], &[0], &[1], &[2], &[0, 1], &[0, 2], &[1, 2]];
+    let mut active_frames = [0usize; 3];
 
-    for spk in 0..num_speakers_slots {
-        let active_frames: usize = (0..num_frames)
-            .filter(|&f| {
-                let idx = f * num_speakers_slots + spk;
-                idx < seg_data.len() && seg_data[idx] > threshold
-            })
-            .count();
-
-        let ratio = active_frames as f64 / num_frames.max(1) as f64;
-        if ratio > min_activity_ratio {
-            active_speakers += 1;
+    for f in 0..num_frames {
+        let mut best_class = 0usize;
+        let mut best_val = f32::NEG_INFINITY;
+        for k in 0..num_classes.min(POWERSET.len()) {
+            let idx = f * num_classes + k;
+            if idx < seg_data.len() && seg_data[idx] > best_val {
+                best_val = seg_data[idx];
+                best_class = k;
+            }
+        }
+        for &s in POWERSET[best_class] {
+            active_frames[s] += 1;
         }
     }
+
+    // A speaker counts if active in > 10% of frames
+    let min_activity_ratio = 0.1;
+    let active_speakers = active_frames
+        .iter()
+        .filter(|&&n| n as f64 / num_frames.max(1) as f64 > min_activity_ratio)
+        .count() as u32;
 
     // At least 1 speaker
     let count = active_speakers.max(1);

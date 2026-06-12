@@ -8,6 +8,7 @@ mod denoise;
 mod enhance;
 mod ffmpeg;
 mod helpers;
+mod mel;
 mod models;
 mod persistence;
 mod safety;

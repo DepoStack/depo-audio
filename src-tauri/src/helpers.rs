@@ -33,6 +33,13 @@ pub(crate) fn get_formats() -> Vec<FormatInfo> {
             status: "supported".into(), handler: "passthrough".into(), channels: None, note: None },
         FormatInfo { key: "aiff".into(), name: "AIFF Audio".into(), vendor: "Standard".into(),
             status: "supported".into(), handler: "passthrough".into(), channels: None, note: None },
+        FormatInfo { key: "caf".into(), name: "CAF · Apple Core Audio".into(), vendor: "Standard".into(),
+            status: "supported".into(), handler: "passthrough".into(), channels: None, note: None },
+        FormatInfo { key: "amr".into(), name: "AMR Phone Audio".into(), vendor: "Standard".into(),
+            status: "supported".into(), handler: "passthrough".into(), channels: None, note: None },
+        FormatInfo { key: "video".into(), name: "Video Audio Track".into(), vendor: "MP4 / MOV / MKV / AVI / WebM".into(),
+            status: "supported".into(), handler: "passthrough".into(), channels: None,
+            note: Some("The audio track is extracted and converted; video is discarded.".into()) },
         // Court reporting formats — require conversion
         FormatInfo { key: "sgmca".into(), name: "Stenograph SGMCA".into(), vendor: "Case CATalyst".into(),
             status: "supported".into(), handler: "sgmca".into(), channels: Some("4".into()), note: None },
@@ -56,7 +63,7 @@ pub(crate) fn get_formats() -> Vec<FormatInfo> {
 /// Check if a file extension is a standard audio format (no conversion needed for basic use)
 #[allow(dead_code)]
 pub(crate) fn is_standard_format(ext: &str) -> bool {
-    matches!(ext, "wav" | "mp3" | "flac" | "m4a" | "aac" | "ogg" | "opus" | "wma" | "aif" | "aiff")
+    matches!(ext, "wav" | "mp3" | "flac" | "m4a" | "aac" | "ogg" | "opus" | "wma" | "aif" | "aiff" | "caf" | "amr")
 }
 
 pub(crate) fn detect_format_for_path(path: &str) -> Option<FormatInfo> {
@@ -83,6 +90,11 @@ pub(crate) fn detect_format_for_path(path: &str) -> Option<FormatInfo> {
         "ogg" | "opus"  => fmts.into_iter().find(|f| f.key == "ogg"),
         "wma"           => fmts.into_iter().find(|f| f.key == "wma"),
         "aif" | "aiff"  => fmts.into_iter().find(|f| f.key == "aiff"),
+        "caf"           => fmts.into_iter().find(|f| f.key == "caf"),
+        "amr" | "3ga"   => fmts.into_iter().find(|f| f.key == "amr"),
+        // Video containers: FFmpeg extracts the audio track
+        "mp4" | "mov" | "mkv" | "avi" | "webm" | "m4v" | "3gp"
+                        => fmts.into_iter().find(|f| f.key == "video"),
         _               => None,
     }
 }
