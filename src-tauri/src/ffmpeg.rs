@@ -32,7 +32,10 @@ pub(crate) async fn probe_duration(app: &AppHandle, feed: &Path) -> Option<f64> 
     v["format"]["duration"].as_str()?.parse::<f64>().ok()
 }
 
-pub(crate) async fn probe_channels(app: &AppHandle, feed: &Path) -> u32 {
+/// Probe the channel count of the first audio stream. Returns None when the
+/// probe fails — callers that build per-channel filtergraphs must not guess:
+/// a wrong count silently produces silent output channels.
+pub(crate) async fn probe_channels(app: &AppHandle, feed: &Path) -> Option<u32> {
     let args: Vec<String> = vec![
         "-v".into(), "quiet".into(),
         "-print_format".into(), "json".into(),
@@ -40,20 +43,12 @@ pub(crate) async fn probe_channels(app: &AppHandle, feed: &Path) -> u32 {
         "-select_streams".into(), "a:0".into(),
         feed.to_string_lossy().to_string(),
     ];
-    let ok = app.shell().sidecar(ffprobe_bin_name())
-        .and_then(|s| Ok(s.args(args)))
-        .ok();
-    if let Some(cmd) = ok {
-        if let Ok(out) = cmd.output().await {
-            let text = String::from_utf8_lossy(&out.stdout);
-            if let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) {
-                if let Some(ch) = v["streams"][0]["channels"].as_u64() {
-                    if ch > 0 { return ch as u32; }
-                }
-            }
-        }
-    }
-    4
+    let cmd = app.shell().sidecar(ffprobe_bin_name()).ok()?;
+    let out = cmd.args(args).output().await.ok()?;
+    let text = String::from_utf8_lossy(&out.stdout);
+    let v = serde_json::from_str::<serde_json::Value>(&text).ok()?;
+    let ch = v["streams"][0]["channels"].as_u64()?;
+    if ch > 0 { Some(ch as u32) } else { None }
 }
 
 // ── Filter chain builder ─────────────────────────────────────────────────────

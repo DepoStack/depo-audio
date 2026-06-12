@@ -29,28 +29,30 @@ pub(crate) fn load_library(app: &AppHandle) -> Library {
         .unwrap_or_default()
 }
 
-pub(crate) fn save_library(app: &AppHandle, lib: &Library) {
+pub(crate) fn save_library(app: &AppHandle, lib: &Library) -> Result<(), String> {
     let path = lib_path(app);
     if let Some(parent) = path.parent() { let _ = fs::create_dir_all(parent); }
-    if let Ok(json) = serde_json::to_string_pretty(lib) {
-        // Atomic replace: write a uniquely-named temp file, then rename over
-        // library.json. Readers never observe a truncated or partial file,
-        // and a crash mid-write leaves the previous library intact.
-        let tmp = path.with_extension(format!("json.{}.tmp", std::process::id()));
-        let wrote = fs::OpenOptions::new()
-            .write(true).create(true).truncate(true)
-            .open(&tmp)
-            .and_then(|mut file| {
-                file.write_all(json.as_bytes())?;
-                file.sync_all()
-            })
-            .and_then(|_| fs::rename(&tmp, &path));
-        if wrote.is_err() {
-            let _ = fs::remove_file(&tmp);
-            // Fallback: direct write (better than losing the data entirely)
-            let _ = fs::write(&path, &json);
-        }
+    let json = serde_json::to_string_pretty(lib)
+        .map_err(|e| format!("Failed to serialize library: {}", e))?;
+    // Atomic replace: write a uniquely-named temp file, then rename over
+    // library.json. Readers never observe a truncated or partial file,
+    // and a crash mid-write leaves the previous library intact.
+    let tmp = path.with_extension(format!("json.{}.tmp", std::process::id()));
+    let wrote = fs::OpenOptions::new()
+        .write(true).create(true).truncate(true)
+        .open(&tmp)
+        .and_then(|mut file| {
+            file.write_all(json.as_bytes())?;
+            file.sync_all()
+        })
+        .and_then(|_| fs::rename(&tmp, &path));
+    if let Err(primary) = wrote {
+        let _ = fs::remove_file(&tmp);
+        // Fallback: direct write (better than losing the data entirely)
+        fs::write(&path, &json)
+            .map_err(|_| format!("Failed to save library: {}", primary))?;
     }
+    Ok(())
 }
 
 pub(crate) fn save_to_library(app: &AppHandle, state: &tauri::State<'_, AppState>, job: &ConvertJob, files: &[OutputFile]) {
@@ -96,5 +98,7 @@ pub(crate) fn save_to_library(app: &AppHandle, state: &tauri::State<'_, AppState
         });
     }
 
-    save_library(app, &lib);
+    // Conversion already succeeded and the files exist on disk; a failed
+    // library save should not fail the conversion itself.
+    let _ = save_library(app, &lib);
 }

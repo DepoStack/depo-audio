@@ -15,6 +15,9 @@ import { WaveformIcon } from '../common/Icons'
 // Play any audio file directly — no conversion needed. Supports multi-channel
 // files with color-coded speaker tracks. Drop files or browse to start.
 
+// Extensions the player accepts — native drops can contain anything
+const AUDIO_EXTS = ['wav','mp3','flac','opus','ogg','m4a','aac','wma','aif','aiff','sgmca','trm','ftr','bwf']
+
 export default function PlayerTab({ dropHandlerRef }) {
   const [tracks, setTracks] = useState([])       // { path, name, size, channels, duration, color }
   const [activeTrack, setActiveTrack] = useState(null)
@@ -22,9 +25,13 @@ export default function PlayerTab({ dropHandlerRef }) {
   const [currentTime, setCurrentTime] = useState(0)
   const [duration, setDuration] = useState(0)
   const [dragOver, setDragOver] = useState(false)
-  // Bookmarks persist across sessions
+  // Bookmarks persist across sessions; validate the shape — corrupt storage
+  // must not crash the tab on every launch
   const [bookmarks, setBookmarks] = useState(() => {
-    try { return JSON.parse(localStorage.getItem('player-bookmarks') || '[]') } catch { return [] }
+    try {
+      const v = JSON.parse(localStorage.getItem('player-bookmarks') || '[]')
+      return Array.isArray(v) ? v.filter(b => b && typeof b.time === 'number' && typeof b.trackPath === 'string') : []
+    } catch { return [] }
   })
   useEffect(() => {
     try { localStorage.setItem('player-bookmarks', JSON.stringify(bookmarks)) } catch { /* storage full or unavailable */ }
@@ -38,7 +45,7 @@ export default function PlayerTab({ dropHandlerRef }) {
     try {
       const selected = await open({
         multiple: true,
-        filters: [{ name: 'Audio', extensions: ['wav','mp3','flac','opus','ogg','m4a','aac','wma','aif','aiff','sgmca','trm','ftr','bwf'] }],
+        filters: [{ name: 'Audio', extensions: AUDIO_EXTS }],
       })
       if (selected) {
         const paths = Array.isArray(selected) ? selected : [selected]
@@ -49,21 +56,23 @@ export default function PlayerTab({ dropHandlerRef }) {
     }
   }
 
-  // Add files to playlist
+  // Add files to playlist. Native drops arrive unfiltered, so skip paths
+  // already queued (duplicate keys break selection) and non-audio files.
   const addFiles = (paths) => {
-    const newTracks = paths.map((p, i) => {
-      const path = typeof p === 'string' ? p : p.path
-      const name = path.split('/').pop().split('\\').pop()
-      return {
-        path,
-        name,
-        size: 0,
-        color: CH_COLORS[(tracks.length + i) % CH_COLORS.length],
-        label: `Speaker ${tracks.length + i + 1}`,
-      }
-    })
+    const fresh = paths
+      .map(p => (typeof p === 'string' ? p : p.path))
+      .filter(path => AUDIO_EXTS.includes(path.split('.').pop()?.toLowerCase()))
+      .filter(path => !tracks.some(t => t.path === path))
+    const newTracks = [...new Set(fresh)].map((path, i) => ({
+      path,
+      name: path.split('/').pop().split('\\').pop(),
+      size: 0,
+      color: CH_COLORS[(tracks.length + i) % CH_COLORS.length],
+      label: `Speaker ${tracks.length + i + 1}`,
+    }))
+    if (!newTracks.length) return
     setTracks(prev => [...prev, ...newTracks])
-    if (!activeTrack && newTracks.length > 0) {
+    if (!activeTrack) {
       setActiveTrack(newTracks[0])
     }
   }

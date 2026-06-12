@@ -147,8 +147,11 @@ pub(crate) async fn detect_sync(
         0.0
     };
 
-    // Consider same event if confidence > 0.3
-    let is_same_event = confidence > 0.3;
+    // Same-event threshold. Confidence is now a true normalized cross-
+    // correlation of raw waveforms from different microphones, which sits
+    // well below the old saturated values even for genuine matches — 0.15
+    // separates matched recordings (~0.2+) from unrelated audio (~0.05).
+    let is_same_event = confidence > 0.15;
 
     Ok(SyncResult {
         offset_seconds,
@@ -377,8 +380,17 @@ fn best_quality_strategy(
                         sources[prev][prev_idx as usize]
                     } else { 0.0 };
 
-                    // Crossfade: blend from previous to current
-                    output[fade_start + j] = prev_sample * (1.0 - t) + output[fade_start + j] * t;
+                    // Fetch the NEW source directly for the whole window: in
+                    // the first half output[] still holds the previous source,
+                    // so blending against output would make the ramp a no-op
+                    // until the midpoint and leave a half-amplitude step.
+                    let new_offset = offsets[best_src];
+                    let new_idx = (fade_start + j) as i64 - new_offset;
+                    let new_sample = if new_idx >= 0 && (new_idx as usize) < sources[best_src].len() {
+                        sources[best_src][new_idx as usize]
+                    } else { 0.0 };
+
+                    output[fade_start + j] = prev_sample * (1.0 - t) + new_sample * t;
                 }
             }
         }

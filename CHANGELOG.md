@@ -13,6 +13,14 @@
 - **Keyboard & screen-reader support** — drop zones are keyboard-operable; icon buttons, toggles, and sliders have accessible names; toggle groups expose pressed state.
 
 ### Fixed
+- **In-app audio playback restored** — the Tauri asset protocol had been disabled since 0.6.0, so the Player tab, library inline playback, result mini-players, waveforms, and before/after comparison could not load audio in installed builds.
+- **Model downloads work on installed apps** — models now download to the user data directory instead of the read-only install directory (Program Files / signed macOS bundle), and the model manager reports their real sizes.
+- **Stereo mix no longer hard-clips** — mixing multiple channels that picked up the same voice could exceed full scale by up to 12 dB; a true-peak limiter now guards the mix when loudness normalization is off.
+- **"Best quality" denoise falls back honestly** — when the DeepFilterNet3 models can't run, denoising now falls back to RNNoise instead of silently passing audio through unprocessed.
+- **Merge crossfades are complete** — source switches in "Best quality" merges ramped only half the window, leaving an audible step; the full crossfade is now applied. Sync confidence threshold recalibrated for the corrected normalization.
+- **FTR files with AI processing** — the forced AAC decoder hint now follows the original file into the AI pipeline instead of being wrongly applied to the intermediate WAV.
+- **Split/stereo conversion fails loudly on probe errors** — a failed channel probe used to assume 4 channels, which would have produced silent "speaker" files; it now reports an error instead.
+- **Library write failures are reported** — imports and library edits now surface disk errors instead of claiming success while the change exists only in memory.
 - **Split mode works for mono and 4-channel files** — the FFmpeg `channelsplit` filter defaulted to a stereo layout, so splitting any non-stereo input (including 4-channel SGMCA court recordings) failed. Now uses a layout-agnostic `asplit` + `pan` graph.
 - **Merge sync alignment** — the detected sync offset had an inverted sign, misaligning merged tracks by twice the true offset. Sync confidence is now properly normalized so loud unrelated recordings no longer classify as "same event".
 - **Per-speaker separation preserved** — de-reverb, bandwidth extension (FlashSR), and DeepFilterNet3 denoising now process each channel independently instead of downmixing everything to mono and replicating it across channels.
@@ -26,7 +34,7 @@
 - **Playlist auto-advance** — when a track ends, the next one now plays automatically (stops at end of playlist).
 - **Scan with missing VAD model** — scanning without the VAD model installed no longer reports "0% speech" and force-enables Trim Silence.
 - **Settings number fields** — values can now be typed normally; previously most keystrokes were rejected (e.g. typing a negative dB value was impossible).
-- **Default Output Format/Mode/Fade Duration settings** — these now actually control what the app opens with; previously they were saved but never applied. "Folder Scan Depth" is now honored when detecting court software.
+- **Default Output Format/Mode settings** — these now actually work, with an explicit "Remember last used" option (the default, preserving the old behavior). The Settings "Fade Duration" field now edits the live conversion setting directly. "Folder Scan Depth" is now honored when detecting court software.
 - **Event listener leaks** — conversion completion listeners and waveform AudioContexts are no longer leaked; repeated use no longer breaks waveform rendering.
 - **Temp file cleanup** — VAD/scoring/speaker-detection temp WAVs are cleaned up on error paths via drop guards.
 - **Peak limit of 0 dB** — a configured 0 dB peak limit is no longer silently replaced with the default −1.5.

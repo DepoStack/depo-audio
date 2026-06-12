@@ -11,8 +11,17 @@ use tauri::{AppHandle, Manager};
 // Heavier models (speaker_embed.onnx) can optionally be downloaded on demand
 // rather than bundled, to keep the installer small.
 
-/// Resolve a model file path in the app's resource directory.
+/// Resolve a model file path. User-downloaded models live in the app data
+/// directory (writable on installed apps — the resource dir is read-only in
+/// Program Files and inside signed macOS bundles); bundled models live in
+/// the resource directory. Data dir wins so downloads can update models.
 pub(crate) fn model_path(app: &AppHandle, filename: &str) -> Result<PathBuf, String> {
+    if let Ok(data_dir) = app.path().app_data_dir() {
+        let downloaded = data_dir.join("models").join(filename);
+        if downloaded.exists() {
+            return Ok(downloaded);
+        }
+    }
     let resource_dir = app
         .path()
         .resource_dir()
@@ -119,6 +128,7 @@ fn verify_model_hash(path: &PathBuf, expected: &str) -> Result<(), String> {
 /// Useful for UI to show/hide features based on bundled models.
 pub(crate) fn available_models(app: &AppHandle) -> Vec<String> {
     let models = [
+        "silero_vad.onnx",
         "smart-turn-v3-int8.onnx",
         "flashsr.onnx",
         "dfn3_enc.onnx",
@@ -156,24 +166,25 @@ pub(crate) fn model_catalog(app: &AppHandle) -> Vec<ModelInfo> {
 
     const BASE_URL: &str = "https://github.com/mayes/depo-audio/releases/download/models-v1";
 
+    // size_mb values reflect the actual model files on disk
     let catalog = vec![
-        ("silero_vad.onnx", "Silero VAD", "Voice activity detection — identifies speech vs silence", 1.6, "Speech Detection", true,
+        ("silero_vad.onnx", "Silero VAD", "Voice activity detection — identifies speech vs silence", 2.1, "Speech Detection", true,
          format!("{}/silero_vad.onnx", BASE_URL)),
-        ("smart-turn-v3-int8.onnx", "Smart Turn v3", "Detects speaker turns in court recordings", 8.0, "Turn Detection", false,
+        ("smart-turn-v3-int8.onnx", "Smart Turn v3", "Detects speaker turns in court recordings", 8.2, "Turn Detection", false,
          format!("{}/smart-turn-v3-int8.onnx", BASE_URL)),
-        ("dfn3_enc.onnx", "DeepFilterNet3 Encoder", "High-quality noise removal encoder", 3.2, "Noise Removal (Best)", false,
+        ("dfn3_enc.onnx", "DeepFilterNet3 Encoder", "High-quality noise removal encoder", 1.9, "Noise Removal (Best)", false,
          format!("{}/dfn3_enc.onnx", BASE_URL)),
-        ("dfn3_erb_dec.onnx", "DeepFilterNet3 ERB Decoder", "High-quality noise removal ERB decoder", 5.8, "Noise Removal (Best)", false,
+        ("dfn3_erb_dec.onnx", "DeepFilterNet3 ERB Decoder", "High-quality noise removal ERB decoder", 3.1, "Noise Removal (Best)", false,
          format!("{}/dfn3_erb_dec.onnx", BASE_URL)),
-        ("dfn3_df_dec.onnx", "DeepFilterNet3 DF Decoder", "High-quality noise removal DF decoder", 4.5, "Noise Removal (Best)", false,
+        ("dfn3_df_dec.onnx", "DeepFilterNet3 DF Decoder", "High-quality noise removal DF decoder", 3.2, "Noise Removal (Best)", false,
          format!("{}/dfn3_df_dec.onnx", BASE_URL)),
-        ("flashsr.onnx", "FlashSR", "Neural bandwidth extension for phone/narrow-band audio", 12.0, "Clarity Enhancement", false,
+        ("flashsr.onnx", "FlashSR", "Neural bandwidth extension for phone/narrow-band audio", 0.5, "Clarity Enhancement", false,
          format!("{}/flashsr.onnx", BASE_URL)),
-        ("dnsmos_sig_bak_ovr.onnx", "DNSMOS", "Audio quality scoring (1-5 scale)", 1.8, "Quality Scoring", false,
+        ("dnsmos_sig_bak_ovr.onnx", "DNSMOS", "Audio quality scoring (1-5 scale)", 0.3, "Quality Scoring", false,
          format!("{}/dnsmos_sig_bak_ovr.onnx", BASE_URL)),
-        ("speaker_seg_int8.onnx", "Speaker Segmentation", "Detects when different speakers are talking", 5.2, "Speaker Detection", false,
+        ("speaker_seg_int8.onnx", "Speaker Segmentation", "Detects when different speakers are talking", 1.5, "Speaker Detection", false,
          format!("{}/speaker_seg_int8.onnx", BASE_URL)),
-        ("speaker_embed.onnx", "Speaker Embedding", "Creates voice fingerprints for speaker identification", 18.0, "Speaker Detection", false,
+        ("speaker_embed.onnx", "Speaker Embedding", "Creates voice fingerprints for speaker identification", 37.8, "Speaker Detection", false,
          format!("{}/speaker_embed.onnx", BASE_URL)),
     ];
 
@@ -209,15 +220,16 @@ pub(crate) async fn download_model(app: &AppHandle, filename: &str) -> Result<St
         .find(|m| m.filename == filename)
         .ok_or_else(|| format!("Unknown model: {}", filename))?;
 
-    let resource_dir = app.path().resource_dir()
-        .map_err(|e| format!("Cannot resolve resource dir: {}", e))?;
-    let models_dir = resource_dir.join("resources").join("models");
+    // Download into the app data dir — the resource dir is not writable for
+    // installed apps (Program Files on Windows, signed bundle on macOS)
+    let data_dir = app.path().app_data_dir()
+        .map_err(|e| format!("Cannot resolve app data dir: {}", e))?;
+    let models_dir = data_dir.join("models");
     std::fs::create_dir_all(&models_dir)
         .map_err(|e| format!("Cannot create models dir: {}", e))?;
 
     let dest = models_dir.join(filename);
 
-    // Download using reqwest (already a transitive dep via tauri-plugin-updater)
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(600))
         .build()

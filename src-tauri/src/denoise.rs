@@ -76,6 +76,7 @@ fn denoise_channel(samples: &mut Vec<f32>) {
 pub(crate) async fn denoise_deep_filter(
     app: &tauri::AppHandle,
     input: &Path,
+    input_codec: &[String],
 ) -> Result<PathBuf, String> {
     // Check if DeepFilterNet3 models are available
     let enc_path = crate::models::model_path(app, "dfn3_enc.onnx")?;
@@ -102,7 +103,7 @@ pub(crate) async fn denoise_deep_filter(
     // the encoder and decoders in one pass.
 
     // Decode input to 48kHz, preserving channels
-    let decoded = decode_to_wav_48k(app, input).await?;
+    let decoded = decode_to_wav_48k(app, input, input_codec).await?;
     let read_result = AudioBuffer::from_wav(&decoded);
     let _ = std::fs::remove_file(&decoded);
     let buf = read_result?;
@@ -116,8 +117,17 @@ pub(crate) async fn denoise_deep_filter(
     // channel boundaries.
     let channel_bufs = buf.channels_split();
     let mut processed = Vec::with_capacity(channel_bufs.len());
+    let mut frames_denoised = 0usize;
     for ch_samples in &channel_bufs {
-        processed.push(dfn3_process_channel(&mut enc_session, &mut erb_session, ch_samples)?);
+        let (out, n) = dfn3_process_channel(&mut enc_session, &mut erb_session, ch_samples)?;
+        frames_denoised += n;
+        processed.push(out);
+    }
+    // If every frame fell through to passthrough, the models didn't actually
+    // run (shape mismatch, incompatible export). Report failure so the caller
+    // falls back to RNNoise instead of shipping un-denoised audio as "best".
+    if frames_denoised == 0 {
+        return Err("DeepFilterNet3 inference processed no frames".into());
     }
     let out_buf = AudioBuffer::from_channels(&processed, 48000);
 
@@ -132,16 +142,19 @@ pub(crate) async fn denoise_deep_filter(
 }
 
 /// Run one mono channel through the DFN3 encoder → ERB decoder pipeline.
+/// Returns the output samples and how many frames inference actually
+/// processed (frames that failed inference pass through unchanged).
 fn dfn3_process_channel(
     enc_session: &mut ort::session::Session,
     erb_session: &mut ort::session::Session,
     samples: &[f32],
-) -> Result<Vec<f32>, String> {
+) -> Result<(Vec<f32>, usize), String> {
     // DeepFilterNet3 processes frames of 480 samples (10ms at 48kHz)
     // For simplicity, process in chunks and concatenate
     let frame_size = 480usize;
     let num_frames = samples.len() / frame_size;
     let mut output_samples = Vec::with_capacity(samples.len());
+    let mut frames_denoised = 0usize;
 
     // Process frames through the encoder → decoder pipeline
     for i in 0..num_frames {
@@ -180,6 +193,7 @@ fn dfn3_process_channel(
                                     let out_data = out_tensor.1;
                                     if out_data.len() >= frame_size {
                                         output_samples.extend_from_slice(&out_data[..frame_size]);
+                                        frames_denoised += 1;
                                         continue;
                                     }
                                 }
@@ -200,21 +214,25 @@ fn dfn3_process_channel(
         output_samples.extend_from_slice(&samples[num_frames * frame_size..]);
     }
 
-    Ok(output_samples)
+    Ok((output_samples, frames_denoised))
 }
 
 /// Decode any audio file to a 48 kHz WAV using FFmpeg, suitable for denoising.
+/// `input_codec` carries forced input options (e.g. `-acodec aac` for FTR
+/// containers FFmpeg cannot auto-detect); pass an empty slice otherwise.
 /// Returns the path to the decoded temp WAV file.
 pub(crate) async fn decode_to_wav_48k(
     app: &tauri::AppHandle,
     input: &Path,
+    input_codec: &[String],
 ) -> Result<PathBuf, String> {
     let tmp = std::env::temp_dir().join(format!(
         "depoaudio_dec_{}.wav",
         Uuid::new_v4().to_string().replace('-', "")
     ));
 
-    let args: Vec<String> = vec![
+    let mut args: Vec<String> = input_codec.to_vec();
+    args.extend([
         "-i".into(),
         input.to_string_lossy().to_string(),
         "-ar".into(),
@@ -223,7 +241,7 @@ pub(crate) async fn decode_to_wav_48k(
         "pcm_f32le".into(),
         "-y".into(),
         tmp.to_string_lossy().to_string(),
-    ];
+    ]);
 
     let output = app
         .shell()

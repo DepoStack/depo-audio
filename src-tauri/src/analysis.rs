@@ -39,8 +39,9 @@ pub(crate) async fn analyze_audio(
     let feed = Path::new(path);
     crate::safety::check_file_safe(feed)?;
 
-    // Probe basic metadata
-    let channels = probe_channels(app, feed).await;
+    // Probe basic metadata. A wrong fallback here is tolerable: per-channel
+    // stats for nonexistent channels read as silence and get filtered out.
+    let channels = probe_channels(app, feed).await.unwrap_or(4);
     let duration = probe_duration(app, feed).await.unwrap_or(0.0);
     let sample_rate = probe_sample_rate(app, feed).await.unwrap_or(48000);
 

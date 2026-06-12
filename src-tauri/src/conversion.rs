@@ -89,7 +89,7 @@ async fn do_convert_inner(app: &AppHandle, job: &ConvertJob, feed: &Path, fmt: &
         });
 
         // Decode input to 48kHz WAV, read into AudioBuffer, delete temp immediately
-        let decoded_wav = decode_to_wav_48k(app, &ai_feed).await?;
+        let decoded_wav = decode_to_wav_48k(app, &ai_feed, &input_codec).await?;
         let mut audio_buf = AudioBuffer::from_wav(&decoded_wav)?;
         let _ = fs::remove_file(&decoded_wav);
 
@@ -99,7 +99,7 @@ async fn do_convert_inner(app: &AppHandle, job: &ConvertJob, feed: &Path, fmt: &
                 // DeepFilterNet3 — best quality, uses ONNX models
                 // DFN3 still uses file-based path (complex STFT pipeline)
                 // Write buffer to temp, run DFN3, read result back
-                match denoise_deep_filter(app, &ai_feed).await {
+                match denoise_deep_filter(app, &ai_feed, &input_codec).await {
                     Ok(denoised) => {
                         match AudioBuffer::from_wav(&denoised) {
                             Ok(buf) => { audio_buf = buf; }
@@ -154,7 +154,9 @@ async fn do_convert_inner(app: &AppHandle, job: &ConvertJob, feed: &Path, fmt: &
         if job.auto_level && job.mode != "stereo" { default_gain } else { None },
     ).await;
 
-    let mut ffmpeg_args: Vec<String> = input_codec.clone();
+    // When AI processing ran, the feed is our own PCM WAV — forcing the
+    // original container's codec (e.g. -acodec aac for FTR) would corrupt it
+    let mut ffmpeg_args: Vec<String> = if has_ai { Vec::new() } else { input_codec.clone() };
     ffmpeg_args.extend(["-i".into(), effective_feed.to_string_lossy().to_string()]);
 
     let mut output_paths: Vec<PathBuf> = Vec::new();
@@ -162,10 +164,8 @@ async fn do_convert_inner(app: &AppHandle, job: &ConvertJob, feed: &Path, fmt: &
     match job.mode.as_str() {
         "stereo" => {
             let dst = unique_path(&out_dir.join(format!("{}{}", base, ext)));
-            let num_ch = probe_channels(app, effective_feed).await;
-            if num_ch == 0 {
-                return Err("Cannot create stereo mix: input has 0 audio channels".into());
-            }
+            let num_ch = probe_channels(app, effective_feed).await
+                .ok_or("Cannot create stereo mix: unable to determine the input's channel count")?;
             let weight = 1.0 / num_ch as f64;
 
             // Use auto-level gains if available, otherwise use manual chan_vols
@@ -186,7 +186,15 @@ async fn do_convert_inner(app: &AppHandle, job: &ConvertJob, feed: &Path, fmt: &
             }).collect();
             let mix = weights.join("+");
             let pan = format!("pan=stereo|c0={}|c1={},volume={:.1}", mix, mix, scale);
-            let all: Vec<String> = std::iter::once(pan).chain(proc.into_iter()).collect();
+            let mut all: Vec<String> = std::iter::once(pan).chain(proc.into_iter()).collect();
+            // The weight/scale pair makes this a unity-gain SUM of channels:
+            // right for turn-taking speakers, but correlated content (every
+            // mic hearing the same voice) can exceed full scale by up to
+            // 20*log10(N) dB. loudnorm true-peak-limits when normalize is on;
+            // otherwise cap peaks ourselves so the encode doesn't hard-clip.
+            if !job.normalize {
+                all.push("alimiter=limit=0.97:level=false".into());
+            }
             let mut args = ffmpeg_args.clone();
             args.extend(["-af".into(), all.join(",")]);
             args.extend(out_codec.clone());
@@ -208,7 +216,8 @@ async fn do_convert_inner(app: &AppHandle, job: &ConvertJob, feed: &Path, fmt: &
         }
 
         "split" => {
-            let num_ch = probe_channels(app, effective_feed).await;
+            let num_ch = probe_channels(app, effective_feed).await
+                .ok_or("Cannot split channels: unable to determine the input's channel count")?;
             let labels: Vec<String> = (0..num_ch as usize).map(|i| {
                 let raw = job.labels.get(i).map(|s| s.as_str()).unwrap_or("");
                 let sl = safe_label(raw);

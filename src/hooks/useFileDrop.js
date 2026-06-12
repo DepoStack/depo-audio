@@ -49,7 +49,7 @@ export default function useFileDrop(dropOverrideRef) {
     })
     // Resolve the promise in cleanup so a listener registered after a fast
     // unmount (e.g. StrictMode double-mount) is still removed
-    return () => { unlisten.then(fn => fn()) }
+    return () => { unlisten.then(fn => fn()).catch(() => {}) }
   }, [addFiles, dropOverrideRef])
 
   const onDragOver  = (e) => { e.preventDefault(); setDragOver(true) }

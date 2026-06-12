@@ -201,24 +201,21 @@ pub fn library_get(app: AppHandle, state: State<'_, AppState>) -> Vec<Case> {
 pub fn library_rename_case(app: AppHandle, state: State<'_, AppState>, case_id: String, name: String) -> bool {
     let mut lib = state.library.lock().unwrap();
     if let Some(c) = lib.cases.iter_mut().find(|c| c.id == case_id) { c.name = name; }
-    save_library(&app, &lib);
-    true
+    save_library(&app, &lib).is_ok()
 }
 
 #[tauri::command]
 pub fn library_archive_case(app: AppHandle, state: State<'_, AppState>, case_id: String, archived: bool) -> bool {
     let mut lib = state.library.lock().unwrap();
     if let Some(c) = lib.cases.iter_mut().find(|c| c.id == case_id) { c.archived = archived; }
-    save_library(&app, &lib);
-    true
+    save_library(&app, &lib).is_ok()
 }
 
 #[tauri::command]
 pub fn library_delete_case(app: AppHandle, state: State<'_, AppState>, case_id: String) -> bool {
     let mut lib = state.library.lock().unwrap();
     lib.cases.retain(|c| c.id != case_id);
-    save_library(&app, &lib);
-    true
+    save_library(&app, &lib).is_ok()
 }
 
 #[tauri::command]
@@ -227,8 +224,7 @@ pub fn library_delete_session(app: AppHandle, state: State<'_, AppState>, case_i
     if let Some(c) = lib.cases.iter_mut().find(|c| c.id == case_id) {
         c.sessions.retain(|s| s.id != session_id);
     }
-    save_library(&app, &lib);
-    true
+    save_library(&app, &lib).is_ok()
 }
 
 #[tauri::command]
@@ -270,7 +266,7 @@ pub fn library_import_file(
         source_name,
         participants: vec![Participant { label: label_trimmed.clone(), files: vec![LibFile { path, format: ext, size }] }],
     });
-    save_library(&app, &lib);
+    save_library(&app, &lib)?;
     Ok(())
 }
 

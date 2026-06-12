@@ -18,12 +18,12 @@ const DEFAULTS = {
   normalizeLufs: -16,
   normalizeTp: -1.5,
   silenceThresh: -50,
-  defaultFadeDur: 0.5,
+  fadeDur: 0.5,
   ffmpegTimeout: 300,
   maxScanDepth: 5,
   maxFileSizeGb: 2,
-  defaultOutputFormat: 'wav',
-  defaultOutputMode: 'stereo',
+  defaultOutputFormat: '',
+  defaultOutputMode: '',
 }
 
 // ── Settings presets ──────────────────────────────────────────────────────────
@@ -45,7 +45,7 @@ const SETTINGS_PRESETS = [
     id: 'gentle',
     name: 'Gentle',
     desc: 'Minimal processing, preserve original character',
-    values: { ...DEFAULTS, hpfCutoff: 40, normalizeLufs: -18, normalizeTp: -2.0, silenceThresh: -60, defaultFadeDur: 0.3 },
+    values: { ...DEFAULTS, hpfCutoff: 40, normalizeLufs: -18, normalizeTp: -2.0, silenceThresh: -60, fadeDur: 0.3 },
   },
   {
     id: 'broadcast',
@@ -274,7 +274,7 @@ export default function SettingsPanel({ open, onOpenChange, prefs }) {
     normalizeLufs, setNormalizeLufs,
     normalizeTp, setNormalizeTp,
     silenceThresh, setSilenceThresh,
-    defaultFadeDur, setDefaultFadeDur,
+    fadeDur, setFadeDur,
     ffmpegTimeout, setFfmpegTimeout,
     maxScanDepth, setMaxScanDepth,
     maxFileSizeGb, setMaxFileSizeGb,
@@ -288,7 +288,7 @@ export default function SettingsPanel({ open, onOpenChange, prefs }) {
     setNormalizeLufs(v.normalizeLufs)
     setNormalizeTp(v.normalizeTp)
     setSilenceThresh(v.silenceThresh)
-    setDefaultFadeDur(v.defaultFadeDur)
+    setFadeDur(v.fadeDur)
   }
 
   const resetAudio = () => applyPreset(SETTINGS_PRESETS[0])
@@ -368,8 +368,8 @@ export default function SettingsPanel({ open, onOpenChange, prefs }) {
               <NumberField
                 label="Fade Duration" unit="seconds"
                 hint="How long the fade in/out lasts at the start and end"
-                value={defaultFadeDur} setValue={setDefaultFadeDur}
-                min={0.1} max={5.0} step={0.1} defaultVal={DEFAULTS.defaultFadeDur}
+                value={fadeDur} setValue={setFadeDur}
+                min={0.1} max={5.0} step={0.1} defaultVal={DEFAULTS.fadeDur}
               />
             </div>
           </section>
@@ -422,10 +422,11 @@ export default function SettingsPanel({ open, onOpenChange, prefs }) {
               />
               <SelectField
                 label="Default Output Format"
-                hint="Format used when you first open the app"
-                value={defaultOutputFormat}
-                setValue={setDefaultOutputFormat}
+                hint="Format the app opens with — or remember whatever you used last"
+                value={defaultOutputFormat || 'last'}
+                setValue={v => setDefaultOutputFormat(v === 'last' ? '' : v)}
                 options={[
+                  { value: 'last', label: 'Remember last used' },
                   { value: 'wav', label: 'WAV (lossless)' },
                   { value: 'mp3', label: 'MP3 (smaller, universal)' },
                   { value: 'flac', label: 'FLAC (lossless, compressed)' },
@@ -435,10 +436,11 @@ export default function SettingsPanel({ open, onOpenChange, prefs }) {
               />
               <SelectField
                 label="Default Output Mode"
-                hint="Channel layout used when you first open the app"
-                value={defaultOutputMode}
-                setValue={setDefaultOutputMode}
+                hint="Channel layout the app opens with — or remember whatever you used last"
+                value={defaultOutputMode || 'last'}
+                setValue={v => setDefaultOutputMode(v === 'last' ? '' : v)}
                 options={[
+                  { value: 'last', label: 'Remember last used' },
                   { value: 'stereo', label: 'Mix to Stereo' },
                   { value: 'keep', label: 'Keep Original Channels' },
                   { value: 'split', label: 'Split by Speaker' },

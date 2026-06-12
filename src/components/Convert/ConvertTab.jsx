@@ -138,7 +138,10 @@ export default function ConvertTab({
             <Label>PRESET</Label>
             {PRESETS.map(p => {
               const s = p.settings
-              const active = mode === s.mode && formatOut === s.format && rate === s.rate
+              // Opus always converts at 48 kHz, so compare the effective rate
+              const effRate = formatOut === 'opus' ? '48000' : rate
+              const sEffRate = s.format === 'opus' ? '48000' : s.rate
+              const active = mode === s.mode && formatOut === s.format && effRate === sEffRate
                 && normalize === s.normalize && trim === s.trim && fade === s.fade
                 && fadeDur === s.fadeDur && hpf === s.hpf
                 && denoise === s.denoise && denoiseQuality === s.denoiseQuality

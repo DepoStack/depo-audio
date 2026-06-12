@@ -23,7 +23,11 @@ impl AudioBuffer {
             hound::SampleFormat::Int => {
                 // hound yields unshifted integers (a 16-bit sample stays in
                 // ±32768), so scale by 2^(bits-1) — i32::MAX would attenuate
-                // 16-bit PCM by ~96 dB into near-silence
+                // 16-bit PCM by ~96 dB into near-silence. Guard the shift:
+                // extensible WAVs can declare arbitrary wValidBitsPerSample.
+                if !(1..=32).contains(&spec.bits_per_sample) {
+                    return Err(format!("Unsupported WAV bit depth: {}", spec.bits_per_sample));
+                }
                 let scale = (1i64 << (spec.bits_per_sample - 1)) as f32;
                 reader
                     .into_samples::<i32>()
@@ -304,9 +308,11 @@ pub struct Prefs {
     pub max_scan_depth: u32,
     #[serde(default = "default_max_file_size_gb")]
     pub max_file_size_gb: f64,
-    #[serde(default = "default_output_format")]
+    /// Startup output format; empty string means "remember last used".
+    #[serde(default)]
     pub default_output_format: String,
-    #[serde(default = "default_output_mode")]
+    /// Startup output mode; empty string means "remember last used".
+    #[serde(default)]
     pub default_output_mode: String,
 }
 
@@ -339,8 +345,8 @@ impl Default for Prefs {
             ffmpeg_timeout: 300,
             max_scan_depth: 5,
             max_file_size_gb: 2.0,
-            default_output_format: "wav".into(),
-            default_output_mode: "stereo".into(),
+            default_output_format: "".into(),
+            default_output_mode: "".into(),
         }
     }
 }
@@ -354,8 +360,6 @@ fn default_fade_dur_setting() -> f64 { 0.5 }
 fn default_ffmpeg_timeout() -> u32 { 300 }
 fn default_max_scan_depth() -> u32 { 5 }
 fn default_max_file_size_gb() -> f64 { 2.0 }
-fn default_output_format() -> String { "wav".into() }
-fn default_output_mode() -> String { "stereo".into() }
 
 // ── App state ─────────────────────────────────────────────────────────────────
 

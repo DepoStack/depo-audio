@@ -4,9 +4,9 @@
 
 | Version | Supported |
 |---------|-----------|
-| 0.7.x   | ✅ Current |
-| 0.4.x   | ✅ Security fixes only |
-| < 0.4   | ❌ No longer supported |
+| 0.8.x   | ✅ Current |
+| 0.7.x   | ✅ Security fixes only |
+| < 0.7   | ❌ No longer supported |
 
 ## Reporting a Vulnerability
 
@@ -20,5 +20,5 @@ We aim to acknowledge reports within 48 hours and provide a fix or mitigation pl
 ## Scope
 
 DepoAudio processes audio files locally on your machine. It does not transmit audio data to any external servers. The only network activity is:
-- **Auto-update checks** — fetches `latest.json` from GitHub Releases to check for new versions
+- **Optional AI model downloads** — fetches ONNX model files from GitHub Releases when you install a model from Settings (SHA-256 verified)
 - **FFmpeg sidecars** — bundled locally, no network calls during conversion

@@ -24,7 +24,6 @@ export default function usePreferences() {
   const [normalizeLufs, setNormalizeLufs]       = useState(-16)
   const [normalizeTp, setNormalizeTp]           = useState(-1.5)
   const [silenceThresh, setSilenceThresh]       = useState(-50)
-  const [defaultFadeDur, setDefaultFadeDur]     = useState(0.5)
   const [ffmpegTimeout, setFfmpegTimeout]       = useState(300)
   const [maxScanDepth, setMaxScanDepth]         = useState(5)
   const [maxFileSizeGb, setMaxFileSizeGb]       = useState(2)
@@ -35,8 +34,8 @@ export default function usePreferences() {
   // Load prefs on mount
   useEffect(() => {
     invoke('prefs_get').then(p => {
-      // The "Default Output ..." settings promise to control what the app
-      // opens with, so they win over the last-used values
+      // A configured "Default Output ..." setting wins on startup; the empty
+      // string means "remember last used" (the out-of-box behavior)
       const startMode = p.defaultOutputMode || p.mode
       const startFormat = p.defaultOutputFormat || p.format
       if (startMode)   setMode(startMode)
@@ -46,7 +45,7 @@ export default function usePreferences() {
       if (p.labels?.length) setLabels(p.labels)
       if (p.chanVols?.length) setChanVols(p.chanVols)
       setNormalize(!!p.normalize); setTrim(!!p.trim)
-      setFade(!!p.fade); setFadeDur(p.defaultFadeDur ?? p.fadeDur ?? 0.5); setHpf(!!p.hpf)
+      setFade(!!p.fade); setFadeDur(p.fadeDur ?? 0.5); setHpf(!!p.hpf)
       setDenoise(!!p.denoise); setDenoiseQuality(p.denoiseQuality || 'fast'); setAutoLevel(!!p.autoLevel)
       setDeclip(!!p.declip); setEnhance(!!p.enhance); setDereverb(!!p.dereverb)
       // Advanced settings
@@ -54,7 +53,6 @@ export default function usePreferences() {
       if (p.normalizeLufs != null) setNormalizeLufs(p.normalizeLufs)
       if (p.normalizeTp != null) setNormalizeTp(p.normalizeTp)
       if (p.silenceThresh != null) setSilenceThresh(p.silenceThresh)
-      if (p.defaultFadeDur != null) setDefaultFadeDur(p.defaultFadeDur)
       if (p.ffmpegTimeout != null) setFfmpegTimeout(p.ffmpegTimeout)
       if (p.maxScanDepth != null) setMaxScanDepth(p.maxScanDepth)
       if (p.maxFileSizeGb != null) setMaxFileSizeGb(p.maxFileSizeGb)
@@ -71,14 +69,14 @@ export default function usePreferences() {
       invoke('prefs_set', { patch: {
         mode, format: formatOut, rate, outDir, labels, chanVols, normalize, trim, fade, fadeDur, hpf,
         denoise, denoiseQuality, autoLevel, declip, enhance, dereverb,
-        hpfCutoff, normalizeLufs, normalizeTp, silenceThresh, defaultFadeDur,
+        hpfCutoff, normalizeLufs, normalizeTp, silenceThresh,
         ffmpegTimeout, maxScanDepth, maxFileSizeGb, defaultOutputFormat, defaultOutputMode,
       } })
     }, 500)
     return () => clearTimeout(timer)
   }, [mode, formatOut, rate, outDir, labels, chanVols, normalize, trim, fade, fadeDur, hpf,
       denoise, denoiseQuality, autoLevel, declip, enhance, dereverb,
-      hpfCutoff, normalizeLufs, normalizeTp, silenceThresh, defaultFadeDur,
+      hpfCutoff, normalizeLufs, normalizeTp, silenceThresh,
       ffmpegTimeout, maxScanDepth, maxFileSizeGb, defaultOutputFormat, defaultOutputMode,
       prefsReady])
 
@@ -104,7 +102,6 @@ export default function usePreferences() {
     normalizeLufs, setNormalizeLufs,
     normalizeTp, setNormalizeTp,
     silenceThresh, setSilenceThresh,
-    defaultFadeDur, setDefaultFadeDur,
     ffmpegTimeout, setFfmpegTimeout,
     maxScanDepth, setMaxScanDepth,
     maxFileSizeGb, setMaxFileSizeGb,

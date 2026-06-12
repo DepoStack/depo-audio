@@ -10,7 +10,7 @@ DepoAudio converts audio files between formats with smart cleanup that automatic
 - **Format Support** — Stenograph SGMCA, FTR/TRM, Broadcast WAV, DigitalCAT, plus standard formats (WAV, MP3, FLAC, M4A, OGG, Opus, WMA, and more)
 - **Three Output Modes** — Mix to Stereo, Keep Original, or Split by Channel
 - **Per-Channel Controls** — Label and volume-adjust each channel
-- **Output Formats** — WAV (PCM 16-bit), MP3 (192 kbps), FLAC, Opus (64 kbps VBR)
+- **Output Formats** — WAV (PCM 16-bit), MP3 (192 kbps), FLAC, Opus (64 kbps VBR), M4A
 - **Batch Processing** — Queue and convert multiple files at once
 
 ### Smart Audio Cleanup
@@ -37,7 +37,6 @@ DepoAudio converts audio files between formats with smart cleanup that automatic
 
 ### General
 - **Dark & Light Themes** — System-aware with manual override
-- **Auto-Updates** — In-app update notifications powered by GitHub Releases
 - **100% Local** — All processing runs on your machine. No cloud, no uploads, no data leaves your computer
 
 ## Supported Formats
@@ -60,7 +59,7 @@ Download the latest preview release for your platform:
 
 > [Latest Release](https://github.com/mayes/depo-audio/releases/latest)
 
-**Note:** Preview builds are not code-signed yet. You'll need to bypass Gatekeeper on macOS or SmartScreen on Windows on first launch. See the [installation guide](https://depoaudio.com/install) for step-by-step instructions.
+**Note:** Preview builds are not code-signed yet. You'll need to bypass Gatekeeper on macOS or SmartScreen on Windows on first launch. See the [project README on GitHub](https://github.com/mayes/depo-audio#installation) for step-by-step instructions.
 
 ## Development Setup
 
@@ -106,7 +105,7 @@ DepoAudio
 │   │   ├── Library/            # Case library + CAT detection
 │   │   └── common/             # Shared components
 │   ├── hooks/                  # Custom hooks (theme, prefs, conversion)
-│   └── App.jsx                 # Main app shell (3-tab layout)
+│   └── App.jsx                 # Main app shell (4-tab layout)
 ├── src-tauri/                  # Rust backend (Tauri v2)
 │   ├── src/
 │   │   ├── analysis.rs         # Audio analysis + Smart Turn ONNX inference
