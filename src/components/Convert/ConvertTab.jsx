@@ -115,8 +115,8 @@ export default function ConvertTab({
             onClick={browseFiles}
             onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); browseFiles() } }}>
             <WaveformIcon />
-            <p className="text-[13px] font-semibold text-foreground">Drop audio files here</p>
-            <p className="text-[11px] text-[hsl(var(--sub))] text-center">or <span className="text-primary cursor-pointer hover:underline">click to browse</span> — MP3 · WAV · FLAC · M4A · OGG · Opus · WMA + court formats (SGMCA · TRM · BWF)</p>
+            <p className="text-[13px] font-semibold text-foreground">Drop audio or video files here</p>
+            <p className="text-[11px] text-[hsl(var(--sub))] text-center">or <span className="text-primary cursor-pointer hover:underline">click to browse</span> — MP3 · WAV · FLAC · M4A · OGG · Opus · WMA · court formats (SGMCA · TRM · BWF) · video (MP4 · MOV · MKV)</p>
           </div>
 
           {files.length > 0 && (
@@ -340,7 +340,9 @@ export default function ConvertTab({
                     detected={analysis?.isNarrowband ? `${analysis.sampleRate?.toLocaleString() || ''}Hz detected` : null}
                   />}
 
-                  {showDereverb && <ProcessingToggle smart name="Reduce Room Echo"
+                  {/* The DCCRN+ model is optional and self-exported; hide the
+                      toggle when it isn't installed so the switch isn't a lie */}
+                  {showDereverb && capabilities?.dereverbAvailable && <ProcessingToggle smart name="Reduce Room Echo"
                     desc="Removes reverb from large rooms or hallways"
                     checked={dereverb} onChange={setDereverb}
                   />}

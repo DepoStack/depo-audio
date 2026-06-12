@@ -22,6 +22,8 @@ export const FORMAT_ROWS = [
   { ext: '.m4a  .aac',              vendor: 'Apple / Standard AAC',                 ch: 'any',    status: 'supported',     group: 'standard' },
   { ext: '.ogg  .opus',             vendor: 'Standard / Voice-optimized',           ch: 'any',    status: 'supported',     group: 'standard' },
   { ext: '.wma  .aif  .aiff',       vendor: 'Windows Media / Apple AIFF',           ch: 'any',    status: 'supported',     group: 'standard' },
+  { ext: '.caf  .amr  .3ga',        vendor: 'Apple Core Audio / Phone recordings',  ch: 'any',    status: 'supported',     group: 'standard' },
+  { ext: '.mp4  .mov  .mkv  .avi  .webm', vendor: 'Video — audio track extracted',  ch: 'any',    status: 'supported',     group: 'standard' },
   // Court reporting formats — require conversion
   { ext: '.sgmca',                  vendor: 'Stenograph · Case CATalyst',           ch: '4 ch',   status: 'supported',     group: 'court' },
   { ext: '.trm  .ftr',              vendor: 'For The Record · FTR Gold',            ch: '4–16 ch',status: 'experimental',  group: 'court' },
@@ -32,4 +34,4 @@ export const FORMAT_ROWS = [
 ]
 
 /// Standard formats that can be played/imported without conversion
-export const STANDARD_EXTS = new Set(['wav','mp3','flac','m4a','aac','ogg','opus','wma','aif','aiff'])
+export const STANDARD_EXTS = new Set(['wav','mp3','flac','m4a','aac','ogg','opus','wma','aif','aiff','caf','amr'])

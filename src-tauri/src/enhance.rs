@@ -54,7 +54,7 @@ fn enhance_channel(
         .map_err(|e| format!("Tensor error: {}", e))?;
 
     let outputs = session
-        .run(ort::inputs!["input" => input_val])
+        .run(ort::inputs!["audio_values" => input_val])
         .map_err(|e| format!("FlashSR inference failed: {}", e))?;
 
     let first_output = outputs

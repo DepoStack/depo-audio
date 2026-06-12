@@ -332,10 +332,8 @@ async fn probe_sample_rate(app: &AppHandle, feed: &Path) -> Option<u32> {
 // ── Smart Turn detection ────────────────────────────────────────────────────
 //
 // Uses the Pipecat Smart Turn v3 ONNX model to detect speaker turn boundaries.
-// The model processes 8-second audio windows and outputs a turn-end probability.
-//
-// For now this is a placeholder that uses simple energy-based detection.
-// Full ONNX integration requires the smart-turn-v3-int8.onnx model file.
+// Each 8-second window is converted to Whisper-style log-mel features
+// (see mel.rs); the model's logit becomes a turn-completion probability.
 
 async fn detect_turns(
     app: &AppHandle,
@@ -397,20 +395,24 @@ async fn detect_turns(
             while pos + window_size <= samples.len() {
                 let window = &samples[pos..pos + window_size];
 
-                // Create input tensor [1, window_size]
-                let input = ndarray::Array2::from_shape_vec(
-                    (1, window_size),
-                    window.to_vec(),
+                // Smart Turn v3 takes Whisper-style log-mel features
+                // [1, 80, 800] under "input_features" and emits a raw logit
+                // under "logits" (sigmoid -> turn-completion probability)
+                let feats = crate::mel::log_mel_8s(window);
+                let input = ndarray::Array3::from_shape_vec(
+                    (1, crate::mel::N_MELS, crate::mel::N_FRAMES),
+                    feats,
                 ).ok();
 
                 let prob = if let Some(input_arr) = input {
                     match ort::value::Tensor::from_array(input_arr) {
                         Ok(tensor) => {
-                            match session.run(ort::inputs!["input" => tensor]) {
+                            match session.run(ort::inputs!["input_features" => tensor]) {
                                 Ok(outputs) => {
-                                    outputs.get("output")
+                                    outputs.get("logits")
                                         .and_then(|v| v.try_extract_tensor::<f32>().ok())
-                                        .and_then(|t| t.1.get(0).copied())
+                                        .and_then(|t| t.1.first().copied())
+                                        .map(|logit| 1.0 / (1.0 + (-logit).exp()))
                                         .unwrap_or(0.0)
                                 }
                                 Err(_) => 0.0,

@@ -2,6 +2,17 @@
 
 ## [0.8.0] - 2026-06-12
 
+### Added
+- **Video file support** — drop MP4, MOV, MKV, AVI, or WebM recordings (Zoom depositions, courtroom video, phone clips) and the audio track is extracted and converted like any other input. Also accepted in Merge.
+- **More phone formats** — CAF (Apple Core Audio) and AMR/3GA phone recordings.
+
+### Fixed — AI features (verified against the actual bundled models)
+- **Improve Audio Clarity (FlashSR) never ran** — the model was fed the wrong input tensor name, so every inference failed silently. Verified working: clean 3× bandwidth extension.
+- **Speaker count detection never ran** — wrong input name, and the model's output (powerset speaker classes) was being misread; it now decodes per-frame argmax over the class set.
+- **Smart Turn detection never ran** — the model expects Whisper-style log-mel spectrograms, not raw audio. Implemented the mel frontend (validated numerically against a reference implementation and the real model).
+- **Quality scoring (DNSMOS) could never have worked** — the bundled model file was a saved HTML error page, not a model. Removed; the model manager will offer it for download once a real asset is published, and downloads now reject non-model payloads.
+- **"Reduce Room Echo" no longer shows for a model that isn't installed** — the DCCRN+ de-reverb model is optional and self-exported; the toggle now appears only when it's present.
+
 ### Improved
 - **Convert tab leads with the file drop zone** — it was previously at the bottom of the page, below every setting.
 - **Readability** — muted hint text now meets WCAG AA contrast in both dark and light themes.
