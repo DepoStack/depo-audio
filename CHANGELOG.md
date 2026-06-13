@@ -3,6 +3,12 @@
 ## [Unreleased]
 
 ### Added
+- **Synced transcript editor** — proof an existing transcript against the audio or build one from scratch, right in the Player:
+  - Import **SRT, VTT, or TXT** (or paste text); every line is editable inline and autosaves per track.
+  - Timed lines **highlight and auto-scroll** as the audio plays ("Follow"); click a line's time to jump there.
+  - **Stamp** the current audio position onto a line to anchor plain text, and press **Enter** to start a new line stamped at the playhead (fast capture).
+  - Optional per-line **speaker** labels (auto-detected from "SPEAKER: text").
+  - **Export** to SRT or TXT, or copy the whole transcript to the clipboard.
 - **Player keyboard transport** — Space/K play-pause, ←/→ seek ±5s, J/L seek ±10s, ↑/↓ change speed, [ / ] previous/next track, B add bookmark (ignored while typing in a field).
 - **Playback speed** — 0.5×–2× control in the player, persists across sessions (essential for transcription).
 - **A-B loop** — set in/out points and repeat a passage for re-listening.
