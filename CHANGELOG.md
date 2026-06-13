@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+### Added
+- **Player keyboard transport** — Space/K play-pause, ←/→ seek ±5s, J/L seek ±10s, ↑/↓ change speed, [ / ] previous/next track, B add bookmark (ignored while typing in a field).
+- **Playback speed** — 0.5×–2× control in the player, persists across sessions (essential for transcription).
+- **A-B loop** — set in/out points and repeat a passage for re-listening.
+- **Bookmark notes & export** — bookmark labels are now editable (e.g. "Objection", "Exhibit 4") and the whole list copies to the clipboard as timestamped lines for a transcript.
+
 ### Improved
 - **Responsive layout** — the UI now scales to the window instead of sitting in a fixed 920px column: content fluidly uses available width (up to a comfortable 1100px for readability) and reflows cleanly down to a 720px minimum, eliminating horizontal scrolling. Default window enlarged to 1160×820 for more breathing room.
 - **Library tab** no longer permits horizontal scrolling (added the same overflow guard the other tabs already had).

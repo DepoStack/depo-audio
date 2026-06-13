@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect } from 'react'
 import { convertFileSrc } from '@tauri-apps/api/core'
 import { open } from '@tauri-apps/plugin-dialog'
-import { Play, Pause, SkipBack, SkipForward, Bookmark, X, Plus } from 'lucide-react'
+import { Play, Pause, SkipBack, SkipForward, Bookmark, X, Plus, Repeat, Copy, Check } from 'lucide-react'
 import { cn } from '../../lib/utils'
 import { CH_COLORS } from '../../constants'
 import { fmtTime } from '../../utils'
@@ -14,9 +14,14 @@ import { WaveformIcon } from '../common/Icons'
 //
 // Play any audio file directly — no conversion needed. Supports multi-channel
 // files with color-coded speaker tracks. Drop files or browse to start.
+//
+// Keyboard transport (when not typing in a field):
+//   Space / K  play-pause      ← / →  seek ±5s       J / L  seek ±10s
+//   ↑ / ↓      speed up/down    [ / ]  prev/next      B      bookmark
 
 // Extensions the player accepts — native drops can contain anything
 const AUDIO_EXTS = ['wav','mp3','flac','opus','ogg','m4a','aac','wma','aif','aiff','sgmca','trm','ftr','bwf']
+const SPEED_STEPS = [0.5, 0.75, 1, 1.25, 1.5, 2]
 
 export default function PlayerTab({ dropHandlerRef }) {
   const [tracks, setTracks] = useState([])       // { path, name, size, channels, duration, color }
@@ -25,6 +30,15 @@ export default function PlayerTab({ dropHandlerRef }) {
   const [currentTime, setCurrentTime] = useState(0)
   const [duration, setDuration] = useState(0)
   const [dragOver, setDragOver] = useState(false)
+  // Playback speed persists across sessions (transcription workflows live here)
+  const [speed, setSpeedState] = useState(() => {
+    const v = parseFloat(localStorage.getItem('player-speed'))
+    return SPEED_STEPS.includes(v) ? v : 1
+  })
+  // A-B loop points (session-only, reset per track)
+  const [loopA, setLoopA] = useState(null)
+  const [loopB, setLoopB] = useState(null)
+  const [copied, setCopied] = useState(false)
   // Bookmarks persist across sessions; validate the shape — corrupt storage
   // must not crash the tab on every launch
   const [bookmarks, setBookmarks] = useState(() => {
@@ -104,6 +118,34 @@ export default function PlayerTab({ dropHandlerRef }) {
     }
   }
 
+  // Seek by a relative amount, clamped to the track
+  const seekBy = (delta) => {
+    const a = audioRef.current
+    if (!a) return
+    a.currentTime = Math.max(0, Math.min((a.currentTime || 0) + delta, a.duration || 0))
+  }
+
+  // Apply and persist playback speed
+  const applySpeed = (s) => {
+    setSpeedState(s)
+    try { localStorage.setItem('player-speed', String(s)) } catch { /* ignore */ }
+    if (audioRef.current) audioRef.current.playbackRate = s
+  }
+  const cycleSpeed = (dir) => {
+    const idx = SPEED_STEPS.indexOf(speed)
+    const next = Math.max(0, Math.min(SPEED_STEPS.length - 1, (idx < 0 ? 2 : idx) + dir))
+    applySpeed(SPEED_STEPS[next])
+  }
+
+  // Add a bookmark at the current position
+  const addBookmark = () => {
+    if (!activeTrack) return
+    const t = audioRef.current?.currentTime ?? currentTime
+    setBookmarks(prev => [...prev, {
+      time: t, label: fmtTime(t), color: '#c44e4e', trackPath: activeTrack.path,
+    }])
+  }
+
   // Skip to next/prev track
   const skip = (dir) => {
     if (!activeTrack || tracks.length === 0) return
@@ -123,12 +165,62 @@ export default function PlayerTab({ dropHandlerRef }) {
     }
   }
 
-  // Reload on track change; keep playing if we got here by auto-advance
+  // Copy the active track's bookmarks as "MM:SS  label" lines (for transcripts)
+  const copyBookmarks = async () => {
+    if (!activeTrack) return
+    const list = bookmarks
+      .filter(b => b.trackPath === activeTrack.path)
+      .sort((a, b) => a.time - b.time)
+    const text = list.map(b => `${fmtTime(b.time)}\t${b.label || ''}`.trimEnd()).join('\n')
+    try {
+      await navigator.clipboard.writeText(text)
+      setCopied(true)
+      setTimeout(() => setCopied(false), 1500)
+    } catch { /* clipboard unavailable */ }
+  }
+
+  // Keyboard transport. Registered once; reads latest actions/state via a ref
+  // so it never goes stale and never re-binds. The ref is refreshed after each
+  // render (refs must not be written during render).
+  const actionsRef = useRef({})
+  useEffect(() => {
+    actionsRef.current = { hasTrack: !!activeTrack, toggle, seekBy, skip, cycleSpeed, addBookmark }
+  })
+  useEffect(() => {
+    const onKey = (e) => {
+      const el = e.target
+      if (el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.isContentEditable)) return
+      if (e.metaKey || e.ctrlKey || e.altKey) return
+      const a = actionsRef.current
+      if (!a.hasTrack) return
+      switch (e.key) {
+        case ' ': case 'k': case 'K': e.preventDefault(); a.toggle(); break
+        case 'ArrowLeft': e.preventDefault(); a.seekBy(-5); break
+        case 'ArrowRight': e.preventDefault(); a.seekBy(5); break
+        case 'j': case 'J': e.preventDefault(); a.seekBy(-10); break
+        case 'l': case 'L': e.preventDefault(); a.seekBy(10); break
+        case 'ArrowUp': e.preventDefault(); a.cycleSpeed(1); break
+        case 'ArrowDown': e.preventDefault(); a.cycleSpeed(-1); break
+        case '[': e.preventDefault(); a.skip(-1); break
+        case ']': e.preventDefault(); a.skip(1); break
+        case 'b': case 'B': e.preventDefault(); a.addBookmark(); break
+        default: break
+      }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [])
+
+  // Reload on track change; keep playing if we got here by auto-advance.
+  // Reset the A-B loop since its points belong to the previous track.
   useEffect(() => {
     if (activeTrack && audioRef.current) {
       audioRef.current.load()
+      audioRef.current.playbackRate = speed
       setCurrentTime(0)
       setDuration(0)
+      setLoopA(null)
+      setLoopB(null)
       if (autoAdvanceRef.current) {
         autoAdvanceRef.current = false
         audioRef.current.play().then(() => setPlaying(true)).catch(() => {})
@@ -138,6 +230,7 @@ export default function PlayerTab({ dropHandlerRef }) {
   }, [activeTrack?.path])
 
   const audioSrc = activeTrack ? convertFileSrc(activeTrack.path) : ''
+  const trackBookmarks = activeTrack ? bookmarks.filter(b => b.trackPath === activeTrack.path) : []
 
   return (
     <>
@@ -162,8 +255,15 @@ export default function PlayerTab({ dropHandlerRef }) {
                 </div>
 
                 <audio ref={audioRef} src={audioSrc} preload="metadata"
-                  onLoadedMetadata={e => setDuration(e.target.duration)}
-                  onTimeUpdate={e => setCurrentTime(e.target.currentTime)}
+                  onLoadedMetadata={e => { setDuration(e.target.duration); e.target.playbackRate = speed }}
+                  onTimeUpdate={e => {
+                    const t = e.target.currentTime
+                    setCurrentTime(t)
+                    // A-B loop: jump back to A when B is reached
+                    if (loopA != null && loopB != null && loopB > loopA && t >= loopB) {
+                      e.target.currentTime = loopA
+                    }
+                  }}
                   onEnded={() => {
                     setPlaying(false)
                     // Continue through the playlist; stop after the last track
@@ -183,24 +283,24 @@ export default function PlayerTab({ dropHandlerRef }) {
                   duration={duration}
                   height={56}
                   onSeek={t => { if (audioRef.current) audioRef.current.currentTime = t }}
-                  markers={bookmarks.filter(b => b.trackPath === activeTrack?.path)}
+                  markers={trackBookmarks}
                 />
 
                 <div className="flex items-center justify-between">
                   <span className="font-mono text-[11px] text-[hsl(var(--sub))] min-w-[45px]">{fmtTime(currentTime)}</span>
                   <div className="flex items-center gap-2">
                     <button
-                      className="w-8 h-8 rounded-full flex items-center justify-center text-[hsl(var(--text2))] transition-colors hover:bg-secondary hover:text-foreground"
+                      className="w-8 h-8 rounded-full flex items-center justify-center text-[hsl(var(--text2))] transition-colors hover:bg-secondary hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                       onClick={() => skip(-1)}
-                      title="Previous"
+                      title="Previous track ( [ )"
                       aria-label="Previous track"
                     >
                       <SkipBack size={14} fill="currentColor" />
                     </button>
                     <button
-                      className="w-11 h-11 bg-primary text-white rounded-full flex items-center justify-center transition-colors hover:bg-gold-hi"
+                      className="w-11 h-11 bg-primary text-white rounded-full flex items-center justify-center transition-colors hover:bg-gold-hi focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                       onClick={toggle}
-                      title={playing ? 'Pause' : 'Play'}
+                      title={playing ? 'Pause (Space)' : 'Play (Space)'}
                       aria-label={playing ? 'Pause' : 'Play'}
                     >
                       {playing
@@ -208,9 +308,9 @@ export default function PlayerTab({ dropHandlerRef }) {
                         : <Play size={16} fill="currentColor" />}
                     </button>
                     <button
-                      className="w-8 h-8 rounded-full flex items-center justify-center text-[hsl(var(--text2))] transition-colors hover:bg-secondary hover:text-foreground"
+                      className="w-8 h-8 rounded-full flex items-center justify-center text-[hsl(var(--text2))] transition-colors hover:bg-secondary hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                       onClick={() => skip(1)}
-                      title="Next"
+                      title="Next track ( ] )"
                       aria-label="Next track"
                     >
                       <SkipForward size={14} fill="currentColor" />
@@ -218,21 +318,66 @@ export default function PlayerTab({ dropHandlerRef }) {
                   </div>
                   <span className="font-mono text-[11px] text-[hsl(var(--sub))] min-w-[45px] text-right">{fmtTime(duration)}</span>
                   <button
-                    className="w-8 h-8 rounded-full flex items-center justify-center text-[hsl(var(--text2))] transition-colors hover:bg-secondary hover:text-foreground"
-                    title="Add bookmark at current position"
+                    className="w-8 h-8 rounded-full flex items-center justify-center text-[hsl(var(--text2))] transition-colors hover:bg-secondary hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                    title="Add bookmark at current position (B)"
                     aria-label="Add bookmark"
-                    onClick={() => {
-                      if (!activeTrack || !currentTime) return
-                      setBookmarks(prev => [...prev, {
-                        time: currentTime,
-                        label: `${fmtTime(currentTime)}`,
-                        color: '#c44e4e',
-                        trackPath: activeTrack.path,
-                      }])
-                    }}
+                    onClick={addBookmark}
                   >
                     <Bookmark size={14} />
                   </button>
+                </div>
+
+                {/* Secondary transport: playback speed + A-B loop */}
+                <div className="flex items-center justify-between flex-wrap gap-2 pt-0.5">
+                  <div className="flex items-center gap-1">
+                    <span className="text-[9.5px] font-mono tracking-wider uppercase text-[hsl(var(--sub))] mr-1">Speed</span>
+                    {SPEED_STEPS.map(s => (
+                      <button
+                        key={s}
+                        onClick={() => applySpeed(s)}
+                        aria-pressed={speed === s}
+                        title={`${s}× playback speed`}
+                        className={cn(
+                          'px-1.5 py-0.5 rounded text-[10px] font-mono transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring',
+                          speed === s ? 'bg-[hsl(var(--gold-dim))] text-primary' : 'text-[hsl(var(--sub))] hover:text-foreground'
+                        )}
+                      >
+                        {s}×
+                      </button>
+                    ))}
+                  </div>
+                  <div className="flex items-center gap-1">
+                    <Repeat size={11} className={cn('mr-0.5', loopA != null && loopB != null ? 'text-primary' : 'text-[hsl(var(--sub))]')} />
+                    <button
+                      onClick={() => setLoopA(currentTime)}
+                      title="Set loop start to current position"
+                      className={cn(
+                        'px-1.5 py-0.5 rounded text-[10px] font-mono transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring',
+                        loopA != null ? 'bg-[hsl(var(--gold-dim))] text-primary' : 'text-[hsl(var(--sub))] hover:text-foreground'
+                      )}
+                    >
+                      {loopA != null ? `A ${fmtTime(loopA)}` : 'Set A'}
+                    </button>
+                    <button
+                      onClick={() => setLoopB(currentTime)}
+                      title="Set loop end to current position"
+                      className={cn(
+                        'px-1.5 py-0.5 rounded text-[10px] font-mono transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring',
+                        loopB != null ? 'bg-[hsl(var(--gold-dim))] text-primary' : 'text-[hsl(var(--sub))] hover:text-foreground'
+                      )}
+                    >
+                      {loopB != null ? `B ${fmtTime(loopB)}` : 'Set B'}
+                    </button>
+                    {(loopA != null || loopB != null) && (
+                      <button
+                        onClick={() => { setLoopA(null); setLoopB(null) }}
+                        title="Clear A-B loop"
+                        className="px-1.5 py-0.5 rounded text-[10px] font-mono text-[hsl(var(--sub))] hover:text-destructive transition-colors"
+                      >
+                        clear
+                      </button>
+                    )}
+                  </div>
                 </div>
               </div>
             ) : (
@@ -241,32 +386,47 @@ export default function PlayerTab({ dropHandlerRef }) {
               </p>
             )}
 
-            {/* Bookmarks for active track */}
-            {activeTrack && bookmarks.filter(b => b.trackPath === activeTrack.path).length > 0 && (
+            {/* Bookmarks for active track — editable labels + export */}
+            {activeTrack && trackBookmarks.length > 0 && (
               <div className="px-4 py-2 border-t border-border/60">
-                <span className="font-mono text-[9.5px] font-medium tracking-[1.2px] uppercase text-[hsl(var(--sub))] block mb-1.5">BOOKMARKS</span>
-                <div className="flex flex-wrap gap-1.5">
-                  {bookmarks.filter(b => b.trackPath === activeTrack.path).map((b, i) => (
-                    <div key={i} className="flex items-center gap-1 px-2 py-0.5 bg-secondary rounded-md text-xs">
-                      <button
-                        className="font-mono text-[11px] text-foreground hover:text-primary transition-colors"
-                        onClick={() => { if (audioRef.current) audioRef.current.currentTime = b.time }}
-                      >
-                        {b.label}
-                      </button>
-                      <button
-                        className="text-[hsl(var(--sub))] hover:text-destructive transition-colors"
-                        aria-label="Remove bookmark"
-                        onClick={() => {
-                          const trackBms = bookmarks.filter(b => b.trackPath === activeTrack.path)
-                          const toRemove = trackBms[i]
-                          setBookmarks(prev => prev.filter(b => b !== toRemove))
-                        }}
-                      >
-                        <X size={10} />
-                      </button>
-                    </div>
-                  ))}
+                <div className="flex items-center justify-between mb-1.5">
+                  <span className="font-mono text-[9.5px] font-medium tracking-[1.2px] uppercase text-[hsl(var(--sub))]">Bookmarks</span>
+                  <button
+                    onClick={copyBookmarks}
+                    title="Copy bookmarks to clipboard"
+                    className="flex items-center gap-1 text-[10px] text-[hsl(var(--sub))] hover:text-foreground transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring rounded px-1"
+                  >
+                    {copied ? <><Check size={11} /> Copied</> : <><Copy size={11} /> Copy</>}
+                  </button>
+                </div>
+                <div className="flex flex-col gap-1">
+                  {trackBookmarks
+                    .slice()
+                    .sort((a, b) => a.time - b.time)
+                    .map((b) => (
+                      <div key={`${b.time}-${b.trackPath}`} className="flex items-center gap-2 group">
+                        <button
+                          className="font-mono text-[11px] text-primary hover:underline shrink-0 w-12 text-left focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring rounded"
+                          title="Jump to bookmark"
+                          onClick={() => { if (audioRef.current) audioRef.current.currentTime = b.time }}
+                        >
+                          {fmtTime(b.time)}
+                        </button>
+                        <input
+                          className="flex-1 min-w-0 bg-transparent border-none p-0 text-[11px] text-foreground focus:text-primary focus:outline-none"
+                          value={b.label}
+                          placeholder="Add a note…"
+                          onChange={e => setBookmarks(prev => prev.map(x => x === b ? { ...x, label: e.target.value } : x))}
+                        />
+                        <button
+                          className="text-[hsl(var(--sub))] opacity-0 group-hover:opacity-100 hover:text-destructive transition-all shrink-0"
+                          aria-label="Remove bookmark"
+                          onClick={() => setBookmarks(prev => prev.filter(x => x !== b))}
+                        >
+                          <X size={10} />
+                        </button>
+                      </div>
+                    ))}
                 </div>
               </div>
             )}
@@ -361,6 +521,13 @@ export default function PlayerTab({ dropHandlerRef }) {
               </div>
             )}
           </Card>
+
+          {/* Keyboard hint */}
+          {tracks.length > 0 && (
+            <p className="text-[10px] text-[hsl(var(--sub))] text-center font-mono">
+              Space play · ←/→ ±5s · J/L ±10s · ↑/↓ speed · [ / ] track · B bookmark
+            </p>
+          )}
 
         </div>
       </div>
