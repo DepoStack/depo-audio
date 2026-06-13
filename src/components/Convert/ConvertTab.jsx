@@ -103,7 +103,7 @@ export default function ConvertTab({
   return (
     <>
       <div className="flex-1 overflow-y-auto overflow-x-hidden scrollbar-thin scrollbar-thumb-border scrollbar-track-transparent">
-        <div className="max-w-[920px] mx-auto px-7 py-5 flex flex-col gap-3.5">
+        <div className="w-full max-w-[1100px] mx-auto px-5 md:px-8 py-5 flex flex-col gap-3.5">
 
           {/* ── FILES (drop zone + queue) — the workflow starts here ─────── */}
           <div

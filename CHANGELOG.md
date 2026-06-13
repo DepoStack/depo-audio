@@ -1,5 +1,12 @@
 # Changelog
 
+## [Unreleased]
+
+### Improved
+- **Responsive layout** — the UI now scales to the window instead of sitting in a fixed 920px column: content fluidly uses available width (up to a comfortable 1100px for readability) and reflows cleanly down to a 720px minimum, eliminating horizontal scrolling. Default window enlarged to 1160×820 for more breathing room.
+- **Library tab** no longer permits horizontal scrolling (added the same overflow guard the other tabs already had).
+
+
 ## [0.8.0] - 2026-06-12
 
 ### Added

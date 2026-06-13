@@ -14,9 +14,9 @@
       {
         "label": "main",
         "title": "DepoAudio",
-        "width": 980,
-        "height": 780,
-        "minWidth": 760,
+        "width": 1160,
+        "height": 820,
+        "minWidth": 720,
         "minHeight": 600,
         "resizable": true,
         "fullscreen": false,

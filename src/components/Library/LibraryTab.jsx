@@ -85,7 +85,7 @@ export default function LibraryTab({ cases, setCases, search, setSearch, labels,
   }
 
   return (
-    <div className="flex-1 overflow-y-auto flex flex-col min-h-0">
+    <div className="flex-1 overflow-y-auto overflow-x-hidden flex flex-col min-h-0">
       <div className="flex items-center gap-2.5 px-6 py-3.5 border-b border-border bg-[hsl(var(--surface))] shrink-0">
         <div className="flex-1 max-w-[400px] relative flex items-center">
           <Search size={14} className="absolute left-2.5 text-[hsl(var(--sub))]" />

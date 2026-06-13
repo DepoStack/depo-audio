@@ -142,7 +142,7 @@ export default function PlayerTab({ dropHandlerRef }) {
   return (
     <>
       <div className="flex-1 overflow-y-auto overflow-x-hidden">
-        <div className="max-w-[920px] mx-auto px-7 py-5 flex flex-col gap-3.5">
+        <div className="w-full max-w-[1100px] mx-auto px-5 md:px-8 py-5 flex flex-col gap-3.5">
 
           {/* ── Now Playing (hidden until something is queued) ─────────── */}
           {tracks.length > 0 && (
