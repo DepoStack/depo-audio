@@ -129,7 +129,10 @@ fn verify_model_hash(path: &PathBuf, expected: &str) -> Result<(), String> {
         hasher.update(&buf[..n]);
     }
 
-    let hash = format!("{:x}", hasher.finalize());
+    // sha2 0.11's finalize() returns an `Array` that doesn't implement
+    // LowerHex, so hex-encode the digest bytes explicitly.
+    let digest = hasher.finalize();
+    let hash: String = digest.iter().map(|b| format!("{:02x}", b)).collect();
     if hash != expected {
         return Err(format!(
             "Model integrity check failed for {}. Expected hash prefix {}..., got {}...",

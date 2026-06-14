@@ -73,6 +73,8 @@
 ### Changed
 - CI installs dependencies with plain `npm ci` — the eslint peer-dependency conflict was fixed by upgrading `eslint-plugin-react-hooks`, so `--legacy-peer-deps` is gone.
 - Dependency refresh (in-range updates for Radix UI, Tauri plugins, React, Vite tooling).
+- **Vite 8** (from 6) — the build toolchain moved to Vite 8 (Rolldown-based); `esbuild` is now an explicit dev dependency since Vite no longer bundles it.
+- **sha2 0.11** (from 0.10) — model-integrity hashing updated for the new digest API (explicit hex encoding of the digest).
 
 ## [0.7.0] - 2026-03-24
 
