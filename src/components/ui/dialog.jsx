@@ -23,7 +23,7 @@ const DialogClose = React.forwardRef(({ className, children, asChild, ...props }
       ref={ref}
       className={cn(
         'rounded-md p-1.5 text-[hsl(var(--sub))] transition-colors hover:text-foreground hover:bg-secondary',
-        'focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring',
+        'focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring',
         className
       )}
       {...props}

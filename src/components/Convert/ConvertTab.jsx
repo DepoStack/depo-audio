@@ -111,7 +111,7 @@ export default function ConvertTab({
             role="button"
             tabIndex={0}
             aria-label="Add audio files: drop them here or press Enter to browse"
-            className={`flex flex-col items-center justify-center gap-2 py-8 px-6 border-2 border-dashed rounded-xl cursor-pointer transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${dragOver ? 'border-primary bg-[hsl(var(--gold-dim))]' : 'border-border/60 hover:border-border hover:bg-secondary/30'}`}
+            className={`flex flex-col items-center justify-center gap-2 py-8 px-6 border-2 border-dashed rounded-xl cursor-pointer transition-colors focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring ${dragOver ? 'border-primary bg-[hsl(var(--gold-dim))]' : 'border-border/60 hover:border-border hover:bg-secondary/30'}`}
             onDragOver={onDragOver} onDragLeave={onDragLeave} onDrop={onDrop}
             onClick={browseFiles}
             onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); browseFiles() } }}>
@@ -177,7 +177,7 @@ export default function ConvertTab({
                 {MODES.map(m => (
                   <button key={m.id}
                     aria-pressed={mode===m.id}
-                    className={`flex items-center gap-3 p-2.5 rounded-lg border transition-colors cursor-pointer focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring ${mode===m.id ? 'border-primary bg-[hsl(var(--gold-dim))]' : 'border-transparent hover:bg-secondary/50'}`}
+                    className={`flex items-center gap-3 p-2.5 rounded-lg border transition-colors cursor-pointer focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring ${mode===m.id ? 'border-primary bg-[hsl(var(--gold-dim))]' : 'border-transparent hover:bg-secondary/50'}`}
                     onClick={() => setMode(m.id)}>
                     <ModeIcon id={m.id} active={mode===m.id} />
                     <div className="flex flex-col items-start">
@@ -379,7 +379,7 @@ export default function ConvertTab({
                     extra={fade && (
                       <span className="inline-flex items-center gap-1 mt-0.5" onClick={e => e.preventDefault()}>
                         <span className="text-[hsl(var(--sub))]">—</span>
-                        <input type="number" className="w-[42px] bg-secondary border border-border rounded px-1 py-px font-mono text-[11px] text-foreground text-center focus:border-primary outline-none"
+                        <input type="number" className="w-[42px] bg-secondary border border-border rounded px-1 py-px font-mono text-[11px] text-foreground text-center focus:border-primary outline-hidden"
                           min="0.1" max="5" step="0.1" value={fadeDur}
                           onChange={e => setFadeDur(Math.max(0.1, parseFloat(e.target.value)||0.5))} />
                         <span className="text-[11px] text-[hsl(var(--sub))]">s</span>
@@ -451,7 +451,7 @@ export default function ConvertTab({
             </div>
             <div className="min-w-[130px]">
               <Label className="mb-1 block">SAMPLE RATE</Label>
-              <select className="flex h-8 w-full rounded-lg border border-border bg-card px-2.5 py-1.5 text-xs text-foreground transition-colors focus:outline-none focus:border-primary cursor-pointer"
+              <select className="flex h-8 w-full rounded-lg border border-border bg-card px-2.5 py-1.5 text-xs text-foreground transition-colors focus:outline-hidden focus:border-primary cursor-pointer"
                 value={formatOut === 'opus' ? '48000' : rate}
                 disabled={formatOut === 'opus'}
                 title={formatOut === 'opus' ? 'Opus is always 48 kHz' : ''}
@@ -467,7 +467,7 @@ export default function ConvertTab({
                 {FORMATS_OUT.map(f => (
                   <button key={f.id} title={f.desc}
                     aria-pressed={formatOut===f.id}
-                    className={`px-2.5 py-1.5 text-[11px] font-semibold rounded-md transition-colors cursor-pointer focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring ${formatOut===f.id ? 'bg-card text-foreground shadow-sm' : 'text-[hsl(var(--sub))] hover:text-[hsl(var(--text2))]'}`}
+                    className={`px-2.5 py-1.5 text-[11px] font-semibold rounded-md transition-colors cursor-pointer focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring ${formatOut===f.id ? 'bg-card text-foreground shadow-xs' : 'text-[hsl(var(--sub))] hover:text-[hsl(var(--text2))]'}`}
                     onClick={() => setFormatOut(f.id)}>{f.label}</button>
                 ))}
               </div>
@@ -479,7 +479,7 @@ export default function ConvertTab({
                   {MP3_BITRATES.map(b => (
                     <button key={b.value} title={b.desc}
                       aria-pressed={mp3Bitrate===b.value}
-                      className={`px-2.5 py-1.5 text-[11px] font-semibold rounded-md transition-colors cursor-pointer focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring ${mp3Bitrate===b.value ? 'bg-card text-foreground shadow-sm' : 'text-[hsl(var(--sub))] hover:text-[hsl(var(--text2))]'}`}
+                      className={`px-2.5 py-1.5 text-[11px] font-semibold rounded-md transition-colors cursor-pointer focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring ${mp3Bitrate===b.value ? 'bg-card text-foreground shadow-xs' : 'text-[hsl(var(--sub))] hover:text-[hsl(var(--text2))]'}`}
                       onClick={() => setMp3Bitrate(b.value)}>{b.label}</button>
                   ))}
                 </div>

@@ -244,7 +244,7 @@ export default function Transcript({ trackPath, currentTime, playing, onSeek }) 
             Import a transcript (SRT, VTT, or TXT) to proof against the audio, paste text below, or start typing a new one.
           </p>
           <textarea
-            className="w-full h-24 bg-secondary/40 border border-border rounded-md p-2.5 text-[12px] text-foreground resize-y focus:outline-none focus:border-primary"
+            className="w-full h-24 bg-secondary/40 border border-border rounded-md p-2.5 text-[12px] text-foreground resize-y focus:outline-hidden focus:border-primary"
             placeholder="Paste transcript text here…"
             value={paste}
             onChange={e => setPaste(e.target.value)}
@@ -276,7 +276,7 @@ export default function Transcript({ trackPath, currentTime, playing, onSeek }) 
                       <button
                         onClick={() => onSeek(s.start)}
                         title="Jump to this point"
-                        className="font-mono text-[10px] text-primary hover:underline focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring rounded"
+                        className="font-mono text-[10px] text-primary hover:underline focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring rounded"
                       >
                         {fmtTime(s.start)}
                       </button>
@@ -293,7 +293,7 @@ export default function Transcript({ trackPath, currentTime, playing, onSeek }) 
 
                   {/* Speaker (optional) */}
                   <input
-                    className="shrink-0 w-16 bg-transparent border-none p-0 pt-0.5 text-[10px] font-mono text-[hsl(var(--text2))] focus:text-primary focus:outline-none placeholder:text-[hsl(var(--sub))]"
+                    className="shrink-0 w-16 bg-transparent border-none p-0 pt-0.5 text-[10px] font-mono text-[hsl(var(--text2))] focus:text-primary focus:outline-hidden placeholder:text-[hsl(var(--sub))]"
                     value={s.speaker}
                     placeholder="speaker"
                     onChange={e => update(s.id, { speaker: e.target.value })}
@@ -302,7 +302,7 @@ export default function Transcript({ trackPath, currentTime, playing, onSeek }) 
                   {/* Text */}
                   <textarea
                     rows={1}
-                    className="flex-1 min-w-0 bg-transparent border-none p-0 text-[12px] leading-snug text-foreground resize-none focus:outline-none overflow-hidden"
+                    className="flex-1 min-w-0 bg-transparent border-none p-0 text-[12px] leading-snug text-foreground resize-none focus:outline-hidden overflow-hidden"
                     value={s.text}
                     placeholder="…"
                     ref={el => { if (el) { el.style.height = 'auto'; el.style.height = el.scrollHeight + 'px' } }}

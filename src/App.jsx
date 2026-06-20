@@ -83,7 +83,7 @@ export default function App() {
     <Tabs value={tab} onValueChange={setTab} className="flex flex-col h-screen overflow-hidden">
       {/* ── Topbar */}
       <header
-        className="h-[var(--topbar-h)] shrink-0 bg-[hsl(var(--surface))] border-b border-border grid grid-cols-[1fr_auto_1fr] items-center px-5 select-none"
+        className="h-(--topbar-h) shrink-0 bg-[hsl(var(--surface))] border-b border-border grid grid-cols-[1fr_auto_1fr] items-center px-5 select-none"
         data-tauri-drag-region
       >
         <div className="flex items-center gap-2.5">
