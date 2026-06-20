@@ -80,7 +80,10 @@ function toPlainText(segs) {
 }
 
 function toSRT(segs) {
-  const timed = segs.filter(s => s.start != null)
+  // Stamped lines can be added out of order, so sort by start time — otherwise
+  // a cue's end (taken from the next line) could precede its start, producing
+  // negative/overlapping durations.
+  const timed = segs.filter(s => s.start != null).sort((a, b) => a.start - b.start)
   return timed.map((s, idx) => {
     const end = timed[idx + 1] ? timed[idx + 1].start : s.start + 3
     const body = (s.speaker ? `${s.speaker}: ` : '') + s.text

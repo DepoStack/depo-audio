@@ -114,6 +114,10 @@ pub(crate) async fn run_ffmpeg_with_timeout(app: &AppHandle, args: Vec<String>, 
     let started = std::time::Instant::now();
     let timeout = std::time::Duration::from_secs(timeout_secs);
 
+    // Some(Some(0)) = clean exit; Some(_) = non-zero/signal kill; None = the
+    // event stream closed without a Terminated event ever arriving.
+    let mut exit_status: Option<Option<i32>> = None;
+
     loop {
         // Bound the wait so a silently wedged FFmpeg is still killed
         let remaining = match timeout.checked_sub(started.elapsed()) {
@@ -145,20 +149,34 @@ pub(crate) async fn run_ffmpeg_with_timeout(app: &AppHandle, args: Vec<String>, 
                 }
             }
             CommandEvent::Terminated(status) => {
-                if status.code != Some(0) {
-                    let lines: Vec<&str> = stderr_acc.lines()
-                        .filter(|l| !l.starts_with("ffmpeg version") && !l.starts_with("built") && !l.starts_with("lib") && !l.starts_with("configuration:"))
-                        .collect();
-                    let msg = lines.iter().rev().take(4).cloned().collect::<Vec<_>>().into_iter().rev().collect::<Vec<_>>().join(" | ");
-                    // Sanitize: strip file paths from error messages
-                    let sanitized = msg.replace(|c: char| c == '/' || c == '\\', "_")
-                        .chars().take(300).collect::<String>();
-                    return Err(sanitized);
-                }
-                return Ok(());
+                exit_status = Some(status.code);
+                break;
             }
             _ => {}
         }
     }
-    Ok(())
+
+    match exit_status {
+        Some(Some(0)) => Ok(()),
+        // Non-zero exit OR a signal kill (code == None): surface the tail of
+        // stderr so the failure isn't reported as success.
+        Some(_) => {
+            let lines: Vec<&str> = stderr_acc.lines()
+                .filter(|l| !l.starts_with("ffmpeg version") && !l.starts_with("built") && !l.starts_with("lib") && !l.starts_with("configuration:"))
+                .collect();
+            let msg = lines.iter().rev().take(4).cloned().collect::<Vec<_>>().into_iter().rev().collect::<Vec<_>>().join(" | ");
+            // Sanitize: strip file paths from error messages
+            let sanitized = msg.replace(|c: char| c == '/' || c == '\\', "_")
+                .chars().take(300).collect::<String>();
+            if sanitized.trim().is_empty() {
+                Err("FFmpeg exited abnormally (no error output)".into())
+            } else {
+                Err(sanitized)
+            }
+        }
+        // The process channel closed without a Terminated event — treat as a
+        // failure rather than silently reporting success on a possibly partial
+        // or missing output file.
+        None => Err("FFmpeg exited without reporting a status".into()),
+    }
 }

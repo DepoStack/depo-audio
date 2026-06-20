@@ -60,9 +60,11 @@ fn denoise_channel(samples: &mut Vec<f32>) {
         // Process frame — output written to frame, returns VAD probability
         let _vad = state.process_frame(&mut frame, &input_frame);
 
-        // Write back, converting from i16 scale to f32 [-1, 1]
+        // Write back, converting from i16 scale to f32. RNNoise can emit peaks
+        // slightly above the input scale, so clamp to [-1, 1] — keep/split
+        // modes have no limiter after denoise and would otherwise hard-clip.
         for j in 0..FRAME_SIZE {
-            samples[offset + j] = frame[j] / 32767.0;
+            samples[offset + j] = (frame[j] / 32767.0).clamp(-1.0, 1.0);
         }
     }
 

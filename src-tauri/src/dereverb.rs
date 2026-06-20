@@ -84,9 +84,16 @@ fn dereverb_channel(
                         let out_data = out_tensor.1;
                         let actual_len = (end - pos).min(out_data.len());
 
+                        // Triangular overlap-add window. The very first frame's
+                        // rising edge has no earlier frame to sum with, so its
+                        // lead-in would be attenuated to silence after weight
+                        // normalization — give the first frame full weight on
+                        // its lead-in. (The trailing edge is always covered by
+                        // the next frame's rising ramp, summing to unity.)
+                        let is_first = pos == 0;
                         for j in 0..actual_len {
                             let w = if j < hop {
-                                j as f32 / hop as f32
+                                if is_first { 1.0 } else { j as f32 / hop as f32 }
                             } else {
                                 1.0 - ((j - hop) as f32 / hop as f32).min(1.0)
                             };

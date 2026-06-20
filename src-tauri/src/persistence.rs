@@ -29,30 +29,34 @@ pub(crate) fn load_library(app: &AppHandle) -> Library {
         .unwrap_or_default()
 }
 
-pub(crate) fn save_library(app: &AppHandle, lib: &Library) -> Result<(), String> {
-    let path = lib_path(app);
+/// Write bytes to `path` atomically: a uniquely-named temp file is written and
+/// fsync'd, then renamed over the destination. Readers never observe a
+/// truncated or partial file, and a crash mid-write leaves the previous file
+/// intact. Falls back to a direct write so data is never lost outright.
+pub(crate) fn atomic_write(path: &std::path::Path, bytes: &[u8]) -> Result<(), String> {
     if let Some(parent) = path.parent() { let _ = fs::create_dir_all(parent); }
-    let json = serde_json::to_string_pretty(lib)
-        .map_err(|e| format!("Failed to serialize library: {}", e))?;
-    // Atomic replace: write a uniquely-named temp file, then rename over
-    // library.json. Readers never observe a truncated or partial file,
-    // and a crash mid-write leaves the previous library intact.
-    let tmp = path.with_extension(format!("json.{}.tmp", std::process::id()));
+    let tmp = path.with_extension(format!("tmp.{}", std::process::id()));
     let wrote = fs::OpenOptions::new()
         .write(true).create(true).truncate(true)
         .open(&tmp)
         .and_then(|mut file| {
-            file.write_all(json.as_bytes())?;
+            file.write_all(bytes)?;
             file.sync_all()
         })
-        .and_then(|_| fs::rename(&tmp, &path));
+        .and_then(|_| fs::rename(&tmp, path));
     if let Err(primary) = wrote {
         let _ = fs::remove_file(&tmp);
-        // Fallback: direct write (better than losing the data entirely)
-        fs::write(&path, &json)
-            .map_err(|_| format!("Failed to save library: {}", primary))?;
+        fs::write(path, bytes)
+            .map_err(|_| format!("Failed to write {}: {}", path.display(), primary))?;
     }
     Ok(())
+}
+
+pub(crate) fn save_library(app: &AppHandle, lib: &Library) -> Result<(), String> {
+    let path = lib_path(app);
+    let json = serde_json::to_string_pretty(lib)
+        .map_err(|e| format!("Failed to serialize library: {}", e))?;
+    atomic_write(&path, json.as_bytes())
 }
 
 /// Find a case by name (case-insensitive), regardless of archived state. Both
@@ -65,7 +69,7 @@ pub(crate) fn find_case_idx(cases: &[Case], name: &str) -> Option<usize> {
 }
 
 pub(crate) fn save_to_library(app: &AppHandle, state: &tauri::State<'_, AppState>, job: &ConvertJob, files: &[OutputFile]) {
-    let mut lib = state.library.lock().unwrap();
+    let mut lib = state.library.lock().unwrap_or_else(|e| e.into_inner());
 
     let source_name = basename(&job.src_path);
     let case_name = job.case_name.clone()

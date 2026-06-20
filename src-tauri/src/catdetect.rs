@@ -88,15 +88,18 @@ pub(crate) fn scan_cat_jobs(base_path: &str) -> Vec<CatJob> {
         return Vec::new();
     }
 
-    // Security: only allow scanning paths under user's home/documents or known CAT dirs
+    // Security: only allow scanning paths under the user's home/documents or
+    // the concrete CAT install directories — never the whole C:\ drive. Roots
+    // are canonicalized so the comparison matches `base` (also canonicalized),
+    // including Windows \\?\ verbatim prefixes.
     let allowed_roots: Vec<PathBuf> = {
         let home = dirs_next::home_dir().unwrap_or_else(|| PathBuf::from("/"));
         let docs = dirs_next::document_dir().unwrap_or_else(|| home.join("Documents"));
-        vec![
-            home.clone(),
-            docs,
-            PathBuf::from("C:\\"),  // Windows CAT software often installs at C:\
-        ]
+        let mut roots = vec![home, docs];
+        for profile in build_profiles() {
+            roots.extend(profile.search_paths);
+        }
+        roots.iter().filter_map(|r| r.canonicalize().ok()).collect()
     };
 
     let is_allowed = allowed_roots.iter().any(|root| base.starts_with(root));
@@ -247,14 +250,18 @@ fn count_audio_files(dir: &Path, extensions: &[&str], depth: usize, max_depth: u
     let mut count = 0;
     if let Ok(entries) = fs::read_dir(dir) {
         for entry in entries.flatten() {
+            // Don't follow symlinks: a symlink cycle could otherwise recurse
+            // (within the depth budget) and re-walk large trees redundantly.
+            let ft = match entry.file_type() { Ok(ft) => ft, Err(_) => continue };
+            if ft.is_symlink() { continue; }
             let path = entry.path();
-            if path.is_file() {
+            if ft.is_file() {
                 if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
                     if extensions.contains(&ext.to_lowercase().as_str()) {
                         count += 1;
                     }
                 }
-            } else if path.is_dir() {
+            } else if ft.is_dir() {
                 count += count_audio_files(&path, extensions, depth + 1, max_depth);
             }
         }
