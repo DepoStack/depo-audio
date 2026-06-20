@@ -41,6 +41,10 @@ export default function ComparePlayer({ originalPath, processedPath, originalLab
     const newRef = source === 'original' ? originalRef : processedRef
     if (newRef.current) {
       newRef.current.currentTime = time
+      // The two sources can differ in length (trim/fade change duration), so
+      // show the duration of the one we're now listening to.
+      const d = newRef.current.duration
+      if (Number.isFinite(d)) setDuration(d)
       if (wasPlaying) {
         newRef.current.play().then(() => setPlaying(true)).catch(() => {})
       }
@@ -59,13 +63,13 @@ export default function ComparePlayer({ originalPath, processedPath, originalLab
     <div className="flex flex-col gap-2 py-3">
       {/* Hidden audio elements */}
       <audio ref={originalRef} src={originalSrc} preload="metadata"
-        onLoadedMetadata={e => { if (!duration) setDuration(e.target.duration) }}
+        onLoadedMetadata={e => { if (activeSource === 'original') setDuration(e.target.duration || 0) }}
         onTimeUpdate={e => { if (activeSource === 'original') setCurrentTime(e.target.currentTime) }}
-        onEnded={() => setPlaying(false)} />
+        onEnded={() => { if (activeSource === 'original') setPlaying(false) }} />
       <audio ref={processedRef} src={processedSrc} preload="metadata"
-        onLoadedMetadata={e => { if (!duration) setDuration(e.target.duration) }}
+        onLoadedMetadata={e => { if (activeSource === 'processed') setDuration(e.target.duration || 0) }}
         onTimeUpdate={e => { if (activeSource === 'processed') setCurrentTime(e.target.currentTime) }}
-        onEnded={() => setPlaying(false)} />
+        onEnded={() => { if (activeSource === 'processed') setPlaying(false) }} />
 
       {/* A/B toggle */}
       <div className="flex gap-0.5 bg-secondary rounded-md p-0.5 self-center">

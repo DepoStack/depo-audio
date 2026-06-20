@@ -157,11 +157,15 @@ export default function PlayerTab({ dropHandlerRef }) {
     setCurrentTime(0)
   }
 
-  // Remove track
+  // Remove track. When removing the active one, advance to the track that took
+  // its slot (the next track), falling back to the previous if it was last —
+  // rather than always jumping to the first track.
   const removeTrack = (path) => {
-    setTracks(prev => prev.filter(t => t.path !== path))
+    const idx = tracks.findIndex(t => t.path === path)
+    const next = tracks.filter(t => t.path !== path)
+    setTracks(next)
     if (activeTrack?.path === path) {
-      setActiveTrack(tracks.find(t => t.path !== path) || null)
+      setActiveTrack(next[idx] ?? next[idx - 1] ?? null)
       setPlaying(false)
     }
   }

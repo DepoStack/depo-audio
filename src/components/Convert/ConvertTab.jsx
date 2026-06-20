@@ -205,7 +205,7 @@ export default function ConvertTab({
               <div className="flex flex-col gap-1 p-3">
                 {labels.map((l,i) => (
                   <div key={i} className="flex items-center gap-2">
-                    <span className="w-2 h-2 rounded-full shrink-0" style={{background:CH_COLORS[i]}} />
+                    <span className="w-2 h-2 rounded-full shrink-0" style={{background:CH_COLORS[i % CH_COLORS.length]}} />
                     <span className="font-mono text-[10px] text-[hsl(var(--sub))] shrink-0 w-7">CH {i+1}</span>
                     <Input className="h-7 text-[11px] w-32 shrink-0" value={l} maxLength={24} placeholder={`Channel ${i+1}`}
                       onChange={e => setLabels(p => p.map((v,j) => j===i ? e.target.value:v))} />

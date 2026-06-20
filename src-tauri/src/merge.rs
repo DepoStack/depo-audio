@@ -129,7 +129,21 @@ pub(crate) async fn detect_sync(
 
     // Confidence from normalized cross-correlation: corr / (|a| * |b|), with
     // |b| measured over the overlapping window at the best offset.
-    let energy_a: f64 = segment_a.iter().map(|&s| (s as f64) * (s as f64)).sum();
+    // energy_a must be measured over the SAME overlapping window as the
+    // correlation (and energy_b). Using the full segment inflates the
+    // denominator when the offset is large (small overlap), pushing genuine
+    // matches below the is_same_event threshold.
+    let energy_a: f64 = (0..search_len)
+        .filter_map(|i| {
+            let idx = i as i64 + best_offset;
+            if idx >= 0 && (idx as usize) < samples_b.len() {
+                let v = segment_a[i] as f64;
+                Some(v * v)
+            } else {
+                None
+            }
+        })
+        .sum();
     let energy_b: f64 = (0..search_len)
         .filter_map(|i| {
             let idx = i as i64 + best_offset;
