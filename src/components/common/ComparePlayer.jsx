@@ -74,12 +74,12 @@ export default function ComparePlayer({ originalPath, processedPath, originalLab
       {/* A/B toggle */}
       <div className="flex gap-0.5 bg-secondary rounded-md p-0.5 self-center">
         <Button variant="ghost" size="sm"
-          className={activeSource === 'original' ? 'bg-card text-foreground shadow-sm' : ''}
+          className={activeSource === 'original' ? 'bg-card text-foreground shadow-xs' : ''}
           onClick={() => switchSource('original')}>
           {originalLabel}
         </Button>
         <Button variant="ghost" size="sm"
-          className={activeSource === 'processed' ? 'bg-[hsl(var(--success)/0.12)] text-success shadow-sm' : ''}
+          className={activeSource === 'processed' ? 'bg-[hsl(var(--success)/0.12)] text-success shadow-xs' : ''}
           onClick={() => switchSource('processed')}>
           {processedLabel}
         </Button>

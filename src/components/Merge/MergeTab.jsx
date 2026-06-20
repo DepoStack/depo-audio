@@ -116,7 +116,7 @@ export default function MergeTab() {
                 role="button"
                 tabIndex={0}
                 aria-label="Add recordings to merge: press Enter to browse"
-                className="border-2 border-dashed border-border rounded-lg m-3 py-10 px-8 text-center cursor-pointer transition-colors hover:border-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                className="border-2 border-dashed border-border rounded-lg m-3 py-10 px-8 text-center cursor-pointer transition-colors hover:border-primary focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
                 onClick={browseFiles}
                 onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); browseFiles() } }}
               >
@@ -228,7 +228,7 @@ export default function MergeTab() {
                           title={f.desc}
                           aria-pressed={format === f.id}
                           className={cn(
-                            'px-3 py-1.5 rounded-md text-xs font-semibold transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring',
+                            'px-3 py-1.5 rounded-md text-xs font-semibold transition-colors focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring',
                             format === f.id
                               ? 'bg-[hsl(var(--gold-dim))] text-primary'
                               : 'text-[hsl(var(--sub))] hover:text-[hsl(var(--text2))]'

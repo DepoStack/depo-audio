@@ -295,7 +295,7 @@ export default function PlayerTab({ dropHandlerRef }) {
                   <span className="font-mono text-[11px] text-[hsl(var(--sub))] min-w-[45px]">{fmtTime(currentTime)}</span>
                   <div className="flex items-center gap-2">
                     <button
-                      className="w-8 h-8 rounded-full flex items-center justify-center text-[hsl(var(--text2))] transition-colors hover:bg-secondary hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                      className="w-8 h-8 rounded-full flex items-center justify-center text-[hsl(var(--text2))] transition-colors hover:bg-secondary hover:text-foreground focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring"
                       onClick={() => skip(-1)}
                       title="Previous track ( [ )"
                       aria-label="Previous track"
@@ -303,7 +303,7 @@ export default function PlayerTab({ dropHandlerRef }) {
                       <SkipBack size={14} fill="currentColor" />
                     </button>
                     <button
-                      className="w-11 h-11 bg-primary text-white rounded-full flex items-center justify-center transition-colors hover:bg-gold-hi focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                      className="w-11 h-11 bg-primary text-white rounded-full flex items-center justify-center transition-colors hover:bg-gold-hi focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
                       onClick={toggle}
                       title={playing ? 'Pause (Space)' : 'Play (Space)'}
                       aria-label={playing ? 'Pause' : 'Play'}
@@ -313,7 +313,7 @@ export default function PlayerTab({ dropHandlerRef }) {
                         : <Play size={16} fill="currentColor" />}
                     </button>
                     <button
-                      className="w-8 h-8 rounded-full flex items-center justify-center text-[hsl(var(--text2))] transition-colors hover:bg-secondary hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                      className="w-8 h-8 rounded-full flex items-center justify-center text-[hsl(var(--text2))] transition-colors hover:bg-secondary hover:text-foreground focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring"
                       onClick={() => skip(1)}
                       title="Next track ( ] )"
                       aria-label="Next track"
@@ -323,7 +323,7 @@ export default function PlayerTab({ dropHandlerRef }) {
                   </div>
                   <span className="font-mono text-[11px] text-[hsl(var(--sub))] min-w-[45px] text-right">{fmtTime(duration)}</span>
                   <button
-                    className="w-8 h-8 rounded-full flex items-center justify-center text-[hsl(var(--text2))] transition-colors hover:bg-secondary hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                    className="w-8 h-8 rounded-full flex items-center justify-center text-[hsl(var(--text2))] transition-colors hover:bg-secondary hover:text-foreground focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring"
                     title="Add bookmark at current position (B)"
                     aria-label="Add bookmark"
                     onClick={addBookmark}
@@ -343,7 +343,7 @@ export default function PlayerTab({ dropHandlerRef }) {
                         aria-pressed={speed === s}
                         title={`${s}× playback speed`}
                         className={cn(
-                          'px-1.5 py-0.5 rounded text-[10px] font-mono transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring',
+                          'px-1.5 py-0.5 rounded text-[10px] font-mono transition-colors focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring',
                           speed === s ? 'bg-[hsl(var(--gold-dim))] text-primary' : 'text-[hsl(var(--sub))] hover:text-foreground'
                         )}
                       >
@@ -357,7 +357,7 @@ export default function PlayerTab({ dropHandlerRef }) {
                       onClick={() => setLoopA(currentTime)}
                       title="Set loop start to current position"
                       className={cn(
-                        'px-1.5 py-0.5 rounded text-[10px] font-mono transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring',
+                        'px-1.5 py-0.5 rounded text-[10px] font-mono transition-colors focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring',
                         loopA != null ? 'bg-[hsl(var(--gold-dim))] text-primary' : 'text-[hsl(var(--sub))] hover:text-foreground'
                       )}
                     >
@@ -367,7 +367,7 @@ export default function PlayerTab({ dropHandlerRef }) {
                       onClick={() => setLoopB(currentTime)}
                       title="Set loop end to current position"
                       className={cn(
-                        'px-1.5 py-0.5 rounded text-[10px] font-mono transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring',
+                        'px-1.5 py-0.5 rounded text-[10px] font-mono transition-colors focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring',
                         loopB != null ? 'bg-[hsl(var(--gold-dim))] text-primary' : 'text-[hsl(var(--sub))] hover:text-foreground'
                       )}
                     >
@@ -399,7 +399,7 @@ export default function PlayerTab({ dropHandlerRef }) {
                   <button
                     onClick={copyBookmarks}
                     title="Copy bookmarks to clipboard"
-                    className="flex items-center gap-1 text-[10px] text-[hsl(var(--sub))] hover:text-foreground transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring rounded px-1"
+                    className="flex items-center gap-1 text-[10px] text-[hsl(var(--sub))] hover:text-foreground transition-colors focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring rounded px-1"
                   >
                     {copied ? <><Check size={11} /> Copied</> : <><Copy size={11} /> Copy</>}
                   </button>
@@ -411,14 +411,14 @@ export default function PlayerTab({ dropHandlerRef }) {
                     .map((b) => (
                       <div key={`${b.time}-${b.trackPath}`} className="flex items-center gap-2 group">
                         <button
-                          className="font-mono text-[11px] text-primary hover:underline shrink-0 w-12 text-left focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring rounded"
+                          className="font-mono text-[11px] text-primary hover:underline shrink-0 w-12 text-left focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring rounded"
                           title="Jump to bookmark"
                           onClick={() => { if (audioRef.current) audioRef.current.currentTime = b.time }}
                         >
                           {fmtTime(b.time)}
                         </button>
                         <input
-                          className="flex-1 min-w-0 bg-transparent border-none p-0 text-[11px] text-foreground focus:text-primary focus:outline-none"
+                          className="flex-1 min-w-0 bg-transparent border-none p-0 text-[11px] text-foreground focus:text-primary focus:outline-hidden"
                           value={b.label}
                           placeholder="Add a note…"
                           onChange={e => setBookmarks(prev => prev.map(x => x === b ? { ...x, label: e.target.value } : x))}
@@ -463,7 +463,7 @@ export default function PlayerTab({ dropHandlerRef }) {
                 aria-label="Add audio files to the playlist: drop them here or press Enter to browse"
                 className={cn(
                   'flex flex-col items-center justify-center gap-2 border-2 border-dashed border-border rounded-lg m-3 py-10 px-8 text-center cursor-pointer transition-colors hover:border-primary',
-                  'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+                  'focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring',
                   dragOver && 'border-primary bg-primary/5'
                 )}
                 onDragOver={e => { e.preventDefault(); setDragOver(true) }}
@@ -510,7 +510,7 @@ export default function PlayerTab({ dropHandlerRef }) {
                     <div className="flex flex-col flex-1 min-w-0">
                       <span className="text-xs text-foreground truncate">{t.name}</span>
                       <input
-                        className="text-[10px] text-[hsl(var(--text2))] bg-transparent border-none p-0 font-mono w-[120px] focus:text-primary focus:outline-none"
+                        className="text-[10px] text-[hsl(var(--text2))] bg-transparent border-none p-0 font-mono w-[120px] focus:text-primary focus:outline-hidden"
                         value={t.label}
                         placeholder="Speaker name"
                         onClick={e => e.stopPropagation()}
