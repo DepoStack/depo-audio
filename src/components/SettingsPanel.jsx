@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react'
 import { invoke } from '@tauri-apps/api/core'
-import { RotateCcw, Download, Trash2, CheckCircle, Loader2, AlertCircle, Cpu } from 'lucide-react'
+import { RotateCcw, Download, Trash2, CheckCircle, Loader2, AlertCircle, Cpu, RefreshCw } from 'lucide-react'
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogClose,
 } from './ui/dialog'
@@ -268,7 +268,8 @@ function ModelManager() {
 
 // ── Main component ────────────────────────────────────────────────────────────
 
-export default function SettingsPanel({ open, onOpenChange, prefs }) {
+export default function SettingsPanel({ open, onOpenChange, prefs, updater = {} }) {
+  const { status: updateStatus, update, progress: updateProgress, checkForUpdate, installUpdate } = updater
   const {
     hpfCutoff, setHpfCutoff,
     normalizeLufs, setNormalizeLufs,
@@ -446,6 +447,44 @@ export default function SettingsPanel({ open, onOpenChange, prefs }) {
                   { value: 'split', label: 'Split by Speaker' },
                 ]}
               />
+            </div>
+          </section>
+
+          {/* ── Software Update ─────────────────────────────────── */}
+          <section className="settings-section">
+            <div className="settings-section-header">
+              <h3 className="settings-section-title">Software Update</h3>
+            </div>
+            <div className="flex items-center justify-between gap-3 px-1">
+              <div className="flex flex-col min-w-0">
+                <span className="settings-label">Updates install automatically from GitHub Releases</span>
+                <span className="settings-hint">
+                  {updateStatus === 'checking' && 'Checking for updates…'}
+                  {updateStatus === 'available' && `Version ${update?.version} is available.`}
+                  {updateStatus === 'uptodate' && "You're on the latest version."}
+                  {updateStatus === 'downloading' && `Downloading… ${Math.round((updateProgress || 0) * 100)}%`}
+                  {updateStatus === 'ready' && 'Update installed — restarting…'}
+                  {updateStatus === 'error' && "Couldn't check for updates (offline, or no release published)."}
+                  {(!updateStatus || updateStatus === 'idle') && 'Checked automatically each time you open the app.'}
+                </span>
+              </div>
+              {updateStatus === 'available' ? (
+                <Button size="sm" variant="primary" className="shrink-0" onClick={() => installUpdate?.()}>
+                  <Download size={12} /> Update &amp; restart
+                </Button>
+              ) : (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="shrink-0"
+                  onClick={() => checkForUpdate?.(true)}
+                  disabled={updateStatus === 'checking' || updateStatus === 'downloading' || updateStatus === 'ready'}
+                >
+                  {updateStatus === 'checking'
+                    ? <><Loader2 size={12} className="animate-spin" /> Checking…</>
+                    : <><RefreshCw size={12} /> Check for updates</>}
+                </Button>
+              )}
             </div>
           </section>
         </div>

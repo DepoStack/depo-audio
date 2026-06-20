@@ -3,6 +3,7 @@
 ## [Unreleased]
 
 ### Added
+- **Auto-update from GitHub Releases** — on launch the app checks for a newer **signed** release; when one exists a banner offers "Update & restart", which downloads, verifies, installs, and relaunches into the new version. A manual "Check for updates" lives in Settings → Software Update. Updates are cryptographically signed (minisign) and verified against the bundled public key before install.
 - **Synced transcript editor** — proof an existing transcript against the audio or build one from scratch, right in the Player:
   - Import **SRT, VTT, or TXT** (or paste text); every line is editable inline and autosaves per track.
   - Timed lines **highlight and auto-scroll** as the audio plays ("Follow"); click a line's time to jump there.

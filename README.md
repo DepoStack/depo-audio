@@ -37,7 +37,8 @@ DepoAudio converts audio files between formats with smart cleanup that automatic
 
 ### General
 - **Dark & Light Themes** — System-aware with manual override
-- **100% Local** — All processing runs on your machine. No cloud, no uploads, no data leaves your computer
+- **Auto-Updates** — Checks GitHub Releases on launch and installs signed updates in place (with a manual check in Settings)
+- **100% Local** — All audio processing runs on your machine. No cloud, no uploads, no data leaves your computer
 
 ## Supported Formats
 

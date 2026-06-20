@@ -7,6 +7,8 @@ import useTheme from './hooks/useTheme'
 import { usePreferencesContext } from './hooks/PreferencesContext'
 import useFileDrop from './hooks/useFileDrop'
 import useConversion from './hooks/useConversion'
+import useUpdater from './hooks/useUpdater'
+import UpdateBanner from './components/UpdateBanner'
 
 import { LogoSvg } from './components/common/Icons'
 import Spinner from './components/common/Spinner'
@@ -35,6 +37,9 @@ export default function App() {
 
   const prefs = usePreferencesContext()
   const { labels, outDir } = prefs
+
+  // Auto-update via GitHub Releases (checks once on launch)
+  const updater = useUpdater()
 
   // While the Player tab is mounted it registers its own drop handler here,
   // so native drops land in the playlist instead of the convert queue
@@ -111,6 +116,8 @@ export default function App() {
         </div>
       </header>
 
+      <UpdateBanner updater={updater} />
+
       <TabsContent value="convert" forceMount={tab === 'convert' ? true : undefined}>
         {tab === 'convert' && (
           <ConvertTab
@@ -159,6 +166,7 @@ export default function App() {
           open={settingsOpen}
           onOpenChange={setSettingsOpen}
           prefs={{ ...prefs, themePref, cycleThemeTo: setThemeDirect }}
+          updater={updater}
         />
       </Suspense>
     </Tabs>

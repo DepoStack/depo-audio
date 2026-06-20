@@ -135,10 +135,15 @@ jobs:
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Updater artifact signing. Set these repo secrets to enable signed
+          # auto-updates (generate with: npx tauri signer generate).
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
           tagName:      ${{ inputs.tag || github.ref_name }}
           releaseName:  'DepoAudio ${{ inputs.tag || github.ref_name }}'
           releaseBody:  'See CHANGELOG.md for details.'
           releaseDraft: true
           prerelease:   false
+          includeUpdaterJson: true
           args:         ${{ matrix.args }}
