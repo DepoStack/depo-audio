@@ -69,7 +69,10 @@ impl AudioBuffer {
     /// Re-interleave from per-channel buffers
     pub fn from_channels(channel_bufs: &[Vec<f32>], sample_rate: u32) -> Self {
         let ch = channel_bufs.len();
-        let frames = channel_bufs.first().map(|b| b.len()).unwrap_or(0);
+        // Use the longest channel so a model returning slightly different
+        // per-channel lengths can't silently truncate a channel (shorter
+        // channels are zero-padded to match).
+        let frames = channel_bufs.iter().map(|b| b.len()).max().unwrap_or(0);
         let mut samples = Vec::with_capacity(frames * ch);
         for f in 0..frames {
             for c in 0..ch {

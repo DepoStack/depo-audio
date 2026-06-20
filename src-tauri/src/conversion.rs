@@ -203,7 +203,10 @@ async fn do_convert_inner(app: &AppHandle, job: &ConvertJob, feed: &Path, fmt: &
             args.extend(["-af".into(), all.join(",")]);
             args.extend(out_codec.clone());
             args.extend(["-y".into(), dst.to_string_lossy().to_string()]);
-            run_ffmpeg_with_timeout(app, args, &job.id, job.ffmpeg_timeout as u64).await?;
+            if let Err(e) = run_ffmpeg_with_timeout(app, args, &job.id, job.ffmpeg_timeout as u64).await {
+                let _ = fs::remove_file(&dst);
+                return Err(e);
+            }
             output_paths.push(dst);
         }
 
@@ -215,7 +218,10 @@ async fn do_convert_inner(app: &AppHandle, job: &ConvertJob, feed: &Path, fmt: &
             }
             args.extend(out_codec.clone());
             args.extend(["-y".into(), dst.to_string_lossy().to_string()]);
-            run_ffmpeg_with_timeout(app, args, &job.id, job.ffmpeg_timeout as u64).await?;
+            if let Err(e) = run_ffmpeg_with_timeout(app, args, &job.id, job.ffmpeg_timeout as u64).await {
+                let _ = fs::remove_file(&dst);
+                return Err(e);
+            }
             output_paths.push(dst);
         }
 
@@ -262,7 +268,10 @@ async fn do_convert_inner(app: &AppHandle, job: &ConvertJob, feed: &Path, fmt: &
                 args.extend(out_codec.clone());
                 args.push(dst.to_string_lossy().to_string());
             }
-            run_ffmpeg_with_timeout(app, args, &job.id, job.ffmpeg_timeout as u64).await?;
+            if let Err(e) = run_ffmpeg_with_timeout(app, args, &job.id, job.ffmpeg_timeout as u64).await {
+                for d in &dsts { let _ = fs::remove_file(d); }
+                return Err(e);
+            }
             output_paths.extend(dsts);
         }
 
@@ -275,6 +284,8 @@ async fn do_convert_inner(app: &AppHandle, job: &ConvertJob, feed: &Path, fmt: &
     }).collect();
 
     if let Some(empty) = files.iter().find(|f| f.size == 0) {
+        // Don't leave partial/empty outputs (or their valid siblings) behind.
+        for f in &files { let _ = fs::remove_file(&f.path); }
         // ai_temps cleaned up automatically via TempFile Drop
         return Err(format!("Output file is empty: {}", empty.name));
     }

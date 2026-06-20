@@ -148,6 +148,8 @@ export default function ConvertTab({
                 && denoise === s.denoise && denoiseQuality === s.denoiseQuality
                 && autoLevel === s.autoLevel && declip === s.declip
                 && enhance === s.enhance && dereverb === s.dereverb
+                // Bitrate only matters for MP3; presets default to 192 kbps
+                && (s.format !== 'mp3' || mp3Bitrate === (s.mp3Bitrate ?? 192))
               return (
                 <Button key={p.id} variant="outline" size="sm" title={p.desc}
                   aria-pressed={active}
@@ -159,6 +161,7 @@ export default function ConvertTab({
                     setDenoise(s.denoise); setDenoiseQuality(s.denoiseQuality)
                     setAutoLevel(s.autoLevel); setDeclip(s.declip)
                     setEnhance(s.enhance); setDereverb(s.dereverb)
+                    if (s.format === 'mp3') setMp3Bitrate(s.mp3Bitrate ?? 192)
                   }}>
                   {p.name}
                 </Button>

@@ -41,6 +41,7 @@ export default function MergeTab() {
           return { path, name: path.split('/').pop().split('\\').pop() }
         })
         setSources(prev => [...prev, ...newSources])
+        setSyncResults([]) // sync is stale once the source set changes
         setResult(null)
         setError('')
       }
@@ -255,7 +256,7 @@ export default function MergeTab() {
                 <span className="text-[11px] text-[hsl(var(--sub))] block mt-0.5">
                   {fmtTime(result.duration)} · {fmtSize(result.outputSize)} · {result.sourcesUsed} sources
                 </span>
-                {result.syncOffsets.length > 1 && (
+                {result.syncOffsets?.length > 1 && (
                   <span className="text-[11px] text-[hsl(var(--sub))] block mt-0.5">
                     Sync offsets: {result.syncOffsets.slice(1).map(o => `${o > 0 ? '+' : ''}${o.toFixed(1)}s`).join(', ')}
                   </span>
