@@ -156,6 +156,19 @@ git push origin v1.0.0
 
 GitHub Actions builds installers for macOS (ARM64 + Intel) and Windows (x64), then creates a draft release with all assets.
 
+### Enabling auto-updates
+
+The in-app updater is wired up but **dormant until a signing key is configured** — releases build fine without it; updates simply won't be offered. To turn it on (one-time setup):
+
+1. **Generate an updater keypair** (keep the private key safe — losing it means you can't ship updates):
+   ```bash
+   npx tauri signer generate -w ~/.tauri/depoaudio.key
+   ```
+2. **Publish the public key**: copy the contents of `~/.tauri/depoaudio.key.pub` into `src-tauri/tauri.conf.json` → `plugins.updater.pubkey` (replacing the `REPLACE_WITH_…` placeholder).
+3. **Add the private key as a repo secret**: `TAURI_SIGNING_PRIVATE_KEY` = the contents of `~/.tauri/depoaudio.key` (and `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` if you set one).
+
+Once the secret exists, the release workflow automatically builds and signs the updater artifacts (via `src-tauri/tauri.updater.conf.json`) and publishes `latest.json`. Installed apps then check `releases/latest/download/latest.json` on launch and offer in-place updates. **Publish** the draft release for clients to see it.
+
 ## License
 
 [MIT](LICENSE)

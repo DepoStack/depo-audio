@@ -130,6 +130,24 @@ jobs:
         if: runner.os == 'macOS'
         run: echo "APPLE_SIGNING_IDENTITY=-" >> $GITHUB_ENV
 
+      # ── Signed auto-updates: only when the signing key secret is set ───
+      # Building updater artifacts requires TAURI_SIGNING_PRIVATE_KEY; gating on
+      # it means a release still succeeds before the maintainer configures the
+      # key (updates are simply dormant until then) and turns on automatically
+      # once the secret exists.
+      - name: Detect updater signing key
+        id: updater
+        shell: bash
+        env:
+          SIGNING_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+        run: |
+          if [ -n "$SIGNING_KEY" ]; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::TAURI_SIGNING_PRIVATE_KEY not set — building without auto-update artifacts."
+          fi
+
       # ── Build & release ────────────────────────────────────────────────
       - name: Build and release
         uses: tauri-apps/tauri-action@v0
@@ -145,5 +163,6 @@ jobs:
           releaseBody:  'See CHANGELOG.md for details.'
           releaseDraft: true
           prerelease:   false
-          includeUpdaterJson: true
-          args:         ${{ matrix.args }}
+          # Updater artifacts + latest.json only when the signing key is present.
+          includeUpdaterJson: ${{ steps.updater.outputs.enabled }}
+          args: ${{ steps.updater.outputs.enabled == 'true' && format('--config src-tauri/tauri.updater.conf.json {0}', matrix.args) || matrix.args }}
