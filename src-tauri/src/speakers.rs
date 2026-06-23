@@ -1,7 +1,6 @@
 use std::path::Path;
 
 use tauri::AppHandle;
-use tauri_plugin_shell::ShellExt;
 
 use crate::models;
 
@@ -44,24 +43,19 @@ pub(crate) async fn detect_speakers(
     )));
 
     let args: Vec<String> = vec![
+        "-t".into(), "60".into(), // Analyze first 60 seconds only (speed)
         "-i".into(), audio_path.to_string_lossy().to_string(),
         "-af".into(), "aresample=16000".into(),
         "-ac".into(), "1".into(),
         "-acodec".into(), "pcm_s16le".into(),
-        "-t".into(), "60".into(), // Analyze first 60 seconds only (speed)
         "-y".into(), tmp.to_string_lossy().to_string(),
     ];
 
-    let output = app
-        .shell()
-        .sidecar(crate::helpers::ffmpeg_bin_name())
-        .map_err(|e| e.to_string())?
-        .args(args)
-        .output()
+    let output = crate::ffmpeg::sidecar_output_opt(app, crate::helpers::ffmpeg_bin_name(), args, 60)
         .await
-        .map_err(|e| e.to_string())?;
+        .ok_or_else(|| "Failed to decode audio for speaker detection".to_string())?;
 
-    if output.status.code() != Some(0) {
+    if !output.status.success() {
         return Err("Failed to decode audio for speaker detection".into());
     }
 

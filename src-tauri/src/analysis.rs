@@ -2,7 +2,6 @@ use std::path::Path;
 
 use regex::Regex;
 use tauri::AppHandle;
-use tauri_plugin_shell::ShellExt;
 
 use crate::ffmpeg::{probe_channels, probe_duration};
 use crate::helpers::ffprobe_bin_name;
@@ -226,30 +225,32 @@ async fn analyze_single_channel(
 
     // Build filter: optionally extract a single channel via pan, then run ebur128.
     // Using pan=mono instead of channelsplit avoids hardcoding a channel layout.
+    // `-t` (input option, before `-i`) limits analysis to a representative
+    // sample so a long recording can't make this pass run for minutes.
+    let secs = crate::ffmpeg::ANALYSIS_SAMPLE_SECS.to_string();
     let args: Vec<String> = if let Some(ch) = channel {
         let pan = format!("pan=mono|c0=c{}", ch);
         let filter = format!("{},ebur128=peak=true", pan);
         vec![
+            "-t".into(), secs,
             "-i".into(), feed_str,
             "-af".into(), filter,
             "-f".into(), "null".into(), "-".into(),
         ]
     } else {
         vec![
+            "-t".into(), secs,
             "-i".into(), feed_str,
             "-af".into(), "ebur128=peak=true".into(),
             "-f".into(), "null".into(), "-".into(),
         ]
     };
 
-    let output = app
-        .shell()
-        .sidecar(crate::helpers::ffmpeg_bin_name())
-        .map_err(|e| e.to_string())?
-        .args(args)
-        .output()
+    // Bounded timeout backstop — the -t cap means a healthy run finishes in
+    // seconds, so a wedged ffmpeg can never hang the Scan.
+    let output = crate::ffmpeg::sidecar_output_opt(app, crate::helpers::ffmpeg_bin_name(), args, 120)
         .await
-        .map_err(|e| e.to_string())?;
+        .ok_or_else(|| "Loudness analysis timed out".to_string())?;
 
     let stderr = String::from_utf8_lossy(&output.stderr).to_string();
 
@@ -279,21 +280,20 @@ async fn estimate_noise_floor(app: &AppHandle, feed: &Path) -> f64 {
     // speech and sits far above any sensible noise threshold, which made
     // denoising look "recommended" for virtually every normal recording.
     let args: Vec<String> = vec![
+        "-t".into(), crate::ffmpeg::ANALYSIS_SAMPLE_SECS.to_string(),
         "-i".into(), feed.to_string_lossy().to_string(),
         "-af".into(), "astats=metadata=1".into(),
         "-f".into(), "null".into(), "-".into(),
     ];
 
-    if let Ok(cmd) = app.shell().sidecar(crate::helpers::ffmpeg_bin_name()) {
-        if let Ok(out) = cmd.args(args).output().await {
-            let stderr = String::from_utf8_lossy(&out.stderr);
-            let noise_re = Regex::new(r"Noise floor dB:\s+(-?\d+\.?\d*)").unwrap();
-            // Use the last match: astats prints per-channel sections first,
-            // then the Overall section.
-            if let Some(cap) = noise_re.captures_iter(&stderr).last() {
-                if let Ok(floor) = cap[1].parse::<f64>() {
-                    return floor;
-                }
+    if let Some(out) = crate::ffmpeg::sidecar_output_opt(app, crate::helpers::ffmpeg_bin_name(), args, 120).await {
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        let noise_re = Regex::new(r"Noise floor dB:\s+(-?\d+\.?\d*)").unwrap();
+        // Use the last match: astats prints per-channel sections first,
+        // then the Overall section.
+        if let Some(cap) = noise_re.captures_iter(&stderr).last() {
+            if let Ok(floor) = cap[1].parse::<f64>() {
+                return floor;
             }
         }
     }
@@ -357,17 +357,17 @@ async fn detect_turns(
         };
 
         let args: Vec<String> = vec![
+            "-t".into(), crate::ffmpeg::ANALYSIS_SAMPLE_SECS.to_string(),
             "-i".into(), feed.to_string_lossy().to_string(),
             "-af".into(), pan_filter,
             "-acodec".into(), "pcm_s16le".into(),
             "-y".into(), tmp.to_string_lossy().to_string(),
         ];
 
-        let ok = if let Ok(cmd) = app.shell().sidecar(crate::helpers::ffmpeg_bin_name()) {
-            cmd.args(args).output().await.is_ok()
-        } else {
-            false
-        };
+        let ok = crate::ffmpeg::sidecar_output_opt(app, crate::helpers::ffmpeg_bin_name(), args, 120)
+            .await
+            .map(|o| o.status.success())
+            .unwrap_or(false);
 
         if !ok || !tmp.exists() { continue; }
 

@@ -1,7 +1,6 @@
 use std::path::Path;
 
 use tauri::AppHandle;
-use tauri_plugin_shell::ShellExt;
 
 use crate::models;
 
@@ -43,7 +42,10 @@ pub(crate) async fn score_quality(
         uuid::Uuid::new_v4().to_string().replace('-', "")
     )));
 
+    // DNSMOS only scores the first ~9s, so decode a short head — no need to
+    // read (and no risk of hanging on) the whole recording.
     let args: Vec<String> = vec![
+        "-t".into(), "12".into(),
         "-i".into(), audio_path.to_string_lossy().to_string(),
         "-af".into(), "aresample=16000".into(),
         "-ac".into(), "1".into(),
@@ -51,16 +53,11 @@ pub(crate) async fn score_quality(
         "-y".into(), tmp.to_string_lossy().to_string(),
     ];
 
-    let output = app
-        .shell()
-        .sidecar(crate::helpers::ffmpeg_bin_name())
-        .map_err(|e| e.to_string())?
-        .args(args)
-        .output()
+    let output = crate::ffmpeg::sidecar_output_opt(app, crate::helpers::ffmpeg_bin_name(), args, 60)
         .await
-        .map_err(|e| e.to_string())?;
+        .ok_or_else(|| "Failed to decode audio for quality scoring".to_string())?;
 
-    if output.status.code() != Some(0) {
+    if !output.status.success() {
         return Err("Failed to decode audio for quality scoring".into());
     }
 

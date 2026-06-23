@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+- **AI feature scan no longer hangs on long recordings** — analysis (loudness, noise floor, VAD, Smart-Turn, speaker count, quality) now reads a bounded sample of each file instead of the whole thing, so the Scan finishes in seconds-to-minutes regardless of length (a multi-hour multichannel deposition previously ran tens of thousands of ONNX inferences and effectively never completed). Every analysis FFmpeg pass also has a timeout backstop.
+- **App now closes immediately** — closing the window quits the process directly, so an in-flight scan or conversion (synchronous ONNX inference + ffmpeg subprocesses) can no longer leave the app stuck on exit.
+
 ### Added
 - **Auto-update from GitHub Releases** — on launch the app checks for a newer **signed** release; when one exists a banner offers "Update & restart", which downloads, verifies, installs, and relaunches into the new version. A manual "Check for updates" lives in Settings → Software Update. Updates are cryptographically signed (minisign) and verified against the bundled public key before install.
 - **Synced transcript editor** — proof an existing transcript against the audio or build one from scratch, right in the Player:

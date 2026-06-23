@@ -1,7 +1,6 @@
 use std::path::Path;
 
 use tauri::AppHandle;
-use tauri_plugin_shell::ShellExt;
 
 use crate::models;
 
@@ -55,6 +54,7 @@ pub(crate) async fn detect_speech(
     )));
 
     let args: Vec<String> = vec![
+        "-t".into(), crate::ffmpeg::ANALYSIS_SAMPLE_SECS.to_string(),
         "-i".into(), audio_path.to_string_lossy().to_string(),
         "-af".into(), "aresample=16000".into(),
         "-ac".into(), "1".into(),
@@ -62,16 +62,12 @@ pub(crate) async fn detect_speech(
         "-y".into(), tmp.to_string_lossy().to_string(),
     ];
 
-    let output = app
-        .shell()
-        .sidecar(crate::helpers::ffmpeg_bin_name())
-        .map_err(|e| e.to_string())?
-        .args(args)
-        .output()
+    // Bounded decode (sample cap + timeout) so VAD can't hang the scan.
+    let output = crate::ffmpeg::sidecar_output_opt(app, crate::helpers::ffmpeg_bin_name(), args, 120)
         .await
-        .map_err(|e| e.to_string())?;
+        .ok_or_else(|| "Failed to decode audio for VAD".to_string())?;
 
-    if output.status.code() != Some(0) {
+    if !output.status.success() {
         return Err("Failed to decode audio for VAD".into());
     }
 

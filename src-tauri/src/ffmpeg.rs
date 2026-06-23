@@ -9,6 +9,12 @@ use tauri_plugin_shell::ShellExt;
 use crate::helpers::{ffmpeg_bin_name, ffprobe_bin_name};
 use crate::types::{ConvertJob, ProgressEvent};
 
+/// How many seconds of audio the pre-scan / auto-level analysis reads.
+/// Analysis is a heuristic recommendation, so a representative sample is
+/// enough — and it bounds the work to ~constant time so the Scan (and the
+/// auto-level pass during conversion) can't hang on a multi-hour recording.
+pub(crate) const ANALYSIS_SAMPLE_SECS: u32 = 180;
+
 fn time_regex() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| Regex::new(r"time=(\d+):(\d+):(\d+\.\d+)").unwrap())

@@ -74,6 +74,16 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_opener::init())
+        // Closing the window quits immediately. A long-running analysis or
+        // conversion (synchronous ONNX inference + ffmpeg children) can block a
+        // graceful async shutdown, leaving the app seemingly stuck; exiting the
+        // process directly guarantees "close means close". Completed work
+        // (library entries, converted files) is already persisted to disk.
+        .on_window_event(|_window, event| {
+            if matches!(event, tauri::WindowEvent::CloseRequested { .. }) {
+                std::process::exit(0);
+            }
+        })
         .manage(AppState::default())
         .setup(|app| {
             setup_onnx_runtime(app.handle());
