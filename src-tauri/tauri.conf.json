@@ -53,6 +53,7 @@
     ],
     "category": "public.app-category.music",
     "copyright": "2025 Andrew Mayes",
+    "licenseFile": "installer/license.rtf",
     "resources": [
       "resources/models/dfn3_config.ini",
       "resources/models/dfn3_df_dec.onnx",
@@ -76,11 +77,18 @@
     },
     "windows": {
       "wix": {
-        "language": "en-US"
+        "language": "en-US",
+        "bannerPath": "installer/wix-banner.bmp",
+        "dialogImagePath": "installer/wix-dialog.bmp"
       },
       "nsis": {
+        "installMode": "currentUser",
         "languages": ["English"],
-        "displayLanguageSelector": false
+        "displayLanguageSelector": false,
+        "installerIcon": "icons/icon.ico",
+        "uninstallerIcon": "icons/icon.ico",
+        "headerImage": "installer/header.bmp",
+        "sidebarImage": "installer/sidebar.bmp"
       }
     }
   }
