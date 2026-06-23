@@ -312,14 +312,7 @@ async fn probe_sample_rate(app: &AppHandle, feed: &Path) -> Option<u32> {
         feed.to_string_lossy().to_string(),
     ];
 
-    let output = app
-        .shell()
-        .sidecar(ffprobe_bin_name())
-        .ok()?
-        .args(args)
-        .output()
-        .await
-        .ok()?;
+    let output = crate::ffmpeg::sidecar_output_opt(app, ffprobe_bin_name(), args, 30).await?;
 
     let text = String::from_utf8_lossy(&output.stdout);
     let v: serde_json::Value = serde_json::from_str(&text).ok()?;

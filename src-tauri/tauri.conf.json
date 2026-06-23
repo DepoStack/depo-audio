@@ -76,6 +76,9 @@
       "frameworks": []
     },
     "windows": {
+      "webviewInstallMode": {
+        "type": "offlineInstaller"
+      },
       "wix": {
         "language": "en-US",
         "bannerPath": "installer/wix-banner.bmp",

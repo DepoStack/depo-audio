@@ -14,6 +14,11 @@ import ProcessingToggle from './ProcessingToggle'
 import FormatTable from './FormatTable'
 import FileRow from './FileRow'
 
+// Per-file scan cap: analysis runs several local ffmpeg/ONNX passes, so a
+// wedged subprocess (or an unusually long recording) must never hang the Scan
+// UI indefinitely — skip the file and move on if it exceeds this.
+const SCAN_TIMEOUT_MS = 240000 // 4 minutes per file
+
 export default function ConvertTab({
   capabilities,
   // Files
@@ -59,10 +64,16 @@ export default function ConvertTab({
         const file = files[i]
         setScanProgress({ current: i, total: files.length, fileName: file.name })
         try {
-          const result = await invoke('analyze_audio_cmd', { path: file.path })
+          // Race the analysis against a timeout so one stuck file can't hang
+          // the whole scan; on timeout (or error) we skip it and continue.
+          let timer
+          const result = await Promise.race([
+            invoke('analyze_audio_cmd', { path: file.path }),
+            new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('Scan timed out')), SCAN_TIMEOUT_MS) }),
+          ]).finally(() => clearTimeout(timer))
           if (result) results.push(result)
         } catch {
-          // Skip failed files
+          // Skip failed/timed-out files
         }
         setScanProgress({ current: i + 1, total: files.length, fileName: file.name })
       }

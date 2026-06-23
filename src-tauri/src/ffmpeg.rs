@@ -16,6 +16,23 @@ fn time_regex() -> &'static Regex {
 
 // ── Probe helpers ─────────────────────────────────────────────────────────────
 
+/// Run a sidecar (ffprobe/ffmpeg) to completion with a timeout. Returns None on
+/// spawn error, failure, or timeout, so callers fall back to safe defaults.
+/// Without this a wedged probe would hang `analyze_audio` — and therefore the
+/// Scan button — forever.
+pub(crate) async fn sidecar_output_opt(
+    app: &AppHandle,
+    bin: &str,
+    args: Vec<String>,
+    secs: u64,
+) -> Option<tauri_plugin_shell::process::Output> {
+    let cmd = app.shell().sidecar(bin).ok()?.args(args);
+    match tokio::time::timeout(std::time::Duration::from_secs(secs), cmd.output()).await {
+        Ok(Ok(out)) => Some(out),
+        _ => None,
+    }
+}
+
 // Note: ffprobe auto-detects codecs and does not accept ffmpeg input options
 // like -acodec, so the probe helpers take no input codec arguments.
 pub(crate) async fn probe_duration(app: &AppHandle, feed: &Path) -> Option<f64> {
@@ -25,8 +42,7 @@ pub(crate) async fn probe_duration(app: &AppHandle, feed: &Path) -> Option<f64> 
         "-show_format".into(),
         feed.to_string_lossy().to_string(),
     ];
-    let output = app.shell().sidecar(ffprobe_bin_name()).ok()?
-        .args(args).output().await.ok()?;
+    let output = sidecar_output_opt(app, ffprobe_bin_name(), args, 30).await?;
     let text = String::from_utf8_lossy(&output.stdout);
     let v: serde_json::Value = serde_json::from_str(&text).ok()?;
     v["format"]["duration"].as_str()?.parse::<f64>().ok()
@@ -43,8 +59,7 @@ pub(crate) async fn probe_channels(app: &AppHandle, feed: &Path) -> Option<u32> 
         "-select_streams".into(), "a:0".into(),
         feed.to_string_lossy().to_string(),
     ];
-    let cmd = app.shell().sidecar(ffprobe_bin_name()).ok()?;
-    let out = cmd.args(args).output().await.ok()?;
+    let out = sidecar_output_opt(app, ffprobe_bin_name(), args, 30).await?;
     let text = String::from_utf8_lossy(&out.stdout);
     let v = serde_json::from_str::<serde_json::Value>(&text).ok()?;
     let ch = v["streams"][0]["channels"].as_u64()?;
