@@ -52,7 +52,16 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev \
             libayatana-appindicator3-dev librsvg2-dev libxdo-dev \
-            build-essential pkg-config libssl-dev
+            build-essential pkg-config libssl-dev ffmpeg
+
+      # tauri-build validates that the externalBin sidecars exist for the
+      # current target triple (binaries/ is gitignored; release workflows
+      # provision real ones per platform — same approach here).
+      - name: Provision FFmpeg sidecar binaries
+        run: |
+          mkdir -p src-tauri/binaries
+          cp "$(which ffmpeg)"  src-tauri/binaries/ffmpeg-x86_64-unknown-linux-gnu
+          cp "$(which ffprobe)" src-tauri/binaries/ffprobe-x86_64-unknown-linux-gnu
 
       - uses: dtolnay/rust-toolchain@stable
         with:
