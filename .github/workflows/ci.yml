@@ -54,14 +54,18 @@ jobs:
             libayatana-appindicator3-dev librsvg2-dev libxdo-dev \
             build-essential pkg-config libssl-dev ffmpeg
 
-      # tauri-build validates that the externalBin sidecars exist for the
-      # current target triple (binaries/ is gitignored; release workflows
-      # provision real ones per platform — same approach here).
-      - name: Provision FFmpeg sidecar binaries
+      # tauri-build validates that the externalBin sidecars and every bundle
+      # resource exist (binaries/ and resources/onnxruntime/ are gitignored;
+      # release workflows provision real ones per platform). FFmpeg comes from
+      # apt; the ORT dylib gets a placeholder — nothing in clippy/cargo-test
+      # loads it (the one test that does is #[ignore]d), and a real download
+      # would add a flaky external dependency to every PR.
+      - name: Provision sidecar binaries and resource placeholders
         run: |
-          mkdir -p src-tauri/binaries
+          mkdir -p src-tauri/binaries src-tauri/resources/onnxruntime
           cp "$(which ffmpeg)"  src-tauri/binaries/ffmpeg-x86_64-unknown-linux-gnu
           cp "$(which ffprobe)" src-tauri/binaries/ffprobe-x86_64-unknown-linux-gnu
+          touch src-tauri/resources/onnxruntime/libonnxruntime-ci-placeholder.so
 
       - uses: dtolnay/rust-toolchain@stable
         with:
