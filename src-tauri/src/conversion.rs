@@ -240,7 +240,7 @@ async fn do_convert_inner(app: &AppHandle, job: &ConvertJob, feed: &Path, fmt: &
             };
 
             let pan = stereo_pan_filter(num_ch, &vols);
-            let mut all: Vec<String> = std::iter::once(pan).chain(proc.into_iter()).collect();
+            let mut all: Vec<String> = std::iter::once(pan).chain(proc).collect();
             // The weight/scale pair makes this a unity-gain SUM of channels:
             // right for turn-taking speakers, but correlated content (every
             // mic hearing the same voice) can exceed full scale by up to
