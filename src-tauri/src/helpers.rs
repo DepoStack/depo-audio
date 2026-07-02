@@ -117,6 +117,19 @@ pub(crate) fn infer_case_name(filename: &str) -> String {
     words.join(" ")
 }
 
+/// Validate and sanitize a user-supplied case name for library import:
+/// trimmed, ≤200 chars, with path separators and control characters removed.
+pub(crate) fn sanitize_case_name(case_name: &str) -> Result<String, String> {
+    let trimmed = case_name.trim().to_string();
+    if trimmed.is_empty() { return Err("Case name cannot be empty".into()); }
+    if trimmed.len() > 200 { return Err("Case name is too long (max 200 characters)".into()); }
+    let sanitized: String = trimmed.chars()
+        .filter(|c| !c.is_control() && *c != '/' && *c != '\\' && *c != ':')
+        .collect();
+    if sanitized.is_empty() { return Err("Case name contains only invalid characters".into()); }
+    Ok(sanitized)
+}
+
 // ── FFmpeg path helpers ───────────────────────────────────────────────────────
 
 pub(crate) fn ffmpeg_bin_name() -> &'static str {
@@ -332,6 +345,23 @@ mod tests {
     fn basename_extracts_filename() {
         assert_eq!(basename("/tmp/audio.wav"), "audio.wav");
         assert_eq!(basename("audio.wav"), "audio.wav");
+    }
+
+    #[test]
+    fn sanitize_case_name_strips_separators_and_controls() {
+        assert_eq!(sanitize_case_name("Smith v Jones"), Ok("Smith v Jones".into()));
+        assert_eq!(sanitize_case_name("  padded  "), Ok("padded".into()));
+        assert_eq!(sanitize_case_name("a/b\\c:d"), Ok("abcd".into()));
+        assert_eq!(sanitize_case_name("tab\there"), Ok("tabhere".into()));
+    }
+
+    #[test]
+    fn sanitize_case_name_rejects_empty_and_oversized() {
+        assert!(sanitize_case_name("").is_err());
+        assert!(sanitize_case_name("   ").is_err());
+        assert!(sanitize_case_name("///").is_err());
+        assert!(sanitize_case_name(&"x".repeat(201)).is_err());
+        assert!(sanitize_case_name(&"x".repeat(200)).is_ok());
     }
 
     #[test]

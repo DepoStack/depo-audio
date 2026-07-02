@@ -82,6 +82,19 @@ pub(crate) async fn build_proc_filters_with_gain(
     feed: &Path,
     auto_gain: Option<f64>,
 ) -> Vec<String> {
+    // Duration is only needed to place the fade-out, so only probe then.
+    let duration = if opts.fade { probe_duration(app, feed).await } else { None };
+    proc_filters(opts, auto_gain, duration)
+}
+
+/// Pure core of the filter-chain builder: everything except the duration
+/// probe. Filter order is part of the output contract (de-clip → HPF → gain →
+/// loudnorm → trim → fades) — see PARITY.md.
+pub(crate) fn proc_filters(
+    opts: &ConvertJob,
+    auto_gain: Option<f64>,
+    duration: Option<f64>,
+) -> Vec<String> {
     let mut filters = Vec::new();
 
     // De-clipping runs first — reconstruct clipped peaks before other processing
@@ -105,9 +118,8 @@ pub(crate) async fn build_proc_filters_with_gain(
 
     // Fade in/out for smooth start and end
     if opts.fade {
-        let dur = probe_duration(app, feed).await;
         filters.push(format!("afade=t=in:d={}", opts.fade_dur));
-        if let Some(d) = dur {
+        if let Some(d) = duration {
             let start = (d - opts.fade_dur).max(0.0);
             filters.push(format!("afade=t=out:st={start:.3}:d={}", opts.fade_dur));
         }
@@ -187,7 +199,7 @@ pub(crate) async fn run_ffmpeg_with_timeout(app: &AppHandle, args: Vec<String>, 
                 .collect();
             let msg = lines.iter().rev().take(4).cloned().collect::<Vec<_>>().into_iter().rev().collect::<Vec<_>>().join(" | ");
             // Sanitize: strip file paths from error messages
-            let sanitized = msg.replace(|c: char| c == '/' || c == '\\', "_")
+            let sanitized = msg.replace(['/', '\\'], "_")
                 .chars().take(300).collect::<String>();
             if sanitized.trim().is_empty() {
                 Err("FFmpeg exited abnormally (no error output)".into())
@@ -199,5 +211,111 @@ pub(crate) async fn run_ffmpeg_with_timeout(app: &AppHandle, args: Vec<String>, 
         // failure rather than silently reporting success on a possibly partial
         // or missing output file.
         None => Err("FFmpeg exited without reporting a status".into()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Build a ConvertJob from the frontend's wire format (camelCase JSON).
+    /// Going through serde here also locks the IPC field names and defaults.
+    fn job(extra: &str) -> ConvertJob {
+        let mut base = serde_json::json!({
+            "id": "t", "srcPath": "/in.wav", "outDir": "", "mode": "stereo",
+            "format": "wav", "rate": "48000", "labels": [], "chanVols": [],
+            "normalize": false, "trim": false, "fade": false, "fadeDur": 0.5,
+            "hpf": false, "caseName": null,
+        });
+        // `extra` is a JSON fragment of overrides, e.g. `, "trim": true`
+        let frag = extra.trim().trim_start_matches(',');
+        let overrides: serde_json::Value =
+            serde_json::from_str(&format!("{{{}}}", frag)).expect("valid override JSON");
+        if let (Some(b), serde_json::Value::Object(o)) = (base.as_object_mut(), overrides) {
+            for (k, v) in o { b.insert(k, v); }
+        }
+        serde_json::from_value(base).expect("valid job JSON")
+    }
+
+    #[test]
+    fn all_processing_off_yields_empty_chain() {
+        assert!(proc_filters(&job(""), None, None).is_empty());
+    }
+
+    #[test]
+    fn declip_filter_is_stable() {
+        assert_eq!(proc_filters(&job(r#", "declip": true"#), None, None),
+                   vec!["adeclip=w=55:o=50"]);
+    }
+
+    #[test]
+    fn hpf_uses_default_cutoff_80() {
+        assert_eq!(proc_filters(&job(r#", "hpf": true"#), None, None),
+                   vec!["highpass=f=80"]);
+    }
+
+    #[test]
+    fn hpf_honors_custom_cutoff() {
+        assert_eq!(proc_filters(&job(r#", "hpf": true, "hpfCutoff": 120.0"#), None, None),
+                   vec!["highpass=f=120"]);
+    }
+
+    #[test]
+    fn normalize_uses_default_lufs_and_tp() {
+        assert_eq!(proc_filters(&job(r#", "normalize": true"#), None, None),
+                   vec!["loudnorm=I=-16:TP=-1.5:LRA=11"]);
+    }
+
+    #[test]
+    fn trim_uses_default_silence_threshold() {
+        assert_eq!(proc_filters(&job(r#", "trim": true"#), None, None),
+                   vec!["silenceremove=start_periods=1:start_duration=0.3:start_threshold=-50dB:stop_periods=-1:stop_duration=0.3:stop_threshold=-50dB"]);
+    }
+
+    #[test]
+    fn near_unity_auto_gain_is_skipped() {
+        // Gains within ±0.01 of 1.0 are noise, not leveling — omitted entirely
+        assert!(proc_filters(&job(""), Some(1.005), None).is_empty());
+        assert!(proc_filters(&job(""), Some(0.995), None).is_empty());
+    }
+
+    #[test]
+    fn auto_gain_is_injected_at_4_decimals() {
+        assert_eq!(proc_filters(&job(""), Some(1.5), None), vec!["volume=1.5000"]);
+        assert_eq!(proc_filters(&job(""), Some(0.3333333), None), vec!["volume=0.3333"]);
+    }
+
+    #[test]
+    fn fade_out_is_placed_from_duration() {
+        assert_eq!(proc_filters(&job(r#", "fade": true"#), None, Some(10.0)),
+                   vec!["afade=t=in:d=0.5", "afade=t=out:st=9.500:d=0.5"]);
+    }
+
+    #[test]
+    fn fade_without_known_duration_only_fades_in() {
+        assert_eq!(proc_filters(&job(r#", "fade": true"#), None, None),
+                   vec!["afade=t=in:d=0.5"]);
+    }
+
+    #[test]
+    fn fade_out_start_never_negative() {
+        // Track shorter than the fade: fade-out starts at 0, not below
+        assert_eq!(proc_filters(&job(r#", "fade": true, "fadeDur": 2.0"#), None, Some(1.0)),
+                   vec!["afade=t=in:d=2", "afade=t=out:st=0.000:d=2"]);
+    }
+
+    #[test]
+    fn full_chain_order_is_declip_hpf_gain_loudnorm_trim_fade() {
+        // Filter ORDER is part of the audio contract: reordering changes output
+        let j = job(r#", "declip": true, "hpf": true, "normalize": true, "trim": true, "fade": true"#);
+        assert_eq!(proc_filters(&j, Some(2.0), Some(60.0)), vec![
+            "adeclip=w=55:o=50",
+            "highpass=f=80",
+            "volume=2.0000",
+            "loudnorm=I=-16:TP=-1.5:LRA=11",
+            "silenceremove=start_periods=1:start_duration=0.3:start_threshold=-50dB:stop_periods=-1:stop_duration=0.3:stop_threshold=-50dB",
+            "afade=t=in:d=0.5",
+            "afade=t=out:st=59.500:d=0.5",
+        ]);
     }
 }

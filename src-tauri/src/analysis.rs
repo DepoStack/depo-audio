@@ -8,8 +8,6 @@ use crate::helpers::ffprobe_bin_name;
 use crate::types::{AnalysisResult, TurnSegment};
 
 // Used by detect_turns for ONNX inference
-use hound;
-use ndarray;
 
 // ── Audio analysis engine ────────────────────────────────────────────────────
 //

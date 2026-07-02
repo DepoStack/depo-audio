@@ -23,7 +23,9 @@ const TabsTrigger = React.forwardRef(({ className, ...props }, ref) => (
       'inline-flex items-center justify-center gap-1.5 whitespace-nowrap rounded-md px-4 py-1.5',
       'text-xs font-semibold text-[hsl(var(--sub))] transition-colors',
       'hover:text-[hsl(var(--text2))]',
-      'data-[state=active]:bg-[hsl(var(--gold-dim))] data-[state=active]:text-primary',
+      // gold-hi (not primary): light-mode primary renders 3.34:1 on the active
+      // tab background, below the 4.5:1 WCAG AA threshold; gold-hi is 5.2:1
+      'data-[state=active]:bg-[hsl(var(--gold-dim))] data-[state=active]:text-[hsl(var(--gold-hi))]',
       'focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring',
       className
     )}

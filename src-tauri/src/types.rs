@@ -75,8 +75,8 @@ impl AudioBuffer {
         let frames = channel_bufs.iter().map(|b| b.len()).max().unwrap_or(0);
         let mut samples = Vec::with_capacity(frames * ch);
         for f in 0..frames {
-            for c in 0..ch {
-                samples.push(channel_bufs[c].get(f).copied().unwrap_or(0.0));
+            for buf in channel_bufs {
+                samples.push(buf.get(f).copied().unwrap_or(0.0));
             }
         }
         Self { samples, channels: ch as u16, sample_rate }
@@ -389,5 +389,95 @@ impl Default for AppState {
             lib_path: Mutex::new(None),
             prefs_path: Mutex::new(None),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Wire-contract characterization: the frontend sends camelCase JSON and
+    // relies on these defaults for fields older frontends omit. Breaking
+    // either breaks every installed client at IPC time.
+
+    #[test]
+    fn convert_job_fills_defaults_for_omitted_fields() {
+        let j: ConvertJob = serde_json::from_value(serde_json::json!({
+            "id": "t", "srcPath": "/in.wav", "outDir": "", "mode": "stereo",
+            "format": "wav", "rate": "48000", "labels": [], "chanVols": [],
+            "normalize": false, "trim": false, "fade": false, "fadeDur": 0.5,
+            "hpf": false, "caseName": null,
+        })).expect("minimal job deserializes");
+        assert_eq!(j.mp3_bitrate, 192);
+        assert_eq!(j.denoise_quality, "fast");
+        assert!(!j.denoise && !j.auto_level && !j.declip && !j.enhance && !j.dereverb);
+        assert_eq!(j.hpf_cutoff, 80.0);
+        assert_eq!(j.normalize_lufs, -16.0);
+        assert_eq!(j.normalize_tp, -1.5);
+        assert_eq!(j.silence_thresh, -50.0);
+        assert_eq!(j.ffmpeg_timeout, 300);
+        assert_eq!(j.max_file_size_gb, 2.0);
+    }
+
+    #[test]
+    fn prefs_defaults_are_the_documented_out_of_box_experience() {
+        let p = Prefs::default();
+        assert_eq!(p.theme, "system");
+        assert_eq!(p.mode, "stereo");
+        assert_eq!(p.format, "wav");
+        assert_eq!(p.rate, "48000");
+        assert_eq!(p.mp3_bitrate, 192);
+        assert_eq!(p.labels, vec!["Speaker 1", "Speaker 2", "Speaker 3", "Speaker 4"]);
+        assert_eq!(p.chan_vols, vec![1.0; 4]);
+        // Empty string = "remember last used" sentinel for startup format/mode
+        assert_eq!(p.default_output_format, "");
+        assert_eq!(p.default_output_mode, "");
+    }
+
+    #[test]
+    fn prefs_serialize_as_camel_case() {
+        let v = serde_json::to_value(Prefs::default()).unwrap();
+        // Spot-check the rename policy on multi-word fields
+        assert!(v.get("mp3Bitrate").is_some());
+        assert!(v.get("outDir").is_some());
+        assert!(v.get("defaultOutputFormat").is_some());
+        assert!(v.get("mp3_bitrate").is_none());
+    }
+
+    #[test]
+    fn prefs_from_older_versions_still_load() {
+        // A prefs.json written before the AI/advanced fields existed must
+        // still deserialize (all newer fields have serde defaults)
+        let p: Prefs = serde_json::from_value(serde_json::json!({
+            "theme": "dark", "mode": "split", "format": "mp3", "rate": "44100",
+            "outDir": "/out", "labels": ["A"], "chanVols": [1.0],
+            "normalize": true, "trim": false, "fade": false, "fadeDur": 0.5, "hpf": false,
+        })).expect("v0.6-era prefs deserialize");
+        assert_eq!(p.theme, "dark");
+        assert_eq!(p.mp3_bitrate, 192);
+        assert_eq!(p.max_scan_depth, 5);
+    }
+
+    #[test]
+    fn library_json_shape_is_stable() {
+        // The on-disk library.json shape: snake-free camelCase for Session/Case,
+        // plain fields for LibFile/Participant
+        let lib: Library = serde_json::from_value(serde_json::json!({
+            "version": 1,
+            "cases": [{
+                "id": "c1", "name": "Smith", "createdAt": "2025-01-01T00:00:00Z",
+                "archived": false,
+                "sessions": [{
+                    "id": "s1", "date": "2025-01-01",
+                    "sourceFile": "/a.wav", "sourceName": "a.wav",
+                    "participants": [{ "label": "Original",
+                        "files": [{ "path": "/a.mp3", "format": "mp3", "size": 5 }] }]
+                }]
+            }]
+        })).expect("library.json deserializes");
+        assert_eq!(lib.cases[0].sessions[0].participants[0].files[0].size, 5);
+        let back = serde_json::to_value(&lib).unwrap();
+        assert!(back["cases"][0].get("createdAt").is_some());
+        assert!(back["cases"][0]["sessions"][0].get("sourceFile").is_some());
     }
 }

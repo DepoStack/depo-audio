@@ -130,6 +130,7 @@ export default function ImportModal({ defaultLabels, existingCases, onDone, onCl
             {(caseInputMode === 'existing' && existingCases.length > 0) ? (
               <select
                 className="flex h-8 w-full rounded-lg border border-border bg-card px-2.5 py-1.5 text-xs text-foreground transition-colors focus:outline-hidden focus:border-primary"
+                aria-label="Case"
                 value={caseName}
                 onChange={e => setCaseName(e.target.value)}
               >

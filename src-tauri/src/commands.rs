@@ -241,16 +241,9 @@ pub fn library_import_file(
 ) -> Result<(), String> {
     // Validate inputs
     crate::safety::check_file_safe(std::path::Path::new(&path))?;
-    let trimmed = case_name.trim().to_string();
-    if trimmed.is_empty() { return Err("Case name cannot be empty".into()); }
-    if trimmed.len() > 200 { return Err("Case name is too long (max 200 characters)".into()); }
+    let sanitized_name = crate::helpers::sanitize_case_name(&case_name)?;
     let label_trimmed = label.trim().to_string();
     if label_trimmed.len() > 100 { return Err("Label is too long (max 100 characters)".into()); }
-    // Sanitize case name: remove path separators and control characters
-    let sanitized_name: String = trimmed.chars()
-        .filter(|c| !c.is_control() && *c != '/' && *c != '\\' && *c != ':')
-        .collect();
-    if sanitized_name.is_empty() { return Err("Case name contains only invalid characters".into()); }
 
     let mut lib = state.library.lock().unwrap_or_else(|e| e.into_inner());
     let size = fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
@@ -293,16 +286,7 @@ pub fn prefs_get(app: AppHandle, state: State<'_, AppState>) -> Prefs {
 #[tauri::command]
 pub fn prefs_set(app: AppHandle, state: State<'_, AppState>, patch: serde_json::Value) -> bool {
     let mut prefs = state.prefs.lock().unwrap_or_else(|e| e.into_inner());
-    if let Ok(mut current) = serde_json::to_value(prefs.clone()) {
-        if let serde_json::Value::Object(ref mut map) = current {
-            if let serde_json::Value::Object(patch_map) = patch {
-                for (k, v) in patch_map { map.insert(k, v); }
-            }
-        }
-        if let Ok(updated) = serde_json::from_value::<Prefs>(current) {
-            *prefs = updated;
-        }
-    }
+    *prefs = crate::persistence::merge_prefs(&prefs, patch);
     let path = prefs_path(&app);
     match serde_json::to_string_pretty(&*prefs) {
         Ok(json) => crate::persistence::atomic_write(&path, json.as_bytes()).is_ok(),

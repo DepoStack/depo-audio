@@ -156,7 +156,7 @@ pub(crate) async fn detect_sync(
         })
         .sum();
     let confidence = if energy_a > 0.0 && energy_b > 0.0 {
-        (best_corr / (energy_a.sqrt() * energy_b.sqrt())).min(1.0).max(0.0)
+        (best_corr / (energy_a.sqrt() * energy_b.sqrt())).clamp(0.0, 1.0)
     } else {
         0.0
     };
@@ -177,10 +177,10 @@ pub(crate) async fn detect_sync(
 /// Cross-correlate segment_a with samples_b at the given offset.
 fn cross_correlate(segment_a: &[f32], samples_b: &[f32], offset: i64, len: usize) -> f64 {
     let mut sum = 0.0f64;
-    for i in 0..len {
+    for (i, &a) in segment_a[..len].iter().enumerate() {
         let b_idx = i as i64 + offset;
         if b_idx >= 0 && (b_idx as usize) < samples_b.len() {
-            sum += segment_a[i] as f64 * samples_b[b_idx as usize] as f64;
+            sum += a as f64 * samples_b[b_idx as usize] as f64;
         }
     }
     sum.abs()
@@ -374,10 +374,10 @@ fn best_quality_strategy(
 
         // Copy best source to output
         let offset = offsets[best_src];
-        for out_idx in pos..end {
-            let src_idx_sample = out_idx as i64 - offset;
+        for (j, out) in output[pos..end].iter_mut().enumerate() {
+            let src_idx_sample = (pos + j) as i64 - offset;
             if src_idx_sample >= 0 && (src_idx_sample as usize) < sources[best_src].len() {
-                output[out_idx] = sources[best_src][src_idx_sample as usize];
+                *out = sources[best_src][src_idx_sample as usize];
             }
         }
 

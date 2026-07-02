@@ -128,7 +128,7 @@ export default function ConvertTab({
             onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); browseFiles() } }}>
             <WaveformIcon />
             <p className="text-[13px] font-semibold text-foreground">Drop audio or video files here</p>
-            <p className="text-[11px] text-[hsl(var(--sub))] text-center">or <span className="text-primary cursor-pointer hover:underline">click to browse</span> — MP3 · WAV · FLAC · M4A · OGG · Opus · WMA · court formats (SGMCA · TRM · BWF) · video (MP4 · MOV · MKV)</p>
+            <p className="text-[11px] text-[hsl(var(--sub))] text-center">or <span className="text-[hsl(var(--gold-hi))] cursor-pointer hover:underline">click to browse</span> — MP3 · WAV · FLAC · M4A · OGG · Opus · WMA · court formats (SGMCA · TRM · BWF) · video (MP4 · MOV · MKV)</p>
           </div>
 
           {files.length > 0 && (
@@ -193,7 +193,8 @@ export default function ConvertTab({
                     <ModeIcon id={m.id} active={mode===m.id} />
                     <div className="flex flex-col items-start">
                       <span className="text-[12px] font-semibold text-foreground">{m.label}</span>
-                      <span className="text-[10px] text-[hsl(var(--sub))] leading-tight">{m.desc}</span>
+                      {/* text2, not sub: the selected card's gold tint drops sub below 4.5:1 */}
+                      <span className="text-[10px] text-[hsl(var(--text2))] leading-tight">{m.desc}</span>
                     </div>
                     {mode===m.id && <span className="ml-auto text-primary text-sm">✓</span>}
                   </button>
@@ -329,6 +330,7 @@ export default function ConvertTab({
                       <span className="inline-flex items-center gap-1 mt-0.5" onClick={e => e.preventDefault()}>
                         <span className="text-[hsl(var(--sub))]">—</span>
                         <select className="font-mono text-[10px] bg-secondary border border-border rounded px-1 py-px text-[hsl(var(--text2))] cursor-pointer"
+                          aria-label="Denoise quality"
                           value={denoiseQuality} onChange={e => { e.stopPropagation(); setDenoiseQuality(e.target.value) }}>
                           <option value="fast">Fast</option>
                           <option value="best">Best quality</option>
@@ -461,8 +463,8 @@ export default function ConvertTab({
               </div>
             </div>
             <div className="min-w-[130px]">
-              <Label className="mb-1 block">SAMPLE RATE</Label>
-              <select className="flex h-8 w-full rounded-lg border border-border bg-card px-2.5 py-1.5 text-xs text-foreground transition-colors focus:outline-hidden focus:border-primary cursor-pointer"
+              <Label className="mb-1 block" htmlFor="sample-rate">SAMPLE RATE</Label>
+              <select id="sample-rate" className="flex h-8 w-full rounded-lg border border-border bg-card px-2.5 py-1.5 text-xs text-foreground transition-colors focus:outline-hidden focus:border-primary cursor-pointer"
                 value={formatOut === 'opus' ? '48000' : rate}
                 disabled={formatOut === 'opus'}
                 title={formatOut === 'opus' ? 'Opus is always 48 kHz' : ''}

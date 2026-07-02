@@ -1,4 +1,6 @@
 @import 'tailwindcss';
+/* Theme variables are generated from design/tokens.json — edit tokens, not CSS */
+@import './styles/tokens.css';
 
 @plugin 'tailwindcss-animate';
 
@@ -110,97 +112,8 @@
 }
 
 @layer base {
-  :root {
-    --background: 213 27% 7%;
-    --foreground: 214 42% 88%;
-    --card: 211 25% 10%;
-    --card-foreground: 214 42% 88%;
-    --popover: 211 25% 10%;
-    --popover-foreground: 214 42% 88%;
-    --primary: 42 60% 49%;
-    --primary-foreground: 213 30% 6%;
-    --secondary: 211 28% 14%;
-    --secondary-foreground: 214 42% 88%;
-    --muted: 211 28% 20%;
-    --muted-foreground: 213 25% 56%;
-    --accent: 211 28% 14%;
-    --accent-foreground: 214 42% 88%;
-    --destructive: 0 50% 54%;
-    --destructive-foreground: 0 0% 100%;
-    --border: 210 38% 19%;
-    --input: 210 38% 19%;
-    --ring: 42 60% 49%;
-    --radius: 0.5rem;
-
-    --gold: 42 60% 49%;
-    --gold-hi: 42 55% 55%;
-    --gold-dim: 42 60% 49% / 0.14;
-    --gold-glow: 42 60% 49% / 0.25;
-    --success: 150 46% 42%;
-    --warning: 36 73% 45%;
-    --surface: 212 25% 9%;
-    --panel2: 211 28% 14%;
-    /* 52% lightness: at the previous 40%, the 11px hint text rendered ~3:1
-       against the background, below the 4.5:1 WCAG AA threshold */
-    --sub: 213 24% 52%;
-    --text2: 213 20% 62%;
-    --blue: 213 65% 58%;
-    --topbar-h: 50px;
-    --bottom-h: 56px;
-
-    /* Full color values for SVG fill/stroke (can't use bare HSL components) */
-    --color-gold: #c49a36;
-    --color-gold-hi: #d4aa48;
-    --color-gold-dim: rgba(196, 154, 54, 0.14);
-    --color-sub: #65799a;
-    --color-green: #3a9e6a;
-    --color-red: #c44e4e;
-    --color-blue: #4a8fdf;
-  }
-
-  .light {
-    --background: 36 24% 93%;
-    --foreground: 218 25% 15%;
-    --card: 32 18% 87%;
-    --card-foreground: 218 25% 15%;
-    --popover: 32 18% 87%;
-    --popover-foreground: 218 25% 15%;
-    --primary: 36 78% 34%;
-    --primary-foreground: 36 24% 93%;
-    --secondary: 32 14% 84%;
-    --secondary-foreground: 218 25% 15%;
-    --muted: 30 12% 73%;
-    --muted-foreground: 213 14% 44%;
-    --accent: 32 14% 84%;
-    --accent-foreground: 218 25% 15%;
-    --destructive: 0 50% 54%;
-    --destructive-foreground: 0 0% 100%;
-    --border: 28 12% 73%;
-    --input: 28 12% 73%;
-    --ring: 36 78% 34%;
-
-    --gold: 36 78% 34%;
-    --gold-hi: 30 78% 27%;
-    --gold-dim: 36 78% 34% / 0.10;
-    --gold-glow: 36 78% 34% / 0.20;
-    --surface: 32 18% 90%;
-    --panel2: 32 14% 84%;
-    /* 42% lightness: at the previous 55%, hint text rendered ~2.9:1 on the
-       light background, below the 4.5:1 WCAG AA threshold */
-    --sub: 213 14% 42%;
-    --text2: 213 15% 34%;
-    --blue: 213 65% 50%;
-    --success: 150 46% 36%;
-    --warning: 36 73% 38%;
-
-    --color-gold: #9a6e18;
-    --color-gold-hi: #7a5210;
-    --color-gold-dim: rgba(154, 110, 24, 0.1);
-    --color-sub: #5c6b80;
-    --color-green: #2d8a58;
-    --color-red: #c44e4e;
-    --color-blue: #3a7cc0;
-  }
+  /* Theme variables (:root and .light) come from src/styles/tokens.css,
+     generated from design/tokens.json. Run `npm run tokens` after editing. */
 
   * {
     @apply border-border;

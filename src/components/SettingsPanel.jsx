@@ -107,7 +107,7 @@ function SelectField({ label, hint, value, setValue, options }) {
       <Label className="settings-label">{label}</Label>
       {hint && <p className="settings-hint">{hint}</p>}
       <Select value={value} onValueChange={setValue}>
-        <SelectTrigger className="settings-select">
+        <SelectTrigger className="settings-select" aria-label={label}>
           <SelectValue />
         </SelectTrigger>
         <SelectContent>

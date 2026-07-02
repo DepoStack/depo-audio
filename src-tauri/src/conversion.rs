@@ -13,6 +13,62 @@ use crate::ffmpeg::{build_proc_filters_with_gain, probe_channels, run_ffmpeg_wit
 use crate::helpers::{basename, detect_format_for_path, output_args, output_ext, safe_label, strip_sgmca_header, unique_path};
 use crate::types::{AudioBuffer, ConvertJob, FormatInfo, OutputFile, ProgressEvent};
 
+// ── Filtergraph builders (pure) ──────────────────────────────────────────────
+//
+// These produce the exact FFmpeg filter strings for each output mode. Their
+// output format is a contract: golden-master tests below pin it down.
+
+/// Stereo downmix: a unity-gain SUM of all channels on both L and R.
+/// `vols` are per-channel volumes already multiplied by 1/num_ch; missing
+/// entries fall back to an equal-weight mix.
+fn stereo_pan_filter(num_ch: u32, vols: &[f64]) -> String {
+    let weight = 1.0 / num_ch as f64;
+    let scale = num_ch as f64; // compensate for per-channel weight
+    let weights: Vec<String> = (0..num_ch).map(|i| {
+        let v = vols.get(i as usize).copied().unwrap_or(weight);
+        format!("{:.4}*c{}", v, i)
+    }).collect();
+    let mix = weights.join("+");
+    format!("pan=stereo|c0={}|c1={},volume={:.1}", mix, mix, scale)
+}
+
+/// Per-channel output labels for split mode: the user's label, sanitized for
+/// filenames, falling back to chN when empty.
+fn split_labels(num_ch: u32, labels: &[String]) -> Vec<String> {
+    (0..num_ch as usize).map(|i| {
+        let raw = labels.get(i).map(|s| s.as_str()).unwrap_or("");
+        let sl = safe_label(raw);
+        if sl.is_empty() { format!("ch{}", i + 1) } else { sl }
+    }).collect()
+}
+
+/// Split mode filter_complex: asplit + pan=mono per channel (channelsplit
+/// requires the actual channel layout, which breaks mono and 4-channel court
+/// recordings). Auto-level injects EACH channel's own gain right after the
+/// channel is isolated — a single averaged gain would leave imbalance in place.
+fn split_filter_complex(
+    num_ch: u32,
+    auto_level: bool,
+    channel_gains: Option<&Vec<f64>>,
+    proc: &[String],
+) -> String {
+    let sp_tags: Vec<String> = (0..num_ch as usize).map(|i| format!("sp{}", i)).collect();
+    let split_str = format!("[0:a]asplit={}[{}]", num_ch, sp_tags.join("]["));
+    let per_ch_proc = if proc.is_empty() { String::new() } else { format!(",{}", proc.join(",")) };
+    let chain: Vec<String> = (0..num_ch as usize)
+        .map(|i| {
+            let gain_str = if auto_level {
+                match channel_gains.and_then(|g| g.get(i)).copied() {
+                    Some(g) if (g - 1.0).abs() > 0.01 => format!(",volume={:.4}", g),
+                    _ => String::new(),
+                }
+            } else { String::new() };
+            format!("[sp{}]pan=mono|c0=c{}{}{}[op{}]", i, i, gain_str, per_ch_proc, i)
+        })
+        .collect();
+    std::iter::once(split_str).chain(chain).collect::<Vec<_>>().join(";")
+}
+
 // ── Conversion orchestration ─────────────────────────────────────────────────
 
 pub(crate) async fn do_convert(app: &AppHandle, job: &ConvertJob) -> Result<Vec<OutputFile>, String> {
@@ -101,9 +157,9 @@ async fn do_convert_inner(app: &AppHandle, job: &ConvertJob, feed: &Path, fmt: &
                 // Write buffer to temp, run DFN3, read result back
                 match denoise_deep_filter(app, &ai_feed, &input_codec).await {
                     Ok(denoised) => {
-                        match AudioBuffer::from_wav(&denoised) {
-                            Ok(buf) => { audio_buf = buf; }
-                            Err(_) => {} // Keep current buffer on read failure
+                        // Keep the current buffer if the result can't be read
+                        if let Ok(buf) = AudioBuffer::from_wav(&denoised) {
+                            audio_buf = buf;
                         }
                         let _ = fs::remove_file(&denoised);
                     }
@@ -183,14 +239,8 @@ async fn do_convert_inner(app: &AppHandle, job: &ConvertJob, feed: &Path, fmt: &
                 (0..num_ch).map(|i| job.chan_vols.get(i as usize).copied().unwrap_or(1.0) * weight).collect()
             };
 
-            let scale = num_ch as f64; // compensate for per-channel weight
-            let weights: Vec<String> = (0..num_ch).map(|i| {
-                let v = vols.get(i as usize).copied().unwrap_or(weight);
-                format!("{:.4}*c{}", v, i)
-            }).collect();
-            let mix = weights.join("+");
-            let pan = format!("pan=stereo|c0={}|c1={},volume={:.1}", mix, mix, scale);
-            let mut all: Vec<String> = std::iter::once(pan).chain(proc.into_iter()).collect();
+            let pan = stereo_pan_filter(num_ch, &vols);
+            let mut all: Vec<String> = std::iter::once(pan).chain(proc).collect();
             // The weight/scale pair makes this a unity-gain SUM of channels:
             // right for turn-taking speakers, but correlated content (every
             // mic hearing the same voice) can exceed full scale by up to
@@ -228,11 +278,7 @@ async fn do_convert_inner(app: &AppHandle, job: &ConvertJob, feed: &Path, fmt: &
         "split" => {
             let num_ch = probe_channels(app, effective_feed).await
                 .ok_or("Cannot split channels: unable to determine the input's channel count")?;
-            let labels: Vec<String> = (0..num_ch as usize).map(|i| {
-                let raw = job.labels.get(i).map(|s| s.as_str()).unwrap_or("");
-                let sl = safe_label(raw);
-                if sl.is_empty() { format!("ch{}", i + 1) } else { sl }
-            }).collect();
+            let labels = split_labels(num_ch, &job.labels);
             let dsts: Vec<PathBuf> = labels.iter()
                 .map(|l| unique_path(&out_dir.join(format!("{}_{}{}", base, l, ext))))
                 .collect();
@@ -241,27 +287,7 @@ async fn do_convert_inner(app: &AppHandle, job: &ConvertJob, feed: &Path, fmt: &
             // channelsplit requires the actual channel layout (defaulting to
             // stereo), which breaks mono and 4-channel court recordings.
             let mut args = ffmpeg_args.clone();
-            let sp_tags: Vec<String> = (0..num_ch as usize).map(|i| format!("sp{}", i)).collect();
-            let split_str = format!("[0:a]asplit={}[{}]", num_ch, sp_tags.join("]["));
-            let per_ch_proc = if proc.is_empty() { String::new() } else { format!(",{}", proc.join(",")) };
-            // Auto-level balances speakers by applying EACH channel's own gain
-            // (from analysis). Folding a single averaged gain — as the shared
-            // chain did — leaves the imbalance in place, so inject the
-            // per-channel gain right after the channel is isolated. (When
-            // loudnorm is also on it normalizes each channel anyway; this gain
-            // is what balances them when normalization is off.)
-            let chain: Vec<String> = (0..num_ch as usize)
-                .map(|i| {
-                    let gain_str = if job.auto_level {
-                        match channel_gains.as_ref().and_then(|g| g.get(i)).copied() {
-                            Some(g) if (g - 1.0).abs() > 0.01 => format!(",volume={:.4}", g),
-                            _ => String::new(),
-                        }
-                    } else { String::new() };
-                    format!("[sp{}]pan=mono|c0=c{}{}{}[op{}]", i, i, gain_str, per_ch_proc, i)
-                })
-                .collect();
-            let fc = std::iter::once(split_str).chain(chain).collect::<Vec<_>>().join(";");
+            let fc = split_filter_complex(num_ch, job.auto_level, channel_gains.as_ref(), &proc);
             args.extend(["-filter_complex".into(), fc, "-y".into()]);
             for (i, dst) in dsts.iter().enumerate() {
                 args.extend(["-map".into(), format!("[op{}]", i)]);
@@ -293,4 +319,82 @@ async fn do_convert_inner(app: &AppHandle, job: &ConvertJob, feed: &Path, fmt: &
     // ai_temps cleaned up automatically via TempFile Drop
 
     Ok(files)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Golden-master tests: these strings are the audio-processing contract.
+    // A change here changes what users' converted files sound like.
+
+    #[test]
+    fn stereo_pan_sums_all_channels_into_both_sides() {
+        // 4-channel court recording, equal vols of 1/4 each
+        let vols = vec![0.25, 0.25, 0.25, 0.25];
+        assert_eq!(
+            stereo_pan_filter(4, &vols),
+            "pan=stereo|c0=0.2500*c0+0.2500*c1+0.2500*c2+0.2500*c3|c1=0.2500*c0+0.2500*c1+0.2500*c2+0.2500*c3,volume=4.0"
+        );
+    }
+
+    #[test]
+    fn stereo_pan_missing_vols_fall_back_to_equal_weight() {
+        assert_eq!(
+            stereo_pan_filter(2, &[]),
+            "pan=stereo|c0=0.5000*c0+0.5000*c1|c1=0.5000*c0+0.5000*c1,volume=2.0"
+        );
+    }
+
+    #[test]
+    fn stereo_pan_carries_per_channel_gains() {
+        // Auto-level: gains 2.0 and 0.5 pre-multiplied by the 1/2 weight
+        assert_eq!(
+            stereo_pan_filter(2, &[1.0, 0.25]),
+            "pan=stereo|c0=1.0000*c0+0.2500*c1|c1=1.0000*c0+0.2500*c1,volume=2.0"
+        );
+    }
+
+    #[test]
+    fn split_labels_sanitize_and_fall_back() {
+        let labels = vec!["Judge Smith".into(), "".into(), "a/b".into()];
+        assert_eq!(split_labels(4, &labels), vec!["Judge_Smith", "ch2", "a_b", "ch4"]);
+    }
+
+    #[test]
+    fn split_filter_uses_asplit_and_pan_mono_per_channel() {
+        // channelsplit would assume a stereo layout; asplit+pan works for any
+        // channel count — the fix that made 4-channel court files split right
+        assert_eq!(
+            split_filter_complex(2, false, None, &[]),
+            "[0:a]asplit=2[sp0][sp1];[sp0]pan=mono|c0=c0[op0];[sp1]pan=mono|c0=c1[op1]"
+        );
+    }
+
+    #[test]
+    fn split_filter_appends_shared_proc_chain_per_channel() {
+        let proc = vec!["highpass=f=80".to_string(), "loudnorm=I=-16:TP=-1.5:LRA=11".to_string()];
+        assert_eq!(
+            split_filter_complex(2, false, None, &proc),
+            "[0:a]asplit=2[sp0][sp1];[sp0]pan=mono|c0=c0,highpass=f=80,loudnorm=I=-16:TP=-1.5:LRA=11[op0];[sp1]pan=mono|c0=c1,highpass=f=80,loudnorm=I=-16:TP=-1.5:LRA=11[op1]"
+        );
+    }
+
+    #[test]
+    fn split_filter_injects_each_channels_own_gain() {
+        let gains = vec![2.0, 1.0, 0.5];
+        assert_eq!(
+            split_filter_complex(3, true, Some(&gains), &[]),
+            "[0:a]asplit=3[sp0][sp1][sp2];[sp0]pan=mono|c0=c0,volume=2.0000[op0];[sp1]pan=mono|c0=c1[op1];[sp2]pan=mono|c0=c2,volume=0.5000[op2]"
+        );
+    }
+
+    #[test]
+    fn split_filter_ignores_gains_when_auto_level_off() {
+        let gains = vec![2.0, 0.5];
+        assert_eq!(
+            split_filter_complex(2, false, Some(&gains), &[]),
+            "[0:a]asplit=2[sp0][sp1];[sp0]pan=mono|c0=c0[op0];[sp1]pan=mono|c0=c1[op1]"
+        );
+    }
 }

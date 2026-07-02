@@ -22,6 +22,9 @@ fn mel_to_hz(m: f64) -> f64 {
 }
 
 /// Triangular mel filterbank, N_MELS x N_BINS.
+// Index-based loops intentionally mirror the numpy reference implementation
+// this function is pinned against (see tests) — clearer than iterator chains.
+#[allow(clippy::needless_range_loop)]
 fn mel_filterbank() -> Vec<Vec<f32>> {
     let mel_max = hz_to_mel(SAMPLE_RATE / 2.0);
     let bin_of = |i: usize| -> usize {

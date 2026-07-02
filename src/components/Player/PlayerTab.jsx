@@ -5,6 +5,7 @@ import { Play, Pause, SkipBack, SkipForward, Bookmark, X, Plus, Repeat, Copy, Ch
 import { cn } from '../../lib/utils'
 import { CH_COLORS } from '../../constants'
 import { fmtTime } from '../../utils'
+import { AUDIO_EXTS, SPEED_STEPS, loadSpeed, cycleSpeedStep, loadBookmarks, freshAudioPaths, bookmarksToText } from '../../lib/player'
 import { Button } from '../ui/button'
 import { Card, CardHeader, CardTitle } from '../ui/card'
 import Waveform from '../common/Waveform'
@@ -15,14 +16,12 @@ import Transcript from './Transcript'
 //
 // Play any audio file directly — no conversion needed. Supports multi-channel
 // files with color-coded speaker tracks. Drop files or browse to start.
+// Accepted extensions, speed steps, and bookmark handling live in
+// lib/player.js (characterization-tested).
 //
 // Keyboard transport (when not typing in a field):
 //   Space / K  play-pause      ← / →  seek ±5s       J / L  seek ±10s
 //   ↑ / ↓      speed up/down    [ / ]  prev/next      B      bookmark
-
-// Extensions the player accepts — native drops can contain anything
-const AUDIO_EXTS = ['wav','mp3','flac','opus','ogg','m4a','aac','wma','aif','aiff','sgmca','trm','ftr','bwf']
-const SPEED_STEPS = [0.5, 0.75, 1, 1.25, 1.5, 2]
 
 export default function PlayerTab({ dropHandlerRef }) {
   const [tracks, setTracks] = useState([])       // { path, name, size, channels, duration, color }
@@ -32,22 +31,14 @@ export default function PlayerTab({ dropHandlerRef }) {
   const [duration, setDuration] = useState(0)
   const [dragOver, setDragOver] = useState(false)
   // Playback speed persists across sessions (transcription workflows live here)
-  const [speed, setSpeedState] = useState(() => {
-    const v = parseFloat(localStorage.getItem('player-speed'))
-    return SPEED_STEPS.includes(v) ? v : 1
-  })
+  const [speed, setSpeedState] = useState(() => loadSpeed(localStorage.getItem('player-speed')))
   // A-B loop points (session-only, reset per track)
   const [loopA, setLoopA] = useState(null)
   const [loopB, setLoopB] = useState(null)
   const [copied, setCopied] = useState(false)
   // Bookmarks persist across sessions; validate the shape — corrupt storage
   // must not crash the tab on every launch
-  const [bookmarks, setBookmarks] = useState(() => {
-    try {
-      const v = JSON.parse(localStorage.getItem('player-bookmarks') || '[]')
-      return Array.isArray(v) ? v.filter(b => b && typeof b.time === 'number' && typeof b.trackPath === 'string') : []
-    } catch { return [] }
-  })
+  const [bookmarks, setBookmarks] = useState(() => loadBookmarks(localStorage.getItem('player-bookmarks')))
   useEffect(() => {
     try { localStorage.setItem('player-bookmarks', JSON.stringify(bookmarks)) } catch { /* storage full or unavailable */ }
   }, [bookmarks])
@@ -74,11 +65,7 @@ export default function PlayerTab({ dropHandlerRef }) {
   // Add files to playlist. Native drops arrive unfiltered, so skip paths
   // already queued (duplicate keys break selection) and non-audio files.
   const addFiles = (paths) => {
-    const fresh = paths
-      .map(p => (typeof p === 'string' ? p : p.path))
-      .filter(path => AUDIO_EXTS.includes(path.split('.').pop()?.toLowerCase()))
-      .filter(path => !tracks.some(t => t.path === path))
-    const newTracks = [...new Set(fresh)].map((path, i) => ({
+    const newTracks = freshAudioPaths(paths, tracks).map((path, i) => ({
       path,
       name: path.split('/').pop().split('\\').pop(),
       size: 0,
@@ -132,11 +119,7 @@ export default function PlayerTab({ dropHandlerRef }) {
     try { localStorage.setItem('player-speed', String(s)) } catch { /* ignore */ }
     if (audioRef.current) audioRef.current.playbackRate = s
   }
-  const cycleSpeed = (dir) => {
-    const idx = SPEED_STEPS.indexOf(speed)
-    const next = Math.max(0, Math.min(SPEED_STEPS.length - 1, (idx < 0 ? 2 : idx) + dir))
-    applySpeed(SPEED_STEPS[next])
-  }
+  const cycleSpeed = (dir) => applySpeed(cycleSpeedStep(speed, dir))
 
   // Add a bookmark at the current position
   const addBookmark = () => {
@@ -173,10 +156,7 @@ export default function PlayerTab({ dropHandlerRef }) {
   // Copy the active track's bookmarks as "MM:SS  label" lines (for transcripts)
   const copyBookmarks = async () => {
     if (!activeTrack) return
-    const list = bookmarks
-      .filter(b => b.trackPath === activeTrack.path)
-      .sort((a, b) => a.time - b.time)
-    const text = list.map(b => `${fmtTime(b.time)}\t${b.label || ''}`.trimEnd()).join('\n')
+    const text = bookmarksToText(bookmarks, activeTrack.path)
     try {
       await navigator.clipboard.writeText(text)
       setCopied(true)
@@ -411,7 +391,7 @@ export default function PlayerTab({ dropHandlerRef }) {
                     .map((b) => (
                       <div key={`${b.time}-${b.trackPath}`} className="flex items-center gap-2 group">
                         <button
-                          className="font-mono text-[11px] text-primary hover:underline shrink-0 w-12 text-left focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring rounded"
+                          className="font-mono text-[11px] text-[hsl(var(--gold-hi))] hover:underline shrink-0 w-12 text-left focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring rounded"
                           title="Jump to bookmark"
                           onClick={() => { if (audioRef.current) audioRef.current.currentTime = b.time }}
                         >
