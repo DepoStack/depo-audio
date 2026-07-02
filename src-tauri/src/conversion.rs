@@ -157,9 +157,9 @@ async fn do_convert_inner(app: &AppHandle, job: &ConvertJob, feed: &Path, fmt: &
                 // Write buffer to temp, run DFN3, read result back
                 match denoise_deep_filter(app, &ai_feed, &input_codec).await {
                     Ok(denoised) => {
-                        match AudioBuffer::from_wav(&denoised) {
-                            Ok(buf) => { audio_buf = buf; }
-                            Err(_) => {} // Keep current buffer on read failure
+                        // Keep the current buffer if the result can't be read
+                        if let Ok(buf) = AudioBuffer::from_wav(&denoised) {
+                            audio_buf = buf;
                         }
                         let _ = fs::remove_file(&denoised);
                     }

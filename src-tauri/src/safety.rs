@@ -51,14 +51,14 @@ pub(crate) fn safe_display(path: &Path) -> String {
 /// Validate numeric parameters are within reasonable bounds.
 pub(crate) fn validate_rate(rate: &str) -> Result<(), String> {
     let r: u32 = rate.parse().map_err(|_| "Invalid sample rate")?;
-    if r < 8000 || r > 192000 {
+    if !(8000..=192000).contains(&r) {
         return Err(format!("Sample rate {} Hz is outside valid range (8000-192000)", r));
     }
     Ok(())
 }
 
 pub(crate) fn validate_fade_dur(dur: f64) -> Result<(), String> {
-    if dur.is_nan() || dur.is_infinite() || dur < 0.0 || dur > 30.0 {
+    if dur.is_nan() || dur.is_infinite() || !(0.0..=30.0).contains(&dur) {
         return Err(format!("Fade duration {} is outside valid range (0-30s)", dur));
     }
     Ok(())

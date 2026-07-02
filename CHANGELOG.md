@@ -22,6 +22,12 @@
 ### Improved
 - **Responsive layout** — the UI now scales to the window instead of sitting in a fixed 920px column: content fluidly uses available width (up to a comfortable 1100px for readability) and reflows cleanly down to a 720px minimum, eliminating horizontal scrolling. Default window enlarged to 1160×820 for more breathing room.
 - **Library tab** no longer permits horizontal scrolling (added the same overflow guard the other tabs already had).
+- **Accessibility (WCAG 2.2 AA)** — audited every screen in both themes with axe-core and fixed all violations: hint/muted text and gold link/tab colors now meet the 4.5:1 contrast threshold on every surface, primary buttons in light mode use a compliant label color, and all selects (sample rate, denoise quality, import case, settings) have accessible names for screen readers.
+- **Theme is now token-driven** — all colors live in `design/tokens.json` (W3C design-token format) as primitive→semantic layers; `npm run tokens` regenerates the CSS, and CI fails if the two drift apart.
+
+### Internal
+- **Characterization test suite** — 70 new golden-master tests pin the behavior users depend on: FFmpeg filter chains and filtergraphs per output mode, preference patch-merge semantics, library filing rules, import sanitization, IPC wire shapes and defaults, transcript SRT/plain parsing round-trips, and player logic. `PARITY.md` documents the full capability/contract inventory.
+- **CI workflow** — every PR now runs eslint, the JS and Rust test suites, a Vite build, `cargo clippy -D warnings` (codebase is warning-clean), and the token-drift check.
 
 
 ## [0.8.0] - 2026-06-12

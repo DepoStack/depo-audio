@@ -199,7 +199,7 @@ pub(crate) async fn run_ffmpeg_with_timeout(app: &AppHandle, args: Vec<String>, 
                 .collect();
             let msg = lines.iter().rev().take(4).cloned().collect::<Vec<_>>().into_iter().rev().collect::<Vec<_>>().join(" | ");
             // Sanitize: strip file paths from error messages
-            let sanitized = msg.replace(|c: char| c == '/' || c == '\\', "_")
+            let sanitized = msg.replace(['/', '\\'], "_")
                 .chars().take(300).collect::<String>();
             if sanitized.trim().is_empty() {
                 Err("FFmpeg exited abnormally (no error output)".into())

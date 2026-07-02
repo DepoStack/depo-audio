@@ -75,8 +75,8 @@ impl AudioBuffer {
         let frames = channel_bufs.iter().map(|b| b.len()).max().unwrap_or(0);
         let mut samples = Vec::with_capacity(frames * ch);
         for f in 0..frames {
-            for c in 0..ch {
-                samples.push(channel_bufs[c].get(f).copied().unwrap_or(0.0));
+            for buf in channel_bufs {
+                samples.push(buf.get(f).copied().unwrap_or(0.0));
             }
         }
         Self { samples, channels: ch as u16, sample_rate }
