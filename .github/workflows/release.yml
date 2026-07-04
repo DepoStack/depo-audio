@@ -70,10 +70,13 @@ jobs:
 
       # ── FFmpeg sidecars ─────────────────────────────────────────────────
       # macOS: download STATIC per-arch ffmpeg + ffprobe, verify each is
-      # self-contained (no Homebrew/Cellar deps), then lipo into one universal
-      # sidecar named for the universal-apple-darwin triple — which is exactly
-      # what the Tauri bundler resolves for a --target universal-apple-darwin
-      # build.
+      # self-contained (no Homebrew/Cellar deps), and stage them for the
+      # universal build. Tauri's --target universal-apple-darwin compiles each
+      # arch as a SEPARATE sub-build and resolves each externalBin by that
+      # arch's own triple, so the per-arch names (ffmpeg-aarch64-apple-darwin /
+      # ffmpeg-x86_64-apple-darwin) are what's actually required; the CLI lipos
+      # them for the final universal bundle. We also emit the -universal-apple-
+      # darwin fat binary as a harmless belt-and-suspenders fallback.
       - name: Build universal FFmpeg sidecars (macOS)
         if: runner.os == 'macOS'
         run: |
@@ -102,6 +105,16 @@ jobs:
             fi
           done
           for name in ffmpeg ffprobe; do
+            # Per-arch thin sidecars under Tauri's target triples — REQUIRED:
+            # each per-arch sub-build of the universal target resolves the
+            # externalBin by its own triple (arm64 static -> aarch64 triple,
+            # x64 static -> x86_64 triple).
+            cp "ffbin/$name-arm64" "src-tauri/binaries/$name-aarch64-apple-darwin"
+            cp "ffbin/$name-x64"   "src-tauri/binaries/$name-x86_64-apple-darwin"
+            chmod +x "src-tauri/binaries/$name-aarch64-apple-darwin" \
+                     "src-tauri/binaries/$name-x86_64-apple-darwin"
+            # Universal fat binary — fallback in case a Tauri version resolves
+            # the externalBin by the universal triple at final assembly.
             lipo -create "ffbin/$name-arm64" "ffbin/$name-x64" \
               -output "src-tauri/binaries/$name-universal-apple-darwin"
             chmod +x "src-tauri/binaries/$name-universal-apple-darwin"
@@ -111,7 +124,7 @@ jobs:
               *x86_64*arm64*|*arm64*x86_64*) : ;;
               *) echo "ERROR: $name is not universal (got: $archs)"; exit 1 ;;
             esac
-            "src-tauri/binaries/$name-universal-apple-darwin" -version | head -1
+            "src-tauri/binaries/$name-aarch64-apple-darwin" -version | head -1
           done
 
       - name: Download FFmpeg (Windows x64)
