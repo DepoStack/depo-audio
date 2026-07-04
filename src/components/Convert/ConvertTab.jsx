@@ -157,7 +157,7 @@ export default function ConvertTab({
             onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); browseFiles() } }}>
             <WaveformIcon />
             <p className="text-[13px] font-semibold text-foreground">Drop audio or video files here</p>
-            <p className="text-[11px] text-[hsl(var(--sub))] text-center">or <span className="text-[hsl(var(--gold-hi))] cursor-pointer hover:underline">click to browse</span> — MP3 · WAV · FLAC · M4A · OGG · Opus · WMA · court formats (SGMCA · TRM · BWF) · video (MP4 · MOV · MKV)</p>
+            <p className="text-[11px] text-[hsl(var(--sub))] text-center">or <span className="text-foreground cursor-pointer hover:underline">click to browse</span> — MP3 · WAV · FLAC · M4A · OGG · Opus · WMA · court formats (SGMCA · TRM · BWF) · video (MP4 · MOV · MKV)</p>
           </div>
 
           {files.length > 0 && (
@@ -193,7 +193,7 @@ export default function ConvertTab({
               return (
                 <Button key={p.id} variant="outline" size="sm" title={p.desc}
                   aria-pressed={active}
-                  className={`rounded-full ${active ? 'border-primary bg-[hsl(var(--gold-dim))] text-primary' : ''}`}
+                  className={`rounded-full ${active ? 'border-primary bg-[hsl(var(--gold-dim))] text-foreground' : ''}`}
                   onClick={() => {
                     setMode(s.mode); setFormatOut(s.format); setRate(s.rate)
                     setNormalize(s.normalize); setTrim(s.trim); setFade(s.fade)
@@ -245,7 +245,7 @@ export default function ConvertTab({
                     onClick={() => setFormatOut(f.id)}>
                     <span className="text-[13px] font-bold text-foreground">{f.label}</span>
                     <span className="text-[10px] text-[hsl(var(--text2))] leading-tight">{f.desc}</span>
-                    {formatOut===f.id && <span aria-hidden="true" className="absolute top-1.5 right-2 text-[hsl(var(--gold-hi))] text-[11px]">✓</span>}
+                    {formatOut===f.id && <span aria-hidden="true" className="absolute top-1.5 right-2 text-foreground text-[11px]">✓</span>}
                   </button>
                 ))}
               </div>
@@ -307,7 +307,7 @@ export default function ConvertTab({
                           className={`flex-1 h-1 accent-primary cursor-pointer ${autoLevel ? 'opacity-40' : ''}`}
                           disabled={autoLevel}
                           onChange={e => setChanVols(p => p.map((x,j) => j===i ? parseFloat(e.target.value):x))} />
-                        <span className={`font-mono text-[10px] w-8 text-right shrink-0 ${autoLevel ? 'text-primary' : 'text-[hsl(var(--sub))]'}`}>
+                        <span className={`font-mono text-[10px] w-8 text-right shrink-0 ${autoLevel ? 'text-foreground' : 'text-[hsl(var(--sub))]'}`}>
                           {autoLevel ? 'auto' : chanVols[i]===0 ? 'mute' : chanVols[i].toFixed(2)}
                         </span>
                       </>
@@ -478,7 +478,7 @@ export default function ConvertTab({
 
                   {/* Show more / less toggle */}
                   {hasAnalysis && hiddenCount > 0 && !showAllProcessing && (
-                    <button className="px-4 py-2 text-[11px] text-primary hover:text-foreground transition-colors cursor-pointer text-left"
+                    <button className="px-4 py-2 text-[11px] text-foreground hover:text-foreground transition-colors cursor-pointer text-left"
                       onClick={() => setShowAllProcessing(true)}>
                       Show {hiddenCount} more option{hiddenCount !== 1 ? 's' : ''}...
                     </button>

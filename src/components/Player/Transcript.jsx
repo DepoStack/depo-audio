@@ -125,7 +125,7 @@ export default function Transcript({ trackPath, currentTime, playing, onSeek }) 
               title="Auto-scroll to the line playing now"
               className={cn(
                 'flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-mono transition-colors',
-                follow ? 'bg-[hsl(var(--gold-dim))] text-primary' : 'text-[hsl(var(--sub))] hover:text-foreground'
+                follow ? 'bg-[hsl(var(--gold-dim))] text-foreground' : 'text-[hsl(var(--sub))] hover:text-foreground'
               )}
             >
               <Locate size={11} /> Follow
@@ -198,7 +198,7 @@ export default function Transcript({ trackPath, currentTime, playing, onSeek }) 
                       <button
                         onClick={() => onSeek(s.start)}
                         title="Jump to this point"
-                        className="font-mono text-[10px] text-[hsl(var(--gold-hi))] hover:underline focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring rounded"
+                        className="font-mono text-[10px] text-foreground hover:underline focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring rounded"
                       >
                         {fmtTime(s.start)}
                       </button>
@@ -206,7 +206,7 @@ export default function Transcript({ trackPath, currentTime, playing, onSeek }) 
                       <button
                         onClick={() => update(s.id, { start: currentTime })}
                         title="Stamp the current audio position onto this line"
-                        className="text-[hsl(var(--sub))] hover:text-primary transition-colors"
+                        className="text-[hsl(var(--sub))] hover:text-foreground transition-colors"
                       >
                         <Crosshair size={12} />
                       </button>
@@ -215,7 +215,7 @@ export default function Transcript({ trackPath, currentTime, playing, onSeek }) 
 
                   {/* Speaker (optional) */}
                   <input
-                    className="shrink-0 w-16 bg-transparent border-none p-0 pt-0.5 text-[10px] font-mono text-[hsl(var(--text2))] focus:text-primary focus:outline-hidden placeholder:text-[hsl(var(--sub))]"
+                    className="shrink-0 w-16 bg-transparent border-none p-0 pt-0.5 text-[10px] font-mono text-[hsl(var(--text2))] focus:text-foreground focus:outline-hidden placeholder:text-[hsl(var(--sub))]"
                     value={s.speaker}
                     placeholder="speaker"
                     onChange={e => update(s.id, { speaker: e.target.value })}
@@ -249,7 +249,7 @@ export default function Transcript({ trackPath, currentTime, playing, onSeek }) 
                     <button
                       onClick={() => update(s.id, { start: currentTime })}
                       title="Set this line's time to the current position"
-                      className="text-[hsl(var(--sub))] hover:text-primary transition-colors"
+                      className="text-[hsl(var(--sub))] hover:text-foreground transition-colors"
                     >
                       <Crosshair size={11} />
                     </button>

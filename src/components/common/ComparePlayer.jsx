@@ -98,7 +98,7 @@ export default function ComparePlayer({ originalPath, processedPath, originalLab
       {/* Controls */}
       <div className="flex items-center justify-center gap-3">
         <span className="font-mono text-[11px] text-[hsl(var(--sub))] min-w-[40px] text-center">{fmtTime(currentTime)}</span>
-        <button className="w-9 h-9 rounded-full bg-[hsl(var(--gold-dim))] border border-primary/30 text-primary flex items-center justify-center shrink-0 transition-colors hover:bg-primary/20 hover:border-primary"
+        <button className="w-9 h-9 rounded-full bg-[hsl(var(--gold-dim))] border border-primary/30 text-foreground flex items-center justify-center shrink-0 transition-colors hover:bg-primary/20 hover:border-primary"
           onClick={toggle}>
           {playing
             ? <Pause size={14} />

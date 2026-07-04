@@ -122,7 +122,7 @@ export default function App() {
         <div className="flex items-center gap-2.5 px-3 md:px-4 pt-4 pb-5">
           <LogoSvg />
           <div className="hidden md:flex flex-col leading-none">
-            <span className="font-serif text-[16px] font-semibold text-gold-hi">DepoAudio</span>
+            <span className="font-serif text-[16px] font-semibold text-foreground">DepoAudio</span>
             <span className="text-[9.5px] text-[hsl(var(--sub))] tracking-wider">Audio Converter &amp; Enhancer</span>
           </div>
         </div>

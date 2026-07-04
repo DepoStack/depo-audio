@@ -131,7 +131,7 @@ export default function MergeTab() {
                     ['3', 'One clean file', 'The clearest source wins at every moment'],
                   ].map(([n, title, desc]) => (
                     <div key={n} className="flex items-start gap-2 max-w-[180px]">
-                      <span className="w-5 h-5 rounded-full bg-[hsl(var(--gold-dim))] text-primary text-[10px] font-bold flex items-center justify-center shrink-0 mt-0.5">{n}</span>
+                      <span className="w-5 h-5 rounded-full bg-[hsl(var(--gold-dim))] text-foreground text-[10px] font-bold flex items-center justify-center shrink-0 mt-0.5">{n}</span>
                       <div className="flex flex-col">
                         <span className="text-[11px] font-semibold text-foreground">{title}</span>
                         <span className="text-[10px] text-[hsl(var(--sub))] leading-snug">{desc}</span>
@@ -230,7 +230,7 @@ export default function MergeTab() {
                           className={cn(
                             'px-3 py-1.5 rounded-md text-xs font-semibold transition-colors focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring',
                             format === f.id
-                              ? 'bg-[hsl(var(--gold-dim))] text-primary'
+                              ? 'bg-[hsl(var(--gold-dim))] text-foreground'
                               : 'text-[hsl(var(--sub))] hover:text-[hsl(var(--text2))]'
                           )}
                           onClick={() => setFormat(f.id)}

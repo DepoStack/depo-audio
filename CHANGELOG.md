@@ -2,7 +2,13 @@
 
 ## [Unreleased]
 
-## [0.9.0] - 2026-07-04
+## [1.0.0] - 2026-07-04
+
+### Changed — DepoStack brand
+- **Full visual rebrand to the DepoStack identity** — plum + gold on warm cream (light) and a deep plum-night (dark). Plum is the primary ink, gold the accent and call-to-action (gold buttons with plum ink), with generously rounded cards and soft shadows. Every color lives in `design/tokens.json`; light-mode status colors are the brand hues tuned to stay legible. Both themes remain **WCAG 2.2 AA** (axe-verified, 0 violations across every screen).
+
+### Added — Universal macOS build
+- **macOS now ships as a single universal binary** — one `.app`/`.dmg` runs natively on both Apple Silicon and Intel. FFmpeg sidecars and the ONNX Runtime library are combined for both architectures; no more separate Intel/Apple-Silicon downloads.
 
 ### Changed — "Docket" redesign (part 1)
 - **Sidebar navigation** replaces the top tab bar: icons + labels, number-key shortcuts (1–4), the case-library count, and a live system-health card (FFmpeg status, installed AI models, update state) with Settings and theme at the bottom. Collapses to an icon rail on narrow windows.

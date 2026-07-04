@@ -25,7 +25,7 @@ export default function MiniPlayer({ out, color, multi }) {
         onTimeUpdate={e => setCurrent(e.target.currentTime)}
         onEnded={() => { setPlaying(false); setCurrent(0) }} />
       <div className="flex items-center gap-1.5 shrink-0">
-        <button className="w-[22px] h-[22px] rounded-full bg-[hsl(var(--gold-dim))] border border-primary/30 text-primary flex items-center justify-center shrink-0 transition-colors hover:bg-primary/20 hover:border-primary"
+        <button className="w-[22px] h-[22px] rounded-full bg-[hsl(var(--gold-dim))] border border-primary/30 text-foreground flex items-center justify-center shrink-0 transition-colors hover:bg-primary/20 hover:border-primary"
           onClick={toggle}>
           {playing
             ? <Pause size={10} fill="currentColor" />

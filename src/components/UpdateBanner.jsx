@@ -14,7 +14,7 @@ export default function UpdateBanner({ updater }) {
     <div className="shrink-0 flex items-center gap-3 px-5 py-2 bg-[hsl(var(--gold-dim))] border-b border-primary/30 text-[12px]">
       {showAvailable && (
         <>
-          <RefreshCw size={14} className="text-primary shrink-0" />
+          <RefreshCw size={14} className="text-foreground shrink-0" />
           <span className="text-foreground">
             <strong className="font-semibold">DepoAudio {update.version}</strong> is available
             {update.currentVersion ? ` — you have ${update.currentVersion}` : ''}.
@@ -33,7 +33,7 @@ export default function UpdateBanner({ updater }) {
 
       {status === 'downloading' && (
         <>
-          <Loader2 size={14} className="text-primary animate-spin shrink-0" />
+          <Loader2 size={14} className="text-foreground animate-spin shrink-0" />
           <span className="text-foreground">
             Downloading update…{progress > 0 ? ` ${Math.round(progress * 100)}%` : ''}
           </span>
@@ -48,7 +48,7 @@ export default function UpdateBanner({ updater }) {
 
       {status === 'ready' && (
         <>
-          <Loader2 size={14} className="text-primary animate-spin shrink-0" />
+          <Loader2 size={14} className="text-foreground animate-spin shrink-0" />
           <span className="text-foreground">Update installed — restarting…</span>
         </>
       )}
