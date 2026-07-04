@@ -6,12 +6,16 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Release tag to create (e.g. v0.8.0)'
+        description: 'Release tag to create (e.g. v0.9.0)'
         required: true
         type: string
 
 env:
   ORT_VERSION: "1.22.0"
+  # Static, self-contained ffmpeg/ffprobe (per-arch) that we lipo into a
+  # universal macOS sidecar. Homebrew's ffmpeg is dynamically linked against
+  # Cellar dylibs and would dyld-fail on a clean Mac, so we do NOT use it.
+  FFMPEG_STATIC_TAG: "b6.1.2-rc.1"
 
 jobs:
   release:
@@ -22,24 +26,16 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # One universal macOS artifact (Apple Silicon + Intel in a single
+          # .app/.dmg). Built on an arm64 runner — Rust cross-compiles both
+          # slices and `lipo` fuses them; no Intel runner needed (macos-13 was
+          # retired Dec 2025).
           - platform: macos-latest
-            args: '--target aarch64-apple-darwin'
-            rust-target: aarch64-apple-darwin
-            ort-url: 'https://github.com/microsoft/onnxruntime/releases/download/v1.22.0/onnxruntime-osx-arm64-1.22.0.tgz'
-            ort-lib: 'libonnxruntime.1.22.0.dylib'
-            ort-dest: 'libonnxruntime.dylib'
-          - platform: macos-latest
-            args: '--target x86_64-apple-darwin'
-            rust-target: x86_64-apple-darwin
-            ort-url: 'https://github.com/microsoft/onnxruntime/releases/download/v1.22.0/onnxruntime-osx-x86_64-1.22.0.tgz'
-            ort-lib: 'libonnxruntime.1.22.0.dylib'
-            ort-dest: 'libonnxruntime.dylib'
+            args: '--target universal-apple-darwin'
+            rust-targets: 'aarch64-apple-darwin,x86_64-apple-darwin'
           - platform: windows-latest
             args: ''
-            rust-target: x86_64-pc-windows-msvc
-            ort-url: 'https://github.com/microsoft/onnxruntime/releases/download/v1.22.0/onnxruntime-win-x64-1.22.0.zip'
-            ort-lib: 'onnxruntime.dll'
-            ort-dest: 'onnxruntime.dll'
+            rust-targets: 'x86_64-pc-windows-msvc'
 
     runs-on: ${{ matrix.platform }}
 
@@ -55,7 +51,7 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: ${{ matrix.rust-target }}
+          targets: ${{ matrix.rust-targets }}
 
       - name: Rust cache
         uses: swatinem/rust-cache@v2
@@ -69,14 +65,43 @@ jobs:
         run: mkdir -p src-tauri/binaries
 
       # ── FFmpeg sidecars ─────────────────────────────────────────────────
-      - name: Install FFmpeg (macOS)
+      # macOS: download STATIC per-arch ffmpeg + ffprobe, verify each is
+      # self-contained (no Homebrew/Cellar deps), then lipo into one universal
+      # sidecar named for the universal-apple-darwin triple — which is exactly
+      # what the Tauri bundler resolves for a --target universal-apple-darwin
+      # build.
+      - name: Build universal FFmpeg sidecars (macOS)
         if: runner.os == 'macOS'
         run: |
-          brew install ffmpeg
-          cp "$(which ffmpeg)"  "src-tauri/binaries/ffmpeg-${{ matrix.rust-target }}"
-          cp "$(which ffprobe)" "src-tauri/binaries/ffprobe-${{ matrix.rust-target }}"
-          chmod +x "src-tauri/binaries/ffmpeg-${{ matrix.rust-target }}" \
-                   "src-tauri/binaries/ffprobe-${{ matrix.rust-target }}"
+          set -euo pipefail
+          base="https://github.com/descriptinc/ffmpeg-ffprobe-static/releases/download/${FFMPEG_STATIC_TAG}"
+          mkdir -p ffbin
+          for arch in arm64 x64; do
+            curl -fL --retry 3 "$base/ffmpeg-darwin-$arch"  -o "ffbin/ffmpeg-$arch"
+            curl -fL --retry 3 "$base/ffprobe-darwin-$arch" -o "ffbin/ffprobe-$arch"
+          done
+          chmod +x ffbin/*
+          # Guard: each thin binary must be static (only system dylibs). A
+          # Homebrew/Cellar/usr-local path here means a broken sidecar on clean
+          # Macs — fail the build rather than ship it.
+          for f in ffbin/ffmpeg-arm64 ffbin/ffmpeg-x64 ffbin/ffprobe-arm64 ffbin/ffprobe-x64; do
+            echo "== $f =="; file "$f"
+            if otool -L "$f" | grep -Eq '/opt/homebrew|/usr/local/opt|/Cellar/'; then
+              echo "ERROR: $f links a non-system dylib — not a self-contained sidecar"; exit 1
+            fi
+          done
+          for name in ffmpeg ffprobe; do
+            lipo -create "ffbin/$name-arm64" "ffbin/$name-x64" \
+              -output "src-tauri/binaries/$name-universal-apple-darwin"
+            chmod +x "src-tauri/binaries/$name-universal-apple-darwin"
+            archs=$(lipo -archs "src-tauri/binaries/$name-universal-apple-darwin")
+            echo "$name universal archs: $archs"
+            case "$archs" in
+              *x86_64*arm64*|*arm64*x86_64*) : ;;
+              *) echo "ERROR: $name is not universal (got: $archs)"; exit 1 ;;
+            esac
+            "src-tauri/binaries/$name-universal-apple-darwin" -version | head -1
+          done
 
       - name: Download FFmpeg (Windows x64)
         if: matrix.platform == 'windows-latest'
@@ -91,8 +116,8 @@ jobs:
           Copy-Item $bin.FullName   src-tauri/binaries/ffmpeg-x86_64-pc-windows-msvc.exe
           Copy-Item $probe.FullName src-tauri/binaries/ffprobe-x86_64-pc-windows-msvc.exe
 
-      - name: Verify FFmpeg sidecars (Unix)
-        if: runner.os != 'Windows'
+      - name: Verify FFmpeg sidecars (macOS)
+        if: runner.os == 'macOS'
         run: |
           echo "=== src-tauri/binaries/ ==="
           ls -lh src-tauri/binaries/
@@ -104,25 +129,37 @@ jobs:
         run: Get-ChildItem src-tauri/binaries/
 
       # ── ONNX Runtime ────────────────────────────────────────────────────
-      - name: Download ONNX Runtime (macOS)
+      # macOS: Microsoft ships a ready-made universal2 (fat) dylib — no lipo
+      # needed. The bundled .dylib is a symlink to the versioned real file, so
+      # copy with -L to bundle the actual Mach-O, not a dangling link.
+      - name: Download universal ONNX Runtime (macOS)
         if: runner.os == 'macOS'
         run: |
+          set -euo pipefail
           mkdir -p src-tauri/resources/onnxruntime
-          curl -fsSL --retry 3 "${{ matrix.ort-url }}" -o ort.tgz
+          curl -fL --retry 3 \
+            "https://github.com/microsoft/onnxruntime/releases/download/v${ORT_VERSION}/onnxruntime-osx-universal2-${ORT_VERSION}.tgz" \
+            -o ort.tgz
           tar xzf ort.tgz
-          ORT_DIR=$(ls -d onnxruntime-*)
-          cp "$ORT_DIR/lib/${{ matrix.ort-lib }}" "src-tauri/resources/onnxruntime/${{ matrix.ort-dest }}"
-          ls -lh src-tauri/resources/onnxruntime/
+          ort_dir=$(ls -d onnxruntime-osx-universal2-*)
+          cp -L "$ort_dir/lib/libonnxruntime.dylib" src-tauri/resources/onnxruntime/libonnxruntime.dylib
+          file src-tauri/resources/onnxruntime/libonnxruntime.dylib
+          archs=$(lipo -archs src-tauri/resources/onnxruntime/libonnxruntime.dylib)
+          echo "ORT dylib archs: $archs"
+          case "$archs" in
+            *x86_64*arm64*|*arm64*x86_64*) : ;;
+            *) echo "ERROR: ORT dylib is not universal (got: $archs)"; exit 1 ;;
+          esac
 
       - name: Download ONNX Runtime (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path src-tauri/resources/onnxruntime | Out-Null
-          Invoke-WebRequest "${{ matrix.ort-url }}" -OutFile ort.zip
+          Invoke-WebRequest "https://github.com/microsoft/onnxruntime/releases/download/v${env:ORT_VERSION}/onnxruntime-win-x64-${env:ORT_VERSION}.zip" -OutFile ort.zip
           Expand-Archive ort.zip -DestinationPath ort_tmp -Force
-          $dll = Get-ChildItem ort_tmp -Recurse -Filter "${{ matrix.ort-lib }}" | Select-Object -First 1
-          Copy-Item $dll.FullName "src-tauri/resources/onnxruntime/${{ matrix.ort-dest }}"
+          $dll = Get-ChildItem ort_tmp -Recurse -Filter "onnxruntime.dll" | Select-Object -First 1
+          Copy-Item $dll.FullName "src-tauri/resources/onnxruntime/onnxruntime.dll"
           Get-ChildItem src-tauri/resources/onnxruntime/
 
       # ── Disable macOS signing when no certificate is configured ────────
