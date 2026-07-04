@@ -24,6 +24,10 @@ jobs:
 
     strategy:
       fail-fast: false
+      # Serialize the platform builds: tauri-action does a read-modify-write of
+      # the draft release's latest.json, so two jobs writing it concurrently
+      # would clobber one platform's updater keys. One-at-a-time is safe.
+      max-parallel: 1
       matrix:
         include:
           # One universal macOS artifact (Apple Silicon + Intel in a single
@@ -77,17 +81,24 @@ jobs:
           base="https://github.com/descriptinc/ffmpeg-ffprobe-static/releases/download/${FFMPEG_STATIC_TAG}"
           mkdir -p ffbin
           for arch in arm64 x64; do
-            curl -fL --retry 3 "$base/ffmpeg-darwin-$arch"  -o "ffbin/ffmpeg-$arch"
-            curl -fL --retry 3 "$base/ffprobe-darwin-$arch" -o "ffbin/ffprobe-$arch"
+            curl -fL --retry 5 --retry-all-errors --retry-delay 2 "$base/ffmpeg-darwin-$arch"  -o "ffbin/ffmpeg-$arch"
+            curl -fL --retry 5 --retry-all-errors --retry-delay 2 "$base/ffprobe-darwin-$arch" -o "ffbin/ffprobe-$arch"
           done
           chmod +x ffbin/*
-          # Guard: each thin binary must be static (only system dylibs). A
-          # Homebrew/Cellar/usr-local path here means a broken sidecar on clean
-          # Macs — fail the build rather than ship it.
+          # Record hashes so a maintainer can pin sha256 after the first run
+          # (this tag is a prerelease and could be re-cut).
+          echo "== sidecar sha256 (pin after first run) =="; shasum -a 256 ffbin/*
+          # Guard (allowlist, not denylist): a real static sidecar may only
+          # depend on system libraries under /usr/lib or /System/Library. Any
+          # other dependency — Homebrew, /usr/local, or an @rpath/@loader_path
+          # reference — means it would dyld-fail on a clean end-user Mac, so
+          # fail the build instead of shipping it. Checked per thin binary
+          # BEFORE lipo.
           for f in ffbin/ffmpeg-arm64 ffbin/ffmpeg-x64 ffbin/ffprobe-arm64 ffbin/ffprobe-x64; do
-            echo "== $f =="; file "$f"
-            if otool -L "$f" | grep -Eq '/opt/homebrew|/usr/local/opt|/Cellar/'; then
-              echo "ERROR: $f links a non-system dylib — not a self-contained sidecar"; exit 1
+            echo "== $f =="; file "$f"; otool -L "$f"
+            bad=$(otool -L "$f" | tail -n +2 | awk '{print $1}' | grep -vE '^/usr/lib/|^/System/Library/' || true)
+            if [ -n "$bad" ]; then
+              echo "ERROR: $f is not self-contained — non-system dependencies:"; echo "$bad"; exit 1
             fi
           done
           for name in ffmpeg ffprobe; do
@@ -137,7 +148,7 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p src-tauri/resources/onnxruntime
-          curl -fL --retry 3 \
+          curl -fL --retry 5 --retry-all-errors --retry-delay 2 \
             "https://github.com/microsoft/onnxruntime/releases/download/v${ORT_VERSION}/onnxruntime-osx-universal2-${ORT_VERSION}.tgz" \
             -o ort.tgz
           tar xzf ort.tgz
