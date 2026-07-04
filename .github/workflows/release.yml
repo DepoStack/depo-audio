@@ -210,7 +210,10 @@ jobs:
           releaseName:  'DepoAudio ${{ inputs.tag || github.ref_name }}'
           releaseBody:  'See CHANGELOG.md for details.'
           releaseDraft: true
-          prerelease:   false
+          # Preview releases: a tag with a pre-release suffix (e.g.
+          # v1.0.0-preview.1, -rc.1, -beta.2) is marked as a GitHub prerelease;
+          # a clean tag (v1.0.0) ships as a final release.
+          prerelease:   ${{ contains(inputs.tag || github.ref_name, '-') }}
           # Updater artifacts + latest.json only when the signing key is present.
           includeUpdaterJson: ${{ steps.updater.outputs.enabled }}
           args: ${{ steps.updater.outputs.enabled == 'true' && format('--config src-tauri/tauri.updater.conf.json {0}', matrix.args) || matrix.args }}
