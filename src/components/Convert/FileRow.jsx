@@ -26,7 +26,7 @@ export default function FileRow({ file, job, onRemove, converting }) {
           'text-[hsl(var(--sub))] shrink-0',
           status === 'done' && 'text-success',
           status === 'error' && 'text-destructive',
-          status === 'converting' && 'text-primary',
+          status === 'converting' && 'text-foreground',
           isRej && 'text-destructive/60'
         )}>
           <FileAudio size={18} />

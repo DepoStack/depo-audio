@@ -107,7 +107,7 @@ export default function ImportModal({ defaultLabels, existingCases, onDone, onCl
                   className={cn(
                     'flex-1 px-3 py-1.5 rounded-md text-xs font-semibold transition-colors',
                     caseInputMode === 'existing'
-                      ? 'bg-[hsl(var(--gold-dim))] text-primary'
+                      ? 'bg-[hsl(var(--gold-dim))] text-foreground'
                       : 'text-[hsl(var(--sub))] hover:text-[hsl(var(--text2))]'
                   )}
                   onClick={() => setCaseInputMode('existing')}
@@ -118,7 +118,7 @@ export default function ImportModal({ defaultLabels, existingCases, onDone, onCl
                   className={cn(
                     'flex-1 px-3 py-1.5 rounded-md text-xs font-semibold transition-colors',
                     caseInputMode === 'new'
-                      ? 'bg-[hsl(var(--gold-dim))] text-primary'
+                      ? 'bg-[hsl(var(--gold-dim))] text-foreground'
                       : 'text-[hsl(var(--sub))] hover:text-[hsl(var(--text2))]'
                   )}
                   onClick={() => setCaseInputMode('new')}
@@ -156,7 +156,7 @@ export default function ImportModal({ defaultLabels, existingCases, onDone, onCl
                   size="sm"
                   className={cn(
                     'rounded-full',
-                    label === l && 'bg-[hsl(var(--gold-dim))] text-primary border-primary/30'
+                    label === l && 'bg-[hsl(var(--gold-dim))] text-foreground border-primary/30'
                   )}
                   onClick={() => { setLabel(l); setCustomLabel('') }}
                 >
@@ -168,7 +168,7 @@ export default function ImportModal({ defaultLabels, existingCases, onDone, onCl
                 size="sm"
                 className={cn(
                   'rounded-full',
-                  label === '__custom__' && 'bg-[hsl(var(--gold-dim))] text-primary border-primary/30'
+                  label === '__custom__' && 'bg-[hsl(var(--gold-dim))] text-foreground border-primary/30'
                 )}
                 onClick={() => setLabel('__custom__')}
               >

@@ -324,7 +324,7 @@ export default function PlayerTab({ dropHandlerRef }) {
                         title={`${s}× playback speed`}
                         className={cn(
                           'px-1.5 py-0.5 rounded text-[10px] font-mono transition-colors focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring',
-                          speed === s ? 'bg-[hsl(var(--gold-dim))] text-primary' : 'text-[hsl(var(--sub))] hover:text-foreground'
+                          speed === s ? 'bg-[hsl(var(--gold-dim))] text-foreground' : 'text-[hsl(var(--sub))] hover:text-foreground'
                         )}
                       >
                         {s}×
@@ -332,13 +332,13 @@ export default function PlayerTab({ dropHandlerRef }) {
                     ))}
                   </div>
                   <div className="flex items-center gap-1">
-                    <Repeat size={11} className={cn('mr-0.5', loopA != null && loopB != null ? 'text-primary' : 'text-[hsl(var(--sub))]')} />
+                    <Repeat size={11} className={cn('mr-0.5', loopA != null && loopB != null ? 'text-foreground' : 'text-[hsl(var(--sub))]')} />
                     <button
                       onClick={() => setLoopA(currentTime)}
                       title="Set loop start to current position"
                       className={cn(
                         'px-1.5 py-0.5 rounded text-[10px] font-mono transition-colors focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring',
-                        loopA != null ? 'bg-[hsl(var(--gold-dim))] text-primary' : 'text-[hsl(var(--sub))] hover:text-foreground'
+                        loopA != null ? 'bg-[hsl(var(--gold-dim))] text-foreground' : 'text-[hsl(var(--sub))] hover:text-foreground'
                       )}
                     >
                       {loopA != null ? `A ${fmtTime(loopA)}` : 'Set A'}
@@ -348,7 +348,7 @@ export default function PlayerTab({ dropHandlerRef }) {
                       title="Set loop end to current position"
                       className={cn(
                         'px-1.5 py-0.5 rounded text-[10px] font-mono transition-colors focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring',
-                        loopB != null ? 'bg-[hsl(var(--gold-dim))] text-primary' : 'text-[hsl(var(--sub))] hover:text-foreground'
+                        loopB != null ? 'bg-[hsl(var(--gold-dim))] text-foreground' : 'text-[hsl(var(--sub))] hover:text-foreground'
                       )}
                     >
                       {loopB != null ? `B ${fmtTime(loopB)}` : 'Set B'}
@@ -391,14 +391,14 @@ export default function PlayerTab({ dropHandlerRef }) {
                     .map((b) => (
                       <div key={`${b.time}-${b.trackPath}`} className="flex items-center gap-2 group">
                         <button
-                          className="font-mono text-[11px] text-[hsl(var(--gold-hi))] hover:underline shrink-0 w-12 text-left focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring rounded"
+                          className="font-mono text-[11px] text-foreground hover:underline shrink-0 w-12 text-left focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring rounded"
                           title="Jump to bookmark"
                           onClick={() => { if (audioRef.current) audioRef.current.currentTime = b.time }}
                         >
                           {fmtTime(b.time)}
                         </button>
                         <input
-                          className="flex-1 min-w-0 bg-transparent border-none p-0 text-[11px] text-foreground focus:text-primary focus:outline-hidden"
+                          className="flex-1 min-w-0 bg-transparent border-none p-0 text-[11px] text-foreground focus:text-foreground focus:outline-hidden"
                           value={b.label}
                           placeholder="Add a note…"
                           onChange={e => setBookmarks(prev => prev.map(x => x === b ? { ...x, label: e.target.value } : x))}
@@ -490,7 +490,7 @@ export default function PlayerTab({ dropHandlerRef }) {
                     <div className="flex flex-col flex-1 min-w-0">
                       <span className="text-xs text-foreground truncate">{t.name}</span>
                       <input
-                        className="text-[10px] text-[hsl(var(--text2))] bg-transparent border-none p-0 font-mono w-[120px] focus:text-primary focus:outline-hidden"
+                        className="text-[10px] text-[hsl(var(--text2))] bg-transparent border-none p-0 font-mono w-[120px] focus:text-foreground focus:outline-hidden"
                         value={t.label}
                         placeholder="Speaker name"
                         onClick={e => e.stopPropagation()}
@@ -498,7 +498,7 @@ export default function PlayerTab({ dropHandlerRef }) {
                       />
                     </div>
                     {activeTrack?.path === t.path && playing && (
-                      <span className="text-primary text-xs shrink-0">
+                      <span className="text-foreground text-xs shrink-0">
                         <Play size={10} fill="currentColor" />
                       </span>
                     )}

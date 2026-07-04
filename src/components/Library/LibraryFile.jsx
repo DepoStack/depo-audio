@@ -7,7 +7,7 @@ import { fmtSize, fmtTime, basename } from '../../utils'
 const fmtBadgeClass = {
   wav:  'bg-success/10 text-success',
   mp3:  'bg-[hsl(var(--blue)/0.1)] text-[hsl(var(--blue))]',
-  flac: 'bg-[hsl(var(--gold-dim))] text-primary',
+  flac: 'bg-[hsl(var(--gold-dim))] text-foreground',
   opus: 'bg-warning/10 text-warning',
 }
 
@@ -40,7 +40,7 @@ export default function LibraryFile({ file }) {
       </span>
       <span className="font-mono text-[10px] text-[hsl(var(--sub))] shrink-0">{fmtSize(file.size)}</span>
       <button
-        className="w-[22px] h-[22px] rounded-full bg-[hsl(var(--gold-dim))] border border-primary/30 text-primary flex items-center justify-center shrink-0 transition-colors hover:bg-primary/20 hover:border-primary"
+        className="w-[22px] h-[22px] rounded-full bg-[hsl(var(--gold-dim))] border border-primary/30 text-foreground flex items-center justify-center shrink-0 transition-colors hover:bg-primary/20 hover:border-primary"
         onClick={toggle}
       >
         {playing
