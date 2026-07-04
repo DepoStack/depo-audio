@@ -1,0 +1,311 @@
+@import 'tailwindcss';
+/* Theme variables are generated from design/tokens.json — edit tokens, not CSS */
+@import './styles/tokens.css';
+
+@plugin 'tailwindcss-animate';
+
+@custom-variant dark (&:is(.dark *));
+
+@theme {
+  --color-border: hsl(var(--border));
+  --color-input: hsl(var(--input));
+  --color-ring: hsl(var(--ring));
+  --color-background: hsl(var(--background));
+  --color-foreground: hsl(var(--foreground));
+
+  --color-primary: hsl(var(--primary));
+  --color-primary-foreground: hsl(var(--primary-foreground));
+
+  --color-secondary: hsl(var(--secondary));
+  --color-secondary-foreground: hsl(var(--secondary-foreground));
+
+  --color-destructive: hsl(var(--destructive));
+  --color-destructive-foreground: hsl(var(--destructive-foreground));
+
+  --color-muted: hsl(var(--muted));
+  --color-muted-foreground: hsl(var(--muted-foreground));
+
+  --color-accent: hsl(var(--accent));
+  --color-accent-foreground: hsl(var(--accent-foreground));
+
+  --color-popover: hsl(var(--popover));
+  --color-popover-foreground: hsl(var(--popover-foreground));
+
+  --color-card: hsl(var(--card));
+  --color-card-foreground: hsl(var(--card-foreground));
+
+  --color-gold: hsl(var(--gold));
+  --color-gold-hi: hsl(var(--gold-hi));
+  --color-success: hsl(var(--success));
+  --color-warning: hsl(var(--warning));
+
+  --radius-lg: var(--radius);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-sm: calc(var(--radius) - 4px);
+
+  --font-sans: DM Sans, Segoe UI, system-ui, sans-serif;
+  --font-mono: DM Mono, Consolas, monospace;
+  --font-serif: Crimson Pro, Palatino Linotype, Georgia, serif;
+
+  --animate-accordion-down: accordion-down 0.2s ease-out;
+  --animate-accordion-up: accordion-up 0.2s ease-out;
+  --animate-progress-pulse: progress-pulse 1.2s ease-in-out infinite;
+  --animate-dot-pulse: dot-pulse 1s ease-in-out infinite;
+
+  @keyframes accordion-down {
+    from {
+      height: 0;
+    }
+    to {
+      height: var(--radix-accordion-content-height);
+    }
+  }
+  @keyframes accordion-up {
+    from {
+      height: var(--radix-accordion-content-height);
+    }
+    to {
+      height: 0;
+    }
+  }
+  @keyframes progress-pulse {
+    0% {
+      width: 10%;
+      opacity: 0.7;
+    }
+    50% {
+      width: 75%;
+      opacity: 1;
+    }
+    100% {
+      width: 10%;
+      opacity: 0.7;
+    }
+  }
+  @keyframes dot-pulse {
+    0%,
+    100% {
+      opacity: 1;
+    }
+    50% {
+      opacity: 0.4;
+    }
+  }
+}
+
+/*
+  The default border color has changed to `currentcolor` in Tailwind CSS v4,
+  so we've added these compatibility styles to make sure everything still
+  looks the same as it did with Tailwind CSS v3.
+
+  If we ever want to remove these styles, we need to add an explicit border
+  color utility to any element that depends on these defaults.
+*/
+@layer base {
+  *,
+  ::after,
+  ::before,
+  ::backdrop,
+  ::file-selector-button {
+    border-color: var(--color-gray-200, currentcolor);
+  }
+}
+
+@layer base {
+  /* Theme variables (:root and .light) come from src/styles/tokens.css,
+     generated from design/tokens.json. Run `npm run tokens` after editing. */
+
+  * {
+    @apply border-border;
+  }
+
+  body {
+    @apply bg-background text-foreground font-sans text-[13px] leading-relaxed antialiased;
+  }
+
+  html, body, #root {
+    height: 100%;
+    overflow: hidden;
+  }
+}
+
+/* ── Settings panel ──────────────────────────────────────────────────────── */
+
+.settings-body {
+  padding: 0.75rem 1.25rem 1.25rem;
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  max-height: calc(90vh - 80px);
+  overflow-y: auto;
+}
+
+.settings-section {
+  background: hsl(var(--surface));
+  border: 1px solid hsl(var(--border));
+  border-radius: var(--radius);
+  padding: 0.75rem 1rem 1rem;
+}
+
+.settings-section-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 0.625rem;
+  padding-bottom: 0.5rem;
+  border-bottom: 1px solid hsl(var(--border) / 0.5);
+}
+
+.settings-section-title {
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: hsl(var(--text2));
+}
+
+.settings-reset-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  font-size: 10px;
+  color: hsl(var(--sub));
+  height: 22px;
+  padding: 0 0.375rem;
+}
+
+.settings-reset-btn:hover {
+  color: hsl(var(--foreground));
+}
+
+.settings-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.625rem 1rem;
+}
+
+.settings-field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.settings-label {
+  font-size: 11px;
+  color: hsl(var(--text2));
+  font-weight: 500;
+}
+
+.settings-unit {
+  color: hsl(var(--sub));
+  font-weight: 400;
+  margin-left: 0.25em;
+}
+
+.settings-hint {
+  font-size: 10px;
+  color: hsl(var(--sub));
+  line-height: 1.4;
+  margin: 0;
+}
+
+.settings-input {
+  height: 30px;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.settings-select {
+  height: 30px;
+  font-size: 12px;
+}
+
+/* Webkit app region for Tauri window drag */
+[data-tauri-drag-region] {
+  -webkit-app-region: drag;
+}
+
+[data-tauri-drag-region] button,
+[data-tauri-drag-region] a,
+[data-tauri-drag-region] input {
+  -webkit-app-region: no-drag;
+}
+
+/* ── Model Manager ─────────────────────────────────────────────────── */
+
+.model-manager { display: flex; flex-direction: column; gap: 0.75rem; }
+
+.model-caps {
+  display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap;
+  padding: 0.5rem 0.75rem; border-radius: var(--radius);
+  background: hsl(var(--accent) / 0.15);
+  font-size: 0.8rem; color: hsl(var(--accent-foreground));
+}
+.model-cap-badge {
+  padding: 0.125rem 0.375rem; border-radius: 9999px;
+  background: hsl(var(--primary) / 0.2);
+  font-size: 0.7rem; font-weight: 500;
+}
+
+.model-summary {
+  font-size: 0.75rem; color: hsl(var(--muted-foreground));
+}
+
+.model-error {
+  display: flex; align-items: center; gap: 0.375rem;
+  padding: 0.375rem 0.5rem; border-radius: var(--radius);
+  background: hsl(var(--destructive) / 0.12); color: hsl(var(--destructive));
+  font-size: 0.75rem;
+}
+
+.model-group { display: flex; flex-direction: column; gap: 0.25rem; }
+.model-group-title {
+  font-size: 0.7rem; font-weight: 600; text-transform: uppercase;
+  letter-spacing: 0.05em; color: hsl(var(--muted-foreground));
+  padding-bottom: 0.125rem; border-bottom: 1px solid hsl(var(--border));
+}
+
+.model-row {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 0.5rem; padding: 0.375rem 0.5rem; border-radius: var(--radius);
+}
+.model-row:hover { background: hsl(var(--accent) / 0.05); }
+
+.model-info { flex: 1; min-width: 0; }
+.model-name {
+  display: flex; align-items: center; gap: 0.375rem;
+  font-size: 0.8rem; font-weight: 500;
+}
+.model-desc {
+  font-size: 0.7rem; color: hsl(var(--muted-foreground));
+  margin-top: 0.125rem;
+}
+.model-installed { color: hsl(var(--success)); }
+.model-missing { color: hsl(var(--muted-foreground)); }
+
+.model-badge-req {
+  padding: 0.0625rem 0.3rem; border-radius: 9999px;
+  background: hsl(var(--destructive) / 0.14); color: hsl(var(--destructive));
+  font-size: 0.625rem; font-weight: 600;
+}
+.model-badge-rec {
+  padding: 0.0625rem 0.3rem; border-radius: 9999px;
+  background: hsl(var(--primary) / 0.2); color: hsl(var(--foreground));
+  font-size: 0.625rem; font-weight: 600;
+}
+
+.model-actions { flex-shrink: 0; }
+
+.model-footer {
+  font-size: 0.7rem; color: hsl(var(--muted-foreground));
+  text-align: center; padding-top: 0.25rem;
+  border-top: 1px solid hsl(var(--border));
+}
+
+.animate-spin {
+  animation: spin 1s linear infinite;
+}
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}

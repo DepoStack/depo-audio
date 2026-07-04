@@ -1,0 +1,82 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  frontend:
+    name: Frontend (lint, tokens, tests, build)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Design tokens are in sync
+        run: |
+          npm run tokens
+          git diff --exit-code src/styles/tokens.css || {
+            echo '::error::src/styles/tokens.css is stale — run `npm run tokens` and commit the result'
+            exit 1
+          }
+
+      - name: Characterization + unit tests
+        run: npm test
+
+      - name: Build
+        run: npm run build
+
+  rust:
+    name: Rust (clippy, tests)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install Tauri system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev \
+            libayatana-appindicator3-dev librsvg2-dev libxdo-dev \
+            build-essential pkg-config libssl-dev ffmpeg
+
+      # tauri-build validates that the externalBin sidecars and every bundle
+      # resource exist (binaries/ and resources/onnxruntime/ are gitignored;
+      # release workflows provision real ones per platform). FFmpeg comes from
+      # apt; the ORT dylib gets a placeholder — nothing in clippy/cargo-test
+      # loads it (the one test that does is #[ignore]d), and a real download
+      # would add a flaky external dependency to every PR.
+      - name: Provision sidecar binaries and resource placeholders
+        run: |
+          mkdir -p src-tauri/binaries src-tauri/resources/onnxruntime
+          cp "$(which ffmpeg)"  src-tauri/binaries/ffmpeg-x86_64-unknown-linux-gnu
+          cp "$(which ffprobe)" src-tauri/binaries/ffprobe-x86_64-unknown-linux-gnu
+          touch src-tauri/resources/onnxruntime/libonnxruntime-ci-placeholder.so
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Clippy (no warnings)
+        run: cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
+
+      - name: Characterization + unit tests
+        run: cargo test --manifest-path src-tauri/Cargo.toml

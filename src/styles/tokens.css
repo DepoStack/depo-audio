@@ -1,0 +1,91 @@
+/* GENERATED FILE — do not edit by hand.
+   Source: design/tokens.json · regenerate with `npm run tokens` */
+
+@layer base {
+  :root {
+    --background: 267 36% 11%;
+    --foreground: 43 24% 94%;
+    --card: 268 35% 16%;
+    --card-foreground: 43 24% 94%;
+    --popover: 268 35% 16%;
+    --popover-foreground: 43 24% 94%;
+    --primary: 36 79% 57%;
+    --primary-foreground: 267 36% 11%;
+    --secondary: 267 20% 18%;
+    --secondary-foreground: 43 24% 94%;
+    --muted: 268 14% 23%;
+    --muted-foreground: 266 19% 65%;
+    --accent: 267 20% 18%;
+    --accent-foreground: 43 24% 94%;
+    --destructive: 6 69% 63%;
+    --destructive-foreground: 0 0% 100%;
+    --border: 267 16% 22%;
+    --input: 267 16% 22%;
+    --ring: 36 79% 57%;
+    --gold: 36 79% 57%;
+    --gold-hi: 36 83% 65%;
+    --gold-dim: 36 79% 57% / 0.14;
+    --gold-glow: 36 79% 57% / 0.25;
+    --success: 166 51% 51%;
+    --warning: 36 83% 65%;
+    --surface: 267 28% 14%;
+    --panel2: 267 20% 18%;
+    /* Hint text — brand plum-soft darkened in light to clear WCAG AA (4.5:1) on every surface */
+    --sub: 266 19% 65%;
+    --text2: 266 28% 80%;
+    --blue: 227 48% 69%;
+    --shadow-card: 0 22px 50px -24px rgba(0,0,0,0.6);
+    --color-gold: #E8A33A;
+    --color-gold-hi: #f0b65e;
+    --color-gold-dim: rgba(232,163,58,0.14);
+    --color-sub: #a394b6;
+    --color-green: #44C2A4;
+    --color-red: #E26B5E;
+    --color-blue: #8A9BD6;
+    --radius: 0.875rem;
+    --topbar-h: 50px;
+    --bottom-h: 56px;
+  }
+
+  .light {
+    --background: 43 24% 94%;
+    --foreground: 273 30% 24%;
+    --card: 45 33% 98%;
+    --card-foreground: 273 30% 24%;
+    --popover: 45 33% 98%;
+    --popover-foreground: 273 30% 24%;
+    --primary: 36 79% 57%;
+    --primary-foreground: 273 30% 24%;
+    --secondary: 24 9% 90%;
+    --secondary-foreground: 273 30% 24%;
+    --muted: 348 6% 85%;
+    --muted-foreground: 271 16% 44%;
+    --accent: 24 9% 90%;
+    --accent-foreground: 273 30% 24%;
+    --destructive: 5 52% 48%;
+    --destructive-foreground: 0 0% 100%;
+    --border: 0 6% 86%;
+    --input: 0 6% 86%;
+    --ring: 36 79% 57%;
+    --gold: 36 79% 57%;
+    --gold-hi: 36 68% 50%;
+    --gold-dim: 36 79% 57% / 0.12;
+    --gold-glow: 36 79% 57% / 0.22;
+    --success: 166 55% 30%;
+    --warning: 34 75% 34%;
+    --surface: 34 17% 92%;
+    --panel2: 12 8% 88%;
+    /* Hint text — brand plum-soft darkened in light to clear WCAG AA (4.5:1) on every surface */
+    --sub: 271 16% 44%;
+    --text2: 276 28% 34%;
+    --blue: 225 33% 49%;
+    --shadow-card: 0 18px 50px -24px rgba(62,42,78,0.35);
+    --color-gold: #E8A33A;
+    --color-gold-hi: #d6912a;
+    --color-gold-dim: rgba(232,163,58,0.12);
+    --color-sub: #705e81;
+    --color-green: #237763;
+    --color-red: #ba453b;
+    --color-blue: #5468a6;
+  }
+}

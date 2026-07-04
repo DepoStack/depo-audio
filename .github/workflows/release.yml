@@ -1,0 +1,219 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag to create (e.g. v0.9.0)'
+        required: true
+        type: string
+
+env:
+  ORT_VERSION: "1.22.0"
+  # Static, self-contained ffmpeg/ffprobe (per-arch) that we lipo into a
+  # universal macOS sidecar. Homebrew's ffmpeg is dynamically linked against
+  # Cellar dylibs and would dyld-fail on a clean Mac, so we do NOT use it.
+  FFMPEG_STATIC_TAG: "b6.1.2-rc.1"
+
+jobs:
+  release:
+    permissions:
+      contents: write
+
+    strategy:
+      fail-fast: false
+      # Serialize the platform builds: tauri-action does a read-modify-write of
+      # the draft release's latest.json, so two jobs writing it concurrently
+      # would clobber one platform's updater keys. One-at-a-time is safe.
+      max-parallel: 1
+      matrix:
+        include:
+          # One universal macOS artifact (Apple Silicon + Intel in a single
+          # .app/.dmg). Built on an arm64 runner — Rust cross-compiles both
+          # slices and `lipo` fuses them; no Intel runner needed (macos-13 was
+          # retired Dec 2025).
+          - platform: macos-latest
+            args: '--target universal-apple-darwin'
+            rust-targets: 'aarch64-apple-darwin,x86_64-apple-darwin'
+          - platform: windows-latest
+            args: ''
+            rust-targets: 'x86_64-pc-windows-msvc'
+
+    runs-on: ${{ matrix.platform }}
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.rust-targets }}
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: './src-tauri -> target'
+
+      - name: Install frontend deps
+        run: npm ci
+
+      - name: Create binaries directory
+        run: mkdir -p src-tauri/binaries
+
+      # ── FFmpeg sidecars ─────────────────────────────────────────────────
+      # macOS: download STATIC per-arch ffmpeg + ffprobe, verify each is
+      # self-contained (no Homebrew/Cellar deps), then lipo into one universal
+      # sidecar named for the universal-apple-darwin triple — which is exactly
+      # what the Tauri bundler resolves for a --target universal-apple-darwin
+      # build.
+      - name: Build universal FFmpeg sidecars (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          set -euo pipefail
+          base="https://github.com/descriptinc/ffmpeg-ffprobe-static/releases/download/${FFMPEG_STATIC_TAG}"
+          mkdir -p ffbin
+          for arch in arm64 x64; do
+            curl -fL --retry 5 --retry-all-errors --retry-delay 2 "$base/ffmpeg-darwin-$arch"  -o "ffbin/ffmpeg-$arch"
+            curl -fL --retry 5 --retry-all-errors --retry-delay 2 "$base/ffprobe-darwin-$arch" -o "ffbin/ffprobe-$arch"
+          done
+          chmod +x ffbin/*
+          # Record hashes so a maintainer can pin sha256 after the first run
+          # (this tag is a prerelease and could be re-cut).
+          echo "== sidecar sha256 (pin after first run) =="; shasum -a 256 ffbin/*
+          # Guard (allowlist, not denylist): a real static sidecar may only
+          # depend on system libraries under /usr/lib or /System/Library. Any
+          # other dependency — Homebrew, /usr/local, or an @rpath/@loader_path
+          # reference — means it would dyld-fail on a clean end-user Mac, so
+          # fail the build instead of shipping it. Checked per thin binary
+          # BEFORE lipo.
+          for f in ffbin/ffmpeg-arm64 ffbin/ffmpeg-x64 ffbin/ffprobe-arm64 ffbin/ffprobe-x64; do
+            echo "== $f =="; file "$f"; otool -L "$f"
+            bad=$(otool -L "$f" | tail -n +2 | awk '{print $1}' | grep -vE '^/usr/lib/|^/System/Library/' || true)
+            if [ -n "$bad" ]; then
+              echo "ERROR: $f is not self-contained — non-system dependencies:"; echo "$bad"; exit 1
+            fi
+          done
+          for name in ffmpeg ffprobe; do
+            lipo -create "ffbin/$name-arm64" "ffbin/$name-x64" \
+              -output "src-tauri/binaries/$name-universal-apple-darwin"
+            chmod +x "src-tauri/binaries/$name-universal-apple-darwin"
+            archs=$(lipo -archs "src-tauri/binaries/$name-universal-apple-darwin")
+            echo "$name universal archs: $archs"
+            case "$archs" in
+              *x86_64*arm64*|*arm64*x86_64*) : ;;
+              *) echo "ERROR: $name is not universal (got: $archs)"; exit 1 ;;
+            esac
+            "src-tauri/binaries/$name-universal-apple-darwin" -version | head -1
+          done
+
+      - name: Download FFmpeg (Windows x64)
+        if: matrix.platform == 'windows-latest'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path src-tauri/binaries | Out-Null
+          $url = "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip"
+          Invoke-WebRequest $url -OutFile ffmpeg.zip
+          Expand-Archive ffmpeg.zip -DestinationPath ffmpeg_tmp -Force
+          $bin   = Get-ChildItem ffmpeg_tmp -Recurse -Filter "ffmpeg.exe"  | Select-Object -First 1
+          $probe = Get-ChildItem ffmpeg_tmp -Recurse -Filter "ffprobe.exe" | Select-Object -First 1
+          Copy-Item $bin.FullName   src-tauri/binaries/ffmpeg-x86_64-pc-windows-msvc.exe
+          Copy-Item $probe.FullName src-tauri/binaries/ffprobe-x86_64-pc-windows-msvc.exe
+
+      - name: Verify FFmpeg sidecars (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          echo "=== src-tauri/binaries/ ==="
+          ls -lh src-tauri/binaries/
+          file src-tauri/binaries/ff* || true
+
+      - name: Verify FFmpeg sidecars (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: Get-ChildItem src-tauri/binaries/
+
+      # ── ONNX Runtime ────────────────────────────────────────────────────
+      # macOS: Microsoft ships a ready-made universal2 (fat) dylib — no lipo
+      # needed. The bundled .dylib is a symlink to the versioned real file, so
+      # copy with -L to bundle the actual Mach-O, not a dangling link.
+      - name: Download universal ONNX Runtime (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          set -euo pipefail
+          mkdir -p src-tauri/resources/onnxruntime
+          curl -fL --retry 5 --retry-all-errors --retry-delay 2 \
+            "https://github.com/microsoft/onnxruntime/releases/download/v${ORT_VERSION}/onnxruntime-osx-universal2-${ORT_VERSION}.tgz" \
+            -o ort.tgz
+          tar xzf ort.tgz
+          ort_dir=$(ls -d onnxruntime-osx-universal2-*)
+          cp -L "$ort_dir/lib/libonnxruntime.dylib" src-tauri/resources/onnxruntime/libonnxruntime.dylib
+          file src-tauri/resources/onnxruntime/libonnxruntime.dylib
+          archs=$(lipo -archs src-tauri/resources/onnxruntime/libonnxruntime.dylib)
+          echo "ORT dylib archs: $archs"
+          case "$archs" in
+            *x86_64*arm64*|*arm64*x86_64*) : ;;
+            *) echo "ERROR: ORT dylib is not universal (got: $archs)"; exit 1 ;;
+          esac
+
+      - name: Download ONNX Runtime (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path src-tauri/resources/onnxruntime | Out-Null
+          Invoke-WebRequest "https://github.com/microsoft/onnxruntime/releases/download/v${env:ORT_VERSION}/onnxruntime-win-x64-${env:ORT_VERSION}.zip" -OutFile ort.zip
+          Expand-Archive ort.zip -DestinationPath ort_tmp -Force
+          $dll = Get-ChildItem ort_tmp -Recurse -Filter "onnxruntime.dll" | Select-Object -First 1
+          Copy-Item $dll.FullName "src-tauri/resources/onnxruntime/onnxruntime.dll"
+          Get-ChildItem src-tauri/resources/onnxruntime/
+
+      # ── Disable macOS signing when no certificate is configured ────────
+      - name: Disable macOS code signing (unsigned build)
+        if: runner.os == 'macOS'
+        run: echo "APPLE_SIGNING_IDENTITY=-" >> $GITHUB_ENV
+
+      # ── Signed auto-updates: only when the signing key secret is set ───
+      # Building updater artifacts requires TAURI_SIGNING_PRIVATE_KEY; gating on
+      # it means a release still succeeds before the maintainer configures the
+      # key (updates are simply dormant until then) and turns on automatically
+      # once the secret exists.
+      - name: Detect updater signing key
+        id: updater
+        shell: bash
+        env:
+          SIGNING_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+        run: |
+          if [ -n "$SIGNING_KEY" ]; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::TAURI_SIGNING_PRIVATE_KEY not set — building without auto-update artifacts."
+          fi
+
+      # ── Build & release ────────────────────────────────────────────────
+      - name: Build and release
+        uses: tauri-apps/tauri-action@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Updater artifact signing. Set these repo secrets to enable signed
+          # auto-updates (generate with: npx tauri signer generate).
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          tagName:      ${{ inputs.tag || github.ref_name }}
+          releaseName:  'DepoAudio ${{ inputs.tag || github.ref_name }}'
+          releaseBody:  'See CHANGELOG.md for details.'
+          releaseDraft: true
+          # Preview releases: a tag with a pre-release suffix (e.g.
+          # v1.0.0-preview.1, -rc.1, -beta.2) is marked as a GitHub prerelease;
+          # a clean tag (v1.0.0) ships as a final release.
+          prerelease:   ${{ contains(inputs.tag || github.ref_name, '-') }}
+          # Updater artifacts + latest.json only when the signing key is present.
+          includeUpdaterJson: ${{ steps.updater.outputs.enabled }}
+          args: ${{ steps.updater.outputs.enabled == 'true' && format('--config src-tauri/tauri.updater.conf.json {0}', matrix.args) || matrix.args }}
