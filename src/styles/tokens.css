@@ -14,11 +14,13 @@
     --secondary: 267 20% 18%;
     --secondary-foreground: 43 24% 94%;
     --muted: 268 14% 23%;
-    --muted-foreground: 266 19% 65%;
+    /* Muted text — lilac lightened to clear WCAG AAA (7:1) on card/surface */
+    --muted-foreground: 266 18% 70%;
     --accent: 267 20% 18%;
     --accent-foreground: 43 24% 94%;
-    --destructive: 6 69% 63%;
-    --destructive-foreground: 0 0% 100%;
+    /* Light red so text-destructive clears 7:1 on dark; pairs with dark foreground as a fill */
+    --destructive: 6 70% 75%;
+    --destructive-foreground: 267 36% 11%;
     --border: 267 16% 22%;
     --input: 267 16% 22%;
     --ring: 36 79% 57%;
@@ -30,18 +32,18 @@
     --warning: 36 83% 65%;
     --surface: 267 28% 14%;
     --panel2: 267 20% 18%;
-    /* Hint text — brand plum-soft darkened in light to clear WCAG AA (4.5:1) on every surface */
-    --sub: 266 19% 65%;
+    /* Hint text — brand lilac lightened to clear WCAG AAA (7:1) on every surface */
+    --sub: 266 18% 70%;
     --text2: 266 28% 80%;
-    --blue: 227 48% 69%;
+    --blue: 226 49% 77%;
     --shadow-card: 0 22px 50px -24px rgba(0,0,0,0.6);
     --color-gold: #E8A33A;
     --color-gold-hi: #f0b65e;
     --color-gold-dim: rgba(232,163,58,0.14);
-    --color-sub: #a394b6;
+    --color-sub: #b1a5c1;
     --color-green: #44C2A4;
-    --color-red: #E26B5E;
-    --color-blue: #8A9BD6;
+    --color-red: #ec9e95;
+    --color-blue: #a8b5e1;
     --radius: 0.875rem;
     --topbar-h: 50px;
     --bottom-h: 56px;
@@ -59,33 +61,36 @@
     --secondary: 24 9% 90%;
     --secondary-foreground: 273 30% 24%;
     --muted: 348 6% 85%;
-    --muted-foreground: 271 16% 44%;
+    /* Muted text — brand plum-soft darkened to clear WCAG AAA (7:1) on every surface */
+    --muted-foreground: 272 16% 35%;
     --accent: 24 9% 90%;
     --accent-foreground: 273 30% 24%;
-    --destructive: 5 52% 48%;
+    /* Dark red so text-destructive clears 7:1 on cream and white text clears 7:1 on the fill */
+    --destructive: 5 52% 31%;
     --destructive-foreground: 0 0% 100%;
     --border: 0 6% 86%;
     --input: 0 6% 86%;
-    --ring: 36 79% 57%;
+    /* Focus ring — plum-2 (gold is invisible on cream); AAA-visible 7.8:1 */
+    --ring: 276 28% 34%;
     --gold: 36 79% 57%;
     --gold-hi: 36 68% 50%;
     --gold-dim: 36 79% 57% / 0.12;
     --gold-glow: 36 79% 57% / 0.22;
-    --success: 166 55% 30%;
-    --warning: 34 75% 34%;
+    --success: 166 54% 21%;
+    --warning: 34 75% 23%;
     --surface: 34 17% 92%;
     --panel2: 12 8% 88%;
-    /* Hint text — brand plum-soft darkened in light to clear WCAG AA (4.5:1) on every surface */
-    --sub: 271 16% 44%;
+    /* Hint text — brand plum-soft darkened to clear WCAG AAA (7:1) on every surface */
+    --sub: 272 16% 35%;
     --text2: 276 28% 34%;
-    --blue: 225 33% 49%;
+    --blue: 226 33% 32%;
     --shadow-card: 0 18px 50px -24px rgba(62,42,78,0.35);
     --color-gold: #E8A33A;
     --color-gold-hi: #d6912a;
     --color-gold-dim: rgba(232,163,58,0.12);
-    --color-sub: #705e81;
-    --color-green: #237763;
-    --color-red: #ba453b;
-    --color-blue: #5468a6;
+    --color-sub: #5b4c68;
+    --color-green: #185144;
+    --color-red: #782d26;
+    --color-blue: #37446d;
   }
 }
