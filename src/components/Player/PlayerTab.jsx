@@ -4,7 +4,7 @@ import { open } from '@tauri-apps/plugin-dialog'
 import { Play, Pause, SkipBack, SkipForward, Bookmark, X, Plus, Repeat, Copy, Check } from 'lucide-react'
 import { cn } from '../../lib/utils'
 import { CH_COLORS } from '../../constants'
-import { fmtTime } from '../../utils'
+import { fmtTime, sortRecordingChunks } from '../../utils'
 import { AUDIO_EXTS, SPEED_STEPS, loadSpeed, cycleSpeedStep, loadBookmarks, freshAudioPaths, bookmarksToText } from '../../lib/player'
 import { Button } from '../ui/button'
 import { Card, CardHeader, CardTitle } from '../ui/card'
@@ -64,8 +64,10 @@ export default function PlayerTab({ dropHandlerRef }) {
 
   // Add files to playlist. Native drops arrive unfiltered, so skip paths
   // already queued (duplicate keys break selection) and non-audio files.
+  // FTR .trm chunks are ordered chronologically — but only the incoming
+  // batch: existing tracks keep any manual drag-reorder the user made.
   const addFiles = (paths) => {
-    const newTracks = freshAudioPaths(paths, tracks).map((path, i) => ({
+    const newTracks = sortRecordingChunks(freshAudioPaths(paths, tracks)).map((path, i) => ({
       path,
       name: path.split('/').pop().split('\\').pop(),
       size: 0,

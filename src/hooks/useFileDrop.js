@@ -2,7 +2,7 @@ import { useState, useCallback, useEffect, useRef } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
 import { open as openDialog } from '@tauri-apps/plugin-dialog'
-import { basename } from '../utils'
+import { basename, sortRecordingChunks } from '../utils'
 
 export default function useFileDrop(dropOverrideRef) {
   const [files, setFiles]       = useState([])
@@ -15,7 +15,11 @@ export default function useFileDrop(dropOverrideRef) {
   useEffect(() => { caseNameRef.current = caseName }, [caseName])
 
   const addFiles = useCallback(async (paths) => {
-    const filtered = paths.filter(p => !p.toLowerCase().endsWith('.trs'))
+    // FTR sessions arrive as ~5-minute .trm chunks; order them chronologically
+    // no matter how the OS delivered the drop. Sorting before the loop also
+    // means the case name below is inferred from the chronologically FIRST
+    // chunk, and conversion runs in playback order.
+    const filtered = sortRecordingChunks(paths.filter(p => !p.toLowerCase().endsWith('.trs')))
     const next = []
     for (const p of filtered) {
       if (filesRef.current.some(f => f.path === p)) continue
