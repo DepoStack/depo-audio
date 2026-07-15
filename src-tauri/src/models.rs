@@ -105,8 +105,9 @@ fn known_model_hash(filename: &str) -> Option<&'static str> {
         "dfn3_enc.onnx"            => Some("7c5399d3da8a50ebef1c1a0ae421b33376aa5e45d0e92df16da7e83c9c131916"),
         "dfn3_erb_dec.onnx"        => Some("ab669a1d10afe20911728b33053a452071042317a90581092b325da7b2f9d895"),
         "dfn3_df_dec.onnx"         => Some("23114ce3b0f6464b763ee62f7bb8aab6b2a129a21eabd5bcfe59413db05f278a"),
-        // dnsmos_sig_bak_ovr.onnx: no hash — the previously committed file
-        // was an HTML error page; re-add the hash when a real asset exists
+        // Upstream sig_bak_ovr.onnx from microsoft/DNS-Challenge (the file
+        // once committed here was an HTML error page — this is the real one)
+        "dnsmos_sig_bak_ovr.onnx"  => Some("269fbebdb513aa23cddfbb593542ecc540284a91849ac50516870e1ac78f6edd"),
         "speaker_seg_int8.onnx"    => Some("d582f4b4c6b48205de7e0643c57df0df5615a3c176189be3fc461e9d18827b5d"),
         "speaker_embed.onnx"       => Some("1a331345f04805badbb495c775a6ddffcdd1a732567d5ec8b3d5749e3c7a5e4b"),
         _ => None,
@@ -203,7 +204,7 @@ pub(crate) fn model_catalog(app: &AppHandle) -> Vec<ModelInfo> {
          format!("{}/dfn3_df_dec.onnx", BASE_URL)),
         ("flashsr.onnx", "FlashSR", "Neural bandwidth extension for phone/narrow-band audio", 0.5, "Clarity Enhancement", false,
          format!("{}/flashsr.onnx", BASE_URL)),
-        ("dnsmos_sig_bak_ovr.onnx", "DNSMOS", "Audio quality scoring (1-5 scale)", 0.3, "Quality Scoring", false,
+        ("dnsmos_sig_bak_ovr.onnx", "DNSMOS", "Audio quality scoring (1-5 scale)", 1.1, "Quality Scoring", false,
          format!("{}/dnsmos_sig_bak_ovr.onnx", BASE_URL)),
         ("speaker_seg_int8.onnx", "Speaker Segmentation", "Detects when different speakers are talking", 1.5, "Speaker Detection", false,
          format!("{}/speaker_seg_int8.onnx", BASE_URL)),

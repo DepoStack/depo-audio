@@ -1,0 +1,84 @@
+name: Restore AI models release
+
+# Rebuilds the `models-v1` release that the app's Model Manager downloads
+# from (the release object was deleted during repo cleanup; the tag
+# survived). Assets are assembled from sources whose bytes are provable:
+#   - 7 models come from src-tauri/resources/models/ in the current tree
+#   - speaker_embed.onnx was removed from the tree when it went
+#     download-only, but the byte-identical blob is still in git history
+#   - dnsmos_sig_bak_ovr.onnx was NEVER validly committed (the historical
+#     file was a saved HTML error page), so it is fetched from Microsoft's
+#     DNS-Challenge repo
+# Every asset is verified against the same SHA-256 pins the app enforces
+# in models.rs before anything is uploaded.
+on:
+  workflow_dispatch:
+
+# The last tree that carried speaker_embed.onnx (v0.7.0). Blob verified:
+# valid ONNX, sha256 matches the models.rs pin.
+env:
+  SPEAKER_EMBED_COMMIT: "b15b28c2d5c5872f073f30370b8facb203949b77"
+  DNSMOS_URL: "https://raw.githubusercontent.com/microsoft/DNS-Challenge/master/DNSMOS/DNSMOS/sig_bak_ovr.onnx"
+
+jobs:
+  restore:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # speaker_embed.onnx only exists in history
+          fetch-depth: 0
+
+      - name: Assemble the nine model assets
+        run: |
+          set -euo pipefail
+          mkdir -p assets
+          for f in silero_vad smart-turn-v3-int8 dfn3_enc dfn3_erb_dec dfn3_df_dec flashsr speaker_seg_int8; do
+            cp "src-tauri/resources/models/$f.onnx" assets/
+          done
+          git cat-file -p "${SPEAKER_EMBED_COMMIT}:src-tauri/resources/models/speaker_embed.onnx" \
+            > assets/speaker_embed.onnx
+          curl -fL --retry 5 --retry-all-errors --retry-delay 2 \
+            "$DNSMOS_URL" -o assets/dnsmos_sig_bak_ovr.onnx
+          ls -l assets/
+
+      - name: Verify integrity (same pins the app enforces in models.rs)
+        run: |
+          set -euo pipefail
+          cd assets
+          sha256sum -c <<'EOF'
+          a4a068cd6cf1ea8355b84327595838ca748ec29a25bc91fc82e6c299ccdc5808  silero_vad.onnx
+          3d072c8fb04446955a365b533686e7e06015ad09929bb824b910c72ff89f5be1  smart-turn-v3-int8.onnx
+          e255c76b227f16f7f392cc43677c38bd2c5aa129f042a2ba3eb03fb29e470c7a  flashsr.onnx
+          7c5399d3da8a50ebef1c1a0ae421b33376aa5e45d0e92df16da7e83c9c131916  dfn3_enc.onnx
+          ab669a1d10afe20911728b33053a452071042317a90581092b325da7b2f9d895  dfn3_erb_dec.onnx
+          23114ce3b0f6464b763ee62f7bb8aab6b2a129a21eabd5bcfe59413db05f278a  dfn3_df_dec.onnx
+          d582f4b4c6b48205de7e0643c57df0df5615a3c176189be3fc461e9d18827b5d  speaker_seg_int8.onnx
+          1a331345f04805badbb495c775a6ddffcdd1a732567d5ec8b3d5749e3c7a5e4b  speaker_embed.onnx
+          269fbebdb513aa23cddfbb593542ecc540284a91849ac50516870e1ac78f6edd  dnsmos_sig_bak_ovr.onnx
+          EOF
+          # Belt-and-suspenders: no asset may be textual (the DNSMOS incident)
+          for f in *.onnx; do
+            if head -c1 "$f" | grep -q '[<{]'; then
+              echo "ERROR: $f looks like text, not a model"; exit 1
+            fi
+          done
+
+      - name: Create release on the existing models-v1 tag and upload
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          # Idempotent: create if missing, then (re)upload all assets.
+          gh release view models-v1 --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 || \
+            gh release create models-v1 \
+              --repo "$GITHUB_REPOSITORY" \
+              --verify-tag \
+              --latest=false \
+              --title "AI Models v1" \
+              --notes "ONNX models downloaded on demand by the DepoAudio Model Manager. Do not delete this release: the app's model download URLs point at these assets. All assets are integrity-pinned (SHA-256) in the app."
+          gh release upload models-v1 assets/*.onnx --clobber --repo "$GITHUB_REPOSITORY"
+          gh release view models-v1 --repo "$GITHUB_REPOSITORY"
