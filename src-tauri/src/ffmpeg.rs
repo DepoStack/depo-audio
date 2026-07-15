@@ -29,6 +29,31 @@ pub(crate) struct SidecarOutput {
     pub stderr: Vec<u8>,
 }
 
+/// Optional cancellation predicate for a sidecar run (a user-cancelled scan).
+/// Checked about once a second; on cancel the child is killed immediately
+/// instead of decoding on until its timeout backstop.
+pub(crate) type CancelCheck<'a> = Option<&'a (dyn Fn() -> bool + Sync)>;
+
+/// Kill the child, then wait (bounded) for the plugin's wait-thread to reap
+/// it. TerminateProcess on Windows returns before the process actually dies;
+/// deleting the child's partial temp output before its handles close fails
+/// with a sharing violation and silently leaks ~6MB per timed-out pass.
+async fn kill_and_drain(
+    child: Option<tauri_plugin_shell::process::CommandChild>,
+    rx: &mut tauri::async_runtime::Receiver<CommandEvent>,
+) {
+    if let Some(c) = child { let _ = c.kill(); }
+    let grace = tokio::time::Instant::now() + std::time::Duration::from_secs(2);
+    loop {
+        let rem = grace.saturating_duration_since(tokio::time::Instant::now());
+        if rem.is_zero() { return; }
+        match tokio::time::timeout(rem, rx.recv()).await {
+            Ok(Some(CommandEvent::Terminated(_))) | Ok(None) | Err(_) => return,
+            Ok(Some(_)) => {}
+        }
+    }
+}
+
 /// Run a sidecar (ffprobe/ffmpeg) to completion with a timeout. Returns None on
 /// spawn error, failure, or timeout, so callers fall back to safe defaults.
 /// Without this a wedged probe would hang `analyze_audio` — and therefore the
@@ -41,22 +66,36 @@ pub(crate) async fn sidecar_output_opt(
     args: Vec<String>,
     secs: u64,
 ) -> Option<SidecarOutput> {
+    sidecar_output_cancellable(app, bin, args, secs, None).await
+}
+
+pub(crate) async fn sidecar_output_cancellable(
+    app: &AppHandle,
+    bin: &str,
+    args: Vec<String>,
+    secs: u64,
+    cancelled: CancelCheck<'_>,
+) -> Option<SidecarOutput> {
     let (mut rx, child) = app.shell().sidecar(bin).ok()?.args(args).spawn().ok()?;
     let mut child = Some(child);
     let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(secs);
     let mut out = SidecarOutput { success: false, stdout: Vec::new(), stderr: Vec::new() };
     loop {
-        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
-        if remaining.is_zero() {
-            if let Some(c) = child.take() { let _ = c.kill(); }
+        if cancelled.map(|f| f()).unwrap_or(false) {
+            kill_and_drain(child.take(), &mut rx).await;
             return None;
         }
-        match tokio::time::timeout(remaining, rx.recv()).await {
-            Err(_) => {
-                if let Some(c) = child.take() { let _ = c.kill(); }
-                return None;
-            }
-            Ok(None) => break, // event channel closed: process is gone
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        if remaining.is_zero() {
+            kill_and_drain(child.take(), &mut rx).await;
+            return None;
+        }
+        // Wait in ~1s ticks so the cancel predicate is re-checked even while
+        // a quiet child produces no events
+        let tick = remaining.min(std::time::Duration::from_secs(1));
+        match tokio::time::timeout(tick, rx.recv()).await {
+            Err(_) => continue, // tick elapsed — re-check cancel + deadline
+            Ok(None) => break,  // event channel closed: process is gone
             Ok(Some(CommandEvent::Stdout(bytes))) => out.stdout.extend_from_slice(&bytes),
             Ok(Some(CommandEvent::Stderr(bytes))) => out.stderr.extend_from_slice(&bytes),
             Ok(Some(CommandEvent::Terminated(status))) => out.success = status.code == Some(0),

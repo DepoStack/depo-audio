@@ -87,12 +87,14 @@ export default function ConvertTab({
   }
 
   const cancelScan = async () => {
-    scanIdRef.current += 1
+    const id = ++scanIdRef.current
     // Await the round-trip: cancel and analyze are independent IPC requests,
     // and an unawaited epoch bump could land AFTER the next scan snapshots
     // its epoch — instantly killing the wrong scan
     await invoke('cancel_scan_cmd').catch(() => {})
-    setScanning(false)
+    // Guard against a stale double-click's late resolve hiding a successor
+    // scan's progress UI while it keeps running
+    if (scanIdRef.current === id) setScanning(false)
   }
 
   const handleScan = async () => {
@@ -105,12 +107,19 @@ export default function ConvertTab({
     setScanProgress({ current: 0, total: scanFiles.length, fileName: '', phase: '', filePct: 0 })
 
     // Within-file progress from the backend; also feeds the stall watchdog.
-    // Filter by path: a just-cancelled file's inference task can emit a few
-    // trailing events that must not move the next file's bar.
+    // Filter by path AND backend generation: a just-cancelled scan's dying
+    // passes emit trailing events — for the SAME path if the user re-scans
+    // immediately — that must not move the bar or feed the watchdog. Each
+    // cancel bumps the backend epoch, so the successor's events always carry
+    // a strictly higher gen; drop anything below the highest gen seen.
     let currentPath = null
+    let maxGen = 0
     let lastEvent = Date.now()
     const unlisten = await listen('scan:progress', ({ payload }) => {
       if (scanIdRef.current !== scanId || payload.path !== currentPath) return
+      const gen = payload.gen ?? 0
+      if (gen < maxGen) return
+      maxGen = gen
       lastEvent = Date.now()
       setScanProgress(p => ({ ...p, phase: payload.phase, filePct: payload.pct ?? p.filePct }))
     })

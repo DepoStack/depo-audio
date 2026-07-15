@@ -59,10 +59,12 @@ impl ScanCtx {
     }
 
     /// Within-file progress: phase name + estimated fraction complete [0, 1].
+    /// `gen` lets the frontend drop trailing events from a cancelled scan
+    /// that would otherwise pollute a successor scan of the same file.
     pub fn emit(&self, phase: &str, pct: f64) {
         let _ = self.app.emit(
             "scan:progress",
-            serde_json::json!({ "path": self.path, "phase": phase, "pct": pct }),
+            serde_json::json!({ "path": self.path, "phase": phase, "pct": pct, "gen": self.my_gen }),
         );
     }
 }
@@ -79,9 +81,11 @@ fn check(ctx: Option<&ScanCtx>) -> Result<(), String> {
 /// stall watchdog can tell "slow but alive" from "wedged".
 const HEARTBEAT_SECS: u64 = 10;
 
-/// sidecar_output_opt plus a progress heartbeat: the per-pass timeout
-/// backstops run up to 120s, and without events during the wait the frontend
-/// watchdog would cancel a scan the backend was about to recover gracefully.
+/// sidecar_output_opt plus a progress heartbeat and scan cancellation: the
+/// per-pass timeout backstops run up to 120s, and without events during the
+/// wait the frontend watchdog would cancel a scan the backend was about to
+/// recover gracefully. A cancelled scan kills the in-flight decoder within
+/// ~1s instead of letting it run out its backstop.
 pub(crate) async fn sidecar_with_heartbeat(
     app: &AppHandle,
     bin: &str,
@@ -91,7 +95,8 @@ pub(crate) async fn sidecar_with_heartbeat(
     phase: &str,
     pct: f64,
 ) -> Option<crate::ffmpeg::SidecarOutput> {
-    let fut = crate::ffmpeg::sidecar_output_opt(app, bin, args, secs);
+    let is_cancelled = || ctx.map(|c| c.cancelled()).unwrap_or(false);
+    let fut = crate::ffmpeg::sidecar_output_cancellable(app, bin, args, secs, Some(&is_cancelled));
     tokio::pin!(fut);
     loop {
         match tokio::time::timeout(std::time::Duration::from_secs(HEARTBEAT_SECS), &mut fut).await {
@@ -333,7 +338,7 @@ async fn analyze_loudness_and_peaks(
     if channels <= 1 {
         // Mono or single-channel: analyze directly
         emit(ctx, "loudness", 0.05);
-        match analyze_single_channel(app, feed, None, input_codec, ctx).await {
+        match analyze_single_channel(app, feed, None, input_codec, ctx, 0.05).await {
             Ok((lufs, peak)) => { lufs_vec.push(lufs); peak_vec.push(peak); }
             Err(_) => { lufs_vec.push(-70.0); peak_vec.push(-70.0); failures += 1; }
         }
@@ -341,8 +346,9 @@ async fn analyze_loudness_and_peaks(
         // Multi-channel: use channelsplit + per-channel ebur128
         for ch in 0..channels {
             check(ctx)?;
-            emit(ctx, "loudness", 0.05 + 0.20 * (ch as f64 / channels as f64));
-            match analyze_single_channel(app, feed, Some(ch), input_codec, ctx).await {
+            let pct = 0.05 + 0.20 * (ch as f64 / channels as f64);
+            emit(ctx, "loudness", pct);
+            match analyze_single_channel(app, feed, Some(ch), input_codec, ctx, pct).await {
                 Ok((lufs, peak)) => { lufs_vec.push(lufs); peak_vec.push(peak); }
                 Err(_) => { lufs_vec.push(-70.0); peak_vec.push(-70.0); failures += 1; }
             }
@@ -362,6 +368,7 @@ async fn analyze_single_channel(
     channel: Option<u32>,
     input_codec: &[String],
     ctx: Option<&ScanCtx>,
+    pct: f64,
 ) -> Result<(f64, f64), String> {
     let feed_str = feed.to_string_lossy().to_string();
 
@@ -392,7 +399,7 @@ async fn analyze_single_channel(
     // Bounded timeout backstop — the -t cap means a healthy run finishes in
     // seconds, so a wedged ffmpeg can never hang the Scan. The heartbeat
     // keeps the frontend's stall watchdog fed while the 120s backstop drains.
-    let output = sidecar_with_heartbeat(app, crate::helpers::ffmpeg_bin_name(), args, 120, ctx, "loudness", 0.15)
+    let output = sidecar_with_heartbeat(app, crate::helpers::ffmpeg_bin_name(), args, 120, ctx, "loudness", pct)
         .await
         .ok_or_else(|| "Loudness analysis timed out".to_string())?;
 
@@ -490,13 +497,19 @@ async fn detect_turns(
         Err(_) => return Vec::new(),
     };
 
-    // Phase 1 (async): decode each channel to a 16kHz mono temp WAV.
-    let mut decoded: Vec<(u32, std::path::PathBuf)> = Vec::new();
+    // Phase 1 (async): decode each channel to a 16kHz mono temp WAV. TempFile
+    // drop guards own cleanup on EVERY path — early returns, cancel/budget
+    // breaks, and panics in the inference task below (an unwinding panic
+    // would skip any explicit cleanup loop and leak up to 16 × ~6MB).
+    let mut decoded: Vec<(u32, crate::safety::TempFile)> = Vec::new();
     for ch in 0..channels {
         if ctx.map(|c| c.cancelled()).unwrap_or(false) { break; }
-        emit(ctx, "turns", 0.45 + 0.10 * (ch as f64 / channels as f64));
+        let pct = 0.45 + 0.10 * (ch as f64 / channels as f64);
+        emit(ctx, "turns", pct);
 
-        let tmp = std::env::temp_dir().join(format!("depoaudio_turn_ch{}_{}.wav", ch, uuid::Uuid::new_v4()));
+        let tmp = crate::safety::TempFile::new(
+            std::env::temp_dir().join(format!("depoaudio_turn_ch{}_{}.wav", ch, uuid::Uuid::new_v4())),
+        );
         let pan_filter = if channels > 1 {
             format!("pan=mono|c0=c{},aresample=16000", ch)
         } else {
@@ -516,16 +529,15 @@ async fn detect_turns(
             "-y".into(), tmp.to_string_lossy().to_string(),
         ]);
 
-        let ok = sidecar_with_heartbeat(app, crate::helpers::ffmpeg_bin_name(), args, 120, ctx, "turns", 0.50)
+        let ok = sidecar_with_heartbeat(app, crate::helpers::ffmpeg_bin_name(), args, 120, ctx, "turns", pct)
             .await
             .map(|o| o.success)
             .unwrap_or(false);
 
         if ok && tmp.exists() {
             decoded.push((ch, tmp));
-        } else {
-            let _ = std::fs::remove_file(&tmp);
         }
+        // else: tmp drops here and removes any partial decode
     }
 
     if decoded.is_empty() { return Vec::new(); }
@@ -538,25 +550,24 @@ async fn detect_turns(
     let ctx_owned = ctx.cloned();
     let result = tauri::async_runtime::spawn_blocking(move || {
         let mut all_turns: Vec<TurnSegment> = Vec::new();
+        // On any early return, break, or panic below, the TempFile guards in
+        // `decoded` (moved into this closure) delete the WAVs as they drop.
         let mut session = match crate::models::load_session(&model_path) {
             Ok(s) => s,
-            Err(_) => {
-                for (_, tmp) in &decoded { let _ = std::fs::remove_file(tmp); }
-                return all_turns;
-            }
+            Err(_) => return all_turns,
         };
 
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(TURNS_BUDGET_SECS);
         let total_channels = decoded.len().max(1) as f64;
 
-        'channels: for (idx, (ch, tmp)) in decoded.iter().enumerate() {
-            let samples: Vec<f32> = match hound::WavReader::open(tmp) {
+        'channels: for (idx, (ch, tmp)) in decoded.into_iter().enumerate() {
+            let samples: Vec<f32> = match hound::WavReader::open(&*tmp) {
                 Ok(reader) => reader
                     .into_samples::<i16>()
                     .filter_map(|s| s.ok())
                     .map(|s| s as f32 / 32768.0)
                     .collect(),
-                Err(_) => { let _ = std::fs::remove_file(tmp); continue; }
+                Err(_) => continue,
             };
 
             let sample_rate = 16000usize;
@@ -624,7 +635,7 @@ async fn detect_turns(
                         all_turns.push(TurnSegment {
                             start,
                             end: time + 4.0, // end of the 8-second window
-                            channel: *ch,
+                            channel: ch,
                             confidence: prob as f64,
                         });
                     }
@@ -633,12 +644,9 @@ async fn detect_turns(
                 pos += stride;
                 window_idx += 1;
             }
-
-            let _ = std::fs::remove_file(tmp);
+            // tmp (TempFile) drops here — WAV deleted; a budget/cancel break
+            // or panic drops the remaining iterator, deleting the rest
         }
-
-        // Clean up any temp WAVs skipped by a budget/cancel break
-        for (_, tmp) in &decoded { let _ = std::fs::remove_file(tmp); }
 
         all_turns
     })
