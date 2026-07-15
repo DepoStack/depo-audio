@@ -29,10 +29,10 @@ pub struct SpeakerInfo {
 pub(crate) async fn detect_speakers(
     app: &AppHandle,
     audio_path: &Path,
+    ctx: Option<&crate::analysis::ScanCtx>,
 ) -> Result<SpeakerInfo, String> {
     // Check model availability
     let seg_path = models::model_path(app, "speaker_seg_int8.onnx")?;
-    let mut seg_session = models::load_session(&seg_path)?;
 
     let has_embed = models::model_path(app, "speaker_embed.onnx").is_ok();
 
@@ -42,20 +42,22 @@ pub(crate) async fn detect_speakers(
         uuid::Uuid::new_v4().to_string().replace('-', "")
     )));
 
-    let args: Vec<String> = vec![
+    // Forced input decoder for formats ffmpeg can't auto-detect (FTR)
+    let mut args: Vec<String> = crate::helpers::scan_input_codec_args(audio_path);
+    args.extend([
         "-t".into(), "60".into(), // Analyze first 60 seconds only (speed)
         "-i".into(), audio_path.to_string_lossy().to_string(),
         "-af".into(), "aresample=16000".into(),
         "-ac".into(), "1".into(),
         "-acodec".into(), "pcm_s16le".into(),
         "-y".into(), tmp.to_string_lossy().to_string(),
-    ];
+    ]);
 
     let output = crate::ffmpeg::sidecar_output_opt(app, crate::helpers::ffmpeg_bin_name(), args, 60)
         .await
         .ok_or_else(|| "Failed to decode audio for speaker detection".to_string())?;
 
-    if !output.status.success() {
+    if !output.success {
         return Err("Failed to decode audio for speaker detection".into());
     }
 
@@ -74,67 +76,82 @@ pub(crate) async fn detect_speakers(
         return Ok(SpeakerInfo { count: 1, full_analysis: false });
     }
 
-    // Segmentation: pyannote model expects [1, 1, num_samples] input
-    // and outputs [1, num_frames, num_speakers] speaker activity probabilities
-    let num_samples = samples.len();
-    let input = ndarray::Array3::from_shape_vec(
-        (1, 1, num_samples),
-        samples.clone(),
-    ).map_err(|e| format!("Tensor error: {}", e))?;
-    let input_val = ort::value::Tensor::from_array(input)
-        .map_err(|e| format!("Tensor error: {}", e))?;
+    // The 60s -t cap limits by input timestamps; corrupt timestamps can yield
+    // far more decoded samples. Hard-cap the tensor so a single inference
+    // can't be handed an arbitrarily large recurrent input.
+    let max_samples = 16000 * 60;
+    let samples = if samples.len() > max_samples { samples[..max_samples].to_vec() } else { samples };
 
-    let seg_outputs = seg_session
-        .run(ort::inputs!["x" => input_val])
-        .map_err(|e| format!("Segmentation inference failed: {}", e))?;
+    if let Some(c) = ctx { c.check()?; }
 
-    // Parse segmentation output to count active speaker slots
-    let first_output = seg_outputs
-        .values()
-        .next()
-        .ok_or("No segmentation output")?;
-    let seg_tensor = first_output
-        .try_extract_tensor::<f32>()
-        .map_err(|e| format!("Failed to extract segmentation output: {}", e))?;
+    // Session load + inference on the blocking pool (see scoring.rs).
+    tauri::async_runtime::spawn_blocking(move || -> Result<SpeakerInfo, String> {
+        let mut seg_session = models::load_session(&seg_path)?;
 
-    let seg_shape = seg_tensor.0;
-    // Output is [1, num_frames, 7]: log-probabilities over the pyannote
-    // powerset classes {none, S1, S2, S3, S1+S2, S1+S3, S2+S3}. Decode by
-    // per-frame argmax, then count speakers with sustained activity.
-    let num_classes = if seg_shape.len() == 3 { seg_shape[2] as usize } else { 7usize };
-    let num_frames = if seg_shape.len() == 3 { seg_shape[1] as usize } else { 1usize };
-    let seg_data = seg_tensor.1;
+        // Segmentation: pyannote model expects [1, 1, num_samples] input
+        // and outputs [1, num_frames, num_speakers] speaker activity probabilities
+        let num_samples = samples.len();
+        let input = ndarray::Array3::from_shape_vec(
+            (1, 1, num_samples),
+            samples,
+        ).map_err(|e| format!("Tensor error: {}", e))?;
+        let input_val = ort::value::Tensor::from_array(input)
+            .map_err(|e| format!("Tensor error: {}", e))?;
 
-    const POWERSET: [&[usize]; 7] = [&[], &[0], &[1], &[2], &[0, 1], &[0, 2], &[1, 2]];
-    let mut active_frames = [0usize; 3];
+        let seg_outputs = seg_session
+            .run(ort::inputs!["x" => input_val])
+            .map_err(|e| format!("Segmentation inference failed: {}", e))?;
 
-    for f in 0..num_frames {
-        let mut best_class = 0usize;
-        let mut best_val = f32::NEG_INFINITY;
-        for k in 0..num_classes.min(POWERSET.len()) {
-            let idx = f * num_classes + k;
-            if idx < seg_data.len() && seg_data[idx] > best_val {
-                best_val = seg_data[idx];
-                best_class = k;
+        // Parse segmentation output to count active speaker slots
+        let first_output = seg_outputs
+            .values()
+            .next()
+            .ok_or("No segmentation output")?;
+        let seg_tensor = first_output
+            .try_extract_tensor::<f32>()
+            .map_err(|e| format!("Failed to extract segmentation output: {}", e))?;
+
+        let seg_shape = seg_tensor.0;
+        // Output is [1, num_frames, 7]: log-probabilities over the pyannote
+        // powerset classes {none, S1, S2, S3, S1+S2, S1+S3, S2+S3}. Decode by
+        // per-frame argmax, then count speakers with sustained activity.
+        let num_classes = if seg_shape.len() == 3 { seg_shape[2] as usize } else { 7usize };
+        let num_frames = if seg_shape.len() == 3 { seg_shape[1] as usize } else { 1usize };
+        let seg_data = seg_tensor.1;
+
+        const POWERSET: [&[usize]; 7] = [&[], &[0], &[1], &[2], &[0, 1], &[0, 2], &[1, 2]];
+        let mut active_frames = [0usize; 3];
+
+        for f in 0..num_frames {
+            let mut best_class = 0usize;
+            let mut best_val = f32::NEG_INFINITY;
+            for k in 0..num_classes.min(POWERSET.len()) {
+                let idx = f * num_classes + k;
+                if idx < seg_data.len() && seg_data[idx] > best_val {
+                    best_val = seg_data[idx];
+                    best_class = k;
+                }
+            }
+            for &s in POWERSET[best_class] {
+                active_frames[s] += 1;
             }
         }
-        for &s in POWERSET[best_class] {
-            active_frames[s] += 1;
-        }
-    }
 
-    // A speaker counts if active in > 10% of frames
-    let min_activity_ratio = 0.1;
-    let active_speakers = active_frames
-        .iter()
-        .filter(|&&n| n as f64 / num_frames.max(1) as f64 > min_activity_ratio)
-        .count() as u32;
+        // A speaker counts if active in > 10% of frames
+        let min_activity_ratio = 0.1;
+        let active_speakers = active_frames
+            .iter()
+            .filter(|&&n| n as f64 / num_frames.max(1) as f64 > min_activity_ratio)
+            .count() as u32;
 
-    // At least 1 speaker
-    let count = active_speakers.max(1);
+        // At least 1 speaker
+        let count = active_speakers.max(1);
 
-    Ok(SpeakerInfo {
-        count,
-        full_analysis: has_embed, // Full embedding analysis would refine this further
+        Ok(SpeakerInfo {
+            count,
+            full_analysis: has_embed, // Full embedding analysis would refine this further
+        })
     })
+    .await
+    .map_err(|e| format!("Speaker detection task failed: {}", e))?
 }

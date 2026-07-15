@@ -101,6 +101,7 @@ pub fn run() {
             commands::detect_format,
             commands::infer_case_name_cmd,
             commands::analyze_audio_cmd,
+            commands::cancel_scan_cmd,
             commands::score_quality_cmd,
             commands::detect_speakers_cmd,
             commands::system_capabilities_cmd,

@@ -32,9 +32,9 @@ pub struct QualityScore {
 pub(crate) async fn score_quality(
     app: &AppHandle,
     audio_path: &Path,
+    ctx: Option<&crate::analysis::ScanCtx>,
 ) -> Result<QualityScore, String> {
     let model_path = models::model_path(app, "dnsmos_sig_bak_ovr.onnx")?;
-    let mut session = models::load_session(&model_path)?;
 
     // Decode to 16kHz mono for DNSMOS (drop guard cleans up on every exit path)
     let tmp = crate::safety::TempFile::new(std::env::temp_dir().join(format!(
@@ -43,21 +43,23 @@ pub(crate) async fn score_quality(
     )));
 
     // DNSMOS only scores the first ~9s, so decode a short head — no need to
-    // read (and no risk of hanging on) the whole recording.
-    let args: Vec<String> = vec![
+    // read (and no risk of hanging on) the whole recording. Forced input
+    // decoder for formats ffmpeg can't auto-detect (FTR).
+    let mut args: Vec<String> = crate::helpers::scan_input_codec_args(audio_path);
+    args.extend([
         "-t".into(), "12".into(),
         "-i".into(), audio_path.to_string_lossy().to_string(),
         "-af".into(), "aresample=16000".into(),
         "-ac".into(), "1".into(),
         "-acodec".into(), "pcm_s16le".into(),
         "-y".into(), tmp.to_string_lossy().to_string(),
-    ];
+    ]);
 
     let output = crate::ffmpeg::sidecar_output_opt(app, crate::helpers::ffmpeg_bin_name(), args, 60)
         .await
         .ok_or_else(|| "Failed to decode audio for quality scoring".to_string())?;
 
-    if !output.status.success() {
+    if !output.success {
         return Err("Failed to decode audio for quality scoring".into());
     }
 
@@ -77,48 +79,58 @@ pub(crate) async fn score_quality(
         return Err("No audio samples for quality scoring".into());
     }
 
-    // DNSMOS expects a fixed-length input. Use first 9.01 seconds (144160 samples at 16kHz)
-    // or pad with zeros if shorter.
-    let target_len = 144160;
-    let mut input_samples = samples;
-    if input_samples.len() > target_len {
-        input_samples.truncate(target_len);
-    } else {
-        input_samples.resize(target_len, 0.0);
-    }
+    if let Some(c) = ctx { c.check()?; }
 
-    // Create input tensor [1, target_len]
-    let input = ndarray::Array2::from_shape_vec((1, target_len), input_samples)
-        .map_err(|e| format!("Tensor error: {}", e))?;
-    let input_val = ort::value::Tensor::from_array(input)
-        .map_err(|e| format!("Tensor error: {}", e))?;
+    // Session load + inference on the blocking pool: EP model compilation and
+    // a full-window inference are CPU-bound and must not pin an async worker.
+    tauri::async_runtime::spawn_blocking(move || -> Result<QualityScore, String> {
+        let mut session = models::load_session(&model_path)?;
 
-    let outputs = session
-        .run(ort::inputs!["input_1" => input_val])
-        .map_err(|e| format!("DNSMOS inference failed: {}", e))?;
+        // DNSMOS expects a fixed-length input. Use first 9.01 seconds (144160 samples at 16kHz)
+        // or pad with zeros if shorter.
+        let target_len = 144160;
+        let mut input_samples = samples;
+        if input_samples.len() > target_len {
+            input_samples.truncate(target_len);
+        } else {
+            input_samples.resize(target_len, 0.0);
+        }
 
-    // Output is [1, 3] with [SIG, BAK, OVR] scores
-    let first_output = outputs
-        .values()
-        .next()
-        .ok_or("No DNSMOS output")?;
-    let scores = first_output
-        .try_extract_tensor::<f32>()
-        .map_err(|e| format!("Failed to extract DNSMOS output: {}", e))?;
+        // Create input tensor [1, target_len]
+        let input = ndarray::Array2::from_shape_vec((1, target_len), input_samples)
+            .map_err(|e| format!("Tensor error: {}", e))?;
+        let input_val = ort::value::Tensor::from_array(input)
+            .map_err(|e| format!("Tensor error: {}", e))?;
 
-    let scores_slice = scores.1;
+        let outputs = session
+            .run(ort::inputs!["input_1" => input_val])
+            .map_err(|e| format!("DNSMOS inference failed: {}", e))?;
 
-    if scores_slice.len() >= 3 {
-        Ok(QualityScore {
-            sig: scores_slice[0].clamp(1.0, 5.0),
-            bak: scores_slice[1].clamp(1.0, 5.0),
-            ovr: scores_slice[2].clamp(1.0, 5.0),
-        })
-    } else if scores_slice.len() == 1 {
-        // Some DNSMOS variants output a single OVR score
-        let ovr = scores_slice[0].clamp(1.0, 5.0);
-        Ok(QualityScore { sig: ovr, bak: ovr, ovr })
-    } else {
-        Err("Unexpected DNSMOS output shape".into())
-    }
+        // Output is [1, 3] with [SIG, BAK, OVR] scores
+        let first_output = outputs
+            .values()
+            .next()
+            .ok_or("No DNSMOS output")?;
+        let scores = first_output
+            .try_extract_tensor::<f32>()
+            .map_err(|e| format!("Failed to extract DNSMOS output: {}", e))?;
+
+        let scores_slice = scores.1;
+
+        if scores_slice.len() >= 3 {
+            Ok(QualityScore {
+                sig: scores_slice[0].clamp(1.0, 5.0),
+                bak: scores_slice[1].clamp(1.0, 5.0),
+                ovr: scores_slice[2].clamp(1.0, 5.0),
+            })
+        } else if scores_slice.len() == 1 {
+            // Some DNSMOS variants output a single OVR score
+            let ovr = scores_slice[0].clamp(1.0, 5.0);
+            Ok(QualityScore { sig: ovr, bak: ovr, ovr })
+        } else {
+            Err("Unexpected DNSMOS output shape".into())
+        }
+    })
+    .await
+    .map_err(|e| format!("Scoring task failed: {}", e))?
 }

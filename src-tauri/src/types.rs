@@ -379,6 +379,11 @@ pub struct AppState {
     pub prefs: Mutex<Prefs>,
     pub lib_path: Mutex<Option<PathBuf>>,
     pub prefs_path: Mutex<Option<PathBuf>>,
+    /// Scan cancellation epoch. A scan snapshots the value when it starts and
+    /// aborts once it no longer matches; `cancel_scan_cmd` bumps it. Arc so
+    /// blocking inference tasks can keep checking after the command future
+    /// itself is gone.
+    pub scan_epoch: std::sync::Arc<std::sync::atomic::AtomicU64>,
 }
 
 impl Default for AppState {
@@ -388,6 +393,7 @@ impl Default for AppState {
             prefs: Mutex::new(Prefs::default()),
             lib_path: Mutex::new(None),
             prefs_path: Mutex::new(None),
+            scan_epoch: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
         }
     }
 }

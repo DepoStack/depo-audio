@@ -22,21 +22,48 @@ fn time_regex() -> &'static Regex {
 
 // ── Probe helpers ─────────────────────────────────────────────────────────────
 
+/// Collected output of a completed sidecar run.
+pub(crate) struct SidecarOutput {
+    pub success: bool,
+    pub stdout: Vec<u8>,
+    pub stderr: Vec<u8>,
+}
+
 /// Run a sidecar (ffprobe/ffmpeg) to completion with a timeout. Returns None on
 /// spawn error, failure, or timeout, so callers fall back to safe defaults.
 /// Without this a wedged probe would hang `analyze_audio` — and therefore the
-/// Scan button — forever.
+/// Scan button — forever. On timeout the child is KILLED, not abandoned:
+/// orphaned decoders otherwise pile up at full CPU during a multi-file scan
+/// and drag every later pass into its own timeout.
 pub(crate) async fn sidecar_output_opt(
     app: &AppHandle,
     bin: &str,
     args: Vec<String>,
     secs: u64,
-) -> Option<tauri_plugin_shell::process::Output> {
-    let cmd = app.shell().sidecar(bin).ok()?.args(args);
-    match tokio::time::timeout(std::time::Duration::from_secs(secs), cmd.output()).await {
-        Ok(Ok(out)) => Some(out),
-        _ => None,
+) -> Option<SidecarOutput> {
+    let (mut rx, child) = app.shell().sidecar(bin).ok()?.args(args).spawn().ok()?;
+    let mut child = Some(child);
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(secs);
+    let mut out = SidecarOutput { success: false, stdout: Vec::new(), stderr: Vec::new() };
+    loop {
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        if remaining.is_zero() {
+            if let Some(c) = child.take() { let _ = c.kill(); }
+            return None;
+        }
+        match tokio::time::timeout(remaining, rx.recv()).await {
+            Err(_) => {
+                if let Some(c) = child.take() { let _ = c.kill(); }
+                return None;
+            }
+            Ok(None) => break, // event channel closed: process is gone
+            Ok(Some(CommandEvent::Stdout(bytes))) => out.stdout.extend_from_slice(&bytes),
+            Ok(Some(CommandEvent::Stderr(bytes))) => out.stderr.extend_from_slice(&bytes),
+            Ok(Some(CommandEvent::Terminated(status))) => out.success = status.code == Some(0),
+            Ok(Some(_)) => {}
+        }
     }
+    Some(out)
 }
 
 // Note: ffprobe auto-detects codecs and does not accept ffmpeg input options

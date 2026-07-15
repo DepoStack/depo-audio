@@ -69,9 +69,20 @@ pub fn infer_case_name_cmd(filename: String) -> String {
 #[tauri::command]
 pub async fn analyze_audio_cmd(
     app: AppHandle,
+    state: State<'_, AppState>,
     path: String,
 ) -> Result<crate::types::AnalysisResult, String> {
-    analysis::analyze_audio(&app, &path).await
+    // ScanCtx gives the frontend within-file progress events and makes this
+    // scan cancellable via cancel_scan_cmd.
+    let ctx = analysis::ScanCtx::new(app.clone(), path.clone(), state.scan_epoch.clone());
+    analysis::analyze_audio(&app, &path, Some(&ctx)).await
+}
+
+/// Cancel all in-flight scans: bumps the scan epoch, which every running
+/// analysis (including its blocking inference tasks) checks between steps.
+#[tauri::command]
+pub fn cancel_scan_cmd(state: State<'_, AppState>) {
+    state.scan_epoch.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
 }
 
 // ── Quality scoring command ──────────────────────────────────────────────────
@@ -81,7 +92,7 @@ pub async fn score_quality_cmd(
     app: AppHandle,
     path: String,
 ) -> Result<scoring::QualityScore, String> {
-    scoring::score_quality(&app, std::path::Path::new(&path)).await
+    scoring::score_quality(&app, std::path::Path::new(&path), None).await
 }
 
 // ── Speaker detection command ───────────────────────────────────────────────
@@ -91,7 +102,7 @@ pub async fn detect_speakers_cmd(
     app: AppHandle,
     path: String,
 ) -> Result<speakers::SpeakerInfo, String> {
-    speakers::detect_speakers(&app, std::path::Path::new(&path)).await
+    speakers::detect_speakers(&app, std::path::Path::new(&path), None).await
 }
 
 // ── System capabilities command ──────────────────────────────────────────────
@@ -125,7 +136,8 @@ pub async fn detect_speech_cmd(
     app: AppHandle,
     path: String,
 ) -> Result<vad::VadResult, String> {
-    vad::detect_speech(&app, std::path::Path::new(&path)).await
+    vad::detect_speech(&app, std::path::Path::new(&path), None).await
+        .map_err(|e| e.to_string())
 }
 
 // ── CAT software detection commands ──────────────────────────────────────────
