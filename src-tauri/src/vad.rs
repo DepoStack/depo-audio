@@ -24,6 +24,27 @@ pub struct SpeechSegment {
     pub confidence: f64,
 }
 
+/// Why VAD produced no result — the distinction matters: an undecodable FILE
+/// should short-circuit the other analysis passes (they'd burn their decode
+/// timeouts on the same bytes), while an unavailable VAD ENVIRONMENT (model
+/// missing/corrupt, ORT failure) says nothing about the file and must not
+/// skip passes whose own models are fine.
+#[derive(Debug)]
+pub(crate) enum VadError {
+    /// FFmpeg could not decode this file (or the decode timed out).
+    Undecodable(String),
+    /// VAD itself is unavailable/failed; the file may be perfectly fine.
+    Unavailable(String),
+}
+
+impl std::fmt::Display for VadError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            VadError::Undecodable(e) | VadError::Unavailable(e) => write!(f, "{}", e),
+        }
+    }
+}
+
 /// VAD analysis result.
 #[derive(Debug, serde::Serialize, serde::Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
@@ -43,9 +64,9 @@ pub struct VadResult {
 pub(crate) async fn detect_speech(
     app: &AppHandle,
     audio_path: &Path,
-) -> Result<VadResult, String> {
-    let model_path = models::model_path(app, "silero_vad.onnx")?;
-    let mut session = models::load_session(&model_path)?;
+    ctx: Option<&crate::analysis::ScanCtx>,
+) -> Result<VadResult, VadError> {
+    let model_path = models::model_path(app, "silero_vad.onnx").map_err(VadError::Unavailable)?;
 
     // Decode to 16kHz mono WAV (drop guard cleans up on every exit path)
     let tmp = crate::safety::TempFile::new(std::env::temp_dir().join(format!(
@@ -53,26 +74,31 @@ pub(crate) async fn detect_speech(
         uuid::Uuid::new_v4().to_string().replace('-', "")
     )));
 
-    let args: Vec<String> = vec![
+    // Forced input decoder for formats ffmpeg can't auto-detect (FTR)
+    let mut args: Vec<String> = crate::helpers::scan_input_codec_args(audio_path);
+    args.extend([
         "-t".into(), crate::ffmpeg::ANALYSIS_SAMPLE_SECS.to_string(),
         "-i".into(), audio_path.to_string_lossy().to_string(),
         "-af".into(), "aresample=16000".into(),
         "-ac".into(), "1".into(),
         "-acodec".into(), "pcm_s16le".into(),
         "-y".into(), tmp.to_string_lossy().to_string(),
-    ];
+    ]);
 
     // Bounded decode (sample cap + timeout) so VAD can't hang the scan.
-    let output = crate::ffmpeg::sidecar_output_opt(app, crate::helpers::ffmpeg_bin_name(), args, 120)
-        .await
-        .ok_or_else(|| "Failed to decode audio for VAD".to_string())?;
+    // Decode failures are Undecodable — the file itself is the problem.
+    let output = crate::analysis::sidecar_with_heartbeat(
+        app, crate::helpers::ffmpeg_bin_name(), args, 120, ctx, "speech", 0.33,
+    )
+    .await
+    .ok_or_else(|| VadError::Undecodable("Failed to decode audio for VAD".into()))?;
 
-    if !output.status.success() {
-        return Err("Failed to decode audio for VAD".into());
+    if !output.success {
+        return Err(VadError::Undecodable("Failed to decode audio for VAD".into()));
     }
 
     let reader = hound::WavReader::open(&tmp)
-        .map_err(|e| format!("WAV read error: {}", e))?;
+        .map_err(|e| VadError::Unavailable(format!("WAV read error: {}", e)))?;
     // Read as i16 and normalize to [-1.0, 1.0] float range for Silero VAD
     let samples: Vec<f32> = reader
         .into_samples::<i16>()
@@ -91,64 +117,92 @@ pub(crate) async fn detect_speech(
         });
     }
 
-    // Silero VAD v5 processes 512-sample chunks at 16kHz (~32ms each)
-    // Inputs: "input" [1, chunk_size], "state" [2, 1, 128], "sr" scalar i64
-    // Outputs: "output" [1, 1], "stateN" [2, 1, 128]
-    let chunk_size = 512usize;
-    let sample_rate = 16000usize;
-    let num_chunks = samples.len() / chunk_size;
-    let threshold = 0.5f32;
+    // Inference runs on the blocking pool: ~5,600 sequential session.run()
+    // calls would otherwise pin an async worker thread (and with several
+    // in-flight scans, starve tokio's timers app-wide).
+    let samples_len = samples.len();
+    let ctx_owned = ctx.cloned();
+    let probabilities = tauri::async_runtime::spawn_blocking(move || -> Result<Vec<f32>, String> {
+        let mut session = models::load_session(&model_path)?;
 
-    // Silero VAD v5 uses a single state tensor [2, 1, 128]
-    let mut state = ndarray::Array3::<f32>::zeros((2, 1, 128));
-    let sr = ndarray::Array1::from_vec(vec![sample_rate as i64]);
+        // Silero VAD v5 processes 512-sample chunks at 16kHz (~32ms each)
+        // Inputs: "input" [1, chunk_size], "state" [2, 1, 128], "sr" scalar i64
+        // Outputs: "output" [1, 1], "stateN" [2, 1, 128]
+        let chunk_size = 512usize;
+        let sample_rate = 16000usize;
+        let num_chunks = samples.len() / chunk_size;
 
-    let mut probabilities: Vec<f32> = Vec::with_capacity(num_chunks);
+        // Silero VAD v5 uses a single state tensor [2, 1, 128]
+        let mut state = ndarray::Array3::<f32>::zeros((2, 1, 128));
+        let sr = ndarray::Array1::from_vec(vec![sample_rate as i64]);
 
-    for i in 0..num_chunks {
-        let start = i * chunk_size;
-        let chunk: Vec<f32> = samples[start..start + chunk_size].to_vec();
-        let input = ndarray::Array2::from_shape_vec((1, chunk_size), chunk)
-            .map_err(|e| format!("Tensor error: {}", e))?;
+        let mut probabilities: Vec<f32> = Vec::with_capacity(num_chunks);
 
-        let input_val = ort::value::Tensor::from_array(input)
-            .map_err(|e| format!("Tensor error: {}", e))?;
-        let sr_val = ort::value::Tensor::from_array(sr.clone())
-            .map_err(|e| format!("Tensor error: {}", e))?;
-        let state_val = ort::value::Tensor::from_array(state.clone())
-            .map_err(|e| format!("Tensor error: {}", e))?;
-        let result = session.run(ort::inputs![
-            "input" => input_val,
-            "state" => state_val,
-            "sr" => sr_val
-        ]);
-
-        match result {
-            Ok(outputs) => {
-                // Extract probability
-                if let Some(prob_val) = outputs.get("output") {
-                    if let Ok(prob_tensor) = prob_val.try_extract_tensor::<f32>() {
-                        let prob = prob_tensor.1.first().copied().unwrap_or(0.0);
-                        probabilities.push(prob);
-                    }
+        for i in 0..num_chunks {
+            // A cancelled scan must stop computing, not just stop reporting —
+            // and a slow-but-healthy loop must keep the frontend's stall
+            // watchdog fed (up to ~5,600 chunks can take minutes on weak CPUs)
+            if i % 256 == 0 {
+                if let Some(c) = &ctx_owned {
+                    if c.cancelled() { return Err("Scan cancelled".into()); }
+                    c.emit("speech", 0.34 + 0.10 * (i as f64 / num_chunks.max(1) as f64));
                 }
+            }
 
-                // Update state for next chunk
-                if let Some(state_out) = outputs.get("stateN") {
-                    if let Ok(state_tensor) = state_out.try_extract_tensor::<f32>() {
-                        let slice: &[f32] = state_tensor.1;
-                        if slice.len() == state.len() {
-                            state.as_slice_mut().unwrap().copy_from_slice(slice);
+            let start = i * chunk_size;
+            let chunk: Vec<f32> = samples[start..start + chunk_size].to_vec();
+            let input = ndarray::Array2::from_shape_vec((1, chunk_size), chunk)
+                .map_err(|e| format!("Tensor error: {}", e))?;
+
+            let input_val = ort::value::Tensor::from_array(input)
+                .map_err(|e| format!("Tensor error: {}", e))?;
+            let sr_val = ort::value::Tensor::from_array(sr.clone())
+                .map_err(|e| format!("Tensor error: {}", e))?;
+            let state_val = ort::value::Tensor::from_array(state.clone())
+                .map_err(|e| format!("Tensor error: {}", e))?;
+            let result = session.run(ort::inputs![
+                "input" => input_val,
+                "state" => state_val,
+                "sr" => sr_val
+            ]);
+
+            match result {
+                Ok(outputs) => {
+                    // Extract probability
+                    if let Some(prob_val) = outputs.get("output") {
+                        if let Ok(prob_tensor) = prob_val.try_extract_tensor::<f32>() {
+                            let prob = prob_tensor.1.first().copied().unwrap_or(0.0);
+                            probabilities.push(prob);
+                        }
+                    }
+
+                    // Update state for next chunk
+                    if let Some(state_out) = outputs.get("stateN") {
+                        if let Ok(state_tensor) = state_out.try_extract_tensor::<f32>() {
+                            let slice: &[f32] = state_tensor.1;
+                            if slice.len() == state.len() {
+                                state.as_slice_mut().unwrap().copy_from_slice(slice);
+                            }
                         }
                     }
                 }
-            }
-            Err(e) => {
-                eprintln!("[vad] inference error at chunk {}: {}", i, e);
-                probabilities.push(0.0);
+                Err(e) => {
+                    eprintln!("[vad] inference error at chunk {}: {}", i, e);
+                    probabilities.push(0.0);
+                }
             }
         }
-    }
+
+        Ok(probabilities)
+    })
+    .await
+    .map_err(|e| VadError::Unavailable(format!("VAD task failed: {}", e)))?
+    .map_err(VadError::Unavailable)?;
+
+    let chunk_size = 512usize;
+    let sample_rate = 16000usize;
+    let num_chunks = probabilities.len();
+    let threshold = 0.5f32;
 
     // Convert frame-level probabilities into speech segments
     let chunk_duration = chunk_size as f64 / sample_rate as f64;
@@ -205,7 +259,7 @@ pub(crate) async fn detect_speech(
     }
 
     // Calculate stats
-    let total_duration = samples.len() as f64 / sample_rate as f64;
+    let total_duration = samples_len as f64 / sample_rate as f64;
     let speech_duration: f64 = merged.iter().map(|s| s.end - s.start).sum();
     let silence_duration = total_duration - speech_duration;
     let speech_ratio = if total_duration > 0.0 { speech_duration / total_duration } else { 0.0 };

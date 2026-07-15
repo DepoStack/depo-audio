@@ -4,7 +4,7 @@ import { open } from '@tauri-apps/plugin-dialog'
 import { Loader2, X } from 'lucide-react'
 import { cn } from '../../lib/utils'
 import { FORMATS_OUT, CH_COLORS } from '../../constants'
-import { fmtSize, fmtTime } from '../../utils'
+import { fmtSize, fmtTime, sortRecordingChunks } from '../../utils'
 import { Button } from '../ui/button'
 import { Card, CardHeader, CardTitle, CardContent } from '../ui/card'
 import { Input } from '../ui/input'
@@ -40,7 +40,11 @@ export default function MergeTab() {
           const path = typeof p === 'string' ? p : p.path
           return { path, name: path.split('/').pop().split('\\').pop() }
         })
-        setSources(prev => [...prev, ...newSources])
+        // Order FTR session chunks chronologically ACROSS batches: source
+        // order is load-bearing here — sources[0] becomes the sync Reference,
+        // so a second "Add Files" must not leave a later chunk in front.
+        // (Mixed/non-chunk source sets keep their order.)
+        setSources(prev => sortRecordingChunks([...prev, ...newSources], s => s.path))
         setSyncResults([]) // sync is stale once the source set changes
         setResult(null)
         setError('')

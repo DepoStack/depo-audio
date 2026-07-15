@@ -66,6 +66,17 @@ pub(crate) fn is_standard_format(ext: &str) -> bool {
     matches!(ext, "wav" | "mp3" | "flac" | "m4a" | "aac" | "ogg" | "opus" | "wma" | "aif" | "aiff" | "caf" | "amr")
 }
 
+/// Input-codec args a decode must pass BEFORE `-i` for formats FFmpeg cannot
+/// auto-detect. FTR's proprietary AAC codec tag 0x4180 needs a forced decoder;
+/// the convert path has always done this (conversion.rs) but the scan-path
+/// decodes did not — so every analysis pass failed or wedged on .trm files.
+pub(crate) fn scan_input_codec_args(path: &Path) -> Vec<String> {
+    match detect_format_for_path(&path.to_string_lossy()) {
+        Some(f) if f.handler == "ftr" => vec!["-acodec".into(), "aac".into()],
+        _ => Vec::new(),
+    }
+}
+
 pub(crate) fn detect_format_for_path(path: &str) -> Option<FormatInfo> {
     let ext = Path::new(path)
         .extension()

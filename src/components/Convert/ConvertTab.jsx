@@ -1,5 +1,6 @@
-import { useState } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { invoke } from '@tauri-apps/api/core'
+import { listen } from '@tauri-apps/api/event'
 import { MODES, FORMATS_OUT, MP3_BITRATES, CH_COLORS } from '../../constants'
 import { PRESETS } from '../../presets'
 import { usePreferencesContext } from '../../hooks/PreferencesContext'
@@ -14,10 +15,27 @@ import ProcessingToggle from './ProcessingToggle'
 import FormatTable from './FormatTable'
 import FileRow from './FileRow'
 
-// Per-file scan cap: analysis runs several local ffmpeg/ONNX passes, so a
-// wedged subprocess (or an unusually long recording) must never hang the Scan
-// UI indefinitely — skip the file and move on if it exceeds this.
-const SCAN_TIMEOUT_MS = 240000 // 4 minutes per file
+// The backend emits scan:progress events throughout each file's analysis
+// (including ~10s heartbeats while a wedged ffmpeg drains its timeout), so
+// staleness — not elapsed time — is the hang signal: a healthy scan of a big
+// multichannel file can legitimately run for many minutes, but it never goes
+// quiet for long. The stall threshold sits above the backend's longest
+// legitimately-silent window (a single blocking model inference / EP compile,
+// which cannot heartbeat mid-run). FILE_CAP_MS is the absolute backstop.
+const SCAN_STALL_MS = 150000      // no progress event for 150s = stuck
+const SCAN_FILE_CAP_MS = 900000   // 15 minutes absolute cap per file
+
+// Human labels for the backend's scan phases
+const SCAN_PHASES = {
+  probe: 'Reading file info',
+  loudness: 'Measuring loudness',
+  noise: 'Estimating noise floor',
+  speech: 'Detecting speech',
+  turns: 'Detecting speaker turns',
+  quality: 'Scoring quality',
+  speakers: 'Counting speakers',
+  done: 'Finishing up',
+}
 
 export default function ConvertTab({
   capabilities,
@@ -42,40 +60,135 @@ export default function ConvertTab({
   const anyAi = denoise || autoLevel || declip || enhance || dereverb
   const [analysis, setAnalysis] = useState(null)
   const [scanning, setScanning] = useState(false)
-  const [scanProgress, setScanProgress] = useState({ current: 0, total: 0, fileName: '' })
+  const [scanProgress, setScanProgress] = useState({ current: 0, total: 0, fileName: '', phase: '', filePct: 0 })
+  const [scanError, setScanError] = useState(null)
   const [showAllProcessing, setShowAllProcessing] = useState(false)
+
+  // Guards for long-running scans: scanIdRef invalidates a superseded scan
+  // (cancel, re-click, unmount), filesRef detects the queue changing mid-scan
+  const scanIdRef = useRef(0)
+  const filesRef = useRef(files)
+  useEffect(() => { filesRef.current = files }, [files])
+
+  // A scan outliving this tab (unmount on tab switch) must stop computing —
+  // otherwise it keeps churning invisibly and can flip toggles minutes later
+  useEffect(() => () => {
+    scanIdRef.current += 1
+    invoke('cancel_scan_cmd').catch(() => {})
+  }, [])
 
   // Clear analysis when files change (reset during render, not in an effect)
   const [prevFiles, setPrevFiles] = useState(files)
   if (files !== prevFiles) {
     setPrevFiles(files)
     setAnalysis(null)
+    setScanError(null)
     setShowAllProcessing(false)
+  }
+
+  const cancelScan = async () => {
+    const id = ++scanIdRef.current
+    // Await the round-trip: cancel and analyze are independent IPC requests,
+    // and an unawaited epoch bump could land AFTER the next scan snapshots
+    // its epoch — instantly killing the wrong scan
+    await invoke('cancel_scan_cmd').catch(() => {})
+    // Guard against a stale double-click's late resolve hiding a successor
+    // scan's progress UI while it keeps running
+    if (scanIdRef.current === id) setScanning(false)
   }
 
   const handleScan = async () => {
     if (!files.length || scanning) return
     setScanning(true)
-    setScanProgress({ current: 0, total: files.length, fileName: '' })
+    setScanError(null)
+    scanIdRef.current += 1
+    const scanId = scanIdRef.current
+    const scanFiles = files
+    setScanProgress({ current: 0, total: scanFiles.length, fileName: '', phase: '', filePct: 0 })
+
+    // Within-file progress from the backend; also feeds the stall watchdog.
+    // Filter by path AND backend generation: a just-cancelled scan's dying
+    // passes emit trailing events — for the SAME path if the user re-scans
+    // immediately — that must not move the bar or feed the watchdog. Each
+    // cancel bumps the backend epoch, so the successor's events always carry
+    // a strictly higher gen; drop anything below the highest gen seen.
+    let currentPath = null
+    let maxGen = 0
+    let lastEvent = Date.now()
+    const unlisten = await listen('scan:progress', ({ payload }) => {
+      if (scanIdRef.current !== scanId || payload.path !== currentPath) return
+      const gen = payload.gen ?? 0
+      if (gen < maxGen) return
+      maxGen = gen
+      lastEvent = Date.now()
+      setScanProgress(p => ({ ...p, phase: payload.phase, filePct: payload.pct ?? p.filePct }))
+    })
+
+    const failed = []
     try {
       // Scan files one at a time to avoid overwhelming ONNX Runtime
       const results = []
-      for (let i = 0; i < files.length; i++) {
-        const file = files[i]
-        setScanProgress({ current: i, total: files.length, fileName: file.name })
+      for (let i = 0; i < scanFiles.length; i++) {
+        if (scanIdRef.current !== scanId) return // cancelled or superseded
+        if (filesRef.current !== scanFiles) {
+          // Queue edited mid-scan: stop burning CPU on a stale file list
+          invoke('cancel_scan_cmd').catch(() => {})
+          setScanError('File list changed during the scan — click Scan to re-analyze.')
+          return
+        }
+        const file = scanFiles[i]
+        currentPath = file.path
+        setScanProgress({ current: i, total: scanFiles.length, fileName: file.name, phase: 'probe', filePct: 0 })
+        lastEvent = Date.now()
         try {
-          // Race the analysis against a timeout so one stuck file can't hang
-          // the whole scan; on timeout (or error) we skip it and continue.
-          let timer
-          const result = await Promise.race([
-            invoke('analyze_audio_cmd', { path: file.path }),
-            new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('Scan timed out')), SCAN_TIMEOUT_MS) }),
-          ]).finally(() => clearTimeout(timer))
+          // Watchdog: a healthy scan streams progress events; silence means a
+          // wedged backend, so cancel it server-side and skip the file. The
+          // absolute cap catches a backend that keeps emitting but never ends.
+          const startedAt = Date.now()
+          const result = await new Promise((resolve, reject) => {
+            const watchdog = setInterval(() => {
+              const stalled = Date.now() - lastEvent > SCAN_STALL_MS
+              const overCap = Date.now() - startedAt > SCAN_FILE_CAP_MS
+              if (stalled || overCap) {
+                clearInterval(watchdog)
+                // Reject only after the cancel round-trip: otherwise the next
+                // file's analyze could snapshot its epoch before this bump
+                // lands and be spuriously cancelled at its first check
+                invoke('cancel_scan_cmd').catch(() => {}).finally(() =>
+                  reject(new Error(stalled ? 'Scan stalled' : 'Scan timed out')))
+              }
+            }, 5000)
+            invoke('analyze_audio_cmd', { path: file.path }).then(
+              r => { clearInterval(watchdog); resolve(r) },
+              e => { clearInterval(watchdog); reject(e) },
+            )
+          })
           if (result) results.push(result)
         } catch {
-          // Skip failed/timed-out files
+          failed.push(file.name)
         }
-        setScanProgress({ current: i + 1, total: files.length, fileName: file.name })
+        // Guard the post-await write: a cancelled scan settling late must not
+        // clobber a successor scan's progress header
+        if (scanIdRef.current === scanId) {
+          setScanProgress({ current: i + 1, total: scanFiles.length, fileName: file.name, phase: 'done', filePct: 1 })
+        }
+      }
+
+      // Ignore results that no longer describe the current queue
+      if (scanIdRef.current !== scanId) return
+      if (filesRef.current !== scanFiles) {
+        setScanError('File list changed during the scan — click Scan to re-analyze.')
+        return
+      }
+
+      // Failures were silent before — a scan where everything timed out
+      // looked exactly like a scan that never ran
+      if (failed.length > 0) {
+        setScanError(
+          results.length === 0
+            ? `Couldn't analyze ${failed.length === 1 ? failed[0] : `any of the ${failed.length} files`} — the file may need converting before it can be scanned.`
+            : `${failed.length} of ${scanFiles.length} files couldn't be analyzed and were skipped.`
+        )
       }
 
       if (results.length > 0) {
@@ -108,8 +221,11 @@ export default function ConvertTab({
       }
     } catch (e) {
       console.error('Scan failed:', e)
+    } finally {
+      unlisten()
+      // A cancelled scan already reset the button via cancelScan
+      if (scanIdRef.current === scanId) setScanning(false)
     }
-    setScanning(false)
   }
 
   // Guided stepper: reflects real state without gating anything — batch users
@@ -329,19 +445,27 @@ export default function ConvertTab({
               </Button>
             </CardHeader>
             <CardContent>
-              {!analysis && !scanning && (
+              {!analysis && !scanning && !scanError && (
                 <p className="px-4 py-2.5 text-[11px] text-[hsl(var(--sub))]">Drop files and click <strong className="text-foreground">Scan</strong> to detect issues and auto-enable the right fixes.</p>
+              )}
+
+              {scanError && !scanning && (
+                <p role="alert" className="px-4 py-2.5 text-[11px] text-[hsl(var(--warning))]">{scanError}</p>
               )}
 
               {scanning && (
                 <div className="px-4 py-2.5">
-                  <p className="text-[11px] text-[hsl(var(--sub))] flex items-center gap-1.5 mb-1.5">
-                    <Loader2 className="animate-spin h-3.5 w-3.5" />
-                    Scanning {scanProgress.current} of {scanProgress.total}
-                    {scanProgress.fileName && <span className="text-[hsl(var(--text2))] truncate max-w-[200px]">— {scanProgress.fileName}</span>}
-                  </p>
+                  <div className="flex items-center justify-between gap-2 mb-1.5">
+                    <p className="text-[11px] text-[hsl(var(--sub))] flex items-center gap-1.5 min-w-0">
+                      <Loader2 className="animate-spin h-3.5 w-3.5 shrink-0" />
+                      <span className="shrink-0">Scanning {Math.min(scanProgress.current + 1, scanProgress.total)} of {scanProgress.total}</span>
+                      {scanProgress.fileName && <span className="text-[hsl(var(--text2))] truncate max-w-[180px]">— {scanProgress.fileName}</span>}
+                      {scanProgress.phase && <span className="text-[hsl(var(--sub))] truncate hidden sm:inline">· {SCAN_PHASES[scanProgress.phase] || scanProgress.phase}</span>}
+                    </p>
+                    <button className="text-[11px] text-[hsl(var(--sub))] hover:text-foreground transition-colors cursor-pointer shrink-0" onClick={cancelScan}>Cancel</button>
+                  </div>
                   <div className="w-full h-1 bg-border rounded-full overflow-hidden">
-                    <div className="h-full bg-primary rounded-full transition-all duration-300" style={{width: `${scanProgress.total > 0 ? (scanProgress.current / scanProgress.total) * 100 : 0}%`}} />
+                    <div className="h-full bg-primary rounded-full transition-all duration-300" style={{width: `${scanProgress.total > 0 ? ((scanProgress.current + (scanProgress.filePct || 0)) / scanProgress.total) * 100 : 0}%`}} />
                   </div>
                 </div>
               )}

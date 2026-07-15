@@ -134,7 +134,7 @@ async fn do_convert_inner(app: &AppHandle, job: &ConvertJob, feed: &Path, fmt: &
 
         // Run analysis if auto-leveling is requested
         if job.auto_level {
-            if let Ok(analysis) = analyze_audio(app, &job.src_path).await {
+            if let Ok(analysis) = analyze_audio(app, &job.src_path, None).await {
                 channel_gains = Some(analysis.channel_gains);
             }
         }
@@ -228,15 +228,16 @@ async fn do_convert_inner(app: &AppHandle, job: &ConvertJob, feed: &Path, fmt: &
                 .ok_or("Cannot create stereo mix: unable to determine the input's channel count")?;
             let weight = 1.0 / num_ch as f64;
 
-            // Use auto-level gains if available, otherwise use manual chan_vols
-            let vols: Vec<f64> = if job.auto_level {
-                if let Some(ref gains) = channel_gains {
+            // Use auto-level gains if available, otherwise use manual chan_vols.
+            // Gains are only trustworthy when the analysis saw the same channel
+            // count we're mixing — its probe can fall back to 1 (or cap at 16)
+            // on files this probe still reads fine, and a mismatched vector
+            // would boost some channels and silence others.
+            let vols: Vec<f64> = match channel_gains {
+                Some(ref gains) if job.auto_level && gains.len() == num_ch as usize => {
                     gains.iter().map(|&g| g * weight).collect()
-                } else {
-                    (0..num_ch).map(|i| job.chan_vols.get(i as usize).copied().unwrap_or(1.0) * weight).collect()
                 }
-            } else {
-                (0..num_ch).map(|i| job.chan_vols.get(i as usize).copied().unwrap_or(1.0) * weight).collect()
+                _ => (0..num_ch).map(|i| job.chan_vols.get(i as usize).copied().unwrap_or(1.0) * weight).collect(),
             };
 
             let pan = stereo_pan_filter(num_ch, &vols);
@@ -287,7 +288,10 @@ async fn do_convert_inner(app: &AppHandle, job: &ConvertJob, feed: &Path, fmt: &
             // channelsplit requires the actual channel layout (defaulting to
             // stereo), which breaks mono and 4-channel court recordings.
             let mut args = ffmpeg_args.clone();
-            let fc = split_filter_complex(num_ch, job.auto_level, channel_gains.as_ref(), &proc);
+            // Same channel-count guard as the stereo arm: a gains vector from
+            // a desynced analysis probe must not be applied per-channel
+            let valid_gains = channel_gains.as_ref().filter(|g| g.len() == num_ch as usize);
+            let fc = split_filter_complex(num_ch, job.auto_level, valid_gains, &proc);
             args.extend(["-filter_complex".into(), fc, "-y".into()]);
             for (i, dst) in dsts.iter().enumerate() {
                 args.extend(["-map".into(), format!("[op{}]", i)]);

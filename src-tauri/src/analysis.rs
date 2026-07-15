@@ -1,13 +1,13 @@
 use std::path::Path;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 
 use regex::Regex;
-use tauri::AppHandle;
+use tauri::{AppHandle, Emitter};
 
 use crate::ffmpeg::{probe_channels, probe_duration};
 use crate::helpers::ffprobe_bin_name;
 use crate::types::{AnalysisResult, TurnSegment};
-
-// Used by detect_turns for ONNX inference
 
 // ── Audio analysis engine ────────────────────────────────────────────────────
 //
@@ -27,24 +27,117 @@ const CLIPPING_THRESHOLD: f64 = -0.5;
 const NOISE_THRESHOLD: f64 = -45.0;
 /// Sample rate at or below which bandwidth extension is recommended.
 const NARROWBAND_RATE: u32 = 16000;
+/// Court recorders top out at 16 channels; anything larger is a corrupt
+/// header and must not become a loop bound.
+const MAX_SCAN_CHANNELS: u32 = 16;
+/// Wall-clock budget for the Smart Turn inference pass (all channels).
+const TURNS_BUDGET_SECS: u64 = 150;
+
+/// Context for a user-visible Scan: progress events + cancellation.
+/// Conversion-time analysis (auto-level) passes None and runs silently.
+#[derive(Clone)]
+pub(crate) struct ScanCtx {
+    pub app: AppHandle,
+    pub path: String,
+    epoch: Arc<AtomicU64>,
+    my_gen: u64,
+}
+
+impl ScanCtx {
+    pub fn new(app: AppHandle, path: String, epoch: Arc<AtomicU64>) -> Self {
+        let my_gen = epoch.load(Ordering::SeqCst);
+        Self { app, path, epoch, my_gen }
+    }
+
+    /// True once cancel_scan_cmd has bumped the epoch past this scan's start.
+    pub fn cancelled(&self) -> bool {
+        self.epoch.load(Ordering::Relaxed) != self.my_gen
+    }
+
+    pub fn check(&self) -> Result<(), String> {
+        if self.cancelled() { Err("Scan cancelled".into()) } else { Ok(()) }
+    }
+
+    /// Within-file progress: phase name + estimated fraction complete [0, 1].
+    /// `gen` lets the frontend drop trailing events from a cancelled scan
+    /// that would otherwise pollute a successor scan of the same file.
+    pub fn emit(&self, phase: &str, pct: f64) {
+        let _ = self.app.emit(
+            "scan:progress",
+            serde_json::json!({ "path": self.path, "phase": phase, "pct": pct, "gen": self.my_gen }),
+        );
+    }
+}
+
+fn emit(ctx: Option<&ScanCtx>, phase: &str, pct: f64) {
+    if let Some(c) = ctx { c.emit(phase, pct); }
+}
+
+fn check(ctx: Option<&ScanCtx>) -> Result<(), String> {
+    match ctx { Some(c) => c.check(), None => Ok(()) }
+}
+
+/// How often a long-running sidecar pass re-emits its phase so the frontend's
+/// stall watchdog can tell "slow but alive" from "wedged".
+const HEARTBEAT_SECS: u64 = 10;
+
+/// sidecar_output_opt plus a progress heartbeat and scan cancellation: the
+/// per-pass timeout backstops run up to 120s, and without events during the
+/// wait the frontend watchdog would cancel a scan the backend was about to
+/// recover gracefully. A cancelled scan kills the in-flight decoder within
+/// ~1s instead of letting it run out its backstop.
+pub(crate) async fn sidecar_with_heartbeat(
+    app: &AppHandle,
+    bin: &str,
+    args: Vec<String>,
+    secs: u64,
+    ctx: Option<&ScanCtx>,
+    phase: &str,
+    pct: f64,
+) -> Option<crate::ffmpeg::SidecarOutput> {
+    let is_cancelled = || ctx.map(|c| c.cancelled()).unwrap_or(false);
+    let fut = crate::ffmpeg::sidecar_output_cancellable(app, bin, args, secs, Some(&is_cancelled));
+    tokio::pin!(fut);
+    loop {
+        match tokio::time::timeout(std::time::Duration::from_secs(HEARTBEAT_SECS), &mut fut).await {
+            Ok(out) => return out,
+            Err(_) => emit(ctx, phase, pct),
+        }
+    }
+}
 
 /// Run full audio analysis on a file.
 pub(crate) async fn analyze_audio(
     app: &AppHandle,
     path: &str,
+    ctx: Option<&ScanCtx>,
 ) -> Result<AnalysisResult, String> {
     let feed = Path::new(path);
     crate::safety::check_file_safe(feed)?;
 
-    // Probe basic metadata. A wrong fallback here is tolerable: per-channel
-    // stats for nonexistent channels read as silence and get filtered out.
-    let channels = probe_channels(app, feed).await.unwrap_or(4);
+    // Formats FFmpeg can't auto-detect (FTR) need a forced input decoder on
+    // every decode below — without it each pass burns its full timeout on an
+    // undecodable file and the whole scan grinds for nothing.
+    let input_codec = crate::helpers::scan_input_codec_args(feed);
+
+    emit(ctx, "probe", 0.02);
+    // Probe basic metadata. On probe failure assume ONE channel — inventing
+    // phantom channels multiplies every per-channel pass (each with a long
+    // timeout backstop) on exactly the files that are already struggling.
+    // Cap the count so a corrupt header can't become a loop bound.
+    // Emit between the chained probes: three wedged 30s probes back-to-back
+    // would otherwise exceed the frontend's stall watchdog.
+    let channels = probe_channels(app, feed).await.unwrap_or(1).min(MAX_SCAN_CHANNELS);
+    emit(ctx, "probe", 0.03);
     let duration = probe_duration(app, feed).await.unwrap_or(0.0);
+    emit(ctx, "probe", 0.04);
     let sample_rate = probe_sample_rate(app, feed).await.unwrap_or(48000);
+    check(ctx)?;
 
     // Run loudness + peak analysis per channel
-    let (per_channel_lufs, per_channel_peak) =
-        analyze_loudness_and_peaks(app, feed, channels).await?;
+    let (per_channel_lufs, per_channel_peak, loudness_failures) =
+        analyze_loudness_and_peaks(app, feed, channels, &input_codec, ctx).await?;
+    check(ctx)?;
 
     // Detect clipping
     let has_clipping = per_channel_peak.iter().any(|&p| p >= CLIPPING_THRESHOLD);
@@ -66,7 +159,9 @@ pub(crate) async fn analyze_audio(
     // Estimate noise floor from quietest channel RMS
     // A rough proxy: if the quietest channel LUFS is above the noise threshold
     // and there's significant content, denoising may help.
-    let needs_denoise = estimate_noise_floor(app, feed).await > NOISE_THRESHOLD;
+    emit(ctx, "noise", 0.28);
+    let needs_denoise = estimate_noise_floor(app, feed, &input_codec, ctx).await > NOISE_THRESHOLD;
+    check(ctx)?;
 
     // Narrowband detection
     let is_narrowband = sample_rate <= NARROWBAND_RATE;
@@ -85,15 +180,37 @@ pub(crate) async fn analyze_audio(
         .collect();
 
     // Voice activity detection (run early so we can skip expensive steps on silence)
-    let vad_result = crate::vad::detect_speech(app, std::path::Path::new(path)).await.ok();
-    let speech_ratio = vad_result.as_ref().map(|v| v.speech_ratio).unwrap_or(1.0);
+    emit(ctx, "speech", 0.32);
+    let (vad_result, file_undecodable) =
+        match crate::vad::detect_speech(app, std::path::Path::new(path), ctx).await {
+            Ok(v) => (Some(v), false),
+            // The FILE failed to decode: every other pass would burn its own
+            // decode timeout on the same bytes, so skip them. (The old
+            // behavior defaulted speech_ratio to 1.0, force-running every
+            // pass on exactly the files that couldn't be analyzed at all.)
+            Err(crate::vad::VadError::Undecodable(_)) => (None, true),
+            // VAD itself is unavailable (model missing/corrupt, ORT failure):
+            // says nothing about the file — run the other passes, their own
+            // models may be fine.
+            Err(crate::vad::VadError::Unavailable(_)) => (None, false),
+        };
+    check(ctx)?;
+
+    // Gate the expensive passes on measured speech; with no measurement the
+    // gate is open unless the file itself proved undecodable.
+    let speech_gate = |threshold: f64| match &vad_result {
+        Some(v) => v.speech_ratio > threshold,
+        None => !file_undecodable,
+    };
 
     // Smart Turn detection — skip if very little speech detected
-    let turns = if speech_ratio > 0.1 {
-        detect_turns(app, feed, channels, duration).await
+    let turns = if speech_gate(0.1) {
+        emit(ctx, "turns", 0.45);
+        detect_turns(app, feed, channels, &input_codec, ctx).await
     } else {
         Vec::new()
     };
+    check(ctx)?;
 
     // Build recommendations
     let mut recommendations = Vec::new();
@@ -139,22 +256,35 @@ pub(crate) async fn analyze_audio(
     }
 
     // Quality scoring — skip if no speech detected
-    let quality_score = if speech_ratio > 0.05 {
-        crate::scoring::score_quality(app, std::path::Path::new(path)).await
+    let quality_score = if speech_gate(0.05) {
+        emit(ctx, "quality", 0.88);
+        crate::scoring::score_quality(app, std::path::Path::new(path), ctx).await
             .map(|qs| crate::types::QualityScoreResult { sig: qs.sig, bak: qs.bak, ovr: qs.ovr })
             .ok()
     } else {
         None
     };
+    check(ctx)?;
 
     // Speaker count detection — skip if no speech detected
-    let speaker_count = if speech_ratio > 0.1 {
-        crate::speakers::detect_speakers(app, std::path::Path::new(path)).await
+    let speaker_count = if speech_gate(0.1) {
+        emit(ctx, "speakers", 0.94);
+        crate::speakers::detect_speakers(app, std::path::Path::new(path), ctx).await
             .map(|info| info.count)
             .ok()
     } else {
         None
     };
+    check(ctx)?;
+
+    // Be honest when the file itself defeated part of the analysis. Total
+    // loudness failure already returned Err above, so any failure count here
+    // means SOME channels silently read as silence.
+    if file_undecodable || loudness_failures > 0 {
+        recommendations.push(
+            "This file could not be fully decoded for analysis — convert it first, then scan the converted output".into(),
+        );
+    }
 
     // Note when AI models are missing so the user knows results may be incomplete
     let mut missing_models = Vec::new();
@@ -167,6 +297,8 @@ pub(crate) async fn analyze_audio(
             missing_models.join(", ")
         ));
     }
+
+    emit(ctx, "done", 1.0);
 
     Ok(AnalysisResult {
         channels,
@@ -193,31 +325,50 @@ async fn analyze_loudness_and_peaks(
     app: &AppHandle,
     feed: &Path,
     channels: u32,
-) -> Result<(Vec<f64>, Vec<f64>), String> {
+    input_codec: &[String],
+    ctx: Option<&ScanCtx>,
+) -> Result<(Vec<f64>, Vec<f64>, u32), String> {
     let mut lufs_vec = Vec::with_capacity(channels as usize);
     let mut peak_vec = Vec::with_capacity(channels as usize);
+    let mut failures = 0u32;
 
+    // A failed channel reads as silence instead of aborting the scan — one
+    // bad channel shouldn't discard the loudness of the others. Only if EVERY
+    // channel fails is the file genuinely unreadable.
     if channels <= 1 {
         // Mono or single-channel: analyze directly
-        let (lufs, peak) = analyze_single_channel(app, feed, None).await?;
-        lufs_vec.push(lufs);
-        peak_vec.push(peak);
+        emit(ctx, "loudness", 0.05);
+        match analyze_single_channel(app, feed, None, input_codec, ctx, 0.05).await {
+            Ok((lufs, peak)) => { lufs_vec.push(lufs); peak_vec.push(peak); }
+            Err(_) => { lufs_vec.push(-70.0); peak_vec.push(-70.0); failures += 1; }
+        }
     } else {
         // Multi-channel: use channelsplit + per-channel ebur128
         for ch in 0..channels {
-            let (lufs, peak) = analyze_single_channel(app, feed, Some(ch)).await?;
-            lufs_vec.push(lufs);
-            peak_vec.push(peak);
+            check(ctx)?;
+            let pct = 0.05 + 0.20 * (ch as f64 / channels as f64);
+            emit(ctx, "loudness", pct);
+            match analyze_single_channel(app, feed, Some(ch), input_codec, ctx, pct).await {
+                Ok((lufs, peak)) => { lufs_vec.push(lufs); peak_vec.push(peak); }
+                Err(_) => { lufs_vec.push(-70.0); peak_vec.push(-70.0); failures += 1; }
+            }
         }
     }
 
-    Ok((lufs_vec, peak_vec))
+    if failures >= channels.max(1) {
+        return Err("Could not decode this file for analysis".into());
+    }
+
+    Ok((lufs_vec, peak_vec, failures))
 }
 
 async fn analyze_single_channel(
     app: &AppHandle,
     feed: &Path,
     channel: Option<u32>,
+    input_codec: &[String],
+    ctx: Option<&ScanCtx>,
+    pct: f64,
 ) -> Result<(f64, f64), String> {
     let feed_str = feed.to_string_lossy().to_string();
 
@@ -226,27 +377,29 @@ async fn analyze_single_channel(
     // `-t` (input option, before `-i`) limits analysis to a representative
     // sample so a long recording can't make this pass run for minutes.
     let secs = crate::ffmpeg::ANALYSIS_SAMPLE_SECS.to_string();
-    let args: Vec<String> = if let Some(ch) = channel {
+    let mut args: Vec<String> = input_codec.to_vec();
+    if let Some(ch) = channel {
         let pan = format!("pan=mono|c0=c{}", ch);
         let filter = format!("{},ebur128=peak=true", pan);
-        vec![
+        args.extend([
             "-t".into(), secs,
             "-i".into(), feed_str,
             "-af".into(), filter,
             "-f".into(), "null".into(), "-".into(),
-        ]
+        ]);
     } else {
-        vec![
+        args.extend([
             "-t".into(), secs,
             "-i".into(), feed_str,
             "-af".into(), "ebur128=peak=true".into(),
             "-f".into(), "null".into(), "-".into(),
-        ]
-    };
+        ]);
+    }
 
     // Bounded timeout backstop — the -t cap means a healthy run finishes in
-    // seconds, so a wedged ffmpeg can never hang the Scan.
-    let output = crate::ffmpeg::sidecar_output_opt(app, crate::helpers::ffmpeg_bin_name(), args, 120)
+    // seconds, so a wedged ffmpeg can never hang the Scan. The heartbeat
+    // keeps the frontend's stall watchdog fed while the 120s backstop drains.
+    let output = sidecar_with_heartbeat(app, crate::helpers::ffmpeg_bin_name(), args, 120, ctx, "loudness", pct)
         .await
         .ok_or_else(|| "Loudness analysis timed out".to_string())?;
 
@@ -257,34 +410,39 @@ async fn analyze_single_channel(
     let lufs = lufs_re
         .captures_iter(&stderr)
         .last()
-        .and_then(|c| c[1].parse::<f64>().ok())
-        .unwrap_or(-70.0);
+        .and_then(|c| c[1].parse::<f64>().ok());
 
     // Parse true peak: "Peak: -XX.X dBFS"
     let peak_re = Regex::new(r"Peak:\s+(-?\d+\.?\d*)\s+dBFS").unwrap();
     let peak = peak_re
         .captures_iter(&stderr)
         .last()
-        .and_then(|c| c[1].parse::<f64>().ok())
-        .unwrap_or(-70.0);
+        .and_then(|c| c[1].parse::<f64>().ok());
 
-    Ok((lufs, peak))
+    // A run that produced neither measurement AND exited non-zero never
+    // decoded anything — report it instead of pretending silence.
+    if lufs.is_none() && peak.is_none() && !output.success {
+        return Err("FFmpeg could not decode this file".into());
+    }
+
+    Ok((lufs.unwrap_or(-70.0), peak.unwrap_or(-70.0)))
 }
 
 // ── Noise floor estimation ──────────────────────────────────────────────────
 
-async fn estimate_noise_floor(app: &AppHandle, feed: &Path) -> f64 {
+async fn estimate_noise_floor(app: &AppHandle, feed: &Path, input_codec: &[String], ctx: Option<&ScanCtx>) -> f64 {
     // Use astats' measured noise floor. The overall RMS level would include
     // speech and sits far above any sensible noise threshold, which made
     // denoising look "recommended" for virtually every normal recording.
-    let args: Vec<String> = vec![
+    let mut args: Vec<String> = input_codec.to_vec();
+    args.extend([
         "-t".into(), crate::ffmpeg::ANALYSIS_SAMPLE_SECS.to_string(),
         "-i".into(), feed.to_string_lossy().to_string(),
         "-af".into(), "astats=metadata=1".into(),
         "-f".into(), "null".into(), "-".into(),
-    ];
+    ]);
 
-    if let Some(out) = crate::ffmpeg::sidecar_output_opt(app, crate::helpers::ffmpeg_bin_name(), args, 120).await {
+    if let Some(out) = sidecar_with_heartbeat(app, crate::helpers::ffmpeg_bin_name(), args, 120, ctx, "noise", 0.29).await {
         let stderr = String::from_utf8_lossy(&out.stderr);
         let noise_re = Regex::new(r"Noise floor dB:\s+(-?\d+\.?\d*)").unwrap();
         // Use the last match: astats prints per-channel sections first,
@@ -330,7 +488,8 @@ async fn detect_turns(
     app: &AppHandle,
     feed: &Path,
     channels: u32,
-    _duration: f64,
+    input_codec: &[String],
+    ctx: Option<&ScanCtx>,
 ) -> Vec<TurnSegment> {
     // Try loading the Smart Turn model — if not available, return empty
     let model_path = match crate::models::model_path(app, "smart-turn-v3-int8.onnx") {
@@ -338,52 +497,99 @@ async fn detect_turns(
         Err(_) => return Vec::new(),
     };
 
-    let mut session = match crate::models::load_session(&model_path) {
-        Ok(s) => s,
-        Err(_) => return Vec::new(),
-    };
-
-    // Decode to 16kHz mono WAV per channel for the model
-    let mut all_turns = Vec::new();
-
+    // Phase 1 (async): decode each channel to a 16kHz mono temp WAV. TempFile
+    // drop guards own cleanup on EVERY path — early returns, cancel/budget
+    // breaks, and panics in the inference task below (an unwinding panic
+    // would skip any explicit cleanup loop and leak up to 16 × ~6MB).
+    let mut decoded: Vec<(u32, crate::safety::TempFile)> = Vec::new();
     for ch in 0..channels {
-        let tmp = std::env::temp_dir().join(format!("depoaudio_turn_ch{}_{}.wav", ch, uuid::Uuid::new_v4()));
+        if ctx.map(|c| c.cancelled()).unwrap_or(false) { break; }
+        let pct = 0.45 + 0.10 * (ch as f64 / channels as f64);
+        emit(ctx, "turns", pct);
+
+        let tmp = crate::safety::TempFile::new(
+            std::env::temp_dir().join(format!("depoaudio_turn_ch{}_{}.wav", ch, uuid::Uuid::new_v4())),
+        );
         let pan_filter = if channels > 1 {
             format!("pan=mono|c0=c{},aresample=16000", ch)
         } else {
             "aresample=16000".into()
         };
 
-        let args: Vec<String> = vec![
+        let mut args: Vec<String> = input_codec.to_vec();
+        args.extend([
             "-t".into(), crate::ffmpeg::ANALYSIS_SAMPLE_SECS.to_string(),
             "-i".into(), feed.to_string_lossy().to_string(),
             "-af".into(), pan_filter,
+            // -ac 1 matters on the channels==1 fallback path (probe failed):
+            // without it a multichannel file would feed interleaved samples
+            // to the model as if they were mono
+            "-ac".into(), "1".into(),
             "-acodec".into(), "pcm_s16le".into(),
             "-y".into(), tmp.to_string_lossy().to_string(),
-        ];
+        ]);
 
-        let ok = crate::ffmpeg::sidecar_output_opt(app, crate::helpers::ffmpeg_bin_name(), args, 120)
+        let ok = sidecar_with_heartbeat(app, crate::helpers::ffmpeg_bin_name(), args, 120, ctx, "turns", pct)
             .await
-            .map(|o| o.status.success())
+            .map(|o| o.success)
             .unwrap_or(false);
 
-        if !ok || !tmp.exists() { continue; }
+        if ok && tmp.exists() {
+            decoded.push((ch, tmp));
+        }
+        // else: tmp drops here and removes any partial decode
+    }
 
-        // Read the decoded WAV and run turn detection
-        if let Ok(reader) = hound::WavReader::open(&tmp) {
-            let samples: Vec<f32> = reader
-                .into_samples::<i16>()
-                .filter_map(|s| s.ok())
-                .map(|s| s as f32 / 32768.0)
-                .collect();
+    if decoded.is_empty() { return Vec::new(); }
+
+    // Phase 2 (blocking pool): mel features + ONNX inference. This is minutes
+    // of CPU-bound work in the worst case; on the async runtime it pinned
+    // worker threads until tokio timers across the whole app stopped firing.
+    // Inside the loop: cancellation check + wall-clock budget, and progress
+    // events so the scan is never silent for minutes.
+    let ctx_owned = ctx.cloned();
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        let mut all_turns: Vec<TurnSegment> = Vec::new();
+        // On any early return, break, or panic below, the TempFile guards in
+        // `decoded` (moved into this closure) delete the WAVs as they drop.
+        let mut session = match crate::models::load_session(&model_path) {
+            Ok(s) => s,
+            Err(_) => return all_turns,
+        };
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(TURNS_BUDGET_SECS);
+        let total_channels = decoded.len().max(1) as f64;
+
+        'channels: for (idx, (ch, tmp)) in decoded.into_iter().enumerate() {
+            let samples: Vec<f32> = match hound::WavReader::open(&*tmp) {
+                Ok(reader) => reader
+                    .into_samples::<i16>()
+                    .filter_map(|s| s.ok())
+                    .map(|s| s as f32 / 32768.0)
+                    .collect(),
+                Err(_) => continue,
+            };
 
             let sample_rate = 16000usize;
             let window_size = sample_rate * 8; // 8 seconds
             let stride = sample_rate; // 1 second stride
+            let total_windows = (samples.len().saturating_sub(window_size) / stride + 1).max(1);
+            let mut window_idx = 0usize;
             let mut pos = 0usize;
             let mut turn_start: Option<f64> = None;
 
             while pos + window_size <= samples.len() {
+                // Budget + cancellation: bounded slowness must stay bounded,
+                // and a cancelled scan must actually stop computing.
+                if std::time::Instant::now() > deadline { break 'channels; }
+                if let Some(c) = &ctx_owned {
+                    if c.cancelled() { break 'channels; }
+                    if window_idx % 16 == 0 {
+                        let ch_frac = (idx as f64 + window_idx as f64 / total_windows as f64) / total_channels;
+                        c.emit("turns", 0.55 + 0.30 * ch_frac);
+                    }
+                }
+
                 let window = &samples[pos..pos + window_size];
 
                 // Smart Turn v3 takes Whisper-style log-mel features
@@ -436,11 +642,17 @@ async fn detect_turns(
                 }
 
                 pos += stride;
+                window_idx += 1;
             }
+            // tmp (TempFile) drops here — WAV deleted; a budget/cancel break
+            // or panic drops the remaining iterator, deleting the rest
         }
 
-        let _ = std::fs::remove_file(&tmp);
-    }
+        all_turns
+    })
+    .await;
+
+    let mut all_turns = result.unwrap_or_default();
 
     // Merge adjacent turns on same channel within 1 second
     all_turns.sort_by(|a, b| a.start.partial_cmp(&b.start).unwrap_or(std::cmp::Ordering::Equal));
