@@ -1,154 +1,129 @@
+<div align="center">
+
+<img src="src-tauri/icons/icon.png" alt="DepoAudio" width="112" height="112" />
+
 # DepoAudio
 
-**Desktop audio converter and enhancer for Windows and macOS.**
+**Desktop audio converter & enhancer for court reporters — and anyone with tricky audio.**
 
-DepoAudio converts audio files between formats with smart cleanup that automatically detects and fixes common audio problems. Built for court reporters but works with any audio — mono, stereo, or multi-channel.
+Convert proprietary court‑recording formats, clean up noisy audio with on‑device AI, and keep every case organized — 100% locally, no cloud.
+
+[![CI](https://github.com/DepoStack/depo-audio/actions/workflows/ci.yml/badge.svg)](../../actions/workflows/ci.yml)
+&nbsp;![Version](https://img.shields.io/badge/version-1.0.0-6E4A9E)
+&nbsp;![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Windows-6E4A9E)
+&nbsp;![License](https://img.shields.io/badge/license-MIT-2F9E44)
+&nbsp;![Runs](https://img.shields.io/badge/100%25-local-C79A3B)
+
+[**⬇ Download**](../../releases/latest) · [Website](https://depoaudio.com) · [Install guide](https://depoaudio.com/install/) · [Changelog](CHANGELOG.md) · [Report a bug](../../issues)
+
+</div>
+
+---
+
+## What it does
+
+DepoAudio handles the audio side of a deposition or hearing, end to end:
+
+- 🎧 **Convert** proprietary court formats (Stenograph SGMCA, FTR `.trm`, CourtSmart BWF) and standard audio to WAV, MP3, FLAC, Opus, or M4A — mix to stereo, keep the channel layout, or split one file per speaker.
+- ✨ **Clean up** with on‑device AI: remove background noise, balance quiet vs. loud speakers, reconstruct clipped peaks, and extend narrow‑band phone audio — all recommended automatically by a one‑click **Scan**.
+- 📝 **Transcribe & review** in a built‑in player with a synced transcript editor (SRT/VTT/TXT), 0.5×–2× speed, A‑B loop, and bookmarks.
+- 🗂️ **Organize** every conversion into an auto‑filed case library, and pull recordings straight from installed court software.
+
+> **100% local.** All processing runs on your machine — no uploads, no accounts, no subscription.
+
+---
+
+## Download
+
+| Platform | Download |
+|----------|----------|
+| **macOS** 12+ | Universal `.dmg` — one download runs on Apple Silicon **and** Intel |
+| **Windows** 10/11 | `.msi` installer |
+
+### ➡️ [Get the latest release](../../releases/latest)
+
+> Builds aren't code‑signed yet, so macOS (Gatekeeper) and Windows (SmartScreen) show a one‑time warning on first launch. The [install guide](https://depoaudio.com/install/) walks through it.
+
+---
+
+## How it works
+
+```mermaid
+flowchart LR
+    A([Drop recordings]) --> B[Scan]
+    B --> C{Issues found?}
+    C -->|noise · clipping · imbalance · narrowband| D[Recommend fixes]
+    C -->|clean| E
+    D --> E[You choose what to apply]
+    E --> F[Rust AI pass<br/>denoise · de-clip · enhance · auto-level]
+    F --> G[FFmpeg<br/>filters · channel mode · format]
+    G --> H([Output + auto-filed<br/>in the case Library])
+```
+
+Scanning is a bounded, cancellable analysis pass; conversion is a two‑step pipeline — a Rust AI stage feeds a clean signal into FFmpeg for the final format and channel layout. Everything is local and reproducible.
+
+---
 
 ## Features
 
-### Audio Conversion
-- **Format Support** — Stenograph SGMCA, FTR/TRM, Broadcast WAV, DigitalCAT, plus standard formats (WAV, MP3, FLAC, M4A, OGG, Opus, WMA, and more)
-- **Three Output Modes** — Mix to Stereo, Keep Original, or Split by Channel
-- **Per-Channel Controls** — Label and volume-adjust each channel
-- **Output Formats** — WAV (PCM 16-bit), MP3 (192 kbps), FLAC, Opus (64 kbps VBR), M4A
-- **Batch Processing** — Queue and convert multiple files at once
+<table>
+<tr><td width="50%" valign="top">
 
-### Smart Audio Cleanup
-- **Automatic Detection** — Scan audio to detect noise, level imbalance, clipping, and narrow bandwidth
-- **Remove Background Noise** — Neural noise suppression (RNNoise fast mode or DeepFilterNet3 best quality)
-- **Balance Speaker Volume** — Turn-aware auto-leveling that measures loudness during active speech
-- **Fix Clipped Audio** — Reconstructs distorted peaks from recordings that were too loud
-- **Improve Audio Clarity** — Neural bandwidth extension for phone recordings and older audio (FlashSR)
-- **Smart Turn Detection** — Identifies when each speaker starts and stops (Pipecat Smart Turn v3)
-- **Quality Scoring** — Before/after quality rating on a 1-5 scale (DNSMOS)
-- **Speaker Count Detection** — Automatically detects how many speakers are in the recording
-- **Hardware-Aware** — Recommends processing options based on your machine's capabilities
-- **Live Scan Progress** — Each analysis phase streams progress with a phase label and a cancel button; a slow or stuck file is skipped without freezing the app
+### 🎧 Conversion
+- **Court + standard formats** in, five formats out (WAV · MP3 · FLAC · Opus · M4A)
+- **Three output modes** — mix to stereo, keep original, or split by channel
+- **Per‑channel** labels and volume
+- **Batch** the whole session at once
 
-### Global Audio Player
-- **Play Any File** — Listen to audio files directly without conversion
-- **Color-Coded Speakers** — Each track gets a distinct color for easy identification
-- **Editable Labels** — Name each speaker in the playlist
-- **Full Playback Controls** — Play, pause, skip, seek with per-track color seekbar
-- **Playback Speed & A-B Loop** — 0.5×–2× speed (persists across sessions) and repeat a passage for re-listening
-- **Bookmarks** — Editable, labeled bookmarks ("Objection", "Exhibit 4") that export as timestamped lines
-- **Keyboard Transport** — Space/K play-pause, ←/→ and J/L to seek, ↑/↓ speed, `[` / `]` track, B bookmark
+### 🗂️ Library & detection
+- **Case library** — auto‑filed by case, with search, archive, inline play, and re‑export
+- **Court‑software detection** — Case CATalyst, FTR Gold, Eclipse, DigitalCAT, CourtSmart
+- **Import jobs** straight from detected directories
 
-### Synced Transcript Editor
-- **Import or Build** — Import SRT, VTT, or TXT (or paste text) and edit every line inline; autosaves per track
-- **Follow the Audio** — Lines highlight and auto-scroll as audio plays; click a line's time to jump there
-- **Stamp & Capture** — Stamp the current playhead onto a line, or press Enter to start a new line at the playhead
-- **Speaker Labels** — Optional per-line speaker labels (auto-detected from "SPEAKER: text")
-- **Export** — Export to SRT or TXT, or copy the whole transcript to the clipboard
+</td><td width="50%" valign="top">
 
-### Merge Recordings
-- **Auto-Sync** — Drop a backup mic and a phone dial-in of the same session; DepoAudio aligns them automatically
-- **Best Quality or Mix All** — Pick the clearest parts of each source, or blend them all together
+### ✨ Smart cleanup (on‑device AI)
+- **Scan** detects noise, level imbalance, clipping, and narrow bandwidth
+- **Denoise** (RNNoise fast / DeepFilterNet3 best)
+- **Auto‑level** — turn‑aware, measures loudness during speech
+- **De‑clip** distorted peaks · **Clarity** (FlashSR bandwidth extension)
+- **Turn / speaker‑count / quality (DNSMOS)** detection
+- **Hardware‑aware** — uses NPU/GPU when present
+- **Live progress** with a Cancel button; stuck files never freeze the app
 
-### Library & Software Detection
-- **Case Library** — Auto-filed by case name with inline playback, search, archive, and re-export
-- **Detect Court Software** — Scans for installed Case CATalyst, FTR Gold, Eclipse, DigitalCAT, CourtSmart
-- **Import Jobs** — Browse detected software directories and import audio jobs directly
+### ▶️ Player & transcript editor
+- Color‑coded tracks, **0.5×–2× speed**, **A‑B loop**, editable **bookmarks**
+- **Synced transcript** — import/edit/export SRT · VTT · TXT with follow‑along highlighting and playhead stamping
+- Full keyboard transport
 
-### General
-- **Dark & Light Themes** — System-aware with manual override
-- **Auto-Updates** — Checks GitHub Releases on launch and installs signed updates in place (with a manual check in Settings)
-- **100% Local** — All audio processing runs on your machine. No cloud, no uploads, no data leaves your computer
+</td></tr>
+</table>
 
-## Supported Formats
+### 🔗 Merge & general
+- **Merge** a backup mic and a phone dial‑in of one session — auto‑synced, then **Best Quality** or **Mix All**
+- **Dark & light** themes (system‑aware) · **auto‑updates** from GitHub Releases (signed, in‑place)
+
+---
+
+## Supported formats
 
 | Format | Vendor | Status |
 |--------|--------|--------|
-| SGMCA | Stenograph / Case CATalyst | Supported |
-| FTR / TRM | For The Record | Experimental |
-| BWF | CourtSmart / Various | Supported |
-| DigitalCAT (.dm) | Stenovations | Experimental |
-| WAV, MP3, FLAC, M4A, OGG, Opus, WMA, AIF | Standard | Supported |
-| AES (Eclipse AudioSync) | Eclipse CAT | Unsupported (encrypted) |
+| **SGMCA** | Stenograph · Case CATalyst | ✅ Supported |
+| **FTR / TRM** | For The Record | 🧪 Experimental |
+| **BWF** | CourtSmart · Various | ✅ Supported |
+| **DigitalCAT (.dm)** | Stenovations | 🧪 Experimental |
+| **WAV, MP3, FLAC, M4A, OGG, Opus, WMA, AIF** | Standard | ✅ Supported |
+| **Video (MP4, MOV, MKV, AVI, WebM)** | — audio track extracted | ✅ Supported |
+| **AES (Eclipse AudioSync)** | Eclipse CAT | 🔒 Encrypted — export to WAV first |
 
-## Installation
+---
 
-Download the latest preview release for your platform:
+## AI models
 
-- **macOS** — `.dmg` (Apple Silicon and Intel)
-- **Windows** — `.msi` installer or `.exe`
-
-> [Latest Release](https://github.com/mayes/depo-audio/releases/latest)
-
-**Note:** Preview builds are not code-signed yet. You'll need to bypass Gatekeeper on macOS or SmartScreen on Windows on first launch. See the [project README on GitHub](https://github.com/mayes/depo-audio#installation) for step-by-step instructions.
-
-## Development Setup
-
-### Prerequisites
-
-- [Rust](https://rustup.rs/) (stable toolchain)
-- [Node.js](https://nodejs.org/) 22+
-- [Tauri CLI](https://v2.tauri.app/start/prerequisites/) (`cargo install tauri-cli`)
-
-### FFmpeg Sidecars
-
-Place FFmpeg and FFprobe binaries in `src-tauri/binaries/` with target-triple naming:
-
-| Platform | Files |
-|----------|-------|
-| macOS ARM | `ffmpeg-aarch64-apple-darwin`, `ffprobe-aarch64-apple-darwin` |
-| macOS Intel | `ffmpeg-x86_64-apple-darwin`, `ffprobe-x86_64-apple-darwin` |
-| Windows x64 | `ffmpeg-x86_64-pc-windows-msvc.exe`, `ffprobe-x86_64-pc-windows-msvc.exe` |
-
-Download from [ffmpeg.org](https://ffmpeg.org/download.html) or [evermeet.cx/ffmpeg](https://evermeet.cx/ffmpeg/) (macOS).
-
-### Run
-
-```bash
-npm install
-npm run tauri dev
-```
-
-### Build
-
-```bash
-npm run tauri build
-```
-
-## Architecture
-
-```
-DepoAudio
-├── src/                        # React frontend
-│   ├── components/
-│   │   ├── Convert/            # Conversion UI + AI Enhance panel
-│   │   ├── Player/             # Global audio player
-│   │   ├── Library/            # Case library + CAT detection
-│   │   └── common/             # Shared components
-│   ├── hooks/                  # Custom hooks (theme, prefs, conversion)
-│   └── App.jsx                 # Main app shell (4-tab layout)
-├── src-tauri/                  # Rust backend (Tauri v2)
-│   ├── src/
-│   │   ├── analysis.rs         # Audio analysis + Smart Turn ONNX inference
-│   │   ├── catdetect.rs        # Court reporting software detection
-│   │   ├── commands.rs         # Tauri command handlers
-│   │   ├── conversion.rs       # Two-step pipeline (Rust AI → FFmpeg)
-│   │   ├── denoise.rs          # RNNoise + DeepFilterNet3 denoising
-│   │   ├── enhance.rs          # FlashSR bandwidth extension
-│   │   ├── ffmpeg.rs           # FFmpeg sidecar + filter chain
-│   │   ├── models.rs           # ONNX model loader + hardware detection
-│   │   ├── scoring.rs          # DNSMOS quality scoring
-│   │   ├── speakers.rs         # Speaker count detection
-│   │   ├── types.rs            # Shared type definitions
-│   │   └── persistence.rs      # Library & prefs storage
-│   ├── resources/models/       # Bundled light ONNX models (~20MB)
-│   └── binaries/               # FFmpeg/FFprobe sidecars (not committed)
-└── .github/workflows/          # CI/CD (release builds)
-```
-
-**Stack:** Tauri 2 · Rust · React 19 · Vite · FFmpeg · ONNX Runtime · nnnoiseless
-
-### AI Models
-
-Light models ship bundled with the app. Larger and optional models download on
-demand from the [`models-v1`](https://github.com/mayes/depo-audio/releases/tag/models-v1)
-release into the app data directory (SHA-256 verified) the first time their
-feature is used, keeping the installer small.
+Light models ship bundled. Larger and optional models download on demand from the
+[`models-v1`](../../releases/tag/models-v1) release into the app data directory
+(SHA‑256 verified) the first time their feature is used — keeping the installer small.
 
 | Model | Size | Purpose | Delivery |
 |-------|------|---------|----------|
@@ -160,36 +135,87 @@ feature is used, keeping the installer small.
 | Speaker embedding | 38 MB | Speaker identification | Download on demand |
 | DNSMOS | 1.1 MB | Audio quality scoring | Download on demand |
 
+---
+
+## Development
+
+### Prerequisites
+- [Rust](https://rustup.rs/) (stable) · [Node.js](https://nodejs.org/) 22+ · [Tauri CLI](https://v2.tauri.app/start/prerequisites/) (`cargo install tauri-cli`)
+
+### FFmpeg sidecars
+Place FFmpeg/FFprobe binaries in `src-tauri/binaries/` with target‑triple names (not committed):
+
+| Platform | Files |
+|----------|-------|
+| macOS ARM | `ffmpeg-aarch64-apple-darwin`, `ffprobe-aarch64-apple-darwin` |
+| macOS Intel | `ffmpeg-x86_64-apple-darwin`, `ffprobe-x86_64-apple-darwin` |
+| Windows x64 | `ffmpeg-x86_64-pc-windows-msvc.exe`, `ffprobe-x86_64-pc-windows-msvc.exe` |
+
+Download from [ffmpeg.org](https://ffmpeg.org/download.html) or [evermeet.cx/ffmpeg](https://evermeet.cx/ffmpeg/) (macOS).
+
+### Run & build
+```bash
+npm install
+npm run tauri dev     # develop
+npm run tauri build   # package installers
+```
+
+### Project layout
+```
+src/                     # React 19 frontend
+  components/
+    Convert/  Player/  Merge/  Library/  common/
+  hooks/                 # theme, prefs, conversion
+  App.jsx                # app shell — sidebar nav (Convert · Player · Merge · Library)
+src-tauri/               # Rust backend (Tauri 2)
+  src/
+    analysis.rs          # bounded, cancellable Scan + Smart-Turn inference
+    conversion.rs        # two-step pipeline (Rust AI → FFmpeg)
+    ffmpeg.rs            # sidecar + filter chain      denoise.rs / dereverb.rs
+    enhance.rs           # FlashSR bandwidth extension  vad.rs / mel.rs
+    scoring.rs speakers.rs   # DNSMOS + speaker count   merge.rs
+    models.rs            # ONNX loader + hardware detect
+    catdetect.rs         # court-software detection     safety.rs / helpers.rs
+    commands.rs types.rs persistence.rs
+  resources/models/      # bundled light ONNX models
+  binaries/              # FFmpeg/FFprobe sidecars (not committed)
+.github/workflows/       # CI + release builds
+```
+
+**Stack:** Tauri 2 · Rust · React 19 · Vite · FFmpeg · ONNX Runtime · nnnoiseless
+
+See [`PARITY.md`](PARITY.md) for the full capability/contract inventory that the characterization tests pin.
+
+---
+
 ## Releasing
 
-Push a version tag to trigger automated builds (replace `vX.Y.Z` with the real
-version — it must match the `version` in `src-tauri/tauri.conf.json`, and the
-tag should point at the commit you intend to ship):
+Push a version tag matching `version` in `src-tauri/tauri.conf.json`:
 
 ```bash
 git tag vX.Y.Z
 git push origin vX.Y.Z
 ```
 
-GitHub Actions builds installers for macOS (ARM64 + Intel) and Windows (x64),
-then creates a draft release with all assets. The workflow verifies the tag
-matches the configured app version and deletes any stale *draft* release
-carrying the same tag before building, so a re-run always produces a fresh,
-consistent draft (published releases are never touched).
+GitHub Actions builds a **universal macOS** `.dmg` and a **Windows** `.msi`, then creates a **draft** release with all assets. The workflow verifies the tag matches the configured version and clears any stale *draft* with the same tag before building (published releases are never touched).
 
-### Enabling auto-updates
+<details>
+<summary><strong>Enabling signed auto‑updates</strong> (one‑time)</summary>
 
-The in-app updater is wired up but **dormant until a signing key is configured** — releases build fine without it; updates simply won't be offered. To turn it on (one-time setup):
+The in‑app updater is wired up but **dormant until a signing key is configured** — releases build fine without it; updates simply aren't offered.
 
-1. **Generate an updater keypair** (keep the private key safe — losing it means you can't ship updates):
+1. **Generate a keypair** (keep the private key safe — losing it means you can't ship updates):
    ```bash
    npx tauri signer generate -w ~/.tauri/depoaudio.key
    ```
-2. **Publish the public key**: copy the contents of `~/.tauri/depoaudio.key.pub` into `src-tauri/tauri.conf.json` → `plugins.updater.pubkey` (replacing the `REPLACE_WITH_…` placeholder).
-3. **Add the private key as a repo secret**: `TAURI_SIGNING_PRIVATE_KEY` = the contents of `~/.tauri/depoaudio.key` (and `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` if you set one).
+2. **Publish the public key**: copy `~/.tauri/depoaudio.key.pub` into `src-tauri/tauri.conf.json` → `plugins.updater.pubkey`.
+3. **Add repo secrets**: `TAURI_SIGNING_PRIVATE_KEY` (contents of `~/.tauri/depoaudio.key`) and `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` if set.
 
-Once the secret exists, the release workflow automatically builds and signs the updater artifacts (via `src-tauri/tauri.updater.conf.json`) and publishes `latest.json`. Installed apps then check `releases/latest/download/latest.json` on launch and offer in-place updates. **Publish** the draft release for clients to see it.
+The release workflow then builds/signs the updater artifacts and publishes `latest.json`; installed apps check it on launch and offer in‑place updates. **Publish** the draft release for clients to see it.
+</details>
+
+---
 
 ## License
 
-[MIT](LICENSE)
+[MIT](LICENSE) © Andrew Mayes
