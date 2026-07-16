@@ -10,6 +10,12 @@ on:
         required: true
         type: string
 
+# One release run per tag at a time: overlapping runs for the same tag can
+# split platforms across drafts (each leg looks the release up independently).
+concurrency:
+  group: release-${{ inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
 env:
   ORT_VERSION: "1.22.0"
   # Static, self-contained ffmpeg/ffprobe (per-arch) that we lipo into a
@@ -275,3 +281,17 @@ jobs:
           # Updater artifacts + latest.json only when the signing key is present.
           includeUpdaterJson: ${{ steps.updater.outputs.enabled }}
           args: ${{ steps.updater.outputs.enabled == 'true' && format('--config src-tauri/tauri.updater.conf.json {0}', matrix.args) || matrix.args }}
+
+  # Self-heal "published mid-run": if the draft is published while a later
+  # matrix leg is still building, that leg's tauri-action (which only looks
+  # for DRAFTS) strands its artifacts in a brand-new draft — splitting the
+  # platforms across two releases. Promote any such stray draft's assets into
+  # the published release and delete the drained draft. No-op on the normal
+  # flow (nothing published yet, no stray draft).
+  finalize:
+    needs: release
+    permissions:
+      contents: write
+    uses: ./.github/workflows/promote-draft.yml
+    with:
+      tag: ${{ inputs.tag || github.ref_name }}

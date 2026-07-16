@@ -199,6 +199,8 @@ git push origin vX.Y.Z
 
 GitHub Actions builds a **universal macOS** `.dmg` and a **Windows** `.msi`, then creates a **draft** release with all assets. The workflow verifies the tag matches the configured version and clears any stale *draft* with the same tag before building (published releases are never touched).
 
+> **Let the workflow finish before publishing the draft.** The platform builds run one after another, so the draft looks complete while later platforms are still building. Publishing early strands the remaining platform's artifacts in a new draft — the run's `finalize` job now heals that automatically (it promotes stray draft assets into the published release), but waiting for the green check avoids the churn.
+
 <details>
 <summary><strong>Enabling signed auto‑updates</strong> (one‑time)</summary>
 

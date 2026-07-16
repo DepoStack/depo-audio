@@ -1,0 +1,61 @@
+name: Promote draft assets
+
+# Moves assets from DRAFT release(s) into the PUBLISHED release carrying the
+# same tag, then deletes the drained draft(s). Heals the "published mid-run"
+# state: publishing the draft while a later matrix leg is still building
+# converts the draft to a release, so the remaining leg (which only looks for
+# drafts) strands its artifacts in a new draft. Safe when there is nothing to
+# do: no published release or no matching draft is a clean no-op.
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag whose stray draft assets should be promoted'
+        required: true
+        type: string
+  workflow_call:
+    inputs:
+      tag:
+        required: true
+        type: string
+
+jobs:
+  promote:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Promote stray draft assets into the published release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # env indirection: never interpolate the expression into shell source
+          TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          tag="$TAG"
+
+          pub_id=$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$tag" --jq .id 2>/dev/null || true)
+          if [ -z "$pub_id" ]; then
+            echo "No published release for tag $tag — nothing to promote."
+            exit 0
+          fi
+
+          for draft_id in $(gh api "repos/$GITHUB_REPOSITORY/releases" --paginate \
+                              --jq ".[] | select(.draft == true and .tag_name == \"$tag\") | .id"); do
+            echo "Promoting assets from stray draft $draft_id into published release $pub_id (tag $tag)"
+            gh api "repos/$GITHUB_REPOSITORY/releases/$draft_id" \
+              --jq '.assets[] | "\(.id)\t\(.name)"' |
+            while IFS=$'\t' read -r aid name; do
+              echo "  moving $name"
+              gh api -H "Accept: application/octet-stream" \
+                "repos/$GITHUB_REPOSITORY/releases/assets/$aid" > "$name"
+              gh release upload "$tag" "$name" --clobber --repo "$GITHUB_REPOSITORY"
+              rm -f "$name"
+            done
+            gh api -X DELETE "repos/$GITHUB_REPOSITORY/releases/$draft_id"
+            echo "Deleted drained draft $draft_id."
+          done
+
+          echo "Published release $pub_id now holds:"
+          gh api "repos/$GITHUB_REPOSITORY/releases/$pub_id" \
+            --jq '.assets[] | "  \(.name)  (\(.size) bytes)"'
