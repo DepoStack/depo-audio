@@ -552,9 +552,13 @@ async fn detect_turns(
         let mut all_turns: Vec<TurnSegment> = Vec::new();
         // On any early return, break, or panic below, the TempFile guards in
         // `decoded` (moved into this closure) delete the WAVs as they drop.
-        let mut session = match crate::models::load_session(&model_path) {
+        let session = match crate::models::cached_session(&model_path) {
             Ok(s) => s,
             Err(_) => return all_turns,
+        };
+        let mut session = match session.lock() {
+            Ok(guard) => guard,
+            Err(_) => return all_turns, // poisoned by a prior panic
         };
 
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(TURNS_BUDGET_SECS);

@@ -84,7 +84,8 @@ pub(crate) async fn score_quality(
     // Session load + inference on the blocking pool: EP model compilation and
     // a full-window inference are CPU-bound and must not pin an async worker.
     tauri::async_runtime::spawn_blocking(move || -> Result<QualityScore, String> {
-        let mut session = models::load_session(&model_path)?;
+        let session = models::cached_session(&model_path)?;
+        let mut session = session.lock().map_err(|_| "DNSMOS session poisoned".to_string())?;
 
         // DNSMOS expects a fixed-length input. Use first 9.01 seconds (144160 samples at 16kHz)
         // or pad with zeros if shorter.

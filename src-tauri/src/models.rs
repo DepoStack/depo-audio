@@ -1,5 +1,6 @@
+use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::OnceLock;
+use std::sync::{Arc, Mutex, OnceLock};
 
 use ort::session::Session;
 use tauri::{AppHandle, Manager};
@@ -45,6 +46,39 @@ pub(crate) fn model_path(app: &AppHandle, filename: &str) -> Result<PathBuf, Str
     }
 }
 
+/// Models that must run on the CPU execution provider. These have dynamic
+/// input shapes and/or recurrent state, which CoreML (macOS) and DirectML
+/// (Windows) handle pathologically: compilation can take minutes or wedge
+/// outright — a per-file recompile of Silero VAD was enough to trip the
+/// scan's 150-second stall watchdog on real machines ("Detecting speech"
+/// froze, then the file was skipped). Both models are tiny; CPU inference is
+/// milliseconds per call and, more importantly, predictable.
+fn cpu_only(filename: &str) -> bool {
+    matches!(filename, "silero_vad.onnx" | "speaker_seg_int8.onnx")
+}
+
+/// A loaded model session shared across scan passes. EP compilation and hash
+/// verification are paid once per app run instead of once per pass per file.
+pub(crate) type SharedSession = Arc<Mutex<Session>>;
+
+static SESSION_CACHE: OnceLock<Mutex<HashMap<PathBuf, SharedSession>>> = OnceLock::new();
+
+/// Cached variant of load_session for the scan passes: the first call per
+/// model loads (and on macOS/Windows EP-compiles) the session; every later
+/// pass and file reuses it. Callers lock the inner mutex for inference,
+/// which also serializes concurrent use of one model across passes.
+pub(crate) fn cached_session(path: &PathBuf) -> Result<SharedSession, String> {
+    let cache = SESSION_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    if let Some(s) = cache.lock().map_err(|_| "Model session cache poisoned".to_string())?.get(path) {
+        return Ok(s.clone());
+    }
+    // Load outside the cache lock: EP compilation can take seconds and must
+    // not block another pass's cache hit on a different model.
+    let shared: SharedSession = Arc::new(Mutex::new(load_session(path)?));
+    let mut guard = cache.lock().map_err(|_| "Model session cache poisoned".to_string())?;
+    Ok(guard.entry(path.clone()).or_insert_with(|| shared.clone()).clone())
+}
+
 /// Load an ONNX session with hardware acceleration and optional integrity check.
 /// Returns Err if ONNX Runtime is not installed — the app continues without AI features.
 pub(crate) fn load_session(path: &PathBuf) -> Result<Session, String> {
@@ -64,10 +98,11 @@ pub(crate) fn load_session(path: &PathBuf) -> Result<Session, String> {
     }
 
     // Catch panics from missing ONNX Runtime (load-dynamic mode)
+    let _accelerate = !cpu_only(&name);
     let result = std::panic::catch_unwind(|| {
         Session::builder().and_then(|mut b| {
             #[cfg(target_os = "macos")]
-            {
+            if _accelerate {
                 b = match b.with_execution_providers([
                     ort::execution_providers::CoreMLExecutionProvider::default().build(),
                 ]) {
@@ -76,7 +111,7 @@ pub(crate) fn load_session(path: &PathBuf) -> Result<Session, String> {
                 };
             }
             #[cfg(target_os = "windows")]
-            {
+            if _accelerate {
                 b = match b.with_execution_providers([
                     ort::execution_providers::DirectMLExecutionProvider::default().build(),
                 ]) {

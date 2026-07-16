@@ -123,7 +123,8 @@ pub(crate) async fn detect_speech(
     let samples_len = samples.len();
     let ctx_owned = ctx.cloned();
     let probabilities = tauri::async_runtime::spawn_blocking(move || -> Result<Vec<f32>, String> {
-        let mut session = models::load_session(&model_path)?;
+        let session = models::cached_session(&model_path)?;
+        let mut session = session.lock().map_err(|_| "VAD session poisoned".to_string())?;
 
         // Silero VAD v5 processes 512-sample chunks at 16kHz (~32ms each)
         // Inputs: "input" [1, chunk_size], "state" [2, 1, 128], "sr" scalar i64
