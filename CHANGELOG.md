@@ -4,6 +4,16 @@
 
 ## [1.0.0] - 2026-07-16
 
+The first public release. A desktop audio converter and enhancer for court reporters — 100% local.
+
+### Features
+- **Conversion** — court formats (SGMCA, FTR/TRM, BWF, DigitalCAT) plus standard audio and video, out to WAV/MP3/FLAC/Opus/M4A; three output modes (mix to stereo, keep original, split by channel) with per-channel labels and volume; batch processing and 5 presets.
+- **Smart Cleanup (on-device AI)** — one-click Scan recommends denoise, auto-level, de-clip, and clarity fixes; turn detection, speaker count, and 1–5 quality scoring (DNSMOS); hardware-accelerated (Apple Neural Engine, Ryzen AI, Intel AI Boost, or GPU) with live, cancellable progress.
+- **Player & transcript editor** — color-coded speakers, 0.5×–2× speed, A-B loop, and bookmarks, plus a synced transcript editor (import/edit/export SRT, VTT, TXT with follow-along highlighting and playhead stamping).
+- **Merge** — auto-sync a backup mic and a phone dial-in of one session; Best Quality or Mix All.
+- **Library & detection** — case library auto-filed by case and participant (search, archive, re-export); court-software detection (Case CATalyst, FTR Gold, Eclipse, DigitalCAT, CourtSmart) with direct job import.
+- **Platform** — universal macOS (Apple Silicon + Intel) and Windows; signed auto-updates from GitHub Releases; dark & light themes (WCAG 2.2 AA); no cloud, no accounts, no subscription.
+
 ### Added
 - **Live scan progress** — the Convert-tab Scan streams progress for every analysis phase (loudness, noise floor, speech, speaker turns, quality, speakers), the bar advances *within* each file with a phase label — including heartbeats while a slow FFmpeg pass drains its timeout, so "slow but alive" looks different from "stuck" — and a Cancel button actually stops the backend compute.
 - **FTR session chunks auto-order chronologically** — dropping or browsing a set of `.trm`/`.ftr` chunks queues them in recording order (parsed from FTR's filename timestamp, verified against real court-produced files) regardless of how the OS delivered them. Applies to the Convert queue, Merge sources (the earliest chunk becomes the sync reference), and the Player playlist (newly added batches only — manual reordering is preserved). Mixed selections keep the order you chose.
