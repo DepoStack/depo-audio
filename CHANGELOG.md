@@ -2,19 +2,17 @@
 
 ## [Unreleased]
 
-## [1.1.0] - 2026-07-15
+## [1.0.0] - 2026-07-15
+
+### Added — Scan that shows its work
+- **Live scan progress with phase labels** — the Convert-tab Scan streams progress for every analysis phase (loudness, noise floor, speech, speaker turns, quality, speakers), the bar advances *within* each file, and a Cancel button actually stops the backend compute. A stalled file is skipped after 150 seconds of silence instead of poisoning the whole scan, and failures are reported ("2 of 3 files couldn't be analyzed") instead of silently reverting to the idle hint.
+- **FTR (.trm) files can be scanned** — analysis decodes handle FTR's proprietary codec (as conversion always has), and files that genuinely can't be decoded short-circuit the remaining passes with an honest "convert it first" recommendation instead of burning minutes of timeouts.
+- **FTR session chunks auto-order chronologically** — dropping or browsing a set of `.trm`/`.ftr` chunks queues them in recording order (parsed from FTR's filename timestamp, verified against real court-produced files) regardless of how the OS delivered them. Applies to the Convert queue, Merge sources (the earliest chunk becomes the sync reference), and the Player playlist (newly added batches only — manual reordering is preserved). Mixed selections keep the order you chose.
 
 ### Fixed
-- **Scan progress works and scans finish** — the Convert-tab Scan previously showed a frozen bar and could grind for tens of minutes with nothing to show. The backend now streams progress for every analysis phase (with heartbeats while a slow FFmpeg pass drains its timeout), the bar advances *within* each file with a phase label, and a Cancel button actually stops the backend compute. A stalled file is skipped after 150 seconds of silence instead of poisoning the whole scan, and failures are reported ("2 of 3 files couldn't be analyzed") instead of silently reverting to the idle hint.
-- **FTR (.trm) files can now be scanned** — analysis passes never applied the forced FTR decoder the converter has always used, so every Scan of a `.trm` file failed or timed out. Scan decodes now handle FTR's proprietary codec, and files that genuinely can't be decoded short-circuit the remaining passes with an honest "convert it first" recommendation instead of burning minutes of timeouts.
-- **Scans no longer freeze the app** — AI inference used to run on the async runtime's worker threads; a few queued scans could starve the whole backend (timers, other commands). Inference now runs on the blocking pool with cancellation checks and wall-clock budgets, timed-out FFmpeg processes are killed instead of orphaned at full CPU, and a channel-probe failure no longer invents four phantom channels of extra work.
+- **Scans can't freeze the app** — AI inference runs on the blocking pool with cancellation checks and wall-clock budgets, timed-out FFmpeg processes are killed instead of orphaned at full CPU, and a channel-probe failure no longer invents four phantom channels of extra work.
 - **Auto-level gain safety** — conversion only applies per-channel auto-level gains when the analysis measured the same channel count the converter sees, preventing a desynced analysis from boosting some channels and silencing others.
-- **Model downloads restored** — the `models-v1` release hosting the AI models was rebuilt after the repo cleanup deleted it (all nine assets verified against the app's SHA-256 pins), the real DNSMOS model is pinned (the previously committed file was an HTML error page), and its catalog size corrected.
-
-### Added
-- **FTR session chunks auto-order chronologically** — dropping or browsing a set of `.trm`/`.ftr` chunks now queues them in recording order (parsed from FTR's filename timestamp, verified against real court-produced files) regardless of how the OS delivered them. Applies to the Convert queue, Merge sources (the earliest chunk becomes the sync reference), and the Player playlist (newly added batches only — manual reordering is preserved). Mixed selections keep the order you chose.
-
-## [1.0.0] - 2026-07-04
+- **AI model integrity** — the real DNSMOS quality-scoring model is published and integrity-pinned (SHA-256, like all nine downloadable models); the previously bundled file was invalid.
 
 ### Changed — DepoStack brand
 - **Full visual rebrand to the DepoStack identity** — plum + gold on warm cream (light) and a deep plum-night (dark). Plum is the primary ink, gold the accent and call-to-action (gold buttons with plum ink), with generously rounded cards and soft shadows. Every color lives in `design/tokens.json`; light-mode status colors are the brand hues tuned to stay legible. Both themes remain **WCAG 2.2 AA** (axe-verified, 0 violations across every screen).
