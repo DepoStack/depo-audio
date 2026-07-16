@@ -18,7 +18,47 @@ env:
   FFMPEG_STATIC_TAG: "b6.1.2-rc.1"
 
 jobs:
+  # Guard the release before any build starts:
+  #  - the tag must match the configured app version, so binaries can't ship
+  #    self-reporting a different version than their tag
+  #  - any stale DRAFT release carrying this tag is deleted, so tauri-action
+  #    creates a fresh draft whose target_commitish is THIS run's commit (a
+  #    reused draft keeps its old commitish, and publishing it would mint the
+  #    git tag at the wrong commit) and whose assets can't mix with an older
+  #    build's. Published releases are never touched.
+  prepare:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Verify tag matches the configured app version
+        run: |
+          set -euo pipefail
+          tag="${{ inputs.tag || github.ref_name }}"
+          version=$(python3 -c "import json; print(json.load(open('src-tauri/tauri.conf.json'))['version'])")
+          case "$tag" in
+            "v$version"|"v$version-"*) echo "Tag $tag matches app version $version" ;;
+            *) echo "ERROR: tag '$tag' does not match app version '$version' in src-tauri/tauri.conf.json"; exit 1 ;;
+          esac
+
+      - name: Delete stale draft release for this tag
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          tag="${{ inputs.tag || github.ref_name }}"
+          for id in $(gh api "repos/$GITHUB_REPOSITORY/releases" --paginate \
+                        --jq ".[] | select(.draft == true and .tag_name == \"$tag\") | .id"); do
+            echo "Deleting stale draft release $id (tag_name $tag). Assets it held:"
+            gh api "repos/$GITHUB_REPOSITORY/releases/$id" \
+              --jq '.assets[] | "  \(.name)  (\(.download_count) downloads)"' || echo "  (no assets)"
+            gh api -X DELETE "repos/$GITHUB_REPOSITORY/releases/$id"
+          done
+
   release:
+    needs: prepare
     permissions:
       contents: write
 

@@ -143,18 +143,24 @@ feature is used, keeping the installer small.
 | DeepFilterNet3 (3 files) | 8.2 MB | Premium speech denoising | Bundled |
 | Speaker segmentation (int8) | 1.5 MB | Speaker count detection | Bundled |
 | Speaker embedding | 38 MB | Speaker identification | Download on demand |
-| DNSMOS | 297 KB | Audio quality scoring | Download on demand |
+| DNSMOS | 1.1 MB | Audio quality scoring | Download on demand |
 
 ## Releasing
 
-Push a version tag to trigger automated builds:
+Push a version tag to trigger automated builds (replace `vX.Y.Z` with the real
+version — it must match the `version` in `src-tauri/tauri.conf.json`, and the
+tag should point at the commit you intend to ship):
 
 ```bash
-git tag v1.0.0
-git push origin v1.0.0
+git tag vX.Y.Z
+git push origin vX.Y.Z
 ```
 
-GitHub Actions builds installers for macOS (ARM64 + Intel) and Windows (x64), then creates a draft release with all assets.
+GitHub Actions builds installers for macOS (ARM64 + Intel) and Windows (x64),
+then creates a draft release with all assets. The workflow verifies the tag
+matches the configured app version and deletes any stale *draft* release
+carrying the same tag before building, so a re-run always produces a fresh,
+consistent draft (published releases are never touched).
 
 ### Enabling auto-updates
 
