@@ -1,7 +1,9 @@
 import { useState, useEffect, useRef, lazy, Suspense } from 'react'
 import { invoke } from '@tauri-apps/api/core'
+import { openUrl } from '@tauri-apps/plugin-opener'
 import { Sun, Moon, Monitor, Settings, AudioLines, Play, GitMerge, FolderOpen } from 'lucide-react'
 import { basename } from './utils'
+import { DEPOSTACK_URL } from './constants'
 
 import useTheme from './hooks/useTheme'
 import { usePreferencesContext } from './hooks/PreferencesContext'
@@ -156,6 +158,16 @@ export default function App() {
             {updater.status === 'available' ? 'Update available' : 'Up to date'}
           </div>
         </div>
+
+        {/* DepoStack brand link — DepoAudio is one tool in the suite */}
+        <button
+          type="button"
+          onClick={() => openUrl(DEPOSTACK_URL)}
+          title="Part of the DepoStack suite — opens depostack.com"
+          className="hidden md:block mx-3 mb-1.5 px-3 text-left text-[10.5px] text-[hsl(var(--sub))] hover:text-[hsl(var(--gold))] transition-colors"
+        >
+          A <span className="font-semibold text-[hsl(var(--text2))]">DepoStack</span> project&nbsp;↗
+        </button>
 
         <div className="flex md:justify-start justify-center items-center gap-1 px-2 md:px-3 pb-3">
           <Button variant="ghost" size="icon" title="Settings" aria-label="Settings" onClick={() => setSettingsOpen(true)}>

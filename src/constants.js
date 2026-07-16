@@ -12,6 +12,9 @@ export const FORMATS_OUT = [
   { id: 'm4a',  label: 'M4A',  desc: '128 kbps AAC — Apple devices' },
 ]
 
+// DepoStack is the umbrella brand; DepoAudio is one open-source tool in it.
+export const DEPOSTACK_URL = 'https://www.depostack.com'
+
 // Selectable MP3 bitrates (kbps), shown when MP3 output is chosen.
 export const MP3_BITRATES = [
   { value: 128, label: '128k', desc: 'Smallest — email' },
