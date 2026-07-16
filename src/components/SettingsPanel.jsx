@@ -1,6 +1,8 @@
 import { useState, useEffect, useCallback } from 'react'
 import { invoke } from '@tauri-apps/api/core'
-import { RotateCcw, Download, Trash2, CheckCircle, Loader2, AlertCircle, Cpu, RefreshCw } from 'lucide-react'
+import { openUrl } from '@tauri-apps/plugin-opener'
+import { RotateCcw, Download, Trash2, CheckCircle, Loader2, AlertCircle, Cpu, RefreshCw, ExternalLink } from 'lucide-react'
+import { DEPOSTACK_URL } from '../constants'
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogClose,
 } from './ui/dialog'
@@ -485,6 +487,28 @@ export default function SettingsPanel({ open, onOpenChange, prefs, updater = {} 
                     : <><RefreshCw size={12} /> Check for updates</>}
                 </Button>
               )}
+            </div>
+          </section>
+
+          <section className="settings-section">
+            <div className="settings-section-header">
+              <h3 className="settings-section-title">About</h3>
+            </div>
+            <div className="flex items-center justify-between gap-3 px-1">
+              <div className="flex flex-col min-w-0">
+                <span className="settings-label">DepoAudio is part of DepoStack</span>
+                <span className="settings-hint">
+                  A growing suite of tools built for court reporters. DepoAudio itself stays free and open source.
+                </span>
+              </div>
+              <Button
+                size="sm"
+                variant="outline"
+                className="shrink-0"
+                onClick={() => openUrl(DEPOSTACK_URL)}
+              >
+                <ExternalLink size={12} /> depostack.com
+              </Button>
             </div>
           </section>
         </div>

@@ -23,12 +23,27 @@ DepoAudio converts audio files between formats with smart cleanup that automatic
 - **Quality Scoring** — Before/after quality rating on a 1-5 scale (DNSMOS)
 - **Speaker Count Detection** — Automatically detects how many speakers are in the recording
 - **Hardware-Aware** — Recommends processing options based on your machine's capabilities
+- **Live Scan Progress** — Each analysis phase streams progress with a phase label and a cancel button; a slow or stuck file is skipped without freezing the app
 
 ### Global Audio Player
 - **Play Any File** — Listen to audio files directly without conversion
 - **Color-Coded Speakers** — Each track gets a distinct color for easy identification
 - **Editable Labels** — Name each speaker in the playlist
 - **Full Playback Controls** — Play, pause, skip, seek with per-track color seekbar
+- **Playback Speed & A-B Loop** — 0.5×–2× speed (persists across sessions) and repeat a passage for re-listening
+- **Bookmarks** — Editable, labeled bookmarks ("Objection", "Exhibit 4") that export as timestamped lines
+- **Keyboard Transport** — Space/K play-pause, ←/→ and J/L to seek, ↑/↓ speed, `[` / `]` track, B bookmark
+
+### Synced Transcript Editor
+- **Import or Build** — Import SRT, VTT, or TXT (or paste text) and edit every line inline; autosaves per track
+- **Follow the Audio** — Lines highlight and auto-scroll as audio plays; click a line's time to jump there
+- **Stamp & Capture** — Stamp the current playhead onto a line, or press Enter to start a new line at the playhead
+- **Speaker Labels** — Optional per-line speaker labels (auto-detected from "SPEAKER: text")
+- **Export** — Export to SRT or TXT, or copy the whole transcript to the clipboard
+
+### Merge Recordings
+- **Auto-Sync** — Drop a backup mic and a phone dial-in of the same session; DepoAudio aligns them automatically
+- **Best Quality or Mix All** — Pick the clearest parts of each source, or blend them all together
 
 ### Library & Software Detection
 - **Case Library** — Auto-filed by case name with inline playback, search, archive, and re-export
