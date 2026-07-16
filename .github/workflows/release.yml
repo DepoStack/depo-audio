@@ -34,9 +34,13 @@ jobs:
       - uses: actions/checkout@v7
 
       - name: Verify tag matches the configured app version
+        env:
+          # env indirection: never interpolate the expression into shell
+          # source, so the value can't be parsed as script
+          TAG: ${{ inputs.tag || github.ref_name }}
         run: |
           set -euo pipefail
-          tag="${{ inputs.tag || github.ref_name }}"
+          tag="$TAG"
           version=$(python3 -c "import json; print(json.load(open('src-tauri/tauri.conf.json'))['version'])")
           case "$tag" in
             "v$version"|"v$version-"*) echo "Tag $tag matches app version $version" ;;
@@ -46,9 +50,10 @@ jobs:
       - name: Delete stale draft release for this tag
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ inputs.tag || github.ref_name }}
         run: |
           set -euo pipefail
-          tag="${{ inputs.tag || github.ref_name }}"
+          tag="$TAG"
           for id in $(gh api "repos/$GITHUB_REPOSITORY/releases" --paginate \
                         --jq ".[] | select(.draft == true and .tag_name == \"$tag\") | .id"); do
             echo "Deleting stale draft release $id (tag_name $tag). Assets it held:"

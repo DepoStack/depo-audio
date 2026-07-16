@@ -22,9 +22,12 @@ jobs:
       - name: Delete draft release(s) with this tag_name
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # env indirection: never interpolate the expression into shell
+          # source, so the value can't be parsed as script
+          TAG: ${{ inputs.tag }}
         run: |
           set -euo pipefail
-          tag="${{ inputs.tag }}"
+          tag="$TAG"
           found=0
           for id in $(gh api "repos/$GITHUB_REPOSITORY/releases" --paginate \
                         --jq ".[] | select(.draft == true and .tag_name == \"$tag\") | .id"); do
