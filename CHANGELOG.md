@@ -2,38 +2,12 @@
 
 ## [Unreleased]
 
-## [1.1.0] - 2026-07-15
-
-### Fixed
-- **Scan progress works and scans finish** — the Convert-tab Scan previously showed a frozen bar and could grind for tens of minutes with nothing to show. The backend now streams progress for every analysis phase (with heartbeats while a slow FFmpeg pass drains its timeout), the bar advances *within* each file with a phase label, and a Cancel button actually stops the backend compute. A stalled file is skipped after 150 seconds of silence instead of poisoning the whole scan, and failures are reported ("2 of 3 files couldn't be analyzed") instead of silently reverting to the idle hint.
-- **FTR (.trm) files can now be scanned** — analysis passes never applied the forced FTR decoder the converter has always used, so every Scan of a `.trm` file failed or timed out. Scan decodes now handle FTR's proprietary codec, and files that genuinely can't be decoded short-circuit the remaining passes with an honest "convert it first" recommendation instead of burning minutes of timeouts.
-- **Scans no longer freeze the app** — AI inference used to run on the async runtime's worker threads; a few queued scans could starve the whole backend (timers, other commands). Inference now runs on the blocking pool with cancellation checks and wall-clock budgets, timed-out FFmpeg processes are killed instead of orphaned at full CPU, and a channel-probe failure no longer invents four phantom channels of extra work.
-- **Auto-level gain safety** — conversion only applies per-channel auto-level gains when the analysis measured the same channel count the converter sees, preventing a desynced analysis from boosting some channels and silencing others.
-- **Model downloads restored** — the `models-v1` release hosting the AI models was rebuilt after the repo cleanup deleted it (all nine assets verified against the app's SHA-256 pins), the real DNSMOS model is pinned (the previously committed file was an HTML error page), and its catalog size corrected.
+## [1.0.0] - 2026-07-16
 
 ### Added
-- **FTR session chunks auto-order chronologically** — dropping or browsing a set of `.trm`/`.ftr` chunks now queues them in recording order (parsed from FTR's filename timestamp, verified against real court-produced files) regardless of how the OS delivered them. Applies to the Convert queue, Merge sources (the earliest chunk becomes the sync reference), and the Player playlist (newly added batches only — manual reordering is preserved). Mixed selections keep the order you chose.
-
-## [1.0.0] - 2026-07-04
-
-### Changed — DepoStack brand
-- **Full visual rebrand to the DepoStack identity** — plum + gold on warm cream (light) and a deep plum-night (dark). Plum is the primary ink, gold the accent and call-to-action (gold buttons with plum ink), with generously rounded cards and soft shadows. Every color lives in `design/tokens.json`; light-mode status colors are the brand hues tuned to stay legible. Both themes remain **WCAG 2.2 AA** (axe-verified, 0 violations across every screen).
-
-### Added — Universal macOS build
-- **macOS now ships as a single universal binary** — one `.app`/`.dmg` runs natively on both Apple Silicon and Intel. FFmpeg sidecars and the ONNX Runtime library are combined for both architectures; no more separate Intel/Apple-Silicon downloads.
-
-### Changed — "Docket" redesign (part 1)
-- **Sidebar navigation** replaces the top tab bar: icons + labels, number-key shortcuts (1–4), the case-library count, and a live system-health card (FFmpeg status, installed AI models, update state) with Settings and theme at the bottom. Collapses to an icon rail on narrow windows.
-- **Guided steps on Convert** — a state-driven "Add recording → Choose settings → Convert" stepper shows where you are without hiding anything; the whole page still works at once for batch users.
-- **Format tiles** with plain-English trade-offs replace the small format buttons; sample rate and MP3 bitrate live alongside them.
-- **Output mode** is now a segmented control; scan findings appear as green "Recommended" pills on the matching enhancement toggles; the action bar summarizes what's about to happen ("Ready: MP3 · mix to stereo with 2 enhancements → same folder as source").
-- **Light theme retuned** to cool neutrals with white cards and soft shadows (dark theme keeps its ink palette with the new structure); corner radius increased app-wide. All via design tokens; both themes remain WCAG 2.2 AA (axe-verified, 0 violations).
-
-### Fixed
-- **AI feature scan no longer hangs on long recordings** — analysis (loudness, noise floor, VAD, Smart-Turn, speaker count, quality) now reads a bounded sample of each file instead of the whole thing, so the Scan finishes in seconds-to-minutes regardless of length (a multi-hour multichannel deposition previously ran tens of thousands of ONNX inferences and effectively never completed). Every analysis FFmpeg pass also has a timeout backstop.
-- **App now closes immediately** — closing the window quits the process directly, so an in-flight scan or conversion (synchronous ONNX inference + ffmpeg subprocesses) can no longer leave the app stuck on exit.
-
-### Added
+- **Live scan progress** — the Convert-tab Scan streams progress for every analysis phase (loudness, noise floor, speech, speaker turns, quality, speakers), the bar advances *within* each file with a phase label — including heartbeats while a slow FFmpeg pass drains its timeout, so "slow but alive" looks different from "stuck" — and a Cancel button actually stops the backend compute.
+- **FTR session chunks auto-order chronologically** — dropping or browsing a set of `.trm`/`.ftr` chunks queues them in recording order (parsed from FTR's filename timestamp, verified against real court-produced files) regardless of how the OS delivered them. Applies to the Convert queue, Merge sources (the earliest chunk becomes the sync reference), and the Player playlist (newly added batches only — manual reordering is preserved). Mixed selections keep the order you chose.
+- **Universal macOS build** — one `.app`/`.dmg` runs natively on both Apple Silicon and Intel. FFmpeg sidecars and the ONNX Runtime library are combined for both architectures; no more separate Intel/Apple-Silicon downloads.
 - **Auto-update from GitHub Releases** — on launch the app checks for a newer **signed** release; when one exists a banner offers "Update & restart", which downloads, verifies, installs, and relaunches into the new version. A manual "Check for updates" lives in Settings → Software Update. Updates are cryptographically signed (minisign) and verified against the bundled public key before install.
 - **Synced transcript editor** — proof an existing transcript against the audio or build one from scratch, right in the Player:
   - Import **SRT, VTT, or TXT** (or paste text); every line is editable inline and autosaves per track.
@@ -45,6 +19,22 @@
 - **Playback speed** — 0.5×–2× control in the player, persists across sessions (essential for transcription).
 - **A-B loop** — set in/out points and repeat a passage for re-listening.
 - **Bookmark notes & export** — bookmark labels are now editable (e.g. "Objection", "Exhibit 4") and the whole list copies to the clipboard as timestamped lines for a transcript.
+
+### Changed
+- **DepoStack brand** — full visual rebrand: plum + gold on warm cream (light) and a deep plum-night (dark). Plum is the primary ink, gold the accent and call-to-action (gold buttons with plum ink), with generously rounded cards and soft shadows. Every color lives in `design/tokens.json`; light-mode status colors are the brand hues tuned to stay legible. Both themes remain **WCAG 2.2 AA** (axe-verified, 0 violations across every screen).
+- **"Docket" redesign (part 1)** — the app shell and Convert flow, rebuilt:
+  - **Sidebar navigation** replaces the top tab bar: icons + labels, number-key shortcuts (1–4), the case-library count, and a live system-health card (FFmpeg status, installed AI models, update state) with Settings and theme at the bottom. Collapses to an icon rail on narrow windows.
+  - **Guided steps on Convert** — a state-driven "Add recording → Choose settings → Convert" stepper shows where you are without hiding anything; the whole page still works at once for batch users.
+  - **Format tiles** with plain-English trade-offs replace the small format buttons; sample rate and MP3 bitrate live alongside them.
+  - **Output mode** is now a segmented control; scan findings appear as green "Recommended" pills on the matching enhancement toggles; the action bar summarizes what's about to happen ("Ready: MP3 · mix to stereo with 2 enhancements → same folder as source").
+  - **Light theme retuned** to cool neutrals with white cards and soft shadows (dark theme keeps its ink palette with the new structure); corner radius increased app-wide. All via design tokens; both themes remain WCAG 2.2 AA (axe-verified, 0 violations).
+
+### Fixed
+- **Scans finish now — every prior release could hang or freeze** — one fix in three layers. Analysis reads a bounded sample of each file instead of the whole recording (a multi-hour multichannel deposition previously ran tens of thousands of ONNX inferences and effectively never completed), and every analysis FFmpeg pass has a timeout backstop whose expired processes are killed rather than orphaned at full CPU. AI inference moved off the async runtime onto the blocking pool with cancellation checks and wall-clock budgets, so queued scans can no longer freeze the entire app. And a stalled file is skipped after 150 seconds of silence instead of poisoning the whole scan, with failures reported ("2 of 3 files couldn't be analyzed") instead of silently reverting to the idle hint.
+- **Scanning FTR (.trm) files always failed** — analysis passes never applied the forced FTR decoder that conversion has always used, so every Scan of a `.trm` file failed or timed out. Scan decodes now handle FTR's proprietary codec, and files that genuinely can't be decoded short-circuit the remaining passes with an honest "convert it first" recommendation. A channel-probe failure also no longer invents four phantom channels of extra work.
+- **Model downloads restored** — the `models-v1` release hosting all nine downloadable AI models was deleted during a repository cleanup, so every in-app model download returned 404; it was rebuilt with each asset verified against the app's SHA-256 pins. The real DNSMOS quality-scoring model is now published and integrity-pinned like the rest (the previously committed file was an HTML error page), and its catalog size corrected (0.3 → 1.1 MB).
+- **Auto-level gain safety** — conversion only applies per-channel auto-level gains when the analysis measured the same channel count the converter sees, preventing a desynced analysis from boosting some channels and silencing others.
+- **App now closes immediately** — closing the window quits the process directly, so an in-flight scan or conversion can no longer leave the app stuck on exit.
 
 ### Improved
 - **Responsive layout** — the UI now scales to the window instead of sitting in a fixed 920px column: content fluidly uses available width (up to a comfortable 1100px for readability) and reflows cleanly down to a 720px minimum, eliminating horizontal scrolling. Default window enlarged to 1160×820 for more breathing room.
