@@ -11,16 +11,16 @@ import { Card, CardHeader, CardTitle, CardContent } from '../ui/card'
 import { Segmented } from '../ui/segmented'
 import Waveform from '../common/Waveform'
 import { WaveformIcon } from '../common/Icons'
-import Transcript from './Transcript'
 
 // ── Global Audio Player ─────────────────────────────────────────────────────
 //
 // Play any audio file directly — no conversion needed. Multi-channel files get
 // color-coded speaker tracks (colors from the --speaker-N design tokens).
 //
-// Layout: a playlist rail + transcript work surface scroll above a PERSISTENT
-// transport bar (waveform scrubber + controls) that never scrolls away, so the
-// current position stays visible while editing a long transcript.
+// Layout: a Now Playing surface (large seekable waveform) + a playlist/
+// bookmarks rail scroll above a PERSISTENT transport bar (controls + a thin
+// progress scrubber) that never scrolls away, so play/pause and position
+// stay reachable no matter how far you scroll.
 //
 // Keyboard transport (when not typing in a field):
 //   Space / K  play-pause      ← / →  seek ±5s       J / L  seek ±10s
@@ -220,22 +220,39 @@ export default function PlayerTab({ dropHandlerRef }) {
     )
   }
 
-  // ── Workspace (playlist rail + transcript) over a fixed transport bar ──────
+  // ── Workspace (Now Playing + playlist rail) over a fixed transport bar ────
   return (
     <>
       <div className="flex-1 overflow-y-auto overflow-x-hidden">
         <div className="w-full max-w-[1100px] mx-auto px-5 md:px-8 py-5 grid gap-3.5 md:grid-cols-[minmax(0,1fr)_300px]">
 
-          {/* Transcript — the main work surface (first on wide screens) */}
+          {/* Now Playing — the main surface: a large seekable waveform */}
           {activeTrack && (
             <div className="md:order-1 order-2 min-w-0">
-              <Transcript
-                key={activeTrack.path}
-                trackPath={activeTrack.path}
-                currentTime={currentTime}
-                playing={playing}
-                onSeek={seekTo}
-              />
+              <Card>
+                <CardHeader><CardTitle>Now Playing</CardTitle></CardHeader>
+                <CardContent className="p-4 flex flex-col gap-3">
+                  <div className="flex items-baseline gap-2 min-w-0">
+                    <span className="w-2 h-2 rounded-full shrink-0 self-center" style={{ background: activeColor }} />
+                    <span className="text-[15px] font-semibold text-foreground font-serif truncate">{activeTrack.name}</span>
+                    <span className="text-[11px] font-mono text-[hsl(var(--sub))] shrink-0">· {activeTrack.label}</span>
+                  </div>
+                  <Waveform
+                    audioSrc={audioSrc}
+                    color={activeColor}
+                    currentTime={currentTime}
+                    duration={duration}
+                    height={96}
+                    onSeek={seekTo}
+                    markers={trackBookmarks}
+                    loop={loopActive ? { a: loopA, b: loopB } : null}
+                  />
+                  <div className="flex items-center justify-between font-mono text-[11px] text-[hsl(var(--sub))] tabular-nums">
+                    <span>{fmtTime(currentTime)}</span>
+                    <span>{fmtTime(duration)}</span>
+                  </div>
+                </CardContent>
+              </Card>
             </div>
           )}
 
@@ -399,16 +416,28 @@ export default function PlayerTab({ dropHandlerRef }) {
                   {fmtTime(currentTime)} / {fmtTime(duration)}
                 </span>
               </div>
-              <Waveform
-                audioSrc={audioSrc}
-                color={activeColor}
-                currentTime={currentTime}
-                duration={duration}
-                height={34}
-                onSeek={seekTo}
-                markers={trackBookmarks}
-                loop={loopActive ? { a: loopA, b: loopB } : null}
-              />
+              {/* Thin progress scrubber — the detailed waveform lives in Now
+                  Playing above, so the pinned bar stays cheap (no second
+                  decode) while still showing the loop band + position. */}
+              <div
+                className="relative h-1.5 bg-border rounded-full cursor-pointer overflow-hidden"
+                role="slider"
+                aria-label="Seek"
+                aria-valuemin={0}
+                aria-valuemax={Math.round(duration)}
+                aria-valuenow={Math.round(currentTime)}
+                onClick={e => {
+                  const r = e.currentTarget.getBoundingClientRect()
+                  if (duration) seekTo(((e.clientX - r.left) / r.width) * duration)
+                }}
+              >
+                {loopActive && (
+                  <div className="absolute inset-y-0 bg-[hsl(var(--gold-dim))]"
+                    style={{ left: `${(loopA / duration) * 100}%`, width: `${((loopB - loopA) / duration) * 100}%` }} />
+                )}
+                <div className="absolute inset-y-0 left-0 bg-primary rounded-full"
+                  style={{ width: `${duration > 0 ? (currentTime / duration) * 100 : 0}%` }} />
+              </div>
             </div>
 
             {/* Speed + loop + bookmark */}
