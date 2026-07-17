@@ -10,7 +10,8 @@ import { Button } from '../ui/button'
 import { Card, CardHeader, CardTitle } from '../ui/card'
 import Waveform from '../common/Waveform'
 import { WaveformIcon } from '../common/Icons'
-import Transcript from './Transcript'
+// Transcript (synced editor) is hidden for v1 — Transcript.jsx is retained;
+// restore this import and the render block below to bring it back (tracking issue).
 
 // ── Global Audio Player ─────────────────────────────────────────────────────
 //
@@ -418,17 +419,6 @@ export default function PlayerTab({ dropHandlerRef }) {
               </div>
             )}
           </Card>
-          )}
-
-          {/* ── Transcript (synced editor, per track) ─────────── */}
-          {activeTrack && (
-            <Transcript
-              key={activeTrack.path}
-              trackPath={activeTrack.path}
-              currentTime={currentTime}
-              playing={playing}
-              onSeek={t => { if (audioRef.current) audioRef.current.currentTime = t }}
-            />
           )}
 
           {/* ── Playlist ────────────────────────────────────── */}
