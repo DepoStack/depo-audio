@@ -47,6 +47,10 @@
     --radius: 0.875rem;
     --topbar-h: 50px;
     --bottom-h: 56px;
+    --speaker-1: 40 66% 62%;
+    --speaker-2: 212 62% 66%;
+    --speaker-3: 150 46% 56%;
+    --speaker-4: 6 68% 66%;
   }
 
   .light {
@@ -92,5 +96,9 @@
     --color-green: #185144;
     --color-red: #782d26;
     --color-blue: #37446d;
+    --speaker-1: 40 62% 44%;
+    --speaker-2: 212 62% 48%;
+    --speaker-3: 150 46% 37%;
+    --speaker-4: 6 62% 52%;
   }
 }

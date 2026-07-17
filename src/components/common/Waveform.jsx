@@ -10,13 +10,13 @@ import { useRef, useEffect, useState } from 'react'
 
 export default function Waveform({
   audioSrc,        // URL to audio file (from convertFileSrc)
-  color = '#c49a36',
-  playedColor,     // Color for played portion (defaults to brighter version of color)
+  color = 'hsl(var(--speaker-1))',
   currentTime = 0,
   duration = 0,
   height = 48,
   onSeek,          // (time: number) => void
   markers = [],    // [{ time: number, label: string, color: string }]
+  loop = null,     // { a, b } A-B loop region in seconds
 }) {
   const canvasRef = useRef(null)
   const containerRef = useRef(null)
@@ -98,19 +98,30 @@ export default function Waveform({
 
     const midY = height / 2
     const playedWidth = duration > 0 ? (currentTime / duration) * width : 0
-    const resolvedPlayedColor = playedColor || lightenColor(color, 0.3)
+    // Bookmark/marker default resolves to the token, not a raw hex.
+    const markerColor = 'hsl(var(--destructive))'
 
     ctx.clearRect(0, 0, width, height)
 
-    // Draw waveform bars
+    // A-B loop region: a translucent gold band behind the bars so the looped
+    // span is actually visible (the old control drew nothing).
+    if (loop && loop.a != null && loop.b != null && duration > 0 && loop.b > loop.a) {
+      const x0 = (loop.a / duration) * width
+      const x1 = (loop.b / duration) * width
+      ctx.fillStyle = 'hsl(var(--gold-dim))'
+      ctx.fillRect(x0, 0, Math.max(x1 - x0, 1), height)
+    }
+
+    // Draw waveform bars — played at full strength, unplayed dimmed via alpha
+    // (no hue math, so any color format works and stays theme-correct).
     for (let i = 0; i < peaks.length && i < width; i++) {
       const { min, max } = peaks[i]
       const barTop = midY - max * midY * 0.85
       const barBottom = midY - min * midY * 0.85
       const barHeight = Math.max(barBottom - barTop, 1)
 
-      ctx.fillStyle = i < playedWidth ? resolvedPlayedColor : color
-      ctx.globalAlpha = i < playedWidth ? 1.0 : 0.5
+      ctx.fillStyle = color
+      ctx.globalAlpha = i < playedWidth ? 1.0 : 0.42
       ctx.fillRect(i, barTop, 1, barHeight)
     }
 
@@ -118,7 +129,7 @@ export default function Waveform({
 
     // Draw playback position line
     if (duration > 0 && playedWidth > 0) {
-      ctx.strokeStyle = resolvedPlayedColor
+      ctx.strokeStyle = color
       ctx.lineWidth = 1.5
       ctx.beginPath()
       ctx.moveTo(playedWidth, 0)
@@ -130,7 +141,7 @@ export default function Waveform({
     for (const marker of markers) {
       if (marker.time <= 0 || marker.time >= duration) continue
       const x = (marker.time / duration) * width
-      ctx.strokeStyle = marker.color || '#c44e4e'
+      ctx.strokeStyle = marker.color || markerColor
       ctx.lineWidth = 1
       ctx.setLineDash([2, 2])
       ctx.beginPath()
@@ -142,11 +153,11 @@ export default function Waveform({
       // Marker label
       if (marker.label) {
         ctx.font = '9px "DM Mono", monospace'
-        ctx.fillStyle = marker.color || '#c44e4e'
+        ctx.fillStyle = marker.color || markerColor
         ctx.fillText(marker.label, x + 2, 10)
       }
     }
-  }, [peaks, width, height, currentTime, duration, color, playedColor, markers])
+  }, [peaks, width, height, currentTime, duration, color, markers, loop])
 
   const handleClick = (e) => {
     if (!onSeek || !duration) return
@@ -166,23 +177,13 @@ export default function Waveform({
           onClick={handleClick}
         />
       ) : (
-        <div className="flex items-center justify-center" style={{ height }}>
+        <div className="flex items-center justify-center px-2" style={{ height }}>
           <div className="w-full h-0.5 bg-primary/30 rounded-full overflow-hidden">
-            <div className="h-full w-1/3 bg-primary rounded-full animate-[loading_1.2s_ease-in-out_infinite]" />
+            <div className="h-full w-1/3 bg-primary rounded-full"
+              style={{ animation: 'progress-pulse 1.2s ease-in-out infinite' }} />
           </div>
         </div>
       )}
     </div>
   )
-}
-
-// Lighten a hex color by a factor (0-1)
-function lightenColor(hex, factor) {
-  const r = parseInt(hex.slice(1, 3), 16)
-  const g = parseInt(hex.slice(3, 5), 16)
-  const b = parseInt(hex.slice(5, 7), 16)
-  const lr = Math.min(255, Math.floor(r + (255 - r) * factor))
-  const lg = Math.min(255, Math.floor(g + (255 - g) * factor))
-  const lb = Math.min(255, Math.floor(b + (255 - b) * factor))
-  return `#${lr.toString(16).padStart(2,'0')}${lg.toString(16).padStart(2,'0')}${lb.toString(16).padStart(2,'0')}`
 }
