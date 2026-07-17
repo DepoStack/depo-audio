@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, lazy, Suspense } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import { openUrl } from '@tauri-apps/plugin-opener'
-import { Sun, Moon, Monitor, Settings, AudioLines, Play, GitMerge, FolderOpen } from 'lucide-react'
+import { Sun, Moon, Monitor, Settings, AudioLines, Play, FolderOpen } from 'lucide-react'
 import { basename } from './utils'
 import { DEPOSTACK_URL } from './constants'
 
@@ -21,7 +21,8 @@ import ConvertTab from './components/Convert/ConvertTab'
 
 const LibraryTab = lazy(() => import('./components/Library/LibraryTab'))
 const PlayerTab  = lazy(() => import('./components/Player/PlayerTab'))
-const MergeTab   = lazy(() => import('./components/Merge/MergeTab'))
+// Merge is hidden for v1 — MergeTab.jsx is retained; re-add the nav entry and
+// TabsContent below to bring it back (see the "Re-add Merge" tracking issue).
 const SettingsPanel = lazy(() => import('./components/SettingsPanel'))
 
 const themeIcons = {
@@ -34,7 +35,6 @@ const themeIcons = {
 const NAV = [
   { id: 'convert', label: 'Convert', Icon: AudioLines },
   { id: 'player',  label: 'Player',  Icon: Play },
-  { id: 'merge',   label: 'Merge',   Icon: GitMerge },
   { id: 'library', label: 'Library', Icon: FolderOpen },
 ]
 
@@ -90,14 +90,14 @@ export default function App() {
     }
   }, [tab])
 
-  // Number keys 1–4 switch tabs (ignored while typing or with modifiers held)
+  // Number keys switch tabs (ignored while typing or with modifiers held)
   useEffect(() => {
     const onKey = (e) => {
       if (e.metaKey || e.ctrlKey || e.altKey) return
       const el = e.target
       if (el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.tagName === 'SELECT' || el.isContentEditable)) return
       const idx = ['1', '2', '3', '4'].indexOf(e.key)
-      if (idx >= 0) setTab(NAV[idx].id)
+      if (idx >= 0 && idx < NAV.length) setTab(NAV[idx].id)
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
@@ -202,12 +202,6 @@ export default function App() {
         <TabsContent value="player">
           <Suspense fallback={<div className="flex items-center justify-center py-12"><Spinner className="h-5 w-5" /></div>}>
             <PlayerTab dropHandlerRef={dropOverrideRef} />
-          </Suspense>
-        </TabsContent>
-
-        <TabsContent value="merge">
-          <Suspense fallback={<div className="flex items-center justify-center py-12"><Spinner className="h-5 w-5" /></div>}>
-            <MergeTab />
           </Suspense>
         </TabsContent>
 
