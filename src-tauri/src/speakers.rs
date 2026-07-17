@@ -86,7 +86,8 @@ pub(crate) async fn detect_speakers(
 
     // Session load + inference on the blocking pool (see scoring.rs).
     tauri::async_runtime::spawn_blocking(move || -> Result<SpeakerInfo, String> {
-        let mut seg_session = models::load_session(&seg_path)?;
+        let seg_session = models::cached_session(&seg_path)?;
+        let mut seg_session = seg_session.lock().map_err(|_| "Segmentation session poisoned".to_string())?;
 
         // Segmentation: pyannote model expects [1, 1, num_samples] input
         // and outputs [1, num_frames, num_speakers] speaker activity probabilities
