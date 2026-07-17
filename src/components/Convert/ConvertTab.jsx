@@ -229,9 +229,17 @@ export default function ConvertTab({
   }
 
   // Guided stepper: reflects real state without gating anything — batch users
-  // can still work the whole page at once.
-  const step = converting ? 3 : files.length > 0 ? 2 : 1
-  const stepDone = (n) => n < step || (n === 3 && !converting && doneCount > 0 && files.length > 0)
+  // can still work the whole page at once. Completion is judged against the
+  // CURRENT queue (jobs are keyed by path), so adding a new file resets the
+  // stepper instead of inheriting the previous conversion's checkmark, and a
+  // finished queue shows all three steps done rather than bouncing the
+  // highlight back to "Choose settings".
+  const queueStatuses = files.map(f => jobs[f.path]?.status)
+  const queueSettled = files.length > 0 && !converting
+    && queueStatuses.every(s => s === 'done' || s === 'error')
+    && queueStatuses.some(s => s === 'done')
+  const step = converting || queueSettled ? 3 : files.length > 0 ? 2 : 1
+  const stepDone = (n) => n < step || (n === 3 && queueSettled)
   const procCount = [denoise, autoLevel, declip, enhance, dereverb, hpf, normalize, trim, fade].filter(Boolean).length
   const formatLabel = FORMATS_OUT.find(f => f.id === formatOut)?.label || formatOut
   const modeLabel = MODES.find(m => m.id === mode)?.label || mode

@@ -164,6 +164,10 @@ pub struct ProgressEvent {
     pub seconds: f64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub phase: Option<String>,
+    /// Source duration in seconds, when known — lets the UI render a real
+    /// percentage instead of an indeterminate bar during encoding.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub total: Option<f64>,
 }
 
 // ── AI analysis types ────────────────────────────────────────────────────────

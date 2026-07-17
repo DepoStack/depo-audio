@@ -9,7 +9,7 @@ use crate::analysis::analyze_audio;
 use crate::denoise::{decode_to_wav_48k, denoise_buffer, denoise_deep_filter};
 use crate::dereverb;
 use crate::enhance::enhance_buffer;
-use crate::ffmpeg::{build_proc_filters_with_gain, probe_channels, run_ffmpeg_with_timeout};
+use crate::ffmpeg::{build_proc_filters_with_gain, probe_channels, probe_duration, run_ffmpeg_with_timeout};
 use crate::helpers::{basename, detect_format_for_path, output_args, output_ext, safe_label, strip_sgmca_header, unique_path};
 use crate::types::{AudioBuffer, ConvertJob, FormatInfo, OutputFile, ProgressEvent};
 
@@ -129,7 +129,7 @@ async fn do_convert_inner(app: &AppHandle, job: &ConvertJob, feed: &Path, fmt: &
     if has_ai {
         // Phase: Analyzing
         let _ = app.emit("convert:progress", ProgressEvent {
-            id: job.id.clone(), seconds: 0.0, phase: Some("analyzing".into()),
+            id: job.id.clone(), seconds: 0.0, phase: Some("analyzing".into()), total: None,
         });
 
         // Run analysis if auto-leveling is requested
@@ -141,7 +141,7 @@ async fn do_convert_inner(app: &AppHandle, job: &ConvertJob, feed: &Path, fmt: &
 
         // Phase: Cleaning up audio
         let _ = app.emit("convert:progress", ProgressEvent {
-            id: job.id.clone(), seconds: 0.0, phase: Some("processing".into()),
+            id: job.id.clone(), seconds: 0.0, phase: Some("processing".into()), total: None,
         });
 
         // Decode input to 48kHz WAV, read into AudioBuffer, delete temp immediately
@@ -196,6 +196,11 @@ async fn do_convert_inner(app: &AppHandle, job: &ConvertJob, feed: &Path, fmt: &
 
     // Build filter chain — use ai_feed (post-AI) as input to FFmpeg
     let effective_feed = &ai_feed;
+
+    // Source duration for a determinate encode progress bar. The output is
+    // roughly the input's length (trim shortens it slightly), so the UI caps
+    // at 99% until done rather than pretending exact knowledge.
+    let total_secs = probe_duration(app, effective_feed).await;
 
     // For stereo mode with auto-level, we inject gains per-channel in the pan filter
     // For other modes, we inject a single gain into the proc filter chain
@@ -254,7 +259,7 @@ async fn do_convert_inner(app: &AppHandle, job: &ConvertJob, feed: &Path, fmt: &
             args.extend(["-af".into(), all.join(",")]);
             args.extend(out_codec.clone());
             args.extend(["-y".into(), dst.to_string_lossy().to_string()]);
-            if let Err(e) = run_ffmpeg_with_timeout(app, args, &job.id, job.ffmpeg_timeout as u64).await {
+            if let Err(e) = run_ffmpeg_with_timeout(app, args, &job.id, job.ffmpeg_timeout as u64, total_secs).await {
                 let _ = fs::remove_file(&dst);
                 return Err(e);
             }
@@ -269,7 +274,7 @@ async fn do_convert_inner(app: &AppHandle, job: &ConvertJob, feed: &Path, fmt: &
             }
             args.extend(out_codec.clone());
             args.extend(["-y".into(), dst.to_string_lossy().to_string()]);
-            if let Err(e) = run_ffmpeg_with_timeout(app, args, &job.id, job.ffmpeg_timeout as u64).await {
+            if let Err(e) = run_ffmpeg_with_timeout(app, args, &job.id, job.ffmpeg_timeout as u64, total_secs).await {
                 let _ = fs::remove_file(&dst);
                 return Err(e);
             }
@@ -298,7 +303,7 @@ async fn do_convert_inner(app: &AppHandle, job: &ConvertJob, feed: &Path, fmt: &
                 args.extend(out_codec.clone());
                 args.push(dst.to_string_lossy().to_string());
             }
-            if let Err(e) = run_ffmpeg_with_timeout(app, args, &job.id, job.ffmpeg_timeout as u64).await {
+            if let Err(e) = run_ffmpeg_with_timeout(app, args, &job.id, job.ffmpeg_timeout as u64, total_secs).await {
                 for d in &dsts { let _ = fs::remove_file(d); }
                 return Err(e);
             }
