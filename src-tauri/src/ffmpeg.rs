@@ -198,7 +198,7 @@ pub(crate) fn proc_filters(
 /// Minimum allowed FFmpeg timeout, guarding against bogus persisted settings.
 const MIN_FFMPEG_TIMEOUT_SECS: u64 = 30;
 
-pub(crate) async fn run_ffmpeg_with_timeout(app: &AppHandle, args: Vec<String>, job_id: &str, timeout_secs: u64) -> Result<(), String> {
+pub(crate) async fn run_ffmpeg_with_timeout(app: &AppHandle, args: Vec<String>, job_id: &str, timeout_secs: u64, total: Option<f64>) -> Result<(), String> {
     let (mut rx, child) = app
         .shell()
         .sidecar(ffmpeg_bin_name())
@@ -244,7 +244,7 @@ pub(crate) async fn run_ffmpeg_with_timeout(app: &AppHandle, args: Vec<String>, 
                     let m: f64 = cap[2].parse().unwrap_or(0.0);
                     let s: f64 = cap[3].parse().unwrap_or(0.0);
                     let secs = h * 3600.0 + m * 60.0 + s;
-                    let _ = app.emit("convert:progress", ProgressEvent { id: job_id.to_string(), seconds: secs, phase: None });
+                    let _ = app.emit("convert:progress", ProgressEvent { id: job_id.to_string(), seconds: secs, phase: None, total });
                 }
             }
             CommandEvent::Terminated(status) => {

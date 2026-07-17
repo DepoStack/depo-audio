@@ -53,18 +53,32 @@ export default function FileRow({ file, job, onRemove, converting }) {
           )}
         </div>
       </div>
-      {status === 'converting' && (
-        <div className="px-3 pb-2.5">
-          {job?.phase && (
-            <span className="text-[10px] text-[hsl(var(--sub))] block mb-1">
-              {job.phase === 'analyzing' ? 'Analyzing audio…' : job.phase === 'processing' ? 'Removing noise…' : `Encoding…`}{job.seconds > 0 ? ` ${Math.round(job.seconds)}s` : ''}
-            </span>
-          )}
-          <div className="w-full h-1 bg-border rounded-full overflow-hidden">
-            <div className="h-full bg-primary rounded-full animate-[loading_1.2s_ease-in-out_infinite]" />
+      {status === 'converting' && (() => {
+        // Real percentage when the backend knows the source duration; capped
+        // at 99% because trim can shorten the output — a bar sitting at 100%
+        // while work continues reads as stuck. AI phases (no seconds yet)
+        // stay indeterminate.
+        const pct = job?.total > 0 && job?.seconds > 0
+          ? Math.min((job.seconds / job.total) * 100, 99)
+          : null
+        return (
+          <div className="px-3 pb-2.5">
+            {(job?.phase || pct != null || job?.seconds > 0) && (
+              <span className="text-[10px] text-[hsl(var(--sub))] block mb-1">
+                {job.phase === 'analyzing' ? 'Analyzing audio…' : job.phase === 'processing' ? 'Removing noise…' : 'Encoding…'}
+                {pct != null ? ` ${Math.round(pct)}%` : job.seconds > 0 ? ` ${Math.round(job.seconds)}s` : ''}
+              </span>
+            )}
+            <div className="w-full h-1 bg-border rounded-full overflow-hidden">
+              {pct != null ? (
+                <div className="h-full bg-primary rounded-full transition-all duration-300" style={{ width: `${pct}%` }} />
+              ) : (
+                <div className="h-full bg-primary rounded-full animate-[loading_1.2s_ease-in-out_infinite]" />
+              )}
+            </div>
           </div>
-        </div>
-      )}
+        )
+      })()}
       {status === 'done' && job.outputs?.length > 0 && (
         <div className="px-3 pb-2.5 flex flex-col gap-0.5">
           {job.outputs.map((out, i) => <MiniPlayer key={out.path} out={out} color={CH_COLORS[i%4]} multi={job.outputs.length > 1} />)}
