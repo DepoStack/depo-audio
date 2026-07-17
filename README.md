@@ -18,7 +18,7 @@ DepoAudio handles the audio side of a deposition or hearing, end to end:
 
 - 🎧 **Convert** proprietary court formats (Stenograph SGMCA, FTR `.trm`, CourtSmart BWF) and standard audio to WAV, MP3, FLAC, Opus, or M4A — mix to stereo, keep the channel layout, or split one file per speaker.
 - ✨ **Clean up** with on-device AI: remove background noise, balance quiet vs. loud speakers, reconstruct clipped peaks, and extend narrow-band phone audio — all recommended automatically by a one-click **Scan**.
-- 📝 **Transcribe & review** in a built-in player with a synced transcript editor (SRT/VTT/TXT), 0.5×–2× speed, A-B loop, and bookmarks.
+- ▶️ **Play & review** in a built-in player — color-coded speaker tracks, 0.5×–2× speed, A-B loop, and bookmarks.
 - 🗂️ **Organize** every conversion into an auto-filed case library, and pull recordings straight from installed court software.
 
 > **100% local.** All processing runs on your machine — no uploads, no accounts, no subscription.
@@ -73,9 +73,8 @@ Scanning is a bounded, cancellable analysis pass; conversion is a two-step pipel
 - **Hardware-aware** — uses NPU/GPU when present
 - **Live progress** with a Cancel button; stuck files never freeze the app
 
-### ▶️ Player & transcript editor
+### ▶️ Built-in player
 - Color-coded tracks, **0.5×–2× speed**, **A-B loop**, editable **bookmarks**
-- **Synced transcript** — import/edit/export SRT · VTT · TXT with follow-along highlighting and playhead stamping
 - Full keyboard transport
 
 ### 🗂️ Library & detection
@@ -83,8 +82,7 @@ Scanning is a bounded, cancellable analysis pass; conversion is a two-step pipel
 - **Court-software detection** — Case CATalyst, FTR Gold, Eclipse, DigitalCAT, CourtSmart
 - **Import jobs** straight from detected directories
 
-### 🔗 Merge & general
-- **Merge** a backup mic and a phone dial-in of one session — auto-synced, then **Best Quality** or **Mix All**
+### ⚙️ General
 - **Dark & light** themes (system-aware) · **auto-updates** from GitHub Releases (signed, in-place)
 
 ---
@@ -150,7 +148,7 @@ src/                     # React 19 frontend
   components/
     Convert/  Player/  Merge/  Library/  common/
   hooks/                 # theme, prefs, conversion
-  App.jsx                # app shell — sidebar nav (Convert · Player · Merge · Library)
+  App.jsx                # app shell — sidebar nav (Convert · Player · Library)
 src-tauri/               # Rust backend (Tauri 2)
   src/
     analysis.rs          # bounded, cancellable Scan + Smart-Turn inference

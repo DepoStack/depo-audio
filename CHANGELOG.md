@@ -16,22 +16,15 @@ The first public release. A desktop audio converter and enhancer for court repor
 ### Features
 - **Conversion** — court formats (SGMCA, FTR/TRM, BWF, DigitalCAT) plus standard audio and video, out to WAV/MP3/FLAC/Opus/M4A; three output modes (mix to stereo, keep original, split by channel) with per-channel labels and volume; batch processing and 5 presets.
 - **Smart Cleanup (on-device AI)** — one-click Scan recommends denoise, auto-level, de-clip, and clarity fixes; turn detection, speaker count, and 1–5 quality scoring (DNSMOS); hardware-accelerated (Apple Neural Engine, Ryzen AI, Intel AI Boost, or GPU) with live, cancellable progress.
-- **Player & transcript editor** — color-coded speakers, 0.5×–2× speed, A-B loop, and bookmarks, plus a synced transcript editor (import/edit/export SRT, VTT, TXT with follow-along highlighting and playhead stamping).
-- **Merge** — auto-sync a backup mic and a phone dial-in of one session; Best Quality or Mix All.
+- **Player** — color-coded speakers, 0.5×–2× speed, A-B loop, and editable bookmarks.
 - **Library & detection** — case library auto-filed by case and participant (search, archive, re-export); court-software detection (Case CATalyst, FTR Gold, Eclipse, DigitalCAT, CourtSmart) with direct job import.
 - **Platform** — universal macOS (Apple Silicon + Intel) and Windows; signed auto-updates from GitHub Releases; dark & light themes (WCAG 2.2 AA); no cloud, no accounts, no subscription.
 
 ### Added
 - **Live scan progress** — the Convert-tab Scan streams progress for every analysis phase (loudness, noise floor, speech, speaker turns, quality, speakers), the bar advances *within* each file with a phase label — including heartbeats while a slow FFmpeg pass drains its timeout, so "slow but alive" looks different from "stuck" — and a Cancel button actually stops the backend compute.
-- **FTR session chunks auto-order chronologically** — dropping or browsing a set of `.trm`/`.ftr` chunks queues them in recording order (parsed from FTR's filename timestamp, verified against real court-produced files) regardless of how the OS delivered them. Applies to the Convert queue, Merge sources (the earliest chunk becomes the sync reference), and the Player playlist (newly added batches only — manual reordering is preserved). Mixed selections keep the order you chose.
+- **FTR session chunks auto-order chronologically** — dropping or browsing a set of `.trm`/`.ftr` chunks queues them in recording order (parsed from FTR's filename timestamp, verified against real court-produced files) regardless of how the OS delivered them. Applies to the Convert queue and the Player playlist (newly added batches only — manual reordering is preserved). Mixed selections keep the order you chose.
 - **Universal macOS build** — one `.app`/`.dmg` runs natively on both Apple Silicon and Intel. FFmpeg sidecars and the ONNX Runtime library are combined for both architectures; no more separate Intel/Apple-Silicon downloads.
 - **Auto-update from GitHub Releases** — on launch the app checks for a newer **signed** release; when one exists a banner offers "Update & restart", which downloads, verifies, installs, and relaunches into the new version. A manual "Check for updates" lives in Settings → Software Update. Updates are cryptographically signed (minisign) and verified against the bundled public key before install.
-- **Synced transcript editor** — proof an existing transcript against the audio or build one from scratch, right in the Player:
-  - Import **SRT, VTT, or TXT** (or paste text); every line is editable inline and autosaves per track.
-  - Timed lines **highlight and auto-scroll** as the audio plays ("Follow"); click a line's time to jump there.
-  - **Stamp** the current audio position onto a line to anchor plain text, and press **Enter** to start a new line stamped at the playhead (fast capture).
-  - Optional per-line **speaker** labels (auto-detected from "SPEAKER: text").
-  - **Export** to SRT or TXT, or copy the whole transcript to the clipboard.
 - **Player keyboard transport** — Space/K play-pause, ←/→ seek ±5s, J/L seek ±10s, ↑/↓ change speed, [ / ] previous/next track, B add bookmark (ignored while typing in a field).
 - **Playback speed** — 0.5×–2× control in the player, persists across sessions (essential for transcription).
 - **A-B loop** — set in/out points and repeat a passage for re-listening.
