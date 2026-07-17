@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+## [1.0.1] - 2026-07-17
+
+### Fixed
+- **Scan no longer stalls for minutes on "Detecting speech"** — the AI models were being compiled for the hardware accelerator (Apple Neural Engine / DirectML) from scratch for every pass of every file, and the voice-activity model's dynamic shapes made that compilation hang outright. The two dynamic-shape models now run on the CPU (they're tiny — milliseconds per inference), and loaded models are cached for the app's lifetime, which also makes multi-file scans significantly faster.
+- **Conversion progress shows a real percentage** — the bar was an indeterminate full-width pulse that read as "stuck at 100%" while work continued. It now shows actual encode progress ("Encoding… 43%"), capped at 99% until the file is truly finished; AI cleanup phases keep the activity animation.
+- **The guided steps behave** — "Add recording → Choose settings → Convert" now checks all three steps when the current queue finishes, and resets when you add a new file instead of inheriting the previous conversion's checkmark.
+
 ## [1.0.0] - 2026-07-16
 
 The first public release. A desktop audio converter and enhancer for court reporters — 100% local.
