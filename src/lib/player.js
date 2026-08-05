@@ -6,7 +6,25 @@ import { fmtTime } from '../utils'
 // behavior: what files the playlist accepts, how speed cycling steps, and
 // how persisted bookmarks are validated and exported.
 
-export const AUDIO_EXTS = ['wav','mp3','flac','opus','ogg','m4a','aac','wma','aif','aiff','sgmca','trm','ftr','bwf']
+export const AUDIO_EXTS = [
+  'wav',
+  'mp3',
+  'flac',
+  'opus',
+  'ogg',
+  'm4a',
+  'aac',
+  'wma',
+  'aif',
+  'aiff',
+  'sgmca',
+  'trm',
+  'ftr',
+  'bwf',
+]
+// These containers need native preprocessing before a browser media element
+// can decode them. SGMCA may contain an Ogg stream behind a vendor prefix.
+export const CONVERSION_REQUIRED_EXTS = new Set(['sgmca', 'trm', 'ftr'])
 export const SPEED_STEPS = [0.5, 0.75, 1, 1.25, 1.5, 2]
 
 // Parse the persisted playback speed; anything off the menu falls back to 1×
@@ -29,17 +47,28 @@ export function loadBookmarks(raw) {
   try {
     const v = JSON.parse(raw || '[]')
     return Array.isArray(v) ? v.filter(b => b && typeof b.time === 'number' && typeof b.trackPath === 'string') : []
-  } catch { return [] }
+  } catch {
+    return []
+  }
 }
 
 // Native drops arrive unfiltered: keep only audio files, skip paths already
 // queued (duplicate keys break selection), and dedupe within the drop itself.
-export function freshAudioPaths(paths, tracks) {
+export function partitionPlaybackPaths(paths, tracks) {
   const fresh = paths
-    .map(p => (typeof p === 'string' ? p : p.path))
+    .map(p => (typeof p === 'string' ? p : p?.path))
+    .filter(path => typeof path === 'string')
     .filter(path => AUDIO_EXTS.includes(path.split('.').pop()?.toLowerCase()))
     .filter(path => !tracks.some(t => t.path === path))
-  return [...new Set(fresh)]
+  const unique = [...new Set(fresh)]
+  return {
+    playable: unique.filter(path => !CONVERSION_REQUIRED_EXTS.has(path.split('.').pop()?.toLowerCase())),
+    conversionRequired: unique.filter(path => CONVERSION_REQUIRED_EXTS.has(path.split('.').pop()?.toLowerCase())),
+  }
+}
+
+export function freshAudioPaths(paths, tracks) {
+  return partitionPlaybackPaths(paths, tracks).playable
 }
 
 // The active track's bookmarks as "MM:SS<TAB>label" lines (for transcripts)

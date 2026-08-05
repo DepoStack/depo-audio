@@ -24,7 +24,7 @@ const DialogClose = React.forwardRef(({ className, children, asChild, ...props }
       className={cn(
         'rounded-md p-1.5 text-[hsl(var(--sub))] transition-colors hover:text-foreground hover:bg-secondary',
         'focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring',
-        className
+        className,
       )}
       {...props}
     >
@@ -38,7 +38,10 @@ DialogClose.displayName = 'DialogClose'
 const DialogOverlay = React.forwardRef(({ className, ...props }, ref) => (
   <DialogPrimitive.Overlay
     ref={ref}
-    className={cn('fixed inset-0 z-50 bg-black/60 data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0', className)}
+    className={cn(
+      'fixed inset-0 z-50 bg-black/60 data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0',
+      className,
+    )}
     {...props}
   />
 ))
@@ -53,7 +56,7 @@ const DialogContent = React.forwardRef(({ className, children, ...props }, ref) 
         'fixed left-[50%] top-[50%] z-50 w-full max-w-[480px] translate-x-[-50%] translate-y-[-50%]',
         'bg-card border border-border rounded-xl shadow-[0_20px_60px_rgba(0,0,0,0.5)] max-h-[90vh] overflow-y-auto',
         'data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95',
-        className
+        className,
       )}
       {...props}
     >
@@ -64,7 +67,10 @@ const DialogContent = React.forwardRef(({ className, children, ...props }, ref) 
 DialogContent.displayName = 'DialogContent'
 
 const DialogHeader = ({ className, ...props }) => (
-  <div className={cn('flex items-center justify-between px-5 pt-4 pb-3 border-b border-border/60', className)} {...props} />
+  <div
+    className={cn('flex items-center justify-between px-5 pt-4 pb-3 border-b border-border/60', className)}
+    {...props}
+  />
 )
 
 const DialogTitle = React.forwardRef(({ className, ...props }, ref) => (
@@ -73,7 +79,11 @@ const DialogTitle = React.forwardRef(({ className, ...props }, ref) => (
 DialogTitle.displayName = 'DialogTitle'
 
 const DialogDescription = React.forwardRef(({ className, ...props }, ref) => (
-  <DialogPrimitive.Description ref={ref} className={cn('text-xs text-[hsl(var(--sub))] leading-relaxed', className)} {...props} />
+  <DialogPrimitive.Description
+    ref={ref}
+    className={cn('text-xs text-[hsl(var(--sub))] leading-relaxed', className)}
+    {...props}
+  />
 ))
 DialogDescription.displayName = 'DialogDescription'
 
@@ -81,4 +91,15 @@ const DialogFooter = ({ className, ...props }) => (
   <div className={cn('flex justify-end gap-2 px-5 py-4 border-t border-border/60 mt-3.5', className)} {...props} />
 )
 
-export { Dialog, DialogPortal, DialogOverlay, DialogClose, DialogTrigger, DialogContent, DialogHeader, DialogFooter, DialogTitle, DialogDescription }
+export {
+  Dialog,
+  DialogPortal,
+  DialogOverlay,
+  DialogClose,
+  DialogTrigger,
+  DialogContent,
+  DialogHeader,
+  DialogFooter,
+  DialogTitle,
+  DialogDescription,
+}

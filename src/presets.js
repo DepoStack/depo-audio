@@ -4,6 +4,17 @@
 // options to sensible defaults. Users can apply a preset and then override
 // individual settings.
 
+// Resolve capability- and mode-dependent settings before a preset is compared
+// or applied. Unknown capabilities fail closed so a preset can never silently
+// enable a processing path that the current installation cannot run.
+export function resolvePresetSettings(settings, capabilities) {
+  return {
+    ...settings,
+    autoLevel: settings.mode === 'keep' ? false : Boolean(settings.autoLevel),
+    dereverb: Boolean(settings.dereverb && capabilities?.dereverbAvailable === true),
+  }
+}
+
 export const PRESETS = [
   {
     id: 'deposition',
@@ -19,7 +30,7 @@ export const PRESETS = [
       fadeDur: 0.3,
       hpf: true,
       denoise: true,
-      denoiseQuality: 'best',
+      denoiseQuality: 'fast',
       autoLevel: true,
       declip: false,
       enhance: false,
@@ -40,7 +51,7 @@ export const PRESETS = [
       fadeDur: 0.5,
       hpf: true,
       denoise: true,
-      denoiseQuality: 'best',
+      denoiseQuality: 'fast',
       autoLevel: false,
       declip: false,
       enhance: true,
@@ -50,7 +61,7 @@ export const PRESETS = [
   {
     id: 'courtroom',
     name: 'Courtroom',
-    desc: 'Large room recording — reduce echo and background noise',
+    desc: 'Large room recording — reduce background noise and balance speakers',
     settings: {
       mode: 'split',
       format: 'wav',

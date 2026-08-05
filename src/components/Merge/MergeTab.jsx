@@ -30,8 +30,28 @@ export default function MergeTab() {
       const selected = await open({
         multiple: true,
         filters: [
-          { name: 'Audio', extensions: ['wav','mp3','flac','opus','ogg','m4a','aac','wma','aif','aiff','caf','amr','sgmca','trm','ftr','bwf'] },
-          { name: 'Video (audio extracted)', extensions: ['mp4','mov','mkv','avi','webm'] },
+          {
+            name: 'Audio',
+            extensions: [
+              'wav',
+              'mp3',
+              'flac',
+              'opus',
+              'ogg',
+              'm4a',
+              'aac',
+              'wma',
+              'aif',
+              'aiff',
+              'caf',
+              'amr',
+              'sgmca',
+              'trm',
+              'ftr',
+              'bwf',
+            ],
+          },
+          { name: 'Video (audio extracted)', extensions: ['mp4', 'mov', 'mkv', 'avi', 'webm'] },
         ],
       })
       if (selected) {
@@ -49,12 +69,12 @@ export default function MergeTab() {
         setResult(null)
         setError('')
       }
-    } catch {
-      // Dialog dismissed or unavailable — nothing to add
+    } catch (error) {
+      setError(`Could not open the audio picker: ${String(error)}`)
     }
   }
 
-  const removeSource = (idx) => {
+  const removeSource = idx => {
     setSources(prev => prev.filter((_, i) => i !== idx))
     setSyncResults([])
     setResult(null)
@@ -94,7 +114,7 @@ export default function MergeTab() {
           format,
           rate: format === 'opus' ? '48000' : rate,
           strategy,
-        }
+        },
       })
       setResult(res)
     } catch (e) {
@@ -107,12 +127,13 @@ export default function MergeTab() {
     <>
       <div className="flex-1 overflow-y-auto overflow-x-hidden">
         <div className="w-full max-w-[1100px] mx-auto px-5 md:px-8 py-5 flex flex-col gap-3.5">
-
           {/* ── Source Files ──────────────────────────────── */}
           <Card>
             <CardHeader>
               <CardTitle>RECORDINGS TO MERGE</CardTitle>
-              <Button size="sm" onClick={browseFiles}>Add Files</Button>
+              <Button size="sm" onClick={browseFiles}>
+                Add Files
+              </Button>
             </CardHeader>
 
             {sources.length === 0 ? (
@@ -122,9 +143,16 @@ export default function MergeTab() {
                 aria-label="Add recordings to merge: press Enter to browse"
                 className="border-2 border-dashed border-border rounded-lg m-3 py-10 px-8 text-center cursor-pointer transition-colors hover:border-primary focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
                 onClick={browseFiles}
-                onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); browseFiles() } }}
+                onKeyDown={e => {
+                  if (e.key === 'Enter' || e.key === ' ') {
+                    e.preventDefault()
+                    browseFiles()
+                  }
+                }}
               >
-                <p className="text-[13px] font-semibold text-foreground mb-1">Add two or more recordings of the same event</p>
+                <p className="text-[13px] font-semibold text-foreground mb-1">
+                  Add two or more recordings of the same event
+                </p>
                 <p className="text-[11px] text-[hsl(var(--sub))] mb-5">
                   Reporter mic, backup recorder, phone — any combination works.
                 </p>
@@ -135,7 +163,9 @@ export default function MergeTab() {
                     ['3', 'One clean file', 'The clearest source wins at every moment'],
                   ].map(([n, title, desc]) => (
                     <div key={n} className="flex items-start gap-2 max-w-[180px]">
-                      <span className="w-5 h-5 rounded-full bg-[hsl(var(--gold-dim))] text-foreground text-[10px] font-bold flex items-center justify-center shrink-0 mt-0.5">{n}</span>
+                      <span className="w-5 h-5 rounded-full bg-[hsl(var(--gold-dim))] text-foreground text-[10px] font-bold flex items-center justify-center shrink-0 mt-0.5">
+                        {n}
+                      </span>
                       <div className="flex flex-col">
                         <span className="text-[11px] font-semibold text-foreground">{title}</span>
                         <span className="text-[10px] text-[hsl(var(--sub))] leading-snug">{desc}</span>
@@ -147,7 +177,10 @@ export default function MergeTab() {
             ) : (
               <div className="p-2">
                 {sources.map((s, i) => (
-                  <div key={i} className="group flex items-center gap-2.5 px-3 py-2 rounded-md transition-colors hover:bg-secondary/50">
+                  <div
+                    key={i}
+                    className="group flex items-center gap-2.5 px-3 py-2 rounded-md transition-colors hover:bg-secondary/50"
+                  >
                     <span className="w-2 h-2 rounded-full shrink-0" style={{ background: CH_COLORS[i % 4] }} />
                     <span className="font-mono text-[10px] text-[hsl(var(--sub))] min-w-[65px]">
                       {i === 0 ? 'Reference' : `Source ${i + 1}`}
@@ -235,7 +268,7 @@ export default function MergeTab() {
                             'px-3 py-1.5 rounded-md text-xs font-semibold transition-colors focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring',
                             format === f.id
                               ? 'bg-[hsl(var(--gold-dim))] text-foreground'
-                              : 'text-[hsl(var(--sub))] hover:text-[hsl(var(--text2))]'
+                              : 'text-[hsl(var(--sub))] hover:text-[hsl(var(--text2))]',
                           )}
                           onClick={() => setFormat(f.id)}
                         >
@@ -262,8 +295,17 @@ export default function MergeTab() {
                 </span>
                 {result.syncOffsets?.length > 1 && (
                   <span className="text-[11px] text-[hsl(var(--sub))] block mt-0.5">
-                    Sync offsets: {result.syncOffsets.slice(1).map(o => `${o > 0 ? '+' : ''}${o.toFixed(1)}s`).join(', ')}
+                    Sync offsets:{' '}
+                    {result.syncOffsets
+                      .slice(1)
+                      .map(o => `${o > 0 ? '+' : ''}${o.toFixed(1)}s`)
+                      .join(', ')}
                   </span>
+                )}
+                {result.warning && (
+                  <p className="mt-2 rounded-md border border-warning/30 bg-warning/10 px-2.5 py-2 text-xs text-foreground">
+                    {result.warning}
+                  </p>
                 )}
               </CardContent>
             </Card>
@@ -274,7 +316,6 @@ export default function MergeTab() {
               {error}
             </p>
           )}
-
         </div>
       </div>
 
@@ -301,15 +342,25 @@ export default function MergeTab() {
         <div className="flex gap-2">
           {sources.length >= 2 && !merging && (
             <Button size="sm" onClick={handleSync} disabled={syncing}>
-              {syncing ? <><Loader2 className="h-3.5 w-3.5 animate-spin" />Syncing…</> : 'Check Sync'}
+              {syncing ? (
+                <>
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                  Syncing…
+                </>
+              ) : (
+                'Check Sync'
+              )}
             </Button>
           )}
-          <Button
-            variant="primary"
-            onClick={handleMerge}
-            disabled={merging || sources.length < 2}
-          >
-            {merging ? <><Loader2 className="h-3.5 w-3.5 animate-spin" />Merging…</> : 'Merge'}
+          <Button variant="primary" onClick={handleMerge} disabled={merging || sources.length < 2}>
+            {merging ? (
+              <>
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                Merging…
+              </>
+            ) : (
+              'Merge'
+            )}
           </Button>
         </div>
       </footer>

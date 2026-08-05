@@ -109,20 +109,31 @@ describe('sortRecordingChunks', () => {
   })
 
   it('pads mixed-width time fields in the natural-sort fallback (no hex)', () => {
-    const noHex = [
-      '/case/Room 2_20180621-1451.trm',
-      '/case/Room 2_20180621-145000.trm',
-    ]
-    expect(sortRecordingChunks(noHex).map(basename)).toEqual([
-      'Room 2_20180621-145000.trm',
-      'Room 2_20180621-1451.trm',
-    ])
+    const noHex = ['/case/Room 2_20180621-1451.trm', '/case/Room 2_20180621-145000.trm']
+    expect(sortRecordingChunks(noHex).map(basename)).toEqual(['Room 2_20180621-145000.trm', 'Room 2_20180621-1451.trm'])
   })
 
   it('falls back to natural sort for non-FTR-named .trm files', () => {
     const numbered = ['/y/session part 10.trm', '/y/session part 2.trm', '/y/session part 1.trm']
     expect(sortRecordingChunks(numbered).map(basename)).toEqual([
-      'session part 1.trm', 'session part 2.trm', 'session part 10.trm',
+      'session part 1.trm',
+      'session part 2.trm',
+      'session part 10.trm',
+    ])
+  })
+
+  it('uses a stable total order when canonical and renamed chunks are mixed', () => {
+    const mixedNames = [
+      '/y/session part 2.trm',
+      '/y/CR24_20180621-1459_01d409706d824cb0.trm',
+      '/y/session part 1.trm',
+      '/y/CR24_20180621-1449_01d4096f0757ee50.trm',
+    ]
+    expect(sortRecordingChunks(mixedNames).map(basename)).toEqual([
+      'CR24_20180621-1449_01d4096f0757ee50.trm',
+      'CR24_20180621-1459_01d409706d824cb0.trm',
+      'session part 1.trm',
+      'session part 2.trm',
     ])
   })
 

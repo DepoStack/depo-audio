@@ -1,17 +1,99 @@
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 
 use tauri::{AppHandle, Emitter};
 
 use uuid::Uuid;
 
-use crate::analysis::analyze_audio;
-use crate::denoise::{decode_to_wav_48k, denoise_buffer, denoise_deep_filter};
+use crate::denoise::{decode_to_wav_48k, denoise_buffer};
 use crate::dereverb;
 use crate::enhance::enhance_buffer;
-use crate::ffmpeg::{build_proc_filters_with_gain, probe_channels, probe_duration, run_ffmpeg_with_timeout};
-use crate::helpers::{basename, detect_format_for_path, output_args, output_ext, safe_label, strip_sgmca_header, unique_path};
-use crate::types::{AudioBuffer, ConvertJob, FormatInfo, OutputFile, ProgressEvent};
+use crate::ffmpeg::{
+    build_proc_filters_with_gain, ensure_ftr_decoder, probe_channels_cancellable, probe_duration_cancellable,
+    run_ffmpeg_with_timeout,
+};
+use crate::helpers::{
+    basename, detect_format_for_path, input_codec_args, output_args, output_ext, prepare_audio_feed_cancellable,
+    reserve_unique_path, safe_ffmpeg_input_prelude, safe_label,
+};
+use crate::types::{AudioBuffer, ConvertJob, OutputFile, ProgressEvent, CONVERSION_CANCELLED_MESSAGE};
+
+/// Temporary safety ceiling for the non-streaming AI pipeline. Processing can
+/// hold the interleaved source, split channels, model output, and reassembled
+/// output concurrently. FlashSR's visible buffers peak above four copies even
+/// before ONNX workspace, so admission budgets five full PCM copies.
+const AI_PCM_MEMORY_LIMIT_BYTES: u64 = 512 * 1024 * 1024;
+const AI_PCM_SAMPLE_RATE: u64 = 48_000;
+const AI_PCM_BYTES_PER_SAMPLE: u64 = 4;
+const AI_PCM_PEAK_COPY_FACTOR: u64 = 5;
+const AI_BASE_PCM_LIMIT_BYTES: u64 = AI_PCM_MEMORY_LIMIT_BYTES / AI_PCM_PEAK_COPY_FACTOR;
+const AI_DECODED_WAV_HEADER_ALLOWANCE_BYTES: u64 = 1024 * 1024;
+const AI_DECODED_WAV_LIMIT_BYTES: u64 = AI_BASE_PCM_LIMIT_BYTES + AI_DECODED_WAV_HEADER_ALLOWANCE_BYTES;
+const AI_DECODED_SAMPLE_VALUE_LIMIT: usize = (AI_BASE_PCM_LIMIT_BYTES / AI_PCM_BYTES_PER_SAMPLE) as usize;
+/// FTR's supported registry and the analysis engine both cap court recordings
+/// at 16 channels. Reject corrupt or unsupported headers before allocating
+/// labels, filters, or output reservations from their channel count.
+const MAX_CONVERSION_CHANNELS: u32 = 16;
+
+/// Immutable view of one conversion batch's cancellation generation.
+#[derive(Clone)]
+pub(crate) struct ConversionCancel {
+    epoch: Arc<AtomicU64>,
+    generation: u64,
+}
+
+impl ConversionCancel {
+    pub(crate) fn new(epoch: Arc<AtomicU64>, generation: u64) -> Self {
+        Self { epoch, generation }
+    }
+
+    pub(crate) fn cancelled(&self) -> bool {
+        self.epoch.load(Ordering::Acquire) != self.generation
+    }
+
+    pub(crate) fn check(&self) -> Result<(), String> {
+        if self.cancelled() {
+            Err(CONVERSION_CANCELLED_MESSAGE.into())
+        } else {
+            Ok(())
+        }
+    }
+}
+
+/// Deletes every reserved/output path unless the complete result is explicitly
+/// committed. This covers cancellation and all early-return branches, not only
+/// FFmpeg's conventional non-zero exit path.
+#[derive(Default)]
+struct OutputCleanup {
+    paths: Vec<PathBuf>,
+    committed: bool,
+}
+
+impl OutputCleanup {
+    fn track(&mut self, path: PathBuf) {
+        self.paths.push(path);
+    }
+
+    fn track_all(&mut self, paths: &[PathBuf]) {
+        self.paths.extend(paths.iter().cloned());
+    }
+
+    fn commit(&mut self) {
+        self.committed = true;
+    }
+}
+
+impl Drop for OutputCleanup {
+    fn drop(&mut self) {
+        if !self.committed {
+            for path in &self.paths {
+                let _ = fs::remove_file(path);
+            }
+        }
+    }
+}
 
 // ── Filtergraph builders (pure) ──────────────────────────────────────────────
 //
@@ -24,10 +106,12 @@ use crate::types::{AudioBuffer, ConvertJob, FormatInfo, OutputFile, ProgressEven
 fn stereo_pan_filter(num_ch: u32, vols: &[f64]) -> String {
     let weight = 1.0 / num_ch as f64;
     let scale = num_ch as f64; // compensate for per-channel weight
-    let weights: Vec<String> = (0..num_ch).map(|i| {
-        let v = vols.get(i as usize).copied().unwrap_or(weight);
-        format!("{:.4}*c{}", v, i)
-    }).collect();
+    let weights: Vec<String> = (0..num_ch)
+        .map(|i| {
+            let v = vols.get(i as usize).copied().unwrap_or(weight);
+            format!("{:.4}*c{}", v, i)
+        })
+        .collect();
     let mix = weights.join("+");
     format!("pan=stereo|c0={}|c1={},volume={:.1}", mix, mix, scale)
 }
@@ -35,26 +119,31 @@ fn stereo_pan_filter(num_ch: u32, vols: &[f64]) -> String {
 /// Per-channel output labels for split mode: the user's label, sanitized for
 /// filenames, falling back to chN when empty.
 fn split_labels(num_ch: u32, labels: &[String]) -> Vec<String> {
-    (0..num_ch as usize).map(|i| {
-        let raw = labels.get(i).map(|s| s.as_str()).unwrap_or("");
-        let sl = safe_label(raw);
-        if sl.is_empty() { format!("ch{}", i + 1) } else { sl }
-    }).collect()
+    (0..num_ch as usize)
+        .map(|i| {
+            let raw = labels.get(i).map(|s| s.as_str()).unwrap_or("");
+            let sl = safe_label(raw);
+            if sl.is_empty() {
+                format!("ch{}", i + 1)
+            } else {
+                sl
+            }
+        })
+        .collect()
 }
 
 /// Split mode filter_complex: asplit + pan=mono per channel (channelsplit
 /// requires the actual channel layout, which breaks mono and 4-channel court
 /// recordings). Auto-level injects EACH channel's own gain right after the
 /// channel is isolated — a single averaged gain would leave imbalance in place.
-fn split_filter_complex(
-    num_ch: u32,
-    auto_level: bool,
-    channel_gains: Option<&Vec<f64>>,
-    proc: &[String],
-) -> String {
+fn split_filter_complex(num_ch: u32, auto_level: bool, channel_gains: Option<&Vec<f64>>, proc: &[String]) -> String {
     let sp_tags: Vec<String> = (0..num_ch as usize).map(|i| format!("sp{}", i)).collect();
     let split_str = format!("[0:a]asplit={}[{}]", num_ch, sp_tags.join("]["));
-    let per_ch_proc = if proc.is_empty() { String::new() } else { format!(",{}", proc.join(",")) };
+    let per_ch_proc = if proc.is_empty() {
+        String::new()
+    } else {
+        format!(",{}", proc.join(","))
+    };
     let chain: Vec<String> = (0..num_ch as usize)
         .map(|i| {
             let gain_str = if auto_level {
@@ -62,53 +151,193 @@ fn split_filter_complex(
                     Some(g) if (g - 1.0).abs() > 0.01 => format!(",volume={:.4}", g),
                     _ => String::new(),
                 }
-            } else { String::new() };
+            } else {
+                String::new()
+            };
             format!("[sp{}]pan=mono|c0=c{}{}{}[op{}]", i, i, gain_str, per_ch_proc, i)
         })
         .collect();
     std::iter::once(split_str).chain(chain).collect::<Vec<_>>().join(";")
 }
 
+/// Reserve a set of output paths as one operation from the caller's point of
+/// view. If any reservation fails, remove every placeholder already acquired
+/// so a split conversion never leaves a partial set behind.
+fn reserve_output_paths(paths: impl IntoIterator<Item = PathBuf>) -> Result<Vec<PathBuf>, String> {
+    let mut reserved = Vec::new();
+    for path in paths {
+        match reserve_unique_path(&path) {
+            Ok(path) => reserved.push(path),
+            Err(error) => {
+                for path in &reserved {
+                    let _ = fs::remove_file(path);
+                }
+                return Err(error);
+            }
+        }
+    }
+    Ok(reserved)
+}
+
+/// Keep the denoise selector honest until the DeepFilterNet pipeline performs
+/// real inference. A disabled preference may retain any saved quality value;
+/// validation only applies when denoising is actually requested.
+fn validate_denoise_request(enabled: bool, quality: &str) -> Result<(), String> {
+    if !enabled || quality == "fast" {
+        return Ok(());
+    }
+    if quality == "best" {
+        return Err(
+            "Best-quality denoising (DeepFilterNet3) is not implemented yet. Choose Fast (RNNoise) or turn denoising off."
+                .into(),
+        );
+    }
+    Err(format!("Unknown denoising quality: {quality}"))
+}
+
+fn estimated_ai_peak_pcm_bytes(duration_seconds: f64, channels: u32) -> Result<u64, String> {
+    if !duration_seconds.is_finite() || duration_seconds <= 0.0 || channels == 0 {
+        return Err(
+            "Cannot safely estimate AI processing memory for this recording. Convert without AI processing or use shorter chunks."
+                .into(),
+        );
+    }
+
+    let base = duration_seconds * channels as f64 * AI_PCM_SAMPLE_RATE as f64 * AI_PCM_BYTES_PER_SAMPLE as f64;
+    if !base.is_finite() || base > u64::MAX as f64 {
+        return Err(
+            "AI processing memory estimate is too large. Convert without AI processing or use shorter chunks.".into(),
+        );
+    }
+    (base.ceil() as u64)
+        .checked_mul(AI_PCM_PEAK_COPY_FACTOR)
+        .ok_or_else(|| {
+            "AI processing peak-memory estimate overflowed. Convert without AI processing or use shorter chunks.".into()
+        })
+}
+
+fn validate_ai_pcm_memory(duration_seconds: f64, channels: u32) -> Result<(), String> {
+    let estimate = estimated_ai_peak_pcm_bytes(duration_seconds, channels)?;
+    if estimate > AI_PCM_MEMORY_LIMIT_BYTES {
+        let estimate_mib = estimate as f64 / (1024.0 * 1024.0);
+        return Err(format!(
+            "AI processing could require approximately {estimate_mib:.0} MiB at peak (including processing copies), above the 512 MiB safety limit. Convert without AI processing or use shorter chunks."
+        ));
+    }
+    Ok(())
+}
+
+fn validate_conversion_channels(channels: u32) -> Result<u32, String> {
+    match channels {
+        1..=MAX_CONVERSION_CHANNELS => Ok(channels),
+        0 => Err("The recording reports zero audio channels and cannot be converted.".into()),
+        count => Err(format!(
+            "The recording reports {count} audio channels; DepoAudio supports at most {MAX_CONVERSION_CHANNELS}. The file header may be corrupt or use an unsupported layout."
+        )),
+    }
+}
+
+fn validate_finite_range(label: &str, value: f64, min: f64, max: f64) -> Result<(), String> {
+    if !value.is_finite() || !(min..=max).contains(&value) {
+        return Err(format!("{label} must be a finite value from {min} to {max}."));
+    }
+    Ok(())
+}
+
+fn validate_convert_request(job: &ConvertJob) -> Result<(), String> {
+    if !matches!(job.mode.as_str(), "stereo" | "keep" | "split") {
+        return Err(format!("Unsupported conversion mode: {}", job.mode));
+    }
+    if !matches!(job.format.as_str(), "wav" | "mp3" | "flac" | "opus" | "m4a") {
+        return Err(format!("Unsupported output format: {}", job.format));
+    }
+    validate_finite_range("Maximum input size", job.max_file_size_gb, f64::MIN_POSITIVE, 20.0)?;
+    validate_finite_range("High-pass cutoff", job.hpf_cutoff, 20.0, 500.0)?;
+    validate_finite_range("Normalization loudness", job.normalize_lufs, -70.0, -5.0)?;
+    validate_finite_range("Normalization true peak", job.normalize_tp, -20.0, 0.0)?;
+    validate_finite_range("Silence threshold", job.silence_thresh, -100.0, 0.0)?;
+    if job
+        .chan_vols
+        .iter()
+        .any(|volume| !volume.is_finite() || !(0.0..=2.0).contains(volume))
+    {
+        return Err("Channel volumes must be finite values from 0 to 2.".into());
+    }
+    if job.mode == "keep" && job.auto_level {
+        return Err(
+            "Auto-leveling is unavailable in Keep Original mode because that mode must preserve the channel layout without applying one shared gain. Choose Mix to Stereo or Split Channels."
+                .into(),
+        );
+    }
+    Ok(())
+}
+
+fn uses_ai_predecode(job: &ConvertJob) -> bool {
+    // De-clipping is FFmpeg's streaming `adeclip` filter and must not force a
+    // full in-memory PCM decode. Auto-leveling only needs a bounded loudness
+    // sample and likewise remains on the streaming FFmpeg path.
+    job.denoise || job.enhance || job.dereverb
+}
+
 // ── Conversion orchestration ─────────────────────────────────────────────────
 
-pub(crate) async fn do_convert(app: &AppHandle, job: &ConvertJob) -> Result<Vec<OutputFile>, String> {
+pub(crate) async fn do_convert(
+    app: &AppHandle,
+    job: &ConvertJob,
+    cancel: &ConversionCancel,
+) -> Result<Vec<OutputFile>, String> {
+    cancel.check()?;
+    validate_convert_request(job)?;
     // Safety checks
     let src = Path::new(&job.src_path);
     let max_bytes = (job.max_file_size_gb * 1024.0 * 1024.0 * 1024.0) as u64;
     crate::safety::check_file_safe_with_limit(src, max_bytes)?;
-    if job.fade { crate::safety::validate_fade_dur(job.fade_dur)?; }
+    if job.fade {
+        crate::safety::validate_fade_dur(job.fade_dur)?;
+    }
     crate::safety::validate_rate(&job.rate)?;
+    validate_denoise_request(job.denoise, &job.denoise_quality)?;
+    cancel.check()?;
 
-    let fmt = detect_format_for_path(&job.src_path)
-        .ok_or("Unrecognised file format")?;
+    let fmt = detect_format_for_path(&job.src_path).ok_or("Unrecognised file format")?;
 
     if fmt.handler == "rejected" {
         return Err(fmt.note.unwrap_or_else(|| "This format cannot be converted.".into()));
     }
-    let (feed_path, is_temp) = if fmt.handler == "sgmca" {
-        strip_sgmca_header(src)?
-    } else {
-        (src.to_path_buf(), false)
-    };
+    if fmt.handler == "ftr" {
+        ensure_ftr_decoder(app).await?;
+        cancel.check()?;
+    }
+    let preparation_cancel = cancel.clone();
+    let preparation_cancelled: Arc<dyn Fn() -> bool + Send + Sync> = Arc::new(move || preparation_cancel.cancelled());
+    let prepared = prepare_audio_feed_cancellable(src.to_path_buf(), preparation_cancelled).await;
+    cancel.check()?;
+    let (feed_path, _feed_guard) = prepared?;
 
-    let result = do_convert_inner(app, job, &feed_path, &fmt).await;
-
-    if is_temp { let _ = fs::remove_file(&feed_path); }
-    result
+    do_convert_inner(app, job, &feed_path, max_bytes, cancel).await
 }
 
-async fn do_convert_inner(app: &AppHandle, job: &ConvertJob, feed: &Path, fmt: &FormatInfo) -> Result<Vec<OutputFile>, String> {
-    let input_codec: Vec<String> = if fmt.handler == "ftr" {
-        vec!["-acodec".into(), "aac".into()]
-    } else {
-        vec![]
-    };
+async fn do_convert_inner(
+    app: &AppHandle,
+    job: &ConvertJob,
+    feed: &Path,
+    max_input_size: u64,
+    cancel: &ConversionCancel,
+) -> Result<Vec<OutputFile>, String> {
+    cancel.check()?;
+    let is_cancelled = || cancel.cancelled();
+    let input_codec = input_codec_args(feed);
 
     let base = Path::new(&job.src_path)
-        .file_stem().and_then(|s| s.to_str()).unwrap_or("output");
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("output");
 
     let out_dir = if job.out_dir.is_empty() {
-        Path::new(&job.src_path).parent().unwrap_or(Path::new(".")).to_path_buf()
+        Path::new(&job.src_path)
+            .parent()
+            .unwrap_or(Path::new("."))
+            .to_path_buf()
     } else {
         PathBuf::from(&job.out_dir)
     };
@@ -124,64 +353,135 @@ async fn do_convert_inner(app: &AppHandle, job: &ConvertJob, feed: &Path, fmt: &
     let mut ai_temps: Vec<crate::safety::TempFile> = Vec::new();
     let mut channel_gains: Option<Vec<f64>> = None;
 
-    let has_ai = job.denoise || job.auto_level || job.declip || job.enhance || job.dereverb;
+    let has_ai = uses_ai_predecode(job);
 
     if has_ai {
+        let ai_duration = probe_duration_cancellable(app, feed, Some(&is_cancelled)).await;
+        cancel.check()?;
+        let ai_duration = ai_duration.ok_or_else(|| {
+            "Cannot safely determine recording duration for AI processing. Convert without AI processing or use shorter chunks."
+                .to_string()
+        })?;
+        let ai_channels = probe_channels_cancellable(app, feed, Some(&is_cancelled)).await;
+        cancel.check()?;
+        let ai_channels = ai_channels.ok_or_else(|| {
+            "Cannot safely determine the channel count for AI processing. Convert without AI processing or use shorter chunks."
+                .to_string()
+        })?;
+        let ai_channels = validate_conversion_channels(ai_channels)?;
+        validate_ai_pcm_memory(ai_duration, ai_channels)?;
+        cancel.check()?;
+    }
+
+    if job.auto_level {
         // Phase: Analyzing
-        let _ = app.emit("convert:progress", ProgressEvent {
-            id: job.id.clone(), seconds: 0.0, phase: Some("analyzing".into()), total: None,
-        });
+        let _ = app.emit(
+            "convert:progress",
+            ProgressEvent {
+                id: job.id.clone(),
+                seconds: 0.0,
+                phase: Some("analyzing".into()),
+                total: None,
+            },
+        );
 
-        // Run analysis if auto-leveling is requested
-        if job.auto_level {
-            if let Ok(analysis) = analyze_audio(app, &job.src_path, None).await {
-                channel_gains = Some(analysis.channel_gains);
-            }
-        }
+        // Analyze only representative per-channel loudness. Auto-leveling
+        // does not need VAD, Smart Turn, DNSMOS, speaker models, or a full PCM
+        // predecode.
+        let analysis_ctx = crate::analysis::ScanCtx::silent(
+            app.clone(),
+            ai_feed.to_string_lossy().to_string(),
+            cancel.epoch.clone(),
+            cancel.generation,
+        );
+        let gain_result = crate::analysis::analyze_channel_gains(
+            app,
+            &ai_feed.to_string_lossy(),
+            max_input_size,
+            Some(&analysis_ctx),
+        )
+        .await;
+        cancel.check()?;
+        channel_gains = Some(gain_result.map_err(|error| format!("Auto-level analysis failed: {error}"))?);
+    }
 
+    if has_ai {
         // Phase: Cleaning up audio
-        let _ = app.emit("convert:progress", ProgressEvent {
-            id: job.id.clone(), seconds: 0.0, phase: Some("processing".into()), total: None,
-        });
+        let _ = app.emit(
+            "convert:progress",
+            ProgressEvent {
+                id: job.id.clone(),
+                seconds: 0.0,
+                phase: Some("processing".into()),
+                total: None,
+            },
+        );
 
-        // Decode input to 48kHz WAV, read into AudioBuffer, delete temp immediately
-        let decoded_wav = decode_to_wav_48k(app, &ai_feed, &input_codec).await?;
-        let mut audio_buf = AudioBuffer::from_wav(&decoded_wav)?;
-        let _ = fs::remove_file(&decoded_wav);
+        // Guard the decoded WAV before reading it so an AudioBuffer parse error
+        // cannot strand the potentially large temporary file on disk.
+        let decoded_wav =
+            crate::safety::TempFile::new(decode_to_wav_48k(app, &ai_feed, &input_codec, Some(&is_cancelled)).await?);
+        cancel.check()?;
+        let decoded_path = decoded_wav.as_ref().to_path_buf();
+        let mut audio_buf = tauri::async_runtime::spawn_blocking(move || {
+            AudioBuffer::from_wav_bounded(&decoded_path, AI_DECODED_WAV_LIMIT_BYTES, AI_DECODED_SAMPLE_VALUE_LIMIT)
+        })
+        .await
+        .map_err(|error| format!("Decoded WAV read task failed: {error}"))??;
+        drop(decoded_wav);
+        cancel.check()?;
 
-        // Denoise in-memory: route based on quality setting
+        // Fast denoise is the only implemented denoising pipeline. The
+        // unsupported Best option is rejected before any decode begins.
         if job.denoise {
-            if job.denoise_quality == "best" {
-                // DeepFilterNet3 — best quality, uses ONNX models
-                // DFN3 still uses file-based path (complex STFT pipeline)
-                // Write buffer to temp, run DFN3, read result back
-                match denoise_deep_filter(app, &ai_feed, &input_codec).await {
-                    Ok(denoised) => {
-                        // Keep the current buffer if the result can't be read
-                        if let Ok(buf) = AudioBuffer::from_wav(&denoised) {
-                            audio_buf = buf;
-                        }
-                        let _ = fs::remove_file(&denoised);
-                    }
-                    Err(_) => {
-                        // Fall back to RNNoise in-memory
-                        let _ = denoise_buffer(&mut audio_buf);
-                    }
-                }
-            } else {
-                // RNNoise — fast, lightweight, fully in-memory
-                let _ = denoise_buffer(&mut audio_buf);
-            }
+            let stage_cancel = cancel.clone();
+            let (next_buffer, denoise_result) = tauri::async_runtime::spawn_blocking(move || {
+                let is_cancelled = || stage_cancel.cancelled();
+                let result = denoise_buffer(&mut audio_buf, Some(&is_cancelled));
+                (audio_buf, result)
+            })
+            .await
+            .map_err(|error| format!("RNNoise processing task failed: {error}"))?;
+            audio_buf = next_buffer;
+            cancel.check()?;
+            denoise_result.map_err(|error| format!("RNNoise denoising failed: {error}"))?;
         }
+        cancel.check()?;
 
         // De-reverberation in-memory (if DCCRN+ model available)
         if job.dereverb {
-            let _ = dereverb::dereverb_buffer(app, &mut audio_buf);
+            cancel.check()?;
+            let app_owned = app.clone();
+            let stage_cancel = cancel.clone();
+            let (next_buffer, dereverb_result) = tauri::async_runtime::spawn_blocking(move || {
+                let is_cancelled = || stage_cancel.cancelled();
+                let result = dereverb::dereverb_buffer(&app_owned, &mut audio_buf, Some(&is_cancelled));
+                (audio_buf, result)
+            })
+            .await
+            .map_err(|error| format!("Dereverberation task failed: {error}"))?;
+            audio_buf = next_buffer;
+            cancel.check()?;
+            dereverb_result.map_err(|error| format!("Dereverberation failed: {error}"))?;
         }
 
         // Bandwidth extension in-memory (if FlashSR model available)
         if job.enhance {
-            let _ = enhance_buffer(app, &mut audio_buf);
+            cancel.check()?;
+            let app_owned = app.clone();
+            let stage_cancel = cancel.clone();
+            let (next_buffer, enhance_result) = tauri::async_runtime::spawn_blocking(move || {
+                // enhance_buffer validates model availability and performs
+                // the complete FlashSR stage on the blocking pool.
+                let is_cancelled = || stage_cancel.cancelled();
+                let result = enhance_buffer(&app_owned, &mut audio_buf, Some(&is_cancelled));
+                (audio_buf, result)
+            })
+            .await
+            .map_err(|error| format!("Audio enhancement task failed: {error}"))?;
+            audio_buf = next_buffer;
+            cancel.check()?;
+            enhance_result.map_err(|error| format!("Audio enhancement failed: {error}"))?;
         }
 
         // Write the processed AudioBuffer to a single temp WAV for FFmpeg encoding
@@ -189,8 +489,14 @@ async fn do_convert_inner(app: &AppHandle, job: &ConvertJob, feed: &Path, fmt: &
             "depoaudio_ai_{}.wav",
             Uuid::new_v4().to_string().replace('-', "")
         ));
-        audio_buf.to_wav(&tmp_out)?;
-        ai_temps.push(crate::safety::TempFile::new(tmp_out.clone()));
+        let tmp_guard = crate::safety::TempFile::new(tmp_out.clone());
+        cancel.check()?;
+        let write_path = tmp_out.clone();
+        tauri::async_runtime::spawn_blocking(move || audio_buf.to_wav(&write_path))
+            .await
+            .map_err(|error| format!("Processed WAV write task failed: {error}"))??;
+        cancel.check()?;
+        ai_temps.push(tmp_guard);
         ai_feed = tmp_out;
     }
 
@@ -200,37 +506,31 @@ async fn do_convert_inner(app: &AppHandle, job: &ConvertJob, feed: &Path, fmt: &
     // Source duration for a determinate encode progress bar. The output is
     // roughly the input's length (trim shortens it slightly), so the UI caps
     // at 99% until done rather than pretending exact knowledge.
-    let total_secs = probe_duration(app, effective_feed).await;
+    let total_secs = probe_duration_cancellable(app, effective_feed, Some(&is_cancelled)).await;
+    cancel.check()?;
 
-    // For stereo mode with auto-level, we inject gains per-channel in the pan filter
-    // For other modes, we inject a single gain into the proc filter chain
-    let default_gain = channel_gains.as_ref().map(|g| {
-        // Average gain across active channels as fallback for non-split modes
-        let active: Vec<f64> = g.iter().copied().filter(|&v| v > 0.1).collect();
-        if active.is_empty() { 1.0 } else { active.iter().sum::<f64>() / active.len() as f64 }
-    });
-
-    // Stereo injects per-channel gains in the pan filter, and split injects
-    // them per channel below. Only "keep" (a single multi-channel file, where
-    // channels can't be addressed individually) folds the averaged gain into
-    // the shared chain.
-    let proc = build_proc_filters_with_gain(
-        app, job, effective_feed,
-        if job.auto_level && job.mode == "keep" { default_gain } else { None },
-    ).await;
+    // Stereo injects per-channel gains in its pan filter and Split injects
+    // them after isolating each channel. Keep Original rejects auto-leveling
+    // before work starts because one shared gain would not balance channels.
+    let proc = build_proc_filters_with_gain(app, job, effective_feed, None, Some(&is_cancelled)).await;
+    cancel.check()?;
 
     // When AI processing ran, the feed is our own PCM WAV — forcing the
-    // original container's codec (e.g. -acodec aac for FTR) would corrupt it
-    let mut ffmpeg_args: Vec<String> = if has_ai { Vec::new() } else { input_codec.clone() };
+    // original container's native FTR decoder would be invalid here.
+    let mut ffmpeg_args = safe_ffmpeg_input_prelude();
+    if !has_ai {
+        ffmpeg_args.extend(input_codec.clone());
+    }
     ffmpeg_args.extend(["-i".into(), effective_feed.to_string_lossy().to_string()]);
 
-    let mut output_paths: Vec<PathBuf> = Vec::new();
+    let mut output_cleanup = OutputCleanup::default();
 
     match job.mode.as_str() {
         "stereo" => {
-            let dst = unique_path(&out_dir.join(format!("{}{}", base, ext)));
-            let num_ch = probe_channels(app, effective_feed).await
-                .ok_or("Cannot create stereo mix: unable to determine the input's channel count")?;
+            let num_ch = probe_channels_cancellable(app, effective_feed, Some(&is_cancelled)).await;
+            cancel.check()?;
+            let num_ch = num_ch.ok_or("Cannot create stereo mix: unable to determine the input's channel count")?;
+            let num_ch = validate_conversion_channels(num_ch)?;
             let weight = 1.0 / num_ch as f64;
 
             // Use auto-level gains if available, otherwise use manual chan_vols.
@@ -242,7 +542,9 @@ async fn do_convert_inner(app: &AppHandle, job: &ConvertJob, feed: &Path, fmt: &
                 Some(ref gains) if job.auto_level && gains.len() == num_ch as usize => {
                     gains.iter().map(|&g| g * weight).collect()
                 }
-                _ => (0..num_ch).map(|i| job.chan_vols.get(i as usize).copied().unwrap_or(1.0) * weight).collect(),
+                _ => (0..num_ch)
+                    .map(|i| job.chan_vols.get(i as usize).copied().unwrap_or(1.0) * weight)
+                    .collect(),
             };
 
             let pan = stereo_pan_filter(num_ch, &vols);
@@ -255,39 +557,57 @@ async fn do_convert_inner(app: &AppHandle, job: &ConvertJob, feed: &Path, fmt: &
             if !job.normalize {
                 all.push("alimiter=limit=0.97:level=false".into());
             }
+            let dst = reserve_unique_path(&out_dir.join(format!("{}{}", base, ext)))?;
+            output_cleanup.track(dst.clone());
             let mut args = ffmpeg_args.clone();
             args.extend(["-af".into(), all.join(",")]);
             args.extend(out_codec.clone());
             args.extend(["-y".into(), dst.to_string_lossy().to_string()]);
-            if let Err(e) = run_ffmpeg_with_timeout(app, args, &job.id, job.ffmpeg_timeout as u64, total_secs).await {
-                let _ = fs::remove_file(&dst);
-                return Err(e);
-            }
-            output_paths.push(dst);
+            run_ffmpeg_with_timeout(
+                app,
+                args,
+                &job.id,
+                job.ffmpeg_timeout as u64,
+                total_secs,
+                Some(&is_cancelled),
+            )
+            .await?;
+            cancel.check()?;
         }
 
         "keep" => {
-            let dst = unique_path(&out_dir.join(format!("{}_orig{}", base, ext)));
+            let dst = reserve_unique_path(&out_dir.join(format!("{}_orig{}", base, ext)))?;
+            output_cleanup.track(dst.clone());
             let mut args = ffmpeg_args.clone();
             if !proc.is_empty() {
                 args.extend(["-af".into(), proc.join(",")]);
             }
             args.extend(out_codec.clone());
             args.extend(["-y".into(), dst.to_string_lossy().to_string()]);
-            if let Err(e) = run_ffmpeg_with_timeout(app, args, &job.id, job.ffmpeg_timeout as u64, total_secs).await {
-                let _ = fs::remove_file(&dst);
-                return Err(e);
-            }
-            output_paths.push(dst);
+            run_ffmpeg_with_timeout(
+                app,
+                args,
+                &job.id,
+                job.ffmpeg_timeout as u64,
+                total_secs,
+                Some(&is_cancelled),
+            )
+            .await?;
+            cancel.check()?;
         }
 
         "split" => {
-            let num_ch = probe_channels(app, effective_feed).await
-                .ok_or("Cannot split channels: unable to determine the input's channel count")?;
+            let num_ch = probe_channels_cancellable(app, effective_feed, Some(&is_cancelled)).await;
+            cancel.check()?;
+            let num_ch = num_ch.ok_or("Cannot split channels: unable to determine the input's channel count")?;
+            let num_ch = validate_conversion_channels(num_ch)?;
             let labels = split_labels(num_ch, &job.labels);
-            let dsts: Vec<PathBuf> = labels.iter()
-                .map(|l| unique_path(&out_dir.join(format!("{}_{}{}", base, l, ext))))
-                .collect();
+            let dsts = reserve_output_paths(
+                labels
+                    .iter()
+                    .map(|label| out_dir.join(format!("{}_{}{}", base, label, ext))),
+            )?;
+            output_cleanup.track_all(&dsts);
 
             // Use asplit + pan=mono per channel instead of channelsplit:
             // channelsplit requires the actual channel layout (defaulting to
@@ -303,29 +623,41 @@ async fn do_convert_inner(app: &AppHandle, job: &ConvertJob, feed: &Path, fmt: &
                 args.extend(out_codec.clone());
                 args.push(dst.to_string_lossy().to_string());
             }
-            if let Err(e) = run_ffmpeg_with_timeout(app, args, &job.id, job.ffmpeg_timeout as u64, total_secs).await {
-                for d in &dsts { let _ = fs::remove_file(d); }
-                return Err(e);
-            }
-            output_paths.extend(dsts);
+            run_ffmpeg_with_timeout(
+                app,
+                args,
+                &job.id,
+                job.ffmpeg_timeout as u64,
+                total_secs,
+                Some(&is_cancelled),
+            )
+            .await?;
+            cancel.check()?;
         }
 
         _ => return Err(format!("Unknown mode: {}", job.mode)),
     }
 
-    let files: Vec<OutputFile> = output_paths.into_iter().map(|p| {
-        let size = fs::metadata(&p).map(|m| m.len()).unwrap_or(0);
-        OutputFile { name: basename(&p.to_string_lossy()), path: p.to_string_lossy().to_string(), size }
-    }).collect();
+    let files: Vec<OutputFile> = output_cleanup
+        .paths
+        .iter()
+        .map(|p| {
+            let size = fs::metadata(p).map(|m| m.len()).unwrap_or(0);
+            OutputFile {
+                name: basename(&p.to_string_lossy()),
+                path: p.to_string_lossy().to_string(),
+                size,
+            }
+        })
+        .collect();
 
     if let Some(empty) = files.iter().find(|f| f.size == 0) {
-        // Don't leave partial/empty outputs (or their valid siblings) behind.
-        for f in &files { let _ = fs::remove_file(&f.path); }
-        // ai_temps cleaned up automatically via TempFile Drop
+        // OutputCleanup removes this empty file and every valid sibling.
         return Err(format!("Output file is empty: {}", empty.name));
     }
 
-    // ai_temps cleaned up automatically via TempFile Drop
+    cancel.check()?;
+    output_cleanup.commit();
 
     Ok(files)
 }
@@ -333,6 +665,46 @@ async fn do_convert_inner(app: &AppHandle, job: &ConvertJob, feed: &Path, fmt: &
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn valid_job() -> ConvertJob {
+        serde_json::from_value(serde_json::json!({
+            "id": "test",
+            "cancelGeneration": 1,
+            "srcPath": "/input.wav",
+            "outDir": "",
+            "mode": "stereo",
+            "format": "wav",
+            "rate": "48000",
+            "labels": [],
+            "chanVols": [1.0],
+            "normalize": false,
+            "trim": false,
+            "fade": false,
+            "fadeDur": 0.5,
+            "hpf": false,
+            "caseName": null
+        }))
+        .unwrap()
+    }
+
+    struct ConversionTestDir(PathBuf);
+
+    impl ConversionTestDir {
+        fn new() -> Self {
+            let path = std::env::temp_dir().join(format!(
+                "depoaudio_conversion_test_{}",
+                uuid::Uuid::new_v4().to_string().replace('-', "")
+            ));
+            fs::create_dir(&path).expect("create conversion test directory");
+            Self(path)
+        }
+    }
+
+    impl Drop for ConversionTestDir {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
 
     // Golden-master tests: these strings are the audio-processing contract.
     // A change here changes what users' converted files sound like.
@@ -405,5 +777,157 @@ mod tests {
             split_filter_complex(2, false, Some(&gains), &[]),
             "[0:a]asplit=2[sp0][sp1];[sp0]pan=mono|c0=c0[op0];[sp1]pan=mono|c0=c1[op1]"
         );
+    }
+
+    #[test]
+    fn failed_split_reservation_removes_earlier_placeholders() {
+        let dir = ConversionTestDir::new();
+        let first = dir.0.join("first.wav");
+        let invalid = dir.0.join("missing-parent").join("second.wav");
+
+        let result = reserve_output_paths([first.clone(), invalid]);
+
+        assert!(result.is_err());
+        assert!(!first.exists(), "the first reservation must be rolled back");
+    }
+
+    #[test]
+    fn best_denoise_is_rejected_instead_of_silently_falling_back() {
+        let error = validate_denoise_request(true, "best").unwrap_err();
+        assert!(error.contains("not implemented yet"));
+        assert!(error.contains("RNNoise"));
+    }
+
+    #[test]
+    fn fast_or_disabled_denoise_requests_are_valid() {
+        assert!(validate_denoise_request(true, "fast").is_ok());
+        assert!(validate_denoise_request(false, "best").is_ok());
+        assert!(validate_denoise_request(true, "unexpected").is_err());
+    }
+
+    #[test]
+    fn ai_pcm_estimate_budgets_five_processing_copies() {
+        assert_eq!(estimated_ai_peak_pcm_bytes(60.0, 2).unwrap(), 115_200_000);
+    }
+
+    #[test]
+    fn ai_pcm_guard_rejects_large_jobs_but_allows_bounded_chunks() {
+        assert!(validate_ai_pcm_memory(120.0, 4).is_ok());
+
+        let error = validate_ai_pcm_memory(300.0, 4).unwrap_err();
+        assert!(error.contains("512 MiB"));
+        assert!(error.contains("processing copies"));
+        assert!(error.contains("without AI"));
+        assert!(error.contains("shorter chunks"));
+    }
+
+    #[test]
+    fn ai_pcm_guard_fails_closed_when_metadata_is_invalid() {
+        assert!(validate_ai_pcm_memory(0.0, 4).is_err());
+        assert!(validate_ai_pcm_memory(f64::NAN, 4).is_err());
+        assert!(validate_ai_pcm_memory(60.0, 0).is_err());
+    }
+
+    #[test]
+    fn conversion_channel_guard_accepts_registry_limit_and_rejects_above_it() {
+        assert_eq!(validate_conversion_channels(16).unwrap(), 16);
+        assert!(validate_conversion_channels(0).unwrap_err().contains("zero"));
+        let error = validate_conversion_channels(17).unwrap_err();
+        assert!(error.contains("17"));
+        assert!(error.contains("at most 16"));
+    }
+
+    #[test]
+    fn conversion_request_rejects_unknown_modes_and_formats_early() {
+        let mut job = valid_job();
+        job.mode = "surround".into();
+        assert!(validate_convert_request(&job).unwrap_err().contains("mode"));
+
+        job.mode = "stereo".into();
+        job.format = "exe".into();
+        assert!(validate_convert_request(&job).unwrap_err().contains("format"));
+    }
+
+    #[test]
+    fn conversion_request_rejects_auto_level_in_keep_mode() {
+        let mut job = valid_job();
+        job.mode = "keep".into();
+        job.auto_level = true;
+
+        let error = validate_convert_request(&job).unwrap_err();
+        assert!(error.contains("Auto-leveling"));
+        assert!(error.contains("Keep Original"));
+    }
+
+    #[test]
+    fn conversion_request_rejects_nonfinite_or_out_of_range_settings() {
+        let mut job = valid_job();
+        job.max_file_size_gb = f64::NAN;
+        assert!(validate_convert_request(&job).is_err());
+
+        job = valid_job();
+        job.hpf_cutoff = 501.0;
+        assert!(validate_convert_request(&job).unwrap_err().contains("High-pass"));
+
+        job = valid_job();
+        job.normalize_lufs = -71.0;
+        assert!(validate_convert_request(&job).unwrap_err().contains("loudness"));
+
+        job = valid_job();
+        job.normalize_tp = 0.1;
+        assert!(validate_convert_request(&job).unwrap_err().contains("true peak"));
+
+        job = valid_job();
+        job.silence_thresh = f64::INFINITY;
+        assert!(validate_convert_request(&job).unwrap_err().contains("Silence"));
+
+        job = valid_job();
+        job.chan_vols = vec![f64::NAN];
+        assert!(validate_convert_request(&job).unwrap_err().contains("Channel volumes"));
+    }
+
+    #[test]
+    fn declip_and_auto_level_stay_on_streaming_ffmpeg_path() {
+        let mut job = valid_job();
+        job.declip = true;
+        assert!(!uses_ai_predecode(&job));
+        job.auto_level = true;
+        assert!(!uses_ai_predecode(&job));
+        job.denoise = true;
+        assert!(uses_ai_predecode(&job));
+    }
+
+    #[test]
+    fn conversion_cancel_generation_invalidates_stale_jobs() {
+        let epoch = Arc::new(AtomicU64::new(7));
+        let cancel = ConversionCancel::new(epoch.clone(), 7);
+        assert!(cancel.check().is_ok());
+        epoch.store(8, Ordering::Release);
+        assert_eq!(cancel.check().unwrap_err(), CONVERSION_CANCELLED_MESSAGE);
+    }
+
+    #[test]
+    fn uncommitted_output_cleanup_removes_reserved_placeholders() {
+        let dir = ConversionTestDir::new();
+        let output = dir.0.join("cancelled.wav");
+        fs::write(&output, b"partial").unwrap();
+        {
+            let mut cleanup = OutputCleanup::default();
+            cleanup.track(output.clone());
+        }
+        assert!(!output.exists());
+    }
+
+    #[test]
+    fn committed_output_cleanup_preserves_complete_outputs() {
+        let dir = ConversionTestDir::new();
+        let output = dir.0.join("complete.wav");
+        fs::write(&output, b"complete").unwrap();
+        {
+            let mut cleanup = OutputCleanup::default();
+            cleanup.track(output.clone());
+            cleanup.commit();
+        }
+        assert!(output.exists());
     }
 }

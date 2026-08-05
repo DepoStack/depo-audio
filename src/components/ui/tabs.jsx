@@ -7,10 +7,7 @@ const Tabs = TabsPrimitive.Root
 const TabsList = React.forwardRef(({ className, ...props }, ref) => (
   <TabsPrimitive.List
     ref={ref}
-    className={cn(
-      'inline-flex items-center gap-0.5 rounded-lg bg-card border border-border p-[3px]',
-      className
-    )}
+    className={cn('inline-flex items-center gap-0.5 rounded-lg bg-card border border-border p-[3px]', className)}
     {...props}
   />
 ))
@@ -28,7 +25,7 @@ const TabsTrigger = React.forwardRef(({ className, ...props }, ref) => (
       // reads through the gold-dim fill + foreground text, not gold text.
       'data-[state=active]:bg-[hsl(var(--gold-dim))] data-[state=active]:text-foreground',
       'focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring',
-      className
+      className,
     )}
     {...props}
   />
@@ -36,11 +33,7 @@ const TabsTrigger = React.forwardRef(({ className, ...props }, ref) => (
 TabsTrigger.displayName = 'TabsTrigger'
 
 const TabsContent = React.forwardRef(({ className, ...props }, ref) => (
-  <TabsPrimitive.Content
-    ref={ref}
-    className={cn('contents focus-visible:outline-hidden', className)}
-    {...props}
-  />
+  <TabsPrimitive.Content ref={ref} className={cn('contents focus-visible:outline-hidden', className)} {...props} />
 ))
 TabsContent.displayName = 'TabsContent'
 

@@ -22,8 +22,8 @@ pub(crate) fn check_file_safe_with_limit(path: &Path, max_size: u64) -> Result<(
     }
 
     let size = std::fs::metadata(path)
-        .map(|m| m.len())
-        .unwrap_or(0);
+        .map_err(|error| format!("Cannot inspect the selected file: {error}"))?
+        .len();
 
     if size == 0 {
         return Err("File is empty".into());
@@ -66,6 +66,7 @@ pub(crate) fn validate_fade_dur(dur: f64) -> Result<(), String> {
 
 /// Guard that cleans up a temp file when dropped.
 /// Use this instead of manual `fs::remove_file` to ensure cleanup.
+#[derive(Debug)]
 pub(crate) struct TempFile {
     pub path: PathBuf,
 }
@@ -80,7 +81,11 @@ impl Drop for TempFile {
     fn drop(&mut self) {
         if self.path.exists() {
             if let Err(e) = std::fs::remove_file(&self.path) {
-                eprintln!("Warning: failed to clean up temp file {}: {}", safe_display(&self.path), e);
+                eprintln!(
+                    "Warning: failed to clean up temp file {}: {}",
+                    safe_display(&self.path),
+                    e
+                );
             }
         }
     }

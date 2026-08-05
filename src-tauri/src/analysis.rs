@@ -5,7 +5,7 @@ use std::sync::Arc;
 use regex::Regex;
 use tauri::{AppHandle, Emitter};
 
-use crate::ffmpeg::{probe_channels, probe_duration};
+use crate::ffmpeg::{ensure_ftr_decoder, probe_channels_cancellable, probe_duration_cancellable};
 use crate::helpers::ffprobe_bin_name;
 use crate::types::{AnalysisResult, TurnSegment};
 
@@ -41,12 +41,33 @@ pub(crate) struct ScanCtx {
     pub path: String,
     epoch: Arc<AtomicU64>,
     my_gen: u64,
+    emit_progress: bool,
 }
 
 impl ScanCtx {
     pub fn new(app: AppHandle, path: String, epoch: Arc<AtomicU64>) -> Self {
         let my_gen = epoch.load(Ordering::SeqCst);
-        Self { app, path, epoch, my_gen }
+        Self {
+            app,
+            path,
+            epoch,
+            my_gen,
+            emit_progress: true,
+        }
+    }
+
+    /// Reuse the analysis engine for conversion-time auto-leveling while
+    /// binding its sidecars and inference checkpoints to the conversion batch
+    /// cancellation token. Conversion analysis must not leak scan-progress
+    /// events into the Scan UI.
+    pub fn silent(app: AppHandle, path: String, epoch: Arc<AtomicU64>, my_gen: u64) -> Self {
+        Self {
+            app,
+            path,
+            epoch,
+            my_gen,
+            emit_progress: false,
+        }
     }
 
     /// True once cancel_scan_cmd has bumped the epoch past this scan's start.
@@ -55,13 +76,20 @@ impl ScanCtx {
     }
 
     pub fn check(&self) -> Result<(), String> {
-        if self.cancelled() { Err("Scan cancelled".into()) } else { Ok(()) }
+        if self.cancelled() {
+            Err("Scan cancelled".into())
+        } else {
+            Ok(())
+        }
     }
 
     /// Within-file progress: phase name + estimated fraction complete [0, 1].
     /// `gen` lets the frontend drop trailing events from a cancelled scan
     /// that would otherwise pollute a successor scan of the same file.
     pub fn emit(&self, phase: &str, pct: f64) {
+        if !self.emit_progress {
+            return;
+        }
         let _ = self.app.emit(
             "scan:progress",
             serde_json::json!({ "path": self.path, "phase": phase, "pct": pct, "gen": self.my_gen }),
@@ -70,11 +98,71 @@ impl ScanCtx {
 }
 
 fn emit(ctx: Option<&ScanCtx>, phase: &str, pct: f64) {
-    if let Some(c) = ctx { c.emit(phase, pct); }
+    if let Some(c) = ctx {
+        c.emit(phase, pct);
+    }
 }
 
 fn check(ctx: Option<&ScanCtx>) -> Result<(), String> {
-    match ctx { Some(c) => c.check(), None => Ok(()) }
+    match ctx {
+        Some(c) => c.check(),
+        None => Ok(()),
+    }
+}
+
+fn channel_gains_from_lufs(per_channel_lufs: &[f64]) -> Vec<f64> {
+    per_channel_lufs
+        .iter()
+        .map(|&lufs| {
+            if lufs <= SILENCE_THRESHOLD {
+                1.0
+            } else {
+                let gain = 10_f64.powf((TARGET_LUFS - lufs) / 20.0);
+                gain.clamp(0.1, 10.0)
+            }
+        })
+        .collect()
+}
+
+/// Bounded conversion-time auto-level pass. This intentionally performs only
+/// the representative loudness measurements needed for channel gains; it does
+/// not invoke VAD, Smart Turn, quality scoring, speaker models, or full PCM
+/// predecode.
+pub(crate) async fn analyze_channel_gains(
+    app: &AppHandle,
+    path: &str,
+    max_size: u64,
+    ctx: Option<&ScanCtx>,
+) -> Result<Vec<f64>, String> {
+    let source = Path::new(path);
+    crate::safety::check_file_safe_with_limit(source, max_size)?;
+    let preparation_context = ctx.cloned();
+    let preparation_cancelled: Arc<dyn Fn() -> bool + Send + Sync> =
+        Arc::new(move || preparation_context.as_ref().is_some_and(ScanCtx::cancelled));
+    let prepared = crate::helpers::prepare_audio_feed_cancellable(source.to_path_buf(), preparation_cancelled).await;
+    check(ctx)?;
+    let (feed_path, _feed_guard) = prepared?;
+    let feed = feed_path.as_path();
+
+    let input_codec = crate::helpers::input_codec_args(feed);
+    if !input_codec.is_empty() {
+        ensure_ftr_decoder(app).await?;
+        check(ctx)?;
+    }
+
+    let is_cancelled = || ctx.map(|context| context.cancelled()).unwrap_or(false);
+    let channels = probe_channels_cancellable(app, feed, Some(&is_cancelled)).await;
+    check(ctx)?;
+    let channels = channels.ok_or("Cannot auto-level: unable to determine the input's channel count")?;
+    if channels == 0 || channels > MAX_SCAN_CHANNELS {
+        return Err(format!(
+            "Cannot auto-level a recording with {channels} channels; the supported maximum is {MAX_SCAN_CHANNELS}."
+        ));
+    }
+
+    let (per_channel_lufs, _, _) = analyze_loudness_and_peaks(app, feed, channels, &input_codec, ctx).await?;
+    check(ctx)?;
+    Ok(channel_gains_from_lufs(&per_channel_lufs))
 }
 
 /// How often a long-running sidecar pass re-emits its phase so the frontend's
@@ -112,13 +200,22 @@ pub(crate) async fn analyze_audio(
     path: &str,
     ctx: Option<&ScanCtx>,
 ) -> Result<AnalysisResult, String> {
-    let feed = Path::new(path);
-    crate::safety::check_file_safe(feed)?;
+    let source = Path::new(path);
+    crate::safety::check_file_safe(source)?;
+    let preparation_context = ctx.cloned();
+    let preparation_cancelled: Arc<dyn Fn() -> bool + Send + Sync> =
+        Arc::new(move || preparation_context.as_ref().is_some_and(ScanCtx::cancelled));
+    let prepared = crate::helpers::prepare_audio_feed_cancellable(source.to_path_buf(), preparation_cancelled).await;
+    check(ctx)?;
+    let (feed_path, _feed_guard) = prepared?;
+    let feed = feed_path.as_path();
 
-    // Formats FFmpeg can't auto-detect (FTR) need a forced input decoder on
-    // every decode below — without it each pass burns its full timeout on an
-    // undecodable file and the whole scan grinds for nothing.
-    let input_codec = crate::helpers::scan_input_codec_args(feed);
+    // Select FFmpeg's native FTR decoder explicitly. Plain AAC cannot decode
+    // FTR's modified, per-channel packet layout.
+    let input_codec = crate::helpers::input_codec_args(feed);
+    if !input_codec.is_empty() {
+        ensure_ftr_decoder(app).await?;
+    }
 
     emit(ctx, "probe", 0.02);
     // Probe basic metadata. On probe failure assume ONE channel — inventing
@@ -127,11 +224,19 @@ pub(crate) async fn analyze_audio(
     // Cap the count so a corrupt header can't become a loop bound.
     // Emit between the chained probes: three wedged 30s probes back-to-back
     // would otherwise exceed the frontend's stall watchdog.
-    let channels = probe_channels(app, feed).await.unwrap_or(1).min(MAX_SCAN_CHANNELS);
+    let is_cancelled = || ctx.map(|context| context.cancelled()).unwrap_or(false);
+    let channels = probe_channels_cancellable(app, feed, Some(&is_cancelled))
+        .await
+        .unwrap_or(1)
+        .min(MAX_SCAN_CHANNELS);
+    check(ctx)?;
     emit(ctx, "probe", 0.03);
-    let duration = probe_duration(app, feed).await.unwrap_or(0.0);
+    let duration = probe_duration_cancellable(app, feed, Some(&is_cancelled))
+        .await
+        .unwrap_or(0.0);
+    check(ctx)?;
     emit(ctx, "probe", 0.04);
-    let sample_rate = probe_sample_rate(app, feed).await.unwrap_or(48000);
+    let sample_rate = probe_sample_rate(app, feed, ctx).await.unwrap_or(48000);
     check(ctx)?;
 
     // Run loudness + peak analysis per channel
@@ -167,33 +272,22 @@ pub(crate) async fn analyze_audio(
     let is_narrowband = sample_rate <= NARROWBAND_RATE;
 
     // Compute auto-level gains
-    let channel_gains: Vec<f64> = per_channel_lufs
-        .iter()
-        .map(|&lufs| {
-            if lufs <= SILENCE_THRESHOLD {
-                1.0 // Leave silent channels alone
-            } else {
-                let gain = 10_f64.powf((TARGET_LUFS - lufs) / 20.0);
-                gain.clamp(0.1, 10.0)
-            }
-        })
-        .collect();
+    let channel_gains = channel_gains_from_lufs(&per_channel_lufs);
 
     // Voice activity detection (run early so we can skip expensive steps on silence)
     emit(ctx, "speech", 0.32);
-    let (vad_result, file_undecodable) =
-        match crate::vad::detect_speech(app, std::path::Path::new(path), ctx).await {
-            Ok(v) => (Some(v), false),
-            // The FILE failed to decode: every other pass would burn its own
-            // decode timeout on the same bytes, so skip them. (The old
-            // behavior defaulted speech_ratio to 1.0, force-running every
-            // pass on exactly the files that couldn't be analyzed at all.)
-            Err(crate::vad::VadError::Undecodable(_)) => (None, true),
-            // VAD itself is unavailable (model missing/corrupt, ORT failure):
-            // says nothing about the file — run the other passes, their own
-            // models may be fine.
-            Err(crate::vad::VadError::Unavailable(_)) => (None, false),
-        };
+    let (vad_result, file_undecodable, vad_unavailable) = match crate::vad::detect_speech(app, feed, ctx).await {
+        Ok(v) => (Some(v), false, false),
+        // The FILE failed to decode: every other pass would burn its own
+        // decode timeout on the same bytes, so skip them. (The old
+        // behavior defaulted speech_ratio to 1.0, force-running every
+        // pass on exactly the files that couldn't be analyzed at all.)
+        Err(crate::vad::VadError::Undecodable(_)) => (None, true, false),
+        // VAD itself is unavailable (model missing/corrupt, ORT failure):
+        // says nothing about the file — run the other passes, their own
+        // models may be fine.
+        Err(crate::vad::VadError::Unavailable(_)) => (None, false, true),
+    };
     check(ctx)?;
 
     // Gate the expensive passes on measured speech; with no measurement the
@@ -256,20 +350,28 @@ pub(crate) async fn analyze_audio(
     }
 
     // Quality scoring — skip if no speech detected
-    let quality_score = if speech_gate(0.05) {
+    let quality_attempted = speech_gate(0.05);
+    let quality_score = if quality_attempted {
         emit(ctx, "quality", 0.88);
-        crate::scoring::score_quality(app, std::path::Path::new(path), ctx).await
-            .map(|qs| crate::types::QualityScoreResult { sig: qs.sig, bak: qs.bak, ovr: qs.ovr })
+        crate::scoring::score_quality(app, feed, ctx)
+            .await
+            .map(|qs| crate::types::QualityScoreResult {
+                sig: qs.sig,
+                bak: qs.bak,
+                ovr: qs.ovr,
+            })
             .ok()
     } else {
         None
     };
     check(ctx)?;
 
-    // Speaker count detection — skip if no speech detected
-    let speaker_count = if speech_gate(0.1) {
+    // Speaker-slot activity estimation — skip if no speech detected
+    let speaker_attempted = speech_gate(0.1);
+    let speaker_count = if speaker_attempted {
         emit(ctx, "speakers", 0.94);
-        crate::speakers::detect_speakers(app, std::path::Path::new(path), ctx).await
+        crate::speakers::detect_speakers(app, feed, ctx)
+            .await
             .map(|info| info.count)
             .ok()
     } else {
@@ -282,15 +384,22 @@ pub(crate) async fn analyze_audio(
     // means SOME channels silently read as silence.
     if file_undecodable || loudness_failures > 0 {
         recommendations.push(
-            "This file could not be fully decoded for analysis — convert it first, then scan the converted output".into(),
+            "This file could not be fully decoded for analysis — convert it first, then scan the converted output"
+                .into(),
         );
     }
 
     // Note when AI models are missing so the user knows results may be incomplete
     let mut missing_models = Vec::new();
-    if vad_result.is_none() { missing_models.push("VAD"); }
-    if quality_score.is_none() { missing_models.push("quality scoring"); }
-    if speaker_count.is_none() { missing_models.push("speaker detection"); }
+    if vad_unavailable {
+        missing_models.push("VAD");
+    }
+    if quality_attempted && quality_score.is_none() {
+        missing_models.push("quality scoring");
+    }
+    if speaker_attempted && speaker_count.is_none() {
+        missing_models.push("speaker detection");
+    }
     if !missing_models.is_empty() {
         recommendations.push(format!(
             "Some AI models not available ({}) — results may be incomplete",
@@ -339,8 +448,15 @@ async fn analyze_loudness_and_peaks(
         // Mono or single-channel: analyze directly
         emit(ctx, "loudness", 0.05);
         match analyze_single_channel(app, feed, None, input_codec, ctx, 0.05).await {
-            Ok((lufs, peak)) => { lufs_vec.push(lufs); peak_vec.push(peak); }
-            Err(_) => { lufs_vec.push(-70.0); peak_vec.push(-70.0); failures += 1; }
+            Ok((lufs, peak)) => {
+                lufs_vec.push(lufs);
+                peak_vec.push(peak);
+            }
+            Err(_) => {
+                lufs_vec.push(-70.0);
+                peak_vec.push(-70.0);
+                failures += 1;
+            }
         }
     } else {
         // Multi-channel: use channelsplit + per-channel ebur128
@@ -349,8 +465,15 @@ async fn analyze_loudness_and_peaks(
             let pct = 0.05 + 0.20 * (ch as f64 / channels as f64);
             emit(ctx, "loudness", pct);
             match analyze_single_channel(app, feed, Some(ch), input_codec, ctx, pct).await {
-                Ok((lufs, peak)) => { lufs_vec.push(lufs); peak_vec.push(peak); }
-                Err(_) => { lufs_vec.push(-70.0); peak_vec.push(-70.0); failures += 1; }
+                Ok((lufs, peak)) => {
+                    lufs_vec.push(lufs);
+                    peak_vec.push(peak);
+                }
+                Err(_) => {
+                    lufs_vec.push(-70.0);
+                    peak_vec.push(-70.0);
+                    failures += 1;
+                }
             }
         }
     }
@@ -377,22 +500,33 @@ async fn analyze_single_channel(
     // `-t` (input option, before `-i`) limits analysis to a representative
     // sample so a long recording can't make this pass run for minutes.
     let secs = crate::ffmpeg::ANALYSIS_SAMPLE_SECS.to_string();
-    let mut args: Vec<String> = input_codec.to_vec();
+    let mut args = crate::helpers::safe_ffmpeg_input_prelude();
+    args.extend(input_codec.iter().cloned());
     if let Some(ch) = channel {
         let pan = format!("pan=mono|c0=c{}", ch);
         let filter = format!("{},ebur128=peak=true", pan);
         args.extend([
-            "-t".into(), secs,
-            "-i".into(), feed_str,
-            "-af".into(), filter,
-            "-f".into(), "null".into(), "-".into(),
+            "-t".into(),
+            secs,
+            "-i".into(),
+            feed_str,
+            "-af".into(),
+            filter,
+            "-f".into(),
+            "null".into(),
+            "-".into(),
         ]);
     } else {
         args.extend([
-            "-t".into(), secs,
-            "-i".into(), feed_str,
-            "-af".into(), "ebur128=peak=true".into(),
-            "-f".into(), "null".into(), "-".into(),
+            "-t".into(),
+            secs,
+            "-i".into(),
+            feed_str,
+            "-af".into(),
+            "ebur128=peak=true".into(),
+            "-f".into(),
+            "null".into(),
+            "-".into(),
         ]);
     }
 
@@ -434,15 +568,23 @@ async fn estimate_noise_floor(app: &AppHandle, feed: &Path, input_codec: &[Strin
     // Use astats' measured noise floor. The overall RMS level would include
     // speech and sits far above any sensible noise threshold, which made
     // denoising look "recommended" for virtually every normal recording.
-    let mut args: Vec<String> = input_codec.to_vec();
+    let mut args = crate::helpers::safe_ffmpeg_input_prelude();
+    args.extend(input_codec.iter().cloned());
     args.extend([
-        "-t".into(), crate::ffmpeg::ANALYSIS_SAMPLE_SECS.to_string(),
-        "-i".into(), feed.to_string_lossy().to_string(),
-        "-af".into(), "astats=metadata=1".into(),
-        "-f".into(), "null".into(), "-".into(),
+        "-t".into(),
+        crate::ffmpeg::ANALYSIS_SAMPLE_SECS.to_string(),
+        "-i".into(),
+        feed.to_string_lossy().to_string(),
+        "-af".into(),
+        "astats=metadata=1".into(),
+        "-f".into(),
+        "null".into(),
+        "-".into(),
     ]);
 
-    if let Some(out) = sidecar_with_heartbeat(app, crate::helpers::ffmpeg_bin_name(), args, 120, ctx, "noise", 0.29).await {
+    if let Some(out) =
+        sidecar_with_heartbeat(app, crate::helpers::ffmpeg_bin_name(), args, 120, ctx, "noise", 0.29).await
+    {
         let stderr = String::from_utf8_lossy(&out.stderr);
         let noise_re = Regex::new(r"Noise floor dB:\s+(-?\d+\.?\d*)").unwrap();
         // Use the last match: astats prints per-channel sections first,
@@ -459,23 +601,25 @@ async fn estimate_noise_floor(app: &AppHandle, feed: &Path, input_codec: &[Strin
 
 // ── Sample rate probing ─────────────────────────────────────────────────────
 
-async fn probe_sample_rate(app: &AppHandle, feed: &Path) -> Option<u32> {
+async fn probe_sample_rate(app: &AppHandle, feed: &Path, ctx: Option<&ScanCtx>) -> Option<u32> {
     let args: Vec<String> = vec![
-        "-v".into(), "quiet".into(),
-        "-print_format".into(), "json".into(),
+        "-v".into(),
+        "quiet".into(),
+        "-print_format".into(),
+        "json".into(),
         "-show_streams".into(),
-        "-select_streams".into(), "a:0".into(),
+        "-select_streams".into(),
+        "a:0".into(),
         feed.to_string_lossy().to_string(),
     ];
 
-    let output = crate::ffmpeg::sidecar_output_opt(app, ffprobe_bin_name(), args, 30).await?;
+    let is_cancelled = || ctx.map(|context| context.cancelled()).unwrap_or(false);
+    let output =
+        crate::ffmpeg::sidecar_output_cancellable(app, ffprobe_bin_name(), args, 30, Some(&is_cancelled)).await?;
 
     let text = String::from_utf8_lossy(&output.stdout);
     let v: serde_json::Value = serde_json::from_str(&text).ok()?;
-    v["streams"][0]["sample_rate"]
-        .as_str()?
-        .parse::<u32>()
-        .ok()
+    v["streams"][0]["sample_rate"].as_str()?.parse::<u32>().ok()
 }
 
 // ── Smart Turn detection ────────────────────────────────────────────────────
@@ -483,6 +627,12 @@ async fn probe_sample_rate(app: &AppHandle, feed: &Path) -> Option<u32> {
 // Uses the Pipecat Smart Turn v3 ONNX model to detect speaker turn boundaries.
 // Each 8-second window is converted to Whisper-style log-mel features
 // (see mel.rs); the model's logit becomes a turn-completion probability.
+
+fn smart_turn_window_bounds(position_samples: usize, sample_rate: usize, window_samples: usize) -> (f64, f64) {
+    let start = position_samples as f64 / sample_rate as f64;
+    let end = position_samples.saturating_add(window_samples) as f64 / sample_rate as f64;
+    (start, end)
+}
 
 async fn detect_turns(
     app: &AppHandle,
@@ -503,30 +653,41 @@ async fn detect_turns(
     // would skip any explicit cleanup loop and leak up to 16 × ~6MB).
     let mut decoded: Vec<(u32, crate::safety::TempFile)> = Vec::new();
     for ch in 0..channels {
-        if ctx.map(|c| c.cancelled()).unwrap_or(false) { break; }
+        if ctx.map(|c| c.cancelled()).unwrap_or(false) {
+            break;
+        }
         let pct = 0.45 + 0.10 * (ch as f64 / channels as f64);
         emit(ctx, "turns", pct);
 
-        let tmp = crate::safety::TempFile::new(
-            std::env::temp_dir().join(format!("depoaudio_turn_ch{}_{}.wav", ch, uuid::Uuid::new_v4())),
-        );
+        let tmp = crate::safety::TempFile::new(std::env::temp_dir().join(format!(
+            "depoaudio_turn_ch{}_{}.wav",
+            ch,
+            uuid::Uuid::new_v4()
+        )));
         let pan_filter = if channels > 1 {
             format!("pan=mono|c0=c{},aresample=16000", ch)
         } else {
             "aresample=16000".into()
         };
 
-        let mut args: Vec<String> = input_codec.to_vec();
+        let mut args = crate::helpers::safe_ffmpeg_input_prelude();
+        args.extend(input_codec.iter().cloned());
         args.extend([
-            "-t".into(), crate::ffmpeg::ANALYSIS_SAMPLE_SECS.to_string(),
-            "-i".into(), feed.to_string_lossy().to_string(),
-            "-af".into(), pan_filter,
+            "-t".into(),
+            crate::ffmpeg::ANALYSIS_SAMPLE_SECS.to_string(),
+            "-i".into(),
+            feed.to_string_lossy().to_string(),
+            "-af".into(),
+            pan_filter,
             // -ac 1 matters on the channels==1 fallback path (probe failed):
             // without it a multichannel file would feed interleaved samples
             // to the model as if they were mono
-            "-ac".into(), "1".into(),
-            "-acodec".into(), "pcm_s16le".into(),
-            "-y".into(), tmp.to_string_lossy().to_string(),
+            "-ac".into(),
+            "1".into(),
+            "-acodec".into(),
+            "pcm_s16le".into(),
+            "-y".into(),
+            tmp.to_string_lossy().to_string(),
         ]);
 
         let ok = sidecar_with_heartbeat(app, crate::helpers::ffmpeg_bin_name(), args, 120, ctx, "turns", pct)
@@ -540,7 +701,9 @@ async fn detect_turns(
         // else: tmp drops here and removes any partial decode
     }
 
-    if decoded.is_empty() { return Vec::new(); }
+    if decoded.is_empty() {
+        return Vec::new();
+    }
 
     // Phase 2 (blocking pool): mel features + ONNX inference. This is minutes
     // of CPU-bound work in the worst case; on the async runtime it pinned
@@ -565,12 +728,11 @@ async fn detect_turns(
         let total_channels = decoded.len().max(1) as f64;
 
         'channels: for (idx, (ch, tmp)) in decoded.into_iter().enumerate() {
-            let samples: Vec<f32> = match hound::WavReader::open(&*tmp) {
-                Ok(reader) => reader
-                    .into_samples::<i16>()
-                    .filter_map(|s| s.ok())
-                    .map(|s| s as f32 / 32768.0)
-                    .collect(),
+            let samples = match crate::types::read_pcm16_mono_wav_bounded(
+                &tmp,
+                16_000 * crate::ffmpeg::ANALYSIS_SAMPLE_SECS as usize,
+            ) {
+                Ok(samples) => samples,
                 Err(_) => continue,
             };
 
@@ -580,15 +742,18 @@ async fn detect_turns(
             let total_windows = (samples.len().saturating_sub(window_size) / stride + 1).max(1);
             let mut window_idx = 0usize;
             let mut pos = 0usize;
-            let mut turn_start: Option<f64> = None;
 
             while pos + window_size <= samples.len() {
                 // Budget + cancellation: bounded slowness must stay bounded,
                 // and a cancelled scan must actually stop computing.
-                if std::time::Instant::now() > deadline { break 'channels; }
+                if std::time::Instant::now() > deadline {
+                    break 'channels;
+                }
                 if let Some(c) = &ctx_owned {
-                    if c.cancelled() { break 'channels; }
-                    if window_idx % 16 == 0 {
+                    if c.cancelled() {
+                        break 'channels;
+                    }
+                    if window_idx.is_multiple_of(16) {
                         let ch_frac = (idx as f64 + window_idx as f64 / total_windows as f64) / total_channels;
                         c.emit("turns", 0.55 + 0.30 * ch_frac);
                     }
@@ -600,49 +765,38 @@ async fn detect_turns(
                 // [1, 80, 800] under "input_features" and emits a raw logit
                 // under "logits" (sigmoid -> turn-completion probability)
                 let feats = crate::mel::log_mel_8s(window);
-                let input = ndarray::Array3::from_shape_vec(
-                    (1, crate::mel::N_MELS, crate::mel::N_FRAMES),
-                    feats,
-                ).ok();
+                let input = ndarray::Array3::from_shape_vec((1, crate::mel::N_MELS, crate::mel::N_FRAMES), feats).ok();
 
                 let prob = if let Some(input_arr) = input {
                     match ort::value::Tensor::from_array(input_arr) {
-                        Ok(tensor) => {
-                            match session.run(ort::inputs!["input_features" => tensor]) {
-                                Ok(outputs) => {
-                                    outputs.get("logits")
-                                        .and_then(|v| v.try_extract_tensor::<f32>().ok())
-                                        .and_then(|t| t.1.first().copied())
-                                        .map(|logit| 1.0 / (1.0 + (-logit).exp()))
-                                        .unwrap_or(0.0)
-                                }
-                                Err(_) => 0.0,
-                            }
-                        }
+                        Ok(tensor) => match session.run(ort::inputs!["input_features" => tensor]) {
+                            Ok(outputs) => outputs
+                                .get("logits")
+                                .and_then(|v| v.try_extract_tensor::<f32>().ok())
+                                .and_then(|t| t.1.first().copied())
+                                .map(|logit| 1.0 / (1.0 + (-logit).exp()))
+                                .unwrap_or(0.0),
+                            Err(_) => 0.0,
+                        },
                         Err(_) => 0.0,
                     }
                 } else {
                     0.0
                 };
 
-                let time = pos as f64 / sample_rate as f64;
+                // `pos` is the START of the 8-second model window. Preserve
+                // that explicit timeline: the corresponding end is pos + 8s,
+                // not pos + 4s as if pos represented the window midpoint.
+                let (window_start, window_end) = smart_turn_window_bounds(pos, sample_rate, window_size);
 
                 // Turn-end detected (probability > 0.5)
                 if prob > 0.5 {
-                    if turn_start.is_none() {
-                        // Mark the beginning of the current speaking segment
-                        // (look back from the turn-end to find approximate start)
-                        turn_start = Some((time - 4.0).max(0.0));
-                    }
-                    // Close the turn segment
-                    if let Some(start) = turn_start.take() {
-                        all_turns.push(TurnSegment {
-                            start,
-                            end: time + 4.0, // end of the 8-second window
-                            channel: ch,
-                            confidence: prob as f64,
-                        });
-                    }
+                    all_turns.push(TurnSegment {
+                        start: window_start,
+                        end: window_end,
+                        channel: ch,
+                        confidence: prob as f64,
+                    });
                 }
 
                 pos += stride;
@@ -664,8 +818,8 @@ async fn detect_turns(
     for turn in all_turns {
         if let Some(last) = merged.last_mut() {
             let last_turn: &mut TurnSegment = last;
-            if last_turn.channel == turn.channel && (turn.start - last_turn.end).abs() < 1.0 {
-                last_turn.end = turn.end;
+            if last_turn.channel == turn.channel && turn.start <= last_turn.end + 1.0 {
+                last_turn.end = last_turn.end.max(turn.end);
                 last_turn.confidence = last_turn.confidence.max(turn.confidence);
                 continue;
             }
@@ -674,4 +828,26 @@ async fn detect_turns(
     }
 
     merged
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{channel_gains_from_lufs, smart_turn_window_bounds};
+
+    #[test]
+    fn smart_turn_window_uses_start_plus_full_eight_seconds() {
+        let (start, end) = smart_turn_window_bounds(16_000, 16_000, 8 * 16_000);
+        assert_eq!(start, 1.0);
+        assert_eq!(end, 9.0);
+        assert_eq!(end - start, 8.0);
+    }
+
+    #[test]
+    fn channel_gain_analysis_leaves_silence_and_bounds_active_gain() {
+        let gains = channel_gains_from_lufs(&[-70.0, -16.0, -36.0, 20.0]);
+        assert_eq!(gains[0], 1.0);
+        assert!((gains[1] - 1.0).abs() < 0.0001);
+        assert_eq!(gains[2], 10.0);
+        assert_eq!(gains[3], 0.1);
+    }
 }

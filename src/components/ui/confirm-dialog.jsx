@@ -25,12 +25,17 @@ export function ConfirmDialog({
             </DialogDescription>
           )}
           <div className="mt-3 flex justify-end gap-2">
-            <Button variant="ghost" size="sm" onClick={() => onOpenChange(false)}>{cancelLabel}</Button>
+            <Button variant="ghost" size="sm" onClick={() => onOpenChange(false)}>
+              {cancelLabel}
+            </Button>
             <Button
               variant={destructive ? 'destructive' : 'default'}
               size="sm"
               autoFocus
-              onClick={() => { onConfirm(); onOpenChange(false) }}
+              onClick={() => {
+                onConfirm()
+                onOpenChange(false)
+              }}
             >
               {confirmLabel}
             </Button>

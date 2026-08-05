@@ -1,7 +1,13 @@
 import { describe, it, expect } from 'vitest'
 import {
-  AUDIO_EXTS, SPEED_STEPS, loadSpeed, cycleSpeedStep,
-  loadBookmarks, freshAudioPaths, bookmarksToText,
+  AUDIO_EXTS,
+  SPEED_STEPS,
+  loadSpeed,
+  cycleSpeedStep,
+  loadBookmarks,
+  freshAudioPaths,
+  partitionPlaybackPaths,
+  bookmarksToText,
 } from '../lib/player'
 
 // Characterization tests for the Player tab's pure logic: accepted files,
@@ -52,9 +58,14 @@ describe('loadBookmarks', () => {
 })
 
 describe('freshAudioPaths', () => {
-  it('keeps only audio extensions (court formats included)', () => {
-    const out = freshAudioPaths(['/a.wav', '/b.pdf', '/c.trm', '/d.WAV'], [])
-    expect(out).toEqual(['/a.wav', '/c.trm', '/d.WAV'])
+  it('keeps directly playable audio and routes native containers through conversion', () => {
+    const out = freshAudioPaths(['/a.wav', '/b.pdf', '/c.trm', '/d.WAV', '/e.sgmca'], [])
+    expect(out).toEqual(['/a.wav', '/d.WAV'])
+    expect(partitionPlaybackPaths(['/a.wav', '/c.trm', '/d.ftr', '/e.sgmca'], []).conversionRequired).toEqual([
+      '/c.trm',
+      '/d.ftr',
+      '/e.sgmca',
+    ])
   })
   it('skips paths already queued and dedupes the drop', () => {
     const tracks = [{ path: '/a.wav' }]
@@ -81,7 +92,22 @@ describe('bookmarksToText', () => {
 
 describe('constants', () => {
   it('locks the accepted extension list', () => {
-    expect(AUDIO_EXTS).toEqual(['wav','mp3','flac','opus','ogg','m4a','aac','wma','aif','aiff','sgmca','trm','ftr','bwf'])
+    expect(AUDIO_EXTS).toEqual([
+      'wav',
+      'mp3',
+      'flac',
+      'opus',
+      'ogg',
+      'm4a',
+      'aac',
+      'wma',
+      'aif',
+      'aiff',
+      'sgmca',
+      'trm',
+      'ftr',
+      'bwf',
+    ])
   })
   it('locks the speed menu', () => {
     expect(SPEED_STEPS).toEqual([0.5, 0.75, 1, 1.25, 1.5, 2])

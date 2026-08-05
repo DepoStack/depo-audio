@@ -1,22 +1,38 @@
-import { useCallback } from 'react'
+import { useCallback, useEffect } from 'react'
 import { useTheme as useNextTheme } from 'next-themes'
-import { invoke } from '@tauri-apps/api/core'
 
-export default function useTheme() {
-  const { theme, resolvedTheme, setTheme: setNextTheme } = useNextTheme()
+const VALID_THEMES = new Set(['system', 'dark', 'light'])
+
+export default function useTheme(preferenceTheme, setPreferenceTheme) {
+  const { resolvedTheme, setTheme: setNextTheme } = useNextTheme()
+  const themePref = VALID_THEMES.has(preferenceTheme) ? preferenceTheme : 'system'
+
+  // next-themes owns the DOM class, while usePreferences owns persistence.
+  // Reconcile the DOM whenever the backend-hydrated preference changes.
+  useEffect(() => {
+    setNextTheme(themePref)
+  }, [themePref, setNextTheme])
 
   const cycleTheme = useCallback(() => {
-    const next = theme === 'system' ? 'dark' : theme === 'dark' ? 'light' : 'system'
+    const next = themePref === 'system' ? 'dark' : themePref === 'dark' ? 'light' : 'system'
     setNextTheme(next)
-    invoke('prefs_set', { patch: { theme: next } }).catch(() => {})
-  }, [theme, setNextTheme])
+    setPreferenceTheme(next)
+  }, [themePref, setNextTheme, setPreferenceTheme])
 
-  const setThemeDirect = useCallback((value) => {
-    setNextTheme(value)
-    invoke('prefs_set', { patch: { theme: value } }).catch(() => {})
-  }, [setNextTheme])
+  const setThemeDirect = useCallback(
+    value => {
+      const next = VALID_THEMES.has(value) ? value : 'system'
+      setNextTheme(next)
+      setPreferenceTheme(next)
+    },
+    [setNextTheme, setPreferenceTheme],
+  )
 
-  const themeLabel = theme === 'system' ? 'system' : theme === 'dark' ? 'dark' : 'light'
-
-  return { theme: resolvedTheme || 'dark', themePref: theme, themeLabel, cycleTheme, setThemeDirect }
+  return {
+    theme: resolvedTheme || (themePref === 'system' ? 'dark' : themePref),
+    themePref,
+    themeLabel: themePref,
+    cycleTheme,
+    setThemeDirect,
+  }
 }

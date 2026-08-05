@@ -23,8 +23,11 @@ export default function UpdateBanner({ updater }) {
             <Button size="sm" variant="primary" onClick={installUpdate}>
               <Download size={12} /> Update &amp; restart
             </Button>
-            <button onClick={dismiss} aria-label="Dismiss update notice"
-              className="text-[hsl(var(--sub))] hover:text-foreground transition-colors">
+            <button
+              onClick={dismiss}
+              aria-label="Dismiss update notice"
+              className="text-[hsl(var(--sub))] hover:text-foreground transition-colors"
+            >
               <X size={14} />
             </button>
           </div>
@@ -39,7 +42,11 @@ export default function UpdateBanner({ updater }) {
           </span>
           <div className="ml-auto w-40 h-1.5 bg-border rounded-full overflow-hidden">
             <div
-              className={progress > 0 ? 'h-full bg-primary rounded-full transition-all' : 'h-full bg-primary/60 rounded-full animate-pulse w-1/3'}
+              className={
+                progress > 0
+                  ? 'h-full bg-primary rounded-full transition-all'
+                  : 'h-full bg-primary/60 rounded-full animate-pulse w-1/3'
+              }
               style={progress > 0 ? { width: `${Math.round(progress * 100)}%` } : undefined}
             />
           </div>
@@ -56,9 +63,14 @@ export default function UpdateBanner({ updater }) {
       {showError && (
         <>
           <X size={14} className="text-destructive shrink-0" />
-          <span className="text-foreground">Update failed. Please try again or download the latest version manually.</span>
-          <button onClick={dismiss} aria-label="Dismiss"
-            className="ml-auto text-[hsl(var(--sub))] hover:text-foreground transition-colors">
+          <span className="text-foreground">
+            Update failed. Please try again or download the latest version manually.
+          </span>
+          <button
+            onClick={dismiss}
+            aria-label="Dismiss"
+            className="ml-auto text-[hsl(var(--sub))] hover:text-foreground transition-colors"
+          >
             <X size={14} />
           </button>
         </>

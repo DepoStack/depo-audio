@@ -1,4 +1,5 @@
 use std::path::Path;
+use std::sync::Arc;
 
 use tauri::AppHandle;
 
@@ -34,7 +35,21 @@ pub(crate) async fn score_quality(
     audio_path: &Path,
     ctx: Option<&crate::analysis::ScanCtx>,
 ) -> Result<QualityScore, String> {
+    crate::safety::check_file_safe(audio_path)?;
     let model_path = models::model_path(app, "dnsmos_sig_bak_ovr.onnx")?;
+    let preparation_context = ctx.cloned();
+    let preparation_cancelled: Arc<dyn Fn() -> bool + Send + Sync> = Arc::new(move || {
+        preparation_context
+            .as_ref()
+            .is_some_and(crate::analysis::ScanCtx::cancelled)
+    });
+    let prepared =
+        crate::helpers::prepare_audio_feed_cancellable(audio_path.to_path_buf(), preparation_cancelled).await;
+    if ctx.is_some_and(crate::analysis::ScanCtx::cancelled) {
+        return Err("Scan cancelled".into());
+    }
+    let (prepared_audio, _prepared_guard) = prepared?;
+    let audio_path = prepared_audio.as_path();
 
     // Decode to 16kHz mono for DNSMOS (drop guard cleans up on every exit path)
     let tmp = crate::safety::TempFile::new(std::env::temp_dir().join(format!(
@@ -43,35 +58,40 @@ pub(crate) async fn score_quality(
     )));
 
     // DNSMOS only scores the first ~9s, so decode a short head — no need to
-    // read (and no risk of hanging on) the whole recording. Forced input
-    // decoder for formats ffmpeg can't auto-detect (FTR).
-    let mut args: Vec<String> = crate::helpers::scan_input_codec_args(audio_path);
+    // read (and no risk of hanging on) the whole recording. FTR must use its
+    // native FFmpeg decoder rather than plain AAC.
+    let mut args = crate::helpers::safe_ffmpeg_input_prelude();
+    let input_codec = crate::helpers::input_codec_args(audio_path);
+    if !input_codec.is_empty() {
+        crate::ffmpeg::ensure_ftr_decoder(app).await?;
+    }
+    args.extend(input_codec);
     args.extend([
-        "-t".into(), "12".into(),
-        "-i".into(), audio_path.to_string_lossy().to_string(),
-        "-af".into(), "aresample=16000".into(),
-        "-ac".into(), "1".into(),
-        "-acodec".into(), "pcm_s16le".into(),
-        "-y".into(), tmp.to_string_lossy().to_string(),
+        "-t".into(),
+        "12".into(),
+        "-i".into(),
+        audio_path.to_string_lossy().to_string(),
+        "-af".into(),
+        "aresample=16000".into(),
+        "-ac".into(),
+        "1".into(),
+        "-acodec".into(),
+        "pcm_s16le".into(),
+        "-y".into(),
+        tmp.to_string_lossy().to_string(),
     ]);
 
-    let output = crate::ffmpeg::sidecar_output_opt(app, crate::helpers::ffmpeg_bin_name(), args, 60)
-        .await
-        .ok_or_else(|| "Failed to decode audio for quality scoring".to_string())?;
+    let output =
+        crate::analysis::sidecar_with_heartbeat(app, crate::helpers::ffmpeg_bin_name(), args, 60, ctx, "quality", 0.88)
+            .await
+            .ok_or_else(|| "Failed to decode audio for quality scoring".to_string())?;
 
     if !output.success {
         return Err("Failed to decode audio for quality scoring".into());
     }
 
-    // Read the 16kHz mono WAV
-    let reader = hound::WavReader::open(&tmp)
-        .map_err(|e| format!("Failed to open WAV: {}", e))?;
-
-    let samples: Vec<f32> = reader
-        .into_samples::<i16>()
-        .filter_map(|s| s.ok())
-        .map(|s| s as f32 / 32768.0)
-        .collect();
+    // Read only the bounded 12-second PCM output actually requested above.
+    let samples = crate::types::read_pcm16_mono_wav_bounded(&tmp, 16_000 * 12)?;
 
     drop(tmp);
 
@@ -79,7 +99,9 @@ pub(crate) async fn score_quality(
         return Err("No audio samples for quality scoring".into());
     }
 
-    if let Some(c) = ctx { c.check()?; }
+    if let Some(c) = ctx {
+        c.check()?;
+    }
 
     // Session load + inference on the blocking pool: EP model compilation and
     // a full-window inference are CPU-bound and must not pin an async worker.
@@ -100,18 +122,14 @@ pub(crate) async fn score_quality(
         // Create input tensor [1, target_len]
         let input = ndarray::Array2::from_shape_vec((1, target_len), input_samples)
             .map_err(|e| format!("Tensor error: {}", e))?;
-        let input_val = ort::value::Tensor::from_array(input)
-            .map_err(|e| format!("Tensor error: {}", e))?;
+        let input_val = ort::value::Tensor::from_array(input).map_err(|e| format!("Tensor error: {}", e))?;
 
         let outputs = session
             .run(ort::inputs!["input_1" => input_val])
             .map_err(|e| format!("DNSMOS inference failed: {}", e))?;
 
         // Output is [1, 3] with [SIG, BAK, OVR] scores
-        let first_output = outputs
-            .values()
-            .next()
-            .ok_or("No DNSMOS output")?;
+        let first_output = outputs.values().next().ok_or("No DNSMOS output")?;
         let scores = first_output
             .try_extract_tensor::<f32>()
             .map_err(|e| format!("Failed to extract DNSMOS output: {}", e))?;
@@ -127,7 +145,11 @@ pub(crate) async fn score_quality(
         } else if scores_slice.len() == 1 {
             // Some DNSMOS variants output a single OVR score
             let ovr = scores_slice[0].clamp(1.0, 5.0);
-            Ok(QualityScore { sig: ovr, bak: ovr, ovr })
+            Ok(QualityScore {
+                sig: ovr,
+                bak: ovr,
+                ovr,
+            })
         } else {
             Err("Unexpected DNSMOS output shape".into())
         }

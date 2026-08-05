@@ -17,11 +17,31 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  ORT_VERSION: "1.22.0"
-  # Static, self-contained ffmpeg/ffprobe (per-arch) that we lipo into a
-  # universal macOS sidecar. Homebrew's ffmpeg is dynamically linked against
-  # Cellar dylibs and would dyld-fail on a clean Mac, so we do NOT use it.
-  FFMPEG_STATIC_TAG: "b6.1.2-rc.1"
+  # Static, self-contained ffmpeg/ffprobe assets. Homebrew's ffmpeg is
+  # dynamically linked against Cellar dylibs and would fail on a clean Mac.
+  # GitHub release asset IDs are immutable. Replacement assets receive new
+  # IDs, so these downloads fail closed if an upstream release is re-cut.
+  FFMPEG_MAC_ARM64_ID: '202650084'
+  FFMPEG_MAC_ARM64_SIZE: '47078120'
+  FFMPEG_MAC_X64_ID: '202650083'
+  FFMPEG_MAC_X64_SIZE: '75991688'
+  FFPROBE_MAC_ARM64_ID: '202650098'
+  FFPROBE_MAC_ARM64_SIZE: '47037128'
+  FFPROBE_MAC_X64_ID: '202650090'
+  FFPROBE_MAC_X64_SIZE: '75917176'
+  # BtbN deletes ordinary daily assets after its rolling retention window.
+  # Pin the 2026-07-31 month-end build, which upstream retains for two years,
+  # instead of an asset from the short-lived `latest` release.
+  FFMPEG_WIN_ID: '496767003'
+  FFMPEG_WIN_SIZE: '169718043'
+  FFMPEG_WIN_SHA256: '68a5e966533002785c3e4b9a98327e21d5277802668bf889d94086cb6426cbb4'
+  ORT_MAC_ID: '253300416'
+  ORT_MAC_SIZE: '54820264'
+  ORT_WIN_ID: '253300435'
+  ORT_WIN_SIZE: '72368545'
+  FTR_SMOKE_URL: 'https://samples.ffmpeg.org/ffmpeg-bugs/trac/ticket7279/t1.trm'
+  FTR_SMOKE_SIZE: '3775794'
+  FTR_SMOKE_SHA256: '60993c1f5379d56d43f231ea5391504f9c808daf8978fba80e5ad60e81c4c4d7'
 
 jobs:
   # Guard the release before any build starts:
@@ -37,7 +57,9 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
 
       - name: Verify tag matches the configured app version
         env:
@@ -46,12 +68,40 @@ jobs:
           TAG: ${{ inputs.tag || github.ref_name }}
         run: |
           set -euo pipefail
+          python3 - <<'PY'
+          import json, os, re
+          tag = os.environ['TAG']
+          with open('src-tauri/tauri.conf.json', encoding='utf-8') as handle:
+              version = json.load(handle)['version']
+          pattern = rf"v{re.escape(version)}(?:-[0-9A-Za-z][0-9A-Za-z.-]*)?"
+          if re.fullmatch(pattern, tag) is None:
+              raise SystemExit(
+                  f"ERROR: tag {tag!r} is not a safe release tag for app version {version!r}"
+              )
+          print(f"Tag {tag} matches app version {version}")
+          PY
+
+      - name: Verify release commit and published-release immutability
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ inputs.tag || github.ref_name }}
+        run: |
+          set -euo pipefail
           tag="$TAG"
-          version=$(python3 -c "import json; print(json.load(open('src-tauri/tauri.conf.json'))['version'])")
-          case "$tag" in
-            "v$version"|"v$version-"*) echo "Tag $tag matches app version $version" ;;
-            *) echo "ERROR: tag '$tag' does not match app version '$version' in src-tauri/tauri.conf.json"; exit 1 ;;
-          esac
+          tagged_commit=$(git rev-parse -q --verify "refs/tags/$tag^{commit}" 2>/dev/null || true)
+          if [ -n "$tagged_commit" ] && [ "$tagged_commit" != "$GITHUB_SHA" ]; then
+            echo "ERROR: existing tag $tag resolves to $tagged_commit, not this run's $GITHUB_SHA"
+            exit 1
+          fi
+          if gh api "repos/$GITHUB_REPOSITORY/releases/tags/$tag" >/dev/null 2>&1; then
+            echo "ERROR: a published release already exists for $tag; refusing to replace its assets"
+            exit 1
+          fi
+          if [ -n "$tagged_commit" ]; then
+            echo "Existing tag $tag resolves to this run's commit $GITHUB_SHA"
+          else
+            echo "Tag $tag does not exist yet and may be created at $GITHUB_SHA"
+          fi
 
       - name: Delete stale draft release for this tag
         env:
@@ -60,13 +110,14 @@ jobs:
         run: |
           set -euo pipefail
           tag="$TAG"
-          for id in $(gh api "repos/$GITHUB_REPOSITORY/releases" --paginate \
-                        --jq ".[] | select(.draft == true and .tag_name == \"$tag\") | .id"); do
-            echo "Deleting stale draft release $id (tag_name $tag). Assets it held:"
-            gh api "repos/$GITHUB_REPOSITORY/releases/$id" \
-              --jq '.assets[] | "  \(.name)  (\(.download_count) downloads)"' || echo "  (no assets)"
-            gh api -X DELETE "repos/$GITHUB_REPOSITORY/releases/$id"
-          done
+          gh api "repos/$GITHUB_REPOSITORY/releases" --paginate |
+            jq -r --arg tag "$tag" '.[] | select(.draft == true and .tag_name == $tag) | .id' |
+            while IFS= read -r id; do
+              echo "Deleting stale draft release $id (tag_name $tag). Assets it held:"
+              gh api "repos/$GITHUB_REPOSITORY/releases/$id" \
+                --jq '.assets[] | "  \(.name)  (\(.download_count) downloads)"' || echo "  (no assets)"
+              gh api -X DELETE "repos/$GITHUB_REPOSITORY/releases/$id"
+            done
 
   release:
     needs: prepare
@@ -82,9 +133,8 @@ jobs:
       matrix:
         include:
           # One universal macOS artifact (Apple Silicon + Intel in a single
-          # .app/.dmg). Built on an arm64 runner — Rust cross-compiles both
-          # slices and `lipo` fuses them; no Intel runner needed (macos-13 was
-          # retired Dec 2025).
+          # .app/.dmg). Rust cross-compiles both slices on the hosted macOS
+          # runner and `lipo` fuses them, independent of the runner's host CPU.
           - platform: macos-latest
             args: '--target universal-apple-darwin'
             rust-targets: 'aarch64-apple-darwin,x86_64-apple-darwin'
@@ -95,21 +145,21 @@ jobs:
     runs-on: ${{ matrix.platform }}
 
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Install Node.js
-        uses: actions/setup-node@v7
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 22
           cache: npm
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable (2026-08-05)
         with:
           targets: ${{ matrix.rust-targets }}
 
       - name: Rust cache
-        uses: swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
         with:
           workspaces: './src-tauri -> target'
 
@@ -130,18 +180,30 @@ jobs:
       # darwin fat binary as a harmless belt-and-suspenders fallback.
       - name: Build universal FFmpeg sidecars (macOS)
         if: runner.os == 'macOS'
+        env:
+          GH_DOWNLOAD_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          base="https://github.com/descriptinc/ffmpeg-ffprobe-static/releases/download/${FFMPEG_STATIC_TAG}"
           mkdir -p ffbin
-          for arch in arm64 x64; do
-            curl -fL --retry 5 --retry-all-errors --retry-delay 2 "$base/ffmpeg-darwin-$arch"  -o "ffbin/ffmpeg-$arch"
-            curl -fL --retry 5 --retry-all-errors --retry-delay 2 "$base/ffprobe-darwin-$arch" -o "ffbin/ffprobe-$arch"
-          done
+          download_asset() {
+            repo="$1"; asset_id="$2"; output="$3"; expected_size="$4"
+            curl -fL --retry 5 --retry-all-errors --retry-delay 2 \
+              -H "Accept: application/octet-stream" \
+              -H "Authorization: Bearer ${GH_DOWNLOAD_TOKEN}" \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              "https://api.github.com/repos/${repo}/releases/assets/${asset_id}" \
+              -o "$output"
+            actual_size=$(stat -f%z "$output")
+            test "$actual_size" = "$expected_size" || {
+              echo "ERROR: $output size $actual_size does not match pinned size $expected_size"; exit 1;
+            }
+          }
+          download_asset descriptinc/ffmpeg-ffprobe-static "$FFMPEG_MAC_ARM64_ID" ffbin/ffmpeg-arm64 "$FFMPEG_MAC_ARM64_SIZE"
+          download_asset descriptinc/ffmpeg-ffprobe-static "$FFMPEG_MAC_X64_ID" ffbin/ffmpeg-x64 "$FFMPEG_MAC_X64_SIZE"
+          download_asset descriptinc/ffmpeg-ffprobe-static "$FFPROBE_MAC_ARM64_ID" ffbin/ffprobe-arm64 "$FFPROBE_MAC_ARM64_SIZE"
+          download_asset descriptinc/ffmpeg-ffprobe-static "$FFPROBE_MAC_X64_ID" ffbin/ffprobe-x64 "$FFPROBE_MAC_X64_SIZE"
           chmod +x ffbin/*
-          # Record hashes so a maintainer can pin sha256 after the first run
-          # (this tag is a prerelease and could be re-cut).
-          echo "== sidecar sha256 (pin after first run) =="; shasum -a 256 ffbin/*
+          echo "== pinned sidecar sha256 =="; shasum -a 256 ffbin/*
           # Guard (allowlist, not denylist): a real static sidecar may only
           # depend on system libraries under /usr/lib or /System/Library. Any
           # other dependency — Homebrew, /usr/local, or an @rpath/@loader_path
@@ -181,10 +243,22 @@ jobs:
       - name: Download FFmpeg (Windows x64)
         if: matrix.platform == 'windows-latest'
         shell: pwsh
+        env:
+          GH_DOWNLOAD_TOKEN: ${{ github.token }}
         run: |
           New-Item -ItemType Directory -Force -Path src-tauri/binaries | Out-Null
-          $url = "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip"
-          Invoke-WebRequest $url -OutFile ffmpeg.zip
+          $headers = @{
+            Accept = "application/octet-stream"
+            Authorization = "Bearer $env:GH_DOWNLOAD_TOKEN"
+            "X-GitHub-Api-Version" = "2022-11-28"
+          }
+          $url = "https://api.github.com/repos/BtbN/FFmpeg-Builds/releases/assets/$env:FFMPEG_WIN_ID"
+          Invoke-WebRequest $url -Headers $headers -OutFile ffmpeg.zip
+          if ((Get-Item ffmpeg.zip).Length -ne [int64]$env:FFMPEG_WIN_SIZE) {
+            throw "Pinned FFmpeg archive size mismatch"
+          }
+          $hash = (Get-FileHash ffmpeg.zip -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($hash -ne $env:FFMPEG_WIN_SHA256) { throw "Pinned FFmpeg archive hash mismatch: $hash" }
           Expand-Archive ffmpeg.zip -DestinationPath ffmpeg_tmp -Force
           $bin   = Get-ChildItem ffmpeg_tmp -Recurse -Filter "ffmpeg.exe"  | Select-Object -First 1
           $probe = Get-ChildItem ffmpeg_tmp -Recurse -Filter "ffprobe.exe" | Select-Object -First 1
@@ -203,18 +277,54 @@ jobs:
         shell: pwsh
         run: Get-ChildItem src-tauri/binaries/
 
+      - name: Smoke-test native FTR decoding (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          set -euo pipefail
+          curl -fL --retry 5 --retry-all-errors --retry-delay 2 "$FTR_SMOKE_URL" -o ftr-smoke.trm
+          test "$(stat -f%z ftr-smoke.trm)" = "$FTR_SMOKE_SIZE" || { echo "ERROR: FTR fixture size mismatch"; exit 1; }
+          echo "$FTR_SMOKE_SHA256  ftr-smoke.trm" | shasum -a 256 -c -
+          for ffmpeg in \
+            src-tauri/binaries/ffmpeg-aarch64-apple-darwin \
+            src-tauri/binaries/ffmpeg-x86_64-apple-darwin
+          do
+            "$ffmpeg" -hide_banner -v error \
+              -c:a ftr -t 5 -i ftr-smoke.trm -map 0:a:0 -f null -
+          done
+
+      - name: Smoke-test native FTR decoding (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          Invoke-WebRequest $env:FTR_SMOKE_URL -OutFile ftr-smoke.trm
+          if ((Get-Item ftr-smoke.trm).Length -ne [int64]$env:FTR_SMOKE_SIZE) { throw "FTR fixture size mismatch" }
+          $hash = (Get-FileHash ftr-smoke.trm -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($hash -ne $env:FTR_SMOKE_SHA256) { throw "FTR fixture hash mismatch: $hash" }
+          & src-tauri/binaries/ffmpeg-x86_64-pc-windows-msvc.exe -hide_banner -v error `
+            -c:a ftr -t 5 -i ftr-smoke.trm -map 0:a:0 -f null NUL
+          if ($LASTEXITCODE -ne 0) { throw "Bundled FFmpeg failed native FTR decode smoke test" }
+
       # ── ONNX Runtime ────────────────────────────────────────────────────
       # macOS: Microsoft ships a ready-made universal2 (fat) dylib — no lipo
       # needed. The bundled .dylib is a symlink to the versioned real file, so
-      # copy with -L to bundle the actual Mach-O, not a dangling link.
+      # copy with -L to stage the actual Mach-O, not a dangling link. The
+      # release-only config below adds this path as a macOS framework so Tauri
+      # signs it inside-out before signing the app bundle.
       - name: Download universal ONNX Runtime (macOS)
         if: runner.os == 'macOS'
+        env:
+          GH_DOWNLOAD_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           mkdir -p src-tauri/resources/onnxruntime
           curl -fL --retry 5 --retry-all-errors --retry-delay 2 \
-            "https://github.com/microsoft/onnxruntime/releases/download/v${ORT_VERSION}/onnxruntime-osx-universal2-${ORT_VERSION}.tgz" \
+            -H "Accept: application/octet-stream" \
+            -H "Authorization: Bearer ${GH_DOWNLOAD_TOKEN}" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/microsoft/onnxruntime/releases/assets/${ORT_MAC_ID}" \
             -o ort.tgz
+          actual_size=$(stat -f%z ort.tgz)
+          test "$actual_size" = "$ORT_MAC_SIZE" || { echo "ERROR: pinned ONNX Runtime archive size mismatch"; exit 1; }
           tar xzf ort.tgz
           ort_dir=$(ls -d onnxruntime-osx-universal2-*)
           cp -L "$ort_dir/lib/libonnxruntime.dylib" src-tauri/resources/onnxruntime/libonnxruntime.dylib
@@ -226,68 +336,246 @@ jobs:
             *) echo "ERROR: ORT dylib is not universal (got: $archs)"; exit 1 ;;
           esac
 
-      - name: Download ONNX Runtime (Windows)
+      - name: Download ONNX Runtime CPU package (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
+        env:
+          GH_DOWNLOAD_TOKEN: ${{ github.token }}
         run: |
           New-Item -ItemType Directory -Force -Path src-tauri/resources/onnxruntime | Out-Null
-          Invoke-WebRequest "https://github.com/microsoft/onnxruntime/releases/download/v${env:ORT_VERSION}/onnxruntime-win-x64-${env:ORT_VERSION}.zip" -OutFile ort.zip
+          $headers = @{
+            Accept = "application/octet-stream"
+            Authorization = "Bearer $env:GH_DOWNLOAD_TOKEN"
+            "X-GitHub-Api-Version" = "2022-11-28"
+          }
+          Invoke-WebRequest "https://api.github.com/repos/microsoft/onnxruntime/releases/assets/$env:ORT_WIN_ID" -Headers $headers -OutFile ort.zip
+          if ((Get-Item ort.zip).Length -ne [int64]$env:ORT_WIN_SIZE) {
+            throw "Pinned ONNX Runtime archive size mismatch"
+          }
           Expand-Archive ort.zip -DestinationPath ort_tmp -Force
           $dll = Get-ChildItem ort_tmp -Recurse -Filter "onnxruntime.dll" | Select-Object -First 1
           Copy-Item $dll.FullName "src-tauri/resources/onnxruntime/onnxruntime.dll"
           Get-ChildItem src-tauri/resources/onnxruntime/
 
-      # ── Disable macOS signing when no certificate is configured ────────
-      - name: Disable macOS code signing (unsigned build)
-        if: runner.os == 'macOS'
-        run: echo "APPLE_SIGNING_IDENTITY=-" >> $GITHUB_ENV
-
-      # ── Signed auto-updates: only when the signing key secret is set ───
-      # Building updater artifacts requires TAURI_SIGNING_PRIVATE_KEY; gating on
-      # it means a release still succeeds before the maintainer configures the
-      # key (updates are simply dormant until then) and turns on automatically
-      # once the secret exists.
-      - name: Detect updater signing key
-        id: updater
+      # ── Release signing and signed updater configuration ────────────────
+      # Releases fail closed until updater and platform code signing are
+      # configured. macOS additionally requires notarization credentials.
+      - name: Require release signing configuration
         shell: bash
         env:
-          SIGNING_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          TAURI_UPDATER_PUBLIC_KEY: ${{ secrets.TAURI_UPDATER_PUBLIC_KEY }}
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
+          WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+          WINDOWS_CERTIFICATE_THUMBPRINT: ${{ secrets.WINDOWS_CERTIFICATE_THUMBPRINT }}
         run: |
-          if [ -n "$SIGNING_KEY" ]; then
-            echo "enabled=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "enabled=false" >> "$GITHUB_OUTPUT"
-            echo "::notice::TAURI_SIGNING_PRIVATE_KEY not set — building without auto-update artifacts."
+          set -euo pipefail
+          required=(TAURI_SIGNING_PRIVATE_KEY TAURI_UPDATER_PUBLIC_KEY)
+          if [ "$RUNNER_OS" = "macOS" ]; then
+            required+=(APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_SIGNING_IDENTITY APPLE_ID APPLE_PASSWORD APPLE_TEAM_ID)
+          elif [ "$RUNNER_OS" = "Windows" ]; then
+            required+=(WINDOWS_CERTIFICATE WINDOWS_CERTIFICATE_PASSWORD WINDOWS_CERTIFICATE_THUMBPRINT)
           fi
+          missing=()
+          for name in "${required[@]}"; do
+            [ -n "${!name:-}" ] || missing+=("$name")
+          done
+          [ ${#missing[@]} -eq 0 ] || {
+            echo "::error::Release signing is not configured. Missing: ${missing[*]}"; exit 1;
+          }
+
+      # The Tauri CLI has a signer but no verify subcommand. Sign a disposable
+      # nonce with the exact project-pinned CLI, then verify that signature
+      # using the same minisign-verify version/checksum locked by the app's
+      # updater dependency. No key material is written or printed.
+      - name: Verify updater signing key pair
+        shell: bash
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          TAURI_UPDATER_PUBLIC_KEY: ${{ secrets.TAURI_UPDATER_PUBLIC_KEY }}
+        run: |
+          set -euo pipefail
+          umask 077
+          verify_dir=$(mktemp -d "${RUNNER_TEMP}/depoaudio-key-check.XXXXXX")
+          trap 'rm -rf -- "$verify_dir"' EXIT
+
+          payload="$verify_dir/updater-key-check"
+          printf '%s\n' "depo-audio:$GITHUB_RUN_ID:$GITHUB_RUN_ATTEMPT:$RUNNER_OS" > "$payload"
+          npm run tauri -- signer sign "$payload" >/dev/null
+          test -s "$payload.sig" || {
+            echo "::error::Tauri signer did not create a signature"; exit 1;
+          }
+          unset TAURI_SIGNING_PRIVATE_KEY TAURI_SIGNING_PRIVATE_KEY_PASSWORD
+
+          mkdir -p "$verify_dir/src"
+          cat > "$verify_dir/Cargo.toml" <<'TOML'
+          [package]
+          name = "depoaudio-updater-key-check"
+          version = "0.0.0"
+          edition = "2021"
+          publish = false
+
+          [dependencies]
+          base64 = "=0.22.1"
+          minisign-verify = "=0.2.5"
+          TOML
+          cat > "$verify_dir/Cargo.lock" <<'LOCK'
+          # This file is automatically @generated by Cargo.
+          # It is not intended for manual editing.
+          version = 4
+
+          [[package]]
+          name = "base64"
+          version = "0.22.1"
+          source = "registry+https://github.com/rust-lang/crates.io-index"
+          checksum = "72b3254f16251a8381aa12e40e3c4d2f0199f8c6508fbecb9d91f575e0fbb8c6"
+
+          [[package]]
+          name = "depoaudio-updater-key-check"
+          version = "0.0.0"
+          dependencies = [
+           "base64",
+           "minisign-verify",
+          ]
+
+          [[package]]
+          name = "minisign-verify"
+          version = "0.2.5"
+          source = "registry+https://github.com/rust-lang/crates.io-index"
+          checksum = "22f9645cb765ea72b8111f36c522475d2daa0d22c957a9826437e97534bc4e9e"
+          LOCK
+          cat > "$verify_dir/src/main.rs" <<'RUST'
+          use base64::{engine::general_purpose::STANDARD, Engine as _};
+          use minisign_verify::{PublicKey, Signature};
+          use std::{env, fs, path::PathBuf};
+
+          fn main() -> Result<(), Box<dyn std::error::Error>> {
+              let mut args = env::args_os().skip(1);
+              let payload = PathBuf::from(args.next().ok_or("missing payload path")?);
+              let signature_path = PathBuf::from(args.next().ok_or("missing signature path")?);
+              if args.next().is_some() {
+                  return Err("unexpected verifier argument".into());
+              }
+
+              // Tauri updater configuration stores base64 of the complete
+              // Minisign public-key file, and .sig contains base64 of the
+              // complete Minisign signature. Decode exactly as the updater.
+              let public_key_encoded = env::var("TAURI_UPDATER_PUBLIC_KEY")?;
+              let public_key_text = String::from_utf8(
+                  STANDARD
+                      .decode(public_key_encoded.trim())
+                      .map_err(|_| "updater public key is not valid base64")?,
+              )?;
+              let public_key = PublicKey::decode(public_key_text.trim())
+                  .map_err(|error| format!("invalid updater public key: {error}"))?;
+
+              let signature_encoded = fs::read_to_string(&signature_path)?;
+              let signature_text = String::from_utf8(
+                  STANDARD
+                      .decode(signature_encoded.trim())
+                      .map_err(|_| "Tauri signature is not valid base64")?,
+              )?;
+              let signature = Signature::decode(signature_text.trim())
+                  .map_err(|error| format!("invalid Tauri signature: {error}"))?;
+              let data = fs::read(payload)?;
+              public_key
+                  .verify(&data, &signature, true)
+                  .map_err(|error| format!("configured updater keys do not match: {error}"))?;
+              println!("Updater signing key pair verified.");
+              Ok(())
+          }
+          RUST
+
+          cargo run --locked --quiet --manifest-path "$verify_dir/Cargo.toml" -- \
+            "$payload" "$payload.sig"
+
+      - name: Generate signed updater configuration
+        shell: bash
+        env:
+          TAURI_UPDATER_PUBLIC_KEY: ${{ secrets.TAURI_UPDATER_PUBLIC_KEY }}
+          WINDOWS_CERTIFICATE_THUMBPRINT: ${{ secrets.WINDOWS_CERTIFICATE_THUMBPRINT }}
+        run: |
+          set -euo pipefail
+          jq \
+            --arg pubkey "$TAURI_UPDATER_PUBLIC_KEY" \
+            --arg runner "$RUNNER_OS" \
+            --arg thumbprint "$WINDOWS_CERTIFICATE_THUMBPRINT" '{
+            plugins: { updater: {
+              endpoints: ["https://github.com/DepoStack/depo-audio/releases/latest/download/latest.json"],
+              pubkey: $pubkey
+            } },
+            bundle: ({ createUpdaterArtifacts: true } +
+              (if $runner == "Windows" then {
+                resources: (.bundle.resources + ["resources/onnxruntime/onnxruntime.dll"]),
+                windows: {
+                  certificateThumbprint: $thumbprint,
+                  digestAlgorithm: "sha256",
+                  timestampUrl: "http://timestamp.digicert.com"
+                }
+              } elif $runner == "macOS" then {
+                macOS: {
+                  frameworks: ["resources/onnxruntime/libonnxruntime.dylib"]
+                }
+              } else error("unsupported release runner: " + $runner) end))
+          }' src-tauri/tauri.conf.json > src-tauri/tauri.release.conf.json
+
+      - name: Import Windows signing certificate
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
+          WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+          WINDOWS_CERTIFICATE_THUMBPRINT: ${{ secrets.WINDOWS_CERTIFICATE_THUMBPRINT }}
+        run: |
+          $pfx = Join-Path $env:RUNNER_TEMP "depoaudio-signing.pfx"
+          [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:WINDOWS_CERTIFICATE))
+          $password = ConvertTo-SecureString $env:WINDOWS_CERTIFICATE_PASSWORD -AsPlainText -Force
+          Import-PfxCertificate -FilePath $pfx -CertStoreLocation Cert:\CurrentUser\My -Password $password | Out-Null
+          Remove-Item -LiteralPath $pfx -Force
+          $certificate = Get-Item "Cert:\CurrentUser\My\$env:WINDOWS_CERTIFICATE_THUMBPRINT" -ErrorAction Stop
+          if (!$certificate.HasPrivateKey) { throw "Windows signing certificate has no private key" }
 
       # ── Build & release ────────────────────────────────────────────────
       - name: Build and release
-        uses: tauri-apps/tauri-action@v1
+        uses: tauri-apps/tauri-action@1deb371b0cd8bd54025b384f1cd735e725c4060f # action-v1.0.0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # Updater artifact signing. Set these repo secrets to enable signed
-          # auto-updates (generate with: npx tauri signer generate).
+          # Release validation above guarantees updater and platform signing
+          # credentials are present before the build starts.
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         with:
-          tagName:      ${{ inputs.tag || github.ref_name }}
-          releaseName:  'DepoAudio ${{ inputs.tag || github.ref_name }}'
-          releaseBody:  'See CHANGELOG.md for details.'
+          tagName: ${{ inputs.tag || github.ref_name }}
+          releaseCommitish: ${{ github.sha }}
+          releaseName: 'DepoAudio ${{ inputs.tag || github.ref_name }}'
+          releaseBody: 'See CHANGELOG.md for details.'
           releaseDraft: true
           # Preview releases: a tag with a pre-release suffix (e.g.
           # v1.0.0-preview.1, -rc.1, -beta.2) is marked as a GitHub prerelease;
           # a clean tag (v1.0.0) ships as a final release.
-          prerelease:   ${{ contains(inputs.tag || github.ref_name, '-') }}
-          # Updater artifacts + latest.json only when the signing key is present.
-          includeUpdaterJson: ${{ steps.updater.outputs.enabled }}
-          args: ${{ steps.updater.outputs.enabled == 'true' && format('--config src-tauri/tauri.updater.conf.json {0}', matrix.args) || matrix.args }}
+          prerelease: ${{ contains(inputs.tag || github.ref_name, '-') }}
+          includeUpdaterJson: true
+          args: '--config src-tauri/tauri.release.conf.json ${{ matrix.args }}'
 
-  # Self-heal "published mid-run": if the draft is published while a later
-  # matrix leg is still building, that leg's tauri-action (which only looks
-  # for DRAFTS) strands its artifacts in a brand-new draft — splitting the
-  # platforms across two releases. Promote any such stray draft's assets into
-  # the published release and delete the drained draft. No-op on the normal
-  # flow (nothing published yet, no stray draft).
+  # If a draft is published while a later matrix leg is still building, that
+  # leg can strand its artifacts in a new draft. Copy only asset names absent
+  # from the published release after verifying draft/release/tag commit
+  # identity. Any collision (especially latest.json) fails closed; published
+  # assets are never merged, replaced, or uploaded with --clobber.
   finalize:
     needs: release
     permissions:

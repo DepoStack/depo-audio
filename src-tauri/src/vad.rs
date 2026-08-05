@@ -1,4 +1,5 @@
 use std::path::Path;
+use std::sync::Arc;
 
 use tauri::AppHandle;
 
@@ -6,10 +7,9 @@ use crate::models;
 
 // ── Voice Activity Detection (Silero VAD) ───────────────────────────────────
 //
-// Detects speech vs. silence at 10ms granularity. Used to:
-//   1. Skip silent regions during denoising (faster processing)
-//   2. Measure loudness only during speech (better auto-leveling)
-//   3. Pair with Smart Turn for more accurate turn boundaries
+// Detects speech vs. silence at 10ms granularity. Used to report the speech
+// ratio, gate model passes for mostly silent/undecodable files, and recommend
+// trimming when a recording contains substantial dead air.
 //
 // Silero VAD operates on 16kHz mono audio in 512-sample chunks (~32ms).
 // Output is a probability [0.0, 1.0] where > 0.5 indicates speech.
@@ -66,7 +66,21 @@ pub(crate) async fn detect_speech(
     audio_path: &Path,
     ctx: Option<&crate::analysis::ScanCtx>,
 ) -> Result<VadResult, VadError> {
+    crate::safety::check_file_safe(audio_path).map_err(VadError::Undecodable)?;
     let model_path = models::model_path(app, "silero_vad.onnx").map_err(VadError::Unavailable)?;
+    let preparation_context = ctx.cloned();
+    let preparation_cancelled: Arc<dyn Fn() -> bool + Send + Sync> = Arc::new(move || {
+        preparation_context
+            .as_ref()
+            .is_some_and(crate::analysis::ScanCtx::cancelled)
+    });
+    let prepared =
+        crate::helpers::prepare_audio_feed_cancellable(audio_path.to_path_buf(), preparation_cancelled).await;
+    if ctx.is_some_and(crate::analysis::ScanCtx::cancelled) {
+        return Err(VadError::Unavailable("Scan cancelled".into()));
+    }
+    let (prepared_audio, _prepared_guard) = prepared.map_err(VadError::Undecodable)?;
+    let audio_path = prepared_audio.as_path();
 
     // Decode to 16kHz mono WAV (drop guard cleans up on every exit path)
     let tmp = crate::safety::TempFile::new(std::env::temp_dir().join(format!(
@@ -74,37 +88,44 @@ pub(crate) async fn detect_speech(
         uuid::Uuid::new_v4().to_string().replace('-', "")
     )));
 
-    // Forced input decoder for formats ffmpeg can't auto-detect (FTR)
-    let mut args: Vec<String> = crate::helpers::scan_input_codec_args(audio_path);
+    // FTR must use FFmpeg's native multichannel wrapper, never plain AAC.
+    let mut args = crate::helpers::safe_ffmpeg_input_prelude();
+    let input_codec = crate::helpers::input_codec_args(audio_path);
+    if !input_codec.is_empty() {
+        crate::ffmpeg::ensure_ftr_decoder(app)
+            .await
+            .map_err(VadError::Undecodable)?;
+    }
+    args.extend(input_codec);
     args.extend([
-        "-t".into(), crate::ffmpeg::ANALYSIS_SAMPLE_SECS.to_string(),
-        "-i".into(), audio_path.to_string_lossy().to_string(),
-        "-af".into(), "aresample=16000".into(),
-        "-ac".into(), "1".into(),
-        "-acodec".into(), "pcm_s16le".into(),
-        "-y".into(), tmp.to_string_lossy().to_string(),
+        "-t".into(),
+        crate::ffmpeg::ANALYSIS_SAMPLE_SECS.to_string(),
+        "-i".into(),
+        audio_path.to_string_lossy().to_string(),
+        "-af".into(),
+        "aresample=16000".into(),
+        "-ac".into(),
+        "1".into(),
+        "-acodec".into(),
+        "pcm_s16le".into(),
+        "-y".into(),
+        tmp.to_string_lossy().to_string(),
     ]);
 
     // Bounded decode (sample cap + timeout) so VAD can't hang the scan.
     // Decode failures are Undecodable — the file itself is the problem.
-    let output = crate::analysis::sidecar_with_heartbeat(
-        app, crate::helpers::ffmpeg_bin_name(), args, 120, ctx, "speech", 0.33,
-    )
-    .await
-    .ok_or_else(|| VadError::Undecodable("Failed to decode audio for VAD".into()))?;
+    let output =
+        crate::analysis::sidecar_with_heartbeat(app, crate::helpers::ffmpeg_bin_name(), args, 120, ctx, "speech", 0.33)
+            .await
+            .ok_or_else(|| VadError::Undecodable("Failed to decode audio for VAD".into()))?;
 
     if !output.success {
         return Err(VadError::Undecodable("Failed to decode audio for VAD".into()));
     }
 
-    let reader = hound::WavReader::open(&tmp)
-        .map_err(|e| VadError::Unavailable(format!("WAV read error: {}", e)))?;
-    // Read as i16 and normalize to [-1.0, 1.0] float range for Silero VAD
-    let samples: Vec<f32> = reader
-        .into_samples::<i16>()
-        .filter_map(|s| s.ok())
-        .map(|s| s as f32 / 32768.0)
-        .collect();
+    let samples =
+        crate::types::read_pcm16_mono_wav_bounded(&tmp, 16_000 * crate::ffmpeg::ANALYSIS_SAMPLE_SECS as usize)
+            .map_err(VadError::Unavailable)?;
 
     drop(tmp);
 
@@ -145,22 +166,22 @@ pub(crate) async fn detect_speech(
             // watchdog fed (up to ~5,600 chunks can take minutes on weak CPUs)
             if i % 256 == 0 {
                 if let Some(c) = &ctx_owned {
-                    if c.cancelled() { return Err("Scan cancelled".into()); }
+                    if c.cancelled() {
+                        return Err("Scan cancelled".into());
+                    }
                     c.emit("speech", 0.34 + 0.10 * (i as f64 / num_chunks.max(1) as f64));
                 }
             }
 
             let start = i * chunk_size;
             let chunk: Vec<f32> = samples[start..start + chunk_size].to_vec();
-            let input = ndarray::Array2::from_shape_vec((1, chunk_size), chunk)
-                .map_err(|e| format!("Tensor error: {}", e))?;
+            let input =
+                ndarray::Array2::from_shape_vec((1, chunk_size), chunk).map_err(|e| format!("Tensor error: {}", e))?;
 
-            let input_val = ort::value::Tensor::from_array(input)
-                .map_err(|e| format!("Tensor error: {}", e))?;
-            let sr_val = ort::value::Tensor::from_array(sr.clone())
-                .map_err(|e| format!("Tensor error: {}", e))?;
-            let state_val = ort::value::Tensor::from_array(state.clone())
-                .map_err(|e| format!("Tensor error: {}", e))?;
+            let input_val = ort::value::Tensor::from_array(input).map_err(|e| format!("Tensor error: {}", e))?;
+            let sr_val = ort::value::Tensor::from_array(sr.clone()).map_err(|e| format!("Tensor error: {}", e))?;
+            let state_val =
+                ort::value::Tensor::from_array(state.clone()).map_err(|e| format!("Tensor error: {}", e))?;
             let result = session.run(ort::inputs![
                 "input" => input_val,
                 "state" => state_val,
@@ -263,7 +284,11 @@ pub(crate) async fn detect_speech(
     let total_duration = samples_len as f64 / sample_rate as f64;
     let speech_duration: f64 = merged.iter().map(|s| s.end - s.start).sum();
     let silence_duration = total_duration - speech_duration;
-    let speech_ratio = if total_duration > 0.0 { speech_duration / total_duration } else { 0.0 };
+    let speech_ratio = if total_duration > 0.0 {
+        speech_duration / total_duration
+    } else {
+        0.0
+    };
 
     Ok(VadResult {
         segments: merged,

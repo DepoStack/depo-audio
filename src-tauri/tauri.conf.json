@@ -5,7 +5,7 @@
   "identifier": "com.andrewmayes.depoaudio",
   "build": {
     "frontendDist": "../dist",
-    "devUrl": "http://localhost:1420",
+    "devUrl": "http://localhost:5173",
     "beforeDevCommand": "npm run dev",
     "beforeBuildCommand": "npm run build"
   },
@@ -24,21 +24,15 @@
       }
     ],
     "security": {
-      "csp": null,
+      "csp": "default-src 'self' customprotocol: asset:; connect-src ipc: http://ipc.localhost asset: http://asset.localhost; img-src 'self' asset: http://asset.localhost data: blob:; media-src 'self' asset: http://asset.localhost blob:; style-src 'self' 'unsafe-inline'; font-src 'self' data:; script-src 'self'",
+      "devCsp": "default-src 'self'; connect-src ipc: http://ipc.localhost ws://localhost:5173 ws://localhost:5174 http://localhost:5173 asset: http://asset.localhost; img-src 'self' asset: http://asset.localhost data: blob:; media-src 'self' asset: http://asset.localhost blob:; style-src 'self' 'unsafe-inline'; font-src 'self' data:; script-src 'self'",
       "assetProtocol": {
         "enable": true,
-        "scope": ["**"]
+        "scope": []
       }
     }
   },
-  "plugins": {
-    "updater": {
-      "endpoints": [
-        "https://github.com/mayes/depo-audio/releases/latest/download/latest.json"
-      ],
-      "pubkey": "REPLACE_WITH_YOUR_TAURI_UPDATER_PUBLIC_KEY"
-    }
-  },
+  "plugins": {},
   "bundle": {
     "active": true,
     "createUpdaterArtifacts": false,
@@ -62,15 +56,11 @@
       "resources/models/flashsr.onnx",
       "resources/models/silero_vad.onnx",
       "resources/models/smart-turn-v3-int8.onnx",
-      "resources/models/speaker_seg_int8.onnx",
-      "resources/onnxruntime/*"
+      "resources/models/speaker_seg_int8.onnx"
     ],
-    "externalBin": [
-      "binaries/ffmpeg",
-      "binaries/ffprobe"
-    ],
+    "externalBin": ["binaries/ffmpeg", "binaries/ffprobe"],
     "macOS": {
-      "minimumSystemVersion": "12.0",
+      "minimumSystemVersion": "13.3",
       "entitlements": "entitlements.plist",
       "signingIdentity": null,
       "frameworks": []

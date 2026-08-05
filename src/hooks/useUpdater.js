@@ -13,13 +13,13 @@ import { relaunch } from '@tauri-apps/plugin-process'
 // we fail silent (status stays idle, no banner) unless the user checked manually.
 
 export default function useUpdater() {
-  const [update, setUpdate] = useState(null)   // { version, currentVersion, body, date }
+  const [update, setUpdate] = useState(null) // { version, currentVersion, body, date }
   const [status, setStatus] = useState('idle') // idle | checking | available | downloading | ready | uptodate | error
-  const [progress, setProgress] = useState(0)  // 0..1 (0 when the download size is unknown)
+  const [progress, setProgress] = useState(0) // 0..1 (0 when the download size is unknown)
   const [error, setError] = useState(null)
   const [dismissed, setDismissed] = useState(false) // banner dismissed for this session
-  const updateRef = useRef(null)               // the raw Update handle from the plugin
-  const installingRef = useRef(false)          // guards against re-entrant installs
+  const updateRef = useRef(null) // the raw Update handle from the plugin
+  const installingRef = useRef(false) // guards against re-entrant installs
 
   const checkForUpdate = useCallback(async (manual = false) => {
     setStatus('checking')
@@ -29,7 +29,11 @@ export default function useUpdater() {
       // Free the previous Update handle before replacing it — it owns a
       // Rust-side resource that otherwise leaks across repeated checks.
       if (updateRef.current && updateRef.current !== u) {
-        try { await updateRef.current.close() } catch { /* already gone */ }
+        try {
+          await updateRef.current.close()
+        } catch {
+          /* already gone */
+        }
       }
       if (u) {
         updateRef.current = u
@@ -57,7 +61,7 @@ export default function useUpdater() {
     try {
       let total = 0
       let received = 0
-      await u.downloadAndInstall((event) => {
+      await u.downloadAndInstall(event => {
         if (event.event === 'Started') {
           total = event.data?.contentLength || 0
         } else if (event.event === 'Progress') {
@@ -84,8 +88,12 @@ export default function useUpdater() {
   // status update doesn't run synchronously inside the effect body.
   useEffect(() => {
     let cancelled = false
-    Promise.resolve().then(() => { if (!cancelled) checkForUpdate(false) })
-    return () => { cancelled = true }
+    Promise.resolve().then(() => {
+      if (!cancelled) checkForUpdate(false)
+    })
+    return () => {
+      cancelled = true
+    }
   }, [checkForUpdate])
 
   return { update, status, progress, error, dismissed, checkForUpdate, installUpdate, dismiss }

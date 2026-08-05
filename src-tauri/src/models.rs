@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Component, Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 
 use ort::session::Session;
@@ -19,15 +19,17 @@ pub(crate) fn set_ort_preflight(result: Result<(), String>) {
 // Lazily loads ONNX models on first use. The light models ship bundled in the
 // app's resource directory under resources/models/.
 //
-// Heavier and optional models (the 38 MB speaker_embed.onnx, plus dnsmos and
-// gtcrn) are not bundled — they are downloaded on demand from the models
-// release into the app data directory, keeping the installer small.
+// Heavier and optional catalog models (the 38 MB speaker_embed.onnx and
+// DNSMOS) are not bundled; users can install them from the models release.
+// The experimental DCCRN+ dereverb model is developer-provisioned only and is
+// deliberately absent from the downloadable catalog.
 
 /// Resolve a model file path. User-downloaded models live in the app data
 /// directory (writable on installed apps — the resource dir is read-only in
 /// Program Files and inside signed macOS bundles); bundled models live in
 /// the resource directory. Data dir wins so downloads can update models.
 pub(crate) fn model_path(app: &AppHandle, filename: &str) -> Result<PathBuf, String> {
+    validate_model_filename(filename)?;
     if let Ok(data_dir) = app.path().app_data_dir() {
         let downloaded = data_dir.join("models").join(filename);
         if downloaded.exists() {
@@ -46,9 +48,24 @@ pub(crate) fn model_path(app: &AppHandle, filename: &str) -> Result<PathBuf, Str
     }
 }
 
+/// Model names cross an IPC boundary for download/delete commands. Restrict
+/// them to one ordinary filename so joining them to the model directory can
+/// never escape via `..`, an absolute path, a Windows drive prefix, or ADS.
+fn validate_model_filename(filename: &str) -> Result<(), String> {
+    if filename.is_empty() || filename.contains(['/', '\\', ':']) || filename.chars().any(char::is_control) {
+        return Err("Invalid model filename".into());
+    }
+
+    let mut components = Path::new(filename).components();
+    match (components.next(), components.next()) {
+        (Some(Component::Normal(name)), None) if name == std::ffi::OsStr::new(filename) => Ok(()),
+        _ => Err("Invalid model filename".into()),
+    }
+}
+
 /// Models that must run on the CPU execution provider. These have dynamic
-/// input shapes and/or recurrent state, which CoreML (macOS) and DirectML
-/// (Windows) handle pathologically: compilation can take minutes or wedge
+/// input shapes and/or recurrent state, which CoreML can handle
+/// pathologically: compilation can take minutes or wedge
 /// outright — a per-file recompile of Silero VAD was enough to trip the
 /// scan's 150-second stall watchdog on real machines ("Detecting speech"
 /// froze, then the file was skipped). Both models are tiny; CPU inference is
@@ -64,12 +81,16 @@ pub(crate) type SharedSession = Arc<Mutex<Session>>;
 static SESSION_CACHE: OnceLock<Mutex<HashMap<PathBuf, SharedSession>>> = OnceLock::new();
 
 /// Cached variant of load_session for the scan passes: the first call per
-/// model loads (and on macOS/Windows EP-compiles) the session; every later
+/// model loads (and on macOS may EP-compile) the session; every later
 /// pass and file reuses it. Callers lock the inner mutex for inference,
 /// which also serializes concurrent use of one model across passes.
 pub(crate) fn cached_session(path: &PathBuf) -> Result<SharedSession, String> {
     let cache = SESSION_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
-    if let Some(s) = cache.lock().map_err(|_| "Model session cache poisoned".to_string())?.get(path) {
+    if let Some(s) = cache
+        .lock()
+        .map_err(|_| "Model session cache poisoned".to_string())?
+        .get(path)
+    {
         return Ok(s.clone());
     }
     // Load outside the cache lock: EP compilation can take seconds and must
@@ -103,18 +124,9 @@ pub(crate) fn load_session(path: &PathBuf) -> Result<Session, String> {
         Session::builder().and_then(|mut b| {
             #[cfg(target_os = "macos")]
             if _accelerate {
-                b = match b.with_execution_providers([
-                    ort::execution_providers::CoreMLExecutionProvider::default().build(),
-                ]) {
-                    Ok(builder) => builder,
-                    Err(_) => Session::builder()?,
-                };
-            }
-            #[cfg(target_os = "windows")]
-            if _accelerate {
-                b = match b.with_execution_providers([
-                    ort::execution_providers::DirectMLExecutionProvider::default().build(),
-                ]) {
+                b = match b
+                    .with_execution_providers([ort::execution_providers::CoreMLExecutionProvider::default().build()])
+                {
                     Ok(builder) => builder,
                     Err(_) => Session::builder()?,
                 };
@@ -126,7 +138,9 @@ pub(crate) fn load_session(path: &PathBuf) -> Result<Session, String> {
     match result {
         Ok(Ok(session)) => Ok(session),
         Ok(Err(e)) => Err(format!("Failed to load model {}: {}", name, e)),
-        Err(_) => Err("ONNX Runtime not available. AI features are disabled. Install onnxruntime to enable them.".into()),
+        Err(_) => {
+            Err("ONNX Runtime not available. AI features are disabled. Install onnxruntime to enable them.".into())
+        }
     }
 }
 
@@ -134,34 +148,35 @@ pub(crate) fn load_session(path: &PathBuf) -> Result<Session, String> {
 /// Add hashes here after downloading models to verify integrity.
 fn known_model_hash(filename: &str) -> Option<&'static str> {
     match filename {
-        "silero_vad.onnx"          => Some("a4a068cd6cf1ea8355b84327595838ca748ec29a25bc91fc82e6c299ccdc5808"),
-        "smart-turn-v3-int8.onnx"  => Some("3d072c8fb04446955a365b533686e7e06015ad09929bb824b910c72ff89f5be1"),
-        "flashsr.onnx"             => Some("e255c76b227f16f7f392cc43677c38bd2c5aa129f042a2ba3eb03fb29e470c7a"),
-        "dfn3_enc.onnx"            => Some("7c5399d3da8a50ebef1c1a0ae421b33376aa5e45d0e92df16da7e83c9c131916"),
-        "dfn3_erb_dec.onnx"        => Some("ab669a1d10afe20911728b33053a452071042317a90581092b325da7b2f9d895"),
-        "dfn3_df_dec.onnx"         => Some("23114ce3b0f6464b763ee62f7bb8aab6b2a129a21eabd5bcfe59413db05f278a"),
+        "silero_vad.onnx" => Some("a4a068cd6cf1ea8355b84327595838ca748ec29a25bc91fc82e6c299ccdc5808"),
+        "smart-turn-v3-int8.onnx" => Some("3d072c8fb04446955a365b533686e7e06015ad09929bb824b910c72ff89f5be1"),
+        "flashsr.onnx" => Some("e255c76b227f16f7f392cc43677c38bd2c5aa129f042a2ba3eb03fb29e470c7a"),
+        "dfn3_enc.onnx" => Some("7c5399d3da8a50ebef1c1a0ae421b33376aa5e45d0e92df16da7e83c9c131916"),
+        "dfn3_erb_dec.onnx" => Some("ab669a1d10afe20911728b33053a452071042317a90581092b325da7b2f9d895"),
+        "dfn3_df_dec.onnx" => Some("23114ce3b0f6464b763ee62f7bb8aab6b2a129a21eabd5bcfe59413db05f278a"),
         // Upstream sig_bak_ovr.onnx from microsoft/DNS-Challenge (the file
         // once committed here was an HTML error page — this is the real one)
-        "dnsmos_sig_bak_ovr.onnx"  => Some("269fbebdb513aa23cddfbb593542ecc540284a91849ac50516870e1ac78f6edd"),
-        "speaker_seg_int8.onnx"    => Some("d582f4b4c6b48205de7e0643c57df0df5615a3c176189be3fc461e9d18827b5d"),
-        "speaker_embed.onnx"       => Some("1a331345f04805badbb495c775a6ddffcdd1a732567d5ec8b3d5749e3c7a5e4b"),
+        "dnsmos_sig_bak_ovr.onnx" => Some("269fbebdb513aa23cddfbb593542ecc540284a91849ac50516870e1ac78f6edd"),
+        "speaker_seg_int8.onnx" => Some("d582f4b4c6b48205de7e0643c57df0df5615a3c176189be3fc461e9d18827b5d"),
+        "speaker_embed.onnx" => Some("1a331345f04805badbb495c775a6ddffcdd1a732567d5ec8b3d5749e3c7a5e4b"),
         _ => None,
     }
 }
 
 /// Verify a file's SHA256 hash matches the expected value.
 fn verify_model_hash(path: &PathBuf, expected: &str) -> Result<(), String> {
-    use sha2::{Sha256, Digest};
+    use sha2::{Digest, Sha256};
     use std::io::Read;
 
-    let mut file = std::fs::File::open(path)
-        .map_err(|e| format!("Cannot open model for verification: {}", e))?;
+    let mut file = std::fs::File::open(path).map_err(|e| format!("Cannot open model for verification: {}", e))?;
 
     let mut hasher = Sha256::new();
     let mut buf = [0u8; 65536];
     loop {
         let n = file.read(&mut buf).map_err(|e| format!("Read error: {}", e))?;
-        if n == 0 { break; }
+        if n == 0 {
+            break;
+        }
         hasher.update(&buf[..n]);
     }
 
@@ -215,6 +230,9 @@ pub struct ModelInfo {
     pub feature: String,
     pub required: bool,
     pub installed: bool,
+    /// True only for a copy in the writable app-data model directory.
+    /// Bundled resource models are installed but cannot be removed in place.
+    pub removable: bool,
     pub recommended: bool,
     pub download_url: String,
 }
@@ -223,69 +241,151 @@ pub struct ModelInfo {
 pub(crate) fn model_catalog(app: &AppHandle) -> Vec<ModelInfo> {
     let caps = detect_capabilities(app);
 
-    const BASE_URL: &str = "https://github.com/mayes/depo-audio/releases/download/models-v1";
+    const BASE_URL: &str = "https://github.com/DepoStack/depo-audio/releases/download/models-v1";
 
     // size_mb values reflect the actual model files on disk
     let catalog = vec![
-        ("silero_vad.onnx", "Silero VAD", "Voice activity detection — identifies speech vs silence", 2.1, "Speech Detection", true,
-         format!("{}/silero_vad.onnx", BASE_URL)),
-        ("smart-turn-v3-int8.onnx", "Smart Turn v3", "Detects speaker turns in court recordings", 8.2, "Turn Detection", false,
-         format!("{}/smart-turn-v3-int8.onnx", BASE_URL)),
-        ("dfn3_enc.onnx", "DeepFilterNet3 Encoder", "High-quality noise removal encoder", 1.9, "Noise Removal (Best)", false,
-         format!("{}/dfn3_enc.onnx", BASE_URL)),
-        ("dfn3_erb_dec.onnx", "DeepFilterNet3 ERB Decoder", "High-quality noise removal ERB decoder", 3.1, "Noise Removal (Best)", false,
-         format!("{}/dfn3_erb_dec.onnx", BASE_URL)),
-        ("dfn3_df_dec.onnx", "DeepFilterNet3 DF Decoder", "High-quality noise removal DF decoder", 3.2, "Noise Removal (Best)", false,
-         format!("{}/dfn3_df_dec.onnx", BASE_URL)),
-        ("flashsr.onnx", "FlashSR", "Neural bandwidth extension for phone/narrow-band audio", 0.5, "Clarity Enhancement", false,
-         format!("{}/flashsr.onnx", BASE_URL)),
-        ("dnsmos_sig_bak_ovr.onnx", "DNSMOS", "Audio quality scoring (1-5 scale)", 1.1, "Quality Scoring", false,
-         format!("{}/dnsmos_sig_bak_ovr.onnx", BASE_URL)),
-        ("speaker_seg_int8.onnx", "Speaker Segmentation", "Detects when different speakers are talking", 1.5, "Speaker Detection", false,
-         format!("{}/speaker_seg_int8.onnx", BASE_URL)),
-        ("speaker_embed.onnx", "Speaker Embedding", "Creates voice fingerprints for speaker identification", 37.8, "Speaker Detection", false,
-         format!("{}/speaker_embed.onnx", BASE_URL)),
+        (
+            "silero_vad.onnx",
+            "Silero VAD",
+            "Voice activity detection — identifies speech vs silence",
+            2.1,
+            "Speech Detection",
+            true,
+            format!("{}/silero_vad.onnx", BASE_URL),
+        ),
+        (
+            "smart-turn-v3-int8.onnx",
+            "Smart Turn v3",
+            "Detects speaker turns in court recordings",
+            8.2,
+            "Turn Detection",
+            false,
+            format!("{}/smart-turn-v3-int8.onnx", BASE_URL),
+        ),
+        (
+            "dfn3_enc.onnx",
+            "DeepFilterNet3 Encoder",
+            "Reserved for a future DeepFilterNet pipeline; not used by this release",
+            1.9,
+            "Future / Not Available",
+            false,
+            format!("{}/dfn3_enc.onnx", BASE_URL),
+        ),
+        (
+            "dfn3_erb_dec.onnx",
+            "DeepFilterNet3 ERB Decoder",
+            "Reserved for a future DeepFilterNet pipeline; not used by this release",
+            3.1,
+            "Future / Not Available",
+            false,
+            format!("{}/dfn3_erb_dec.onnx", BASE_URL),
+        ),
+        (
+            "dfn3_df_dec.onnx",
+            "DeepFilterNet3 DF Decoder",
+            "Reserved for a future DeepFilterNet pipeline; not used by this release",
+            3.2,
+            "Future / Not Available",
+            false,
+            format!("{}/dfn3_df_dec.onnx", BASE_URL),
+        ),
+        (
+            "flashsr.onnx",
+            "FlashSR",
+            "Neural bandwidth extension for phone/narrow-band audio",
+            0.5,
+            "Clarity Enhancement",
+            false,
+            format!("{}/flashsr.onnx", BASE_URL),
+        ),
+        (
+            "dnsmos_sig_bak_ovr.onnx",
+            "DNSMOS",
+            "Audio quality scoring (1-5 scale)",
+            1.1,
+            "Quality Scoring",
+            false,
+            format!("{}/dnsmos_sig_bak_ovr.onnx", BASE_URL),
+        ),
+        (
+            "speaker_seg_int8.onnx",
+            "Speaker Segmentation",
+            "Estimates active speaker slots; does not identify voices",
+            1.5,
+            "Speaker Activity",
+            false,
+            format!("{}/speaker_seg_int8.onnx", BASE_URL),
+        ),
+        (
+            "speaker_embed.onnx",
+            "Speaker Embedding",
+            "Reserved for future voice clustering; not used by this release",
+            37.8,
+            "Future / Not Available",
+            false,
+            format!("{}/speaker_embed.onnx", BASE_URL),
+        ),
     ];
 
-    catalog.into_iter().map(|(filename, name, desc, size, feature, required, url)| {
-        let installed = model_path(app, filename).is_ok();
-        let recommended = match feature {
-            "Speech Detection" => true,
-            "Noise Removal (Best)" => caps.tier == "high",
-            "Turn Detection" => true,
-            "Clarity Enhancement" => caps.tier != "low",
-            "Quality Scoring" => true,
-            "Speaker Detection" => caps.tier != "low",
-            _ => false,
-        };
-        ModelInfo {
-            filename: filename.to_string(),
-            display_name: name.to_string(),
-            description: desc.to_string(),
-            size_mb: size,
-            feature: feature.to_string(),
-            required,
-            installed,
-            recommended,
-            download_url: url.to_string(),
-        }
-    }).collect()
+    catalog
+        .into_iter()
+        .map(|(filename, name, desc, size, feature, required, url)| {
+            let installed = model_path(app, filename).is_ok();
+            let removable = app
+                .path()
+                .app_data_dir()
+                .ok()
+                .map(|dir| dir.join("models").join(filename).is_file())
+                .unwrap_or(false);
+            let recommended = if filename == "speaker_embed.onnx" {
+                false
+            } else {
+                match feature {
+                    "Speech Detection" => true,
+                    // DeepFilterNet model files are published, but the production
+                    // STFT/ERB/DF pipeline is not implemented yet.
+                    "Future / Not Available" => false,
+                    "Turn Detection" => true,
+                    "Clarity Enhancement" => caps.tier != "low",
+                    "Quality Scoring" => true,
+                    "Speaker Activity" => caps.tier != "low",
+                    _ => false,
+                }
+            };
+            ModelInfo {
+                filename: filename.to_string(),
+                display_name: name.to_string(),
+                description: desc.to_string(),
+                size_mb: size,
+                feature: feature.to_string(),
+                required,
+                installed,
+                removable,
+                recommended,
+                download_url: url.to_string(),
+            }
+        })
+        .collect()
 }
 
 /// Download a model from its URL to the models directory.
 pub(crate) async fn download_model(app: &AppHandle, filename: &str) -> Result<String, String> {
+    const MAX_MODEL_DOWNLOAD_BYTES: usize = 64 * 1024 * 1024;
     let catalog = model_catalog(app);
-    let info = catalog.iter()
+    let info = catalog
+        .iter()
         .find(|m| m.filename == filename)
         .ok_or_else(|| format!("Unknown model: {}", filename))?;
 
     // Download into the app data dir — the resource dir is not writable for
     // installed apps (Program Files on Windows, signed bundle on macOS)
-    let data_dir = app.path().app_data_dir()
+    let data_dir = app
+        .path()
+        .app_data_dir()
         .map_err(|e| format!("Cannot resolve app data dir: {}", e))?;
     let models_dir = data_dir.join("models");
-    std::fs::create_dir_all(&models_dir)
-        .map_err(|e| format!("Cannot create models dir: {}", e))?;
+    std::fs::create_dir_all(&models_dir).map_err(|e| format!("Cannot create models dir: {}", e))?;
 
     let dest = models_dir.join(filename);
 
@@ -294,7 +394,8 @@ pub(crate) async fn download_model(app: &AppHandle, filename: &str) -> Result<St
         .build()
         .map_err(|e| format!("HTTP client error: {}", e))?;
 
-    let resp = client.get(&info.download_url)
+    let mut resp = client
+        .get(&info.download_url)
         .send()
         .await
         .map_err(|e| format!("Download failed: {}", e))?;
@@ -303,21 +404,40 @@ pub(crate) async fn download_model(app: &AppHandle, filename: &str) -> Result<St
         return Err(format!("Download failed: HTTP {}", resp.status()));
     }
 
-    let bytes = resp.bytes().await
-        .map_err(|e| format!("Download read error: {}", e))?;
+    if resp
+        .content_length()
+        .is_some_and(|length| length > MAX_MODEL_DOWNLOAD_BYTES as u64)
+    {
+        return Err("Model download exceeds the 64 MB safety limit".into());
+    }
+
+    let mut bytes = Vec::new();
+    while let Some(chunk) = resp.chunk().await.map_err(|e| format!("Download read error: {}", e))? {
+        if bytes.len().saturating_add(chunk.len()) > MAX_MODEL_DOWNLOAD_BYTES {
+            return Err("Model download exceeds the 64 MB safety limit".into());
+        }
+        bytes.extend_from_slice(&chunk);
+    }
 
     // Guard against saving an error page as a "model" (it has happened):
     // ONNX files are protobuf, never text
-    let looks_textual = bytes.starts_with(b"<") || bytes.starts_with(b"{")
-        || bytes.starts_with(b"Not Found");
+    let looks_textual = bytes.starts_with(b"<") || bytes.starts_with(b"{") || bytes.starts_with(b"Not Found");
     if bytes.len() < 10_000 || looks_textual {
         return Err("Download did not return a valid model file".into());
     }
 
     // Write to temp file first, then rename (atomic)
-    let tmp = dest.with_extension("tmp");
-    std::fs::write(&tmp, &bytes)
-        .map_err(|e| format!("Write error: {}", e))?;
+    let tmp = dest.with_extension(format!("tmp.{}", uuid::Uuid::new_v4().simple()));
+    let write_result = (|| -> std::io::Result<()> {
+        use std::io::Write;
+        let mut file = std::fs::OpenOptions::new().write(true).create_new(true).open(&tmp)?;
+        file.write_all(&bytes)?;
+        file.sync_all()
+    })();
+    if let Err(error) = write_result {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(format!("Write error: {error}"));
+    }
 
     // Verify hash if known
     if let Some(expected) = known_model_hash(filename) {
@@ -327,25 +447,39 @@ pub(crate) async fn download_model(app: &AppHandle, filename: &str) -> Result<St
         }
     }
 
-    std::fs::rename(&tmp, &dest)
-        .map_err(|e| format!("Cannot move model into place: {}", e))?;
+    if let Err(error) = std::fs::rename(&tmp, &dest) {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(format!("Cannot move model into place: {error}"));
+    }
 
     Ok(format!("Downloaded {} ({:.1} MB)", info.display_name, info.size_mb))
 }
 
 /// Delete a downloaded model.
 pub(crate) fn delete_model(app: &AppHandle, filename: &str) -> Result<(), String> {
-    // Don't allow deleting required models
+    validate_model_filename(filename)?;
+
+    // Only exact optional catalog entries may be deleted. Unknown names must
+    // fail closed rather than being passed to model_path, which also searches
+    // outside the writable download directory for bundled resources.
     let catalog = model_catalog(app);
-    if let Some(info) = catalog.iter().find(|m| m.filename == filename) {
-        if info.required {
-            return Err("Cannot delete required model".into());
-        }
+    let info = catalog
+        .iter()
+        .find(|m| m.filename == filename)
+        .ok_or_else(|| format!("Unknown model: {}", filename))?;
+    if info.required {
+        return Err("Cannot delete required model".into());
     }
 
-    let path = model_path(app, filename)?;
-    std::fs::remove_file(&path)
-        .map_err(|e| format!("Cannot delete model: {}", e))
+    let data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("Cannot resolve app data dir: {}", e))?;
+    let path = data_dir.join("models").join(filename);
+    if !path.is_file() {
+        return Err("Downloaded model not found".into());
+    }
+    std::fs::remove_file(&path).map_err(|e| format!("Cannot delete model: {}", e))
 }
 
 // ── Hardware-aware recommendations ──────────────────────────────────────────
@@ -360,13 +494,14 @@ pub struct SystemCapabilities {
     pub ram_mb: u64,
     /// Whether the system is Apple Silicon (CoreML acceleration).
     pub apple_silicon: bool,
-    /// Detected accelerator: "cpu", "coreml", "directml", "rocm", "xdna", "openvino".
+    /// Execution provider used by this build: "cpu", "coreml", "rocm", or "openvino".
     pub accelerator: String,
     /// Human-readable accelerator description.
     pub accelerator_desc: String,
-    /// Recommended denoise quality ("fast" or "best").
+    /// Recommended denoise quality. Only "fast" (RNNoise) is implemented.
     pub recommended_denoise: String,
-    /// Whether speaker detection is recommended (needs 38MB model + RAM).
+    /// Whether active speaker-slot estimation is recommended for this tier.
+    /// The bundled 1.5 MB segmentation model is used; voice embeddings are not.
     pub recommend_speaker_detection: bool,
     /// Whether bandwidth extension is recommended.
     pub recommend_enhance: bool,
@@ -379,9 +514,7 @@ pub struct SystemCapabilities {
 
 /// Detect system capabilities and recommend features.
 pub(crate) fn detect_capabilities(app: &AppHandle) -> SystemCapabilities {
-    let cpu_cores = std::thread::available_parallelism()
-        .map(|p| p.get())
-        .unwrap_or(2);
+    let cpu_cores = std::thread::available_parallelism().map(|p| p.get()).unwrap_or(2);
 
     // Estimate available RAM (platform-specific)
     let ram_mb = estimate_ram_mb();
@@ -402,15 +535,12 @@ pub(crate) fn detect_capabilities(app: &AppHandle) -> SystemCapabilities {
         "low"
     };
 
-    // Recommendations based on tier
-    let recommended_denoise = if tier == "high" {
-        "best" // DeepFilterNet3
-    } else {
-        "fast" // RNNoise
-    };
+    // DeepFilterNet3 is not a usable waveform pipeline yet. Recommend only
+    // the implemented RNNoise path, regardless of hardware tier.
+    let recommended_denoise = "fast";
 
-    let recommend_speaker_detection = tier != "low"
-        && available_models(app).contains(&"speaker_seg_int8.onnx".to_string());
+    let recommend_speaker_detection =
+        tier != "low" && available_models(app).contains(&"speaker_seg_int8.onnx".to_string());
 
     let recommend_enhance = available_models(app).contains(&"flashsr.onnx".to_string());
 
@@ -436,37 +566,6 @@ fn detect_accelerator(apple_silicon: bool) -> (&'static str, &'static str) {
     // Apple Silicon: CoreML via ANE (Apple Neural Engine)
     if apple_silicon {
         return ("coreml", "Apple Neural Engine (CoreML)");
-    }
-
-    // Windows: check for DirectML (AMD/Intel/NVIDIA GPUs) and Intel OpenVINO
-    #[cfg(target_os = "windows")]
-    {
-        // Check for AMD XDNA NPU (Ryzen AI)
-        // The XDNA driver creates a device at a known path
-        if std::path::Path::new("C:\\Windows\\System32\\DriverStore\\FileRepository").exists() {
-            // Heuristic: check for AMD IPU driver
-            if let Ok(entries) = std::fs::read_dir("C:\\Windows\\System32\\drivers") {
-                for entry in entries.flatten() {
-                    let name = entry.file_name().to_string_lossy().to_lowercase();
-                    if name.contains("xdna") || name.contains("amdxdna") || name.contains("aie") {
-                        return ("xdna", "AMD Ryzen AI (XDNA NPU)");
-                    }
-                }
-            }
-
-            // Check for Intel NPU (Meteor Lake+)
-            if let Ok(entries) = std::fs::read_dir("C:\\Windows\\System32\\drivers") {
-                for entry in entries.flatten() {
-                    let name = entry.file_name().to_string_lossy().to_lowercase();
-                    if name.contains("intel_npu") || name.contains("intelnpu") {
-                        return ("openvino", "Intel AI Boost (NPU)");
-                    }
-                }
-            }
-
-            // DirectML is available on all Windows 10+ with any GPU
-            return ("directml", "DirectML (GPU acceleration)");
-        }
     }
 
     // Linux: check for ROCm (AMD GPU)
@@ -522,6 +621,28 @@ fn estimate_ram_mb() -> u64 {
 mod tests {
     use super::*;
 
+    #[test]
+    fn model_filename_accepts_one_plain_component() {
+        assert!(validate_model_filename("speaker_embed.onnx").is_ok());
+    }
+
+    #[test]
+    fn model_filename_rejects_path_escape_forms() {
+        for name in [
+            "",
+            ".",
+            "..",
+            "../library.json",
+            "..\\library.json",
+            "/tmp/model.onnx",
+            "C:\\temp\\model.onnx",
+            "model.onnx:stream",
+            "models/model.onnx",
+        ] {
+            assert!(validate_model_filename(name).is_err(), "unexpectedly accepted {name:?}");
+        }
+    }
+
     /// End-to-end check that the `ort` crate can load a real ONNX Runtime
     /// dylib and run the bundled Silero VAD model with the exact tensors
     /// vad.rs builds. Ignored by default: requires ORT_DYLIB_PATH pointing
@@ -534,8 +655,8 @@ mod tests {
     #[test]
     #[ignore]
     fn ort_loads_and_runs_silero_vad() {
-        let dylib = std::env::var("ORT_DYLIB_PATH")
-            .expect("set ORT_DYLIB_PATH to a real libonnxruntime to run this test");
+        let dylib =
+            std::env::var("ORT_DYLIB_PATH").expect("set ORT_DYLIB_PATH to a real libonnxruntime to run this test");
         // Pre-flight the dylib ourselves: ort 2.0.0-rc.12 deadlocks instead
         // of erroring when its dylib fails to load (see setup_onnx_runtime)
         match unsafe { libloading::Library::new(&dylib) } {
@@ -548,8 +669,7 @@ mod tests {
                 return;
             }
         }
-        let model = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("resources/models/silero_vad.onnx");
+        let model = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("resources/models/silero_vad.onnx");
         let mut session = load_session(&model).expect("session should load");
 
         let chunk = ndarray::Array2::<f32>::zeros((1, 512));

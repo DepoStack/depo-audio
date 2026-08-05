@@ -10,8 +10,8 @@
     "tauri": "tauri",
     "lint": "eslint src",
     "lint:fix": "eslint src --fix",
-    "format": "prettier --write \"src/**/*.{js,jsx,css}\"",
-    "format:check": "prettier --check \"src/**/*.{js,jsx,css}\"",
+    "format": "prettier --write \"src/**/*.{js,jsx,css}\" \"!src/styles/tokens.css\"",
+    "format:check": "prettier --check \"src/**/*.{js,jsx,css}\" \"!src/styles/tokens.css\"",
     "tokens": "node scripts/build-tokens.mjs",
     "test": "vitest run",
     "test:watch": "vitest"

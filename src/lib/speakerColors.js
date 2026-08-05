@@ -26,7 +26,10 @@ export function useSpeakerColors() {
     obs.observe(document.documentElement, { attributes: true, attributeFilter: ['class', 'data-theme', 'style'] })
     const mq = window.matchMedia('(prefers-color-scheme: dark)')
     mq.addEventListener?.('change', update)
-    return () => { obs.disconnect(); mq.removeEventListener?.('change', update) }
+    return () => {
+      obs.disconnect()
+      mq.removeEventListener?.('change', update)
+    }
   }, [])
   return colors
 }

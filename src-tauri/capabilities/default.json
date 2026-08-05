@@ -8,20 +8,14 @@
     "core:path:default",
     "core:event:default",
     "core:window:default",
-    "shell:allow-execute",
-    "shell:allow-spawn",
     "dialog:allow-open",
     "dialog:allow-save",
-    "fs:default",
     "fs:allow-read-text-file",
     "fs:allow-write-text-file",
-    "fs:allow-mkdir",
-    "fs:allow-exists",
-    "fs:allow-stat",
-    "opener:default",
-    "opener:allow-open-path",
-    "opener:allow-open-url",
-    "opener:allow-reveal-item-in-dir",
+    {
+      "identifier": "opener:allow-open-url",
+      "allow": [{ "url": "https://www.depostack.com" }]
+    },
     "updater:default",
     "process:default"
   ]

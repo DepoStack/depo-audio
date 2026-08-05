@@ -1,4 +1,4 @@
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::Mutex;
 
 use serde::{Deserialize, Serialize};
@@ -8,18 +8,39 @@ use serde::{Deserialize, Serialize};
 /// In-memory PCM audio buffer for passing between processing stages.
 /// Eliminates temp WAV files in the pipeline.
 pub struct AudioBuffer {
-    pub samples: Vec<f32>,   // interleaved samples
+    pub samples: Vec<f32>, // interleaved samples
     pub channels: u16,
     pub sample_rate: u32,
 }
 
 impl AudioBuffer {
-    /// Read a WAV file into an AudioBuffer
-    pub fn from_wav(path: &Path) -> Result<Self, String> {
-        let reader = hound::WavReader::open(path)
-            .map_err(|e| format!("WAV read error: {}", e))?;
+    /// Read a WAV file into an AudioBuffer while enforcing limits derived from
+    /// the caller's peak-memory budget. Validate the header before reserving so
+    /// a corrupt decoded WAV cannot turn a safe probe estimate into an
+    /// unbounded allocation.
+    pub fn from_wav_bounded(path: &Path, max_file_bytes: u64, max_sample_values: usize) -> Result<Self, String> {
+        let file_bytes = std::fs::metadata(path)
+            .map_err(|e| format!("Cannot inspect decoded WAV: {e}"))?
+            .len();
+        if file_bytes > max_file_bytes {
+            return Err("Decoded WAV exceeds the AI processing size limit".into());
+        }
+
+        let reader = hound::WavReader::open(path).map_err(|e| format!("WAV read error: {}", e))?;
         let spec = reader.spec();
-        let samples: Vec<f32> = match spec.sample_format {
+        if spec.channels == 0 || spec.sample_rate == 0 {
+            return Err("Decoded WAV has an invalid channel count or sample rate".into());
+        }
+        let declared_values = reader.len() as usize;
+        if declared_values > max_sample_values {
+            return Err("Decoded WAV exceeds the AI processing sample limit".into());
+        }
+
+        let mut samples = Vec::new();
+        samples
+            .try_reserve_exact(declared_values)
+            .map_err(|_| "Cannot reserve memory for decoded WAV".to_string())?;
+        match spec.sample_format {
             hound::SampleFormat::Int => {
                 // hound yields unshifted integers (a 16-bit sample stays in
                 // ±32768), so scale by 2^(bits-1) — i32::MAX would attenuate
@@ -29,17 +50,24 @@ impl AudioBuffer {
                     return Err(format!("Unsupported WAV bit depth: {}", spec.bits_per_sample));
                 }
                 let scale = (1i64 << (spec.bits_per_sample - 1)) as f32;
-                reader
-                    .into_samples::<i32>()
-                    .map(|s| s.unwrap_or(0) as f32 / scale)
-                    .collect()
+                for sample in reader.into_samples::<i32>() {
+                    samples.push(sample.map_err(|e| format!("WAV sample decode error: {e}"))? as f32 / scale);
+                }
             }
-            hound::SampleFormat::Float => reader
-                .into_samples::<f32>()
-                .map(|s| s.unwrap_or(0.0))
-                .collect(),
-        };
-        Ok(Self { samples, channels: spec.channels, sample_rate: spec.sample_rate })
+            hound::SampleFormat::Float => {
+                for sample in reader.into_samples::<f32>() {
+                    samples.push(sample.map_err(|e| format!("WAV sample decode error: {e}"))?);
+                }
+            }
+        }
+        if samples.len() > max_sample_values {
+            return Err("Decoded WAV exceeds the AI processing sample limit".into());
+        }
+        Ok(Self {
+            samples,
+            channels: spec.channels,
+            sample_rate: spec.sample_rate,
+        })
     }
 
     /// Write AudioBuffer to a WAV file
@@ -50,8 +78,7 @@ impl AudioBuffer {
             bits_per_sample: 32,
             sample_format: hound::SampleFormat::Float,
         };
-        let mut writer = hound::WavWriter::create(path, spec)
-            .map_err(|e| format!("WAV write error: {}", e))?;
+        let mut writer = hound::WavWriter::create(path, spec).map_err(|e| format!("WAV write error: {}", e))?;
         for &s in &self.samples {
             writer.write_sample(s).map_err(|e| format!("Write error: {}", e))?;
         }
@@ -63,7 +90,9 @@ impl AudioBuffer {
     pub fn channels_split(&self) -> Vec<Vec<f32>> {
         let ch = self.channels as usize;
         let frames = self.samples.len() / ch;
-        (0..ch).map(|c| (0..frames).map(|f| self.samples[f * ch + c]).collect()).collect()
+        (0..ch)
+            .map(|c| (0..frames).map(|f| self.samples[f * ch + c]).collect())
+            .collect()
     }
 
     /// Re-interleave from per-channel buffers
@@ -79,8 +108,55 @@ impl AudioBuffer {
                 samples.push(buf.get(f).copied().unwrap_or(0.0));
             }
         }
-        Self { samples, channels: ch as u16, sample_rate }
+        Self {
+            samples,
+            channels: ch as u16,
+            sample_rate,
+        }
     }
+}
+
+/// Read a bounded 16 kHz mono PCM WAV produced by an analysis sidecar.
+/// Both the actual file size and the WAV-declared sample count are checked
+/// before allocation, and corrupt samples fail instead of becoming silence.
+pub(crate) fn read_pcm16_mono_wav_bounded(path: &Path, max_samples: usize) -> Result<Vec<f32>, String> {
+    const WAV_HEADER_ALLOWANCE: u64 = 1024 * 1024;
+    let max_audio_bytes = (max_samples as u64)
+        .checked_mul(std::mem::size_of::<i16>() as u64)
+        .and_then(|bytes| bytes.checked_add(WAV_HEADER_ALLOWANCE))
+        .ok_or_else(|| "Decoded WAV size limit overflow".to_string())?;
+    let file_bytes = std::fs::metadata(path)
+        .map_err(|e| format!("Cannot inspect decoded WAV: {e}"))?
+        .len();
+    if file_bytes > max_audio_bytes {
+        return Err("Decoded analysis WAV exceeds its size limit".into());
+    }
+
+    let reader = hound::WavReader::open(path).map_err(|e| format!("WAV read error: {e}"))?;
+    let spec = reader.spec();
+    if spec.channels != 1
+        || spec.sample_rate != 16_000
+        || spec.bits_per_sample != 16
+        || spec.sample_format != hound::SampleFormat::Int
+    {
+        return Err("Decoded analysis WAV has an unexpected audio layout".into());
+    }
+    let declared_values = reader.len() as usize;
+    if declared_values > max_samples {
+        return Err("Decoded analysis WAV exceeds its sample limit".into());
+    }
+
+    let mut samples = Vec::new();
+    samples
+        .try_reserve_exact(declared_values)
+        .map_err(|_| "Cannot reserve memory for decoded analysis WAV".to_string())?;
+    for sample in reader.into_samples::<i16>() {
+        samples.push(sample.map_err(|e| format!("WAV sample decode error: {e}"))? as f32 / 32768.0);
+    }
+    if samples.len() > max_samples {
+        return Err("Decoded analysis WAV exceeds its sample limit".into());
+    }
+    Ok(samples)
 }
 
 // ── Conversion types ─────────────────────────────────────────────────────────
@@ -100,6 +176,11 @@ pub struct FormatInfo {
 #[serde(rename_all = "camelCase")]
 pub struct ConvertJob {
     pub id: String,
+    /// Generation returned by `begin_conversion_batch_cmd`. A cancel bumps the
+    /// backend epoch, making every command from the old batch fail closed even
+    /// if it was already queued in the IPC runtime.
+    #[serde(default)]
+    pub cancel_generation: u64,
     pub src_path: String,
     pub out_dir: String,
     pub mode: String,
@@ -119,7 +200,8 @@ pub struct ConvertJob {
     // AI processing options
     #[serde(default)]
     pub denoise: bool,
-    /// "fast" (RNNoise) or "best" (DeepFilterNet3)
+    /// "fast" (RNNoise). Legacy "best" values are rejected while the
+    /// DeepFilterNet processing pipeline remains unimplemented.
     #[serde(default = "default_denoise_quality")]
     pub denoise_quality: String,
     #[serde(default)]
@@ -156,6 +238,11 @@ pub struct OutputFile {
 pub struct ConvertResult {
     pub files: Vec<OutputFile>,
 }
+
+/// Stable internal sentinel used to distinguish an intentional user cancel
+/// from a conversion failure. The command layer maps it to the dedicated
+/// `convert:cancelled` event rather than presenting it as an error.
+pub(crate) const CONVERSION_CANCELLED_MESSAGE: &str = "Conversion cancelled";
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
@@ -221,6 +308,14 @@ pub struct QualityScoreResult {
 pub struct DoneEvent {
     pub id: String,
     pub files: Vec<OutputFile>,
+    /// Non-fatal post-conversion issue, such as protected/read-only library
+    /// storage. The audio files remain valid and must still be surfaced.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub warning: Option<String>,
+    /// Lets the frontend route storage warnings to its persistent protection
+    /// banner without misclassifying a playback-scope warning as corruption.
+    #[serde(default)]
+    pub library_warning: bool,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -337,7 +432,12 @@ impl Default for Prefs {
             rate: "48000".into(),
             mp3_bitrate: 192,
             out_dir: "".into(),
-            labels: vec!["Speaker 1".into(), "Speaker 2".into(), "Speaker 3".into(), "Speaker 4".into()],
+            labels: vec![
+                "Speaker 1".into(),
+                "Speaker 2".into(),
+                "Speaker 3".into(),
+                "Speaker 4".into(),
+            ],
             chan_vols: vec![1.0, 1.0, 1.0, 1.0],
             normalize: false,
             trim: false,
@@ -364,30 +464,67 @@ impl Default for Prefs {
     }
 }
 
-fn default_denoise_quality() -> String { "fast".into() }
+fn default_denoise_quality() -> String {
+    "fast".into()
+}
 /// Default MP3 bitrate (kbps). Matches the historical fixed 192 kbps output.
-fn default_mp3_bitrate() -> u32 { 192 }
-fn default_hpf_cutoff() -> f64 { 80.0 }
-fn default_normalize_lufs() -> f64 { -16.0 }
-fn default_normalize_tp() -> f64 { -1.5 }
-fn default_silence_thresh() -> f64 { -50.0 }
-fn default_fade_dur_setting() -> f64 { 0.5 }
-fn default_ffmpeg_timeout() -> u32 { 300 }
-fn default_max_scan_depth() -> u32 { 5 }
-fn default_max_file_size_gb() -> f64 { 2.0 }
+fn default_mp3_bitrate() -> u32 {
+    192
+}
+fn default_hpf_cutoff() -> f64 {
+    80.0
+}
+fn default_normalize_lufs() -> f64 {
+    -16.0
+}
+fn default_normalize_tp() -> f64 {
+    -1.5
+}
+fn default_silence_thresh() -> f64 {
+    -50.0
+}
+fn default_fade_dur_setting() -> f64 {
+    0.5
+}
+fn default_ffmpeg_timeout() -> u32 {
+    300
+}
+fn default_max_scan_depth() -> u32 {
+    5
+}
+fn default_max_file_size_gb() -> f64 {
+    2.0
+}
 
 // ── App state ─────────────────────────────────────────────────────────────────
 
 pub struct AppState {
     pub library: Mutex<Library>,
     pub prefs: Mutex<Prefs>,
-    pub lib_path: Mutex<Option<PathBuf>>,
-    pub prefs_path: Mutex<Option<PathBuf>>,
+    /// Set until startup has loaded the on-disk library successfully. A real
+    /// load error remains here so later mutations fail closed instead of
+    /// overwriting the unreadable file with an empty default library.
+    pub library_load_error: Mutex<Option<String>>,
+    /// Same fail-closed guard for preferences. Without it, a corrupt prefs file
+    /// is replaced by UI defaults as soon as the debounce fires.
+    pub prefs_load_error: Mutex<Option<String>>,
     /// Scan cancellation epoch. A scan snapshots the value when it starts and
     /// aborts once it no longer matches; `cancel_scan_cmd` bumps it. Arc so
     /// blocking inference tasks can keep checking after the command future
     /// itself is gone.
     pub scan_epoch: std::sync::Arc<std::sync::atomic::AtomicU64>,
+    /// Conversion cancellation epoch. Each batch snapshots one generation;
+    /// canceling advances the epoch so the active job and any stale queued IPC
+    /// requests observe cancellation without sharing process handles.
+    pub conversion_epoch: std::sync::Arc<std::sync::atomic::AtomicU64>,
+    /// Serializes batch-generation changes with the final library/scope commit.
+    /// Once a cancel command returns, no older conversion can still commit.
+    pub conversion_commit: Mutex<()>,
+    /// Serializes Library metadata changes that also alter asset-protocol
+    /// authorization, preventing delete/re-import scope races.
+    pub library_asset_commit: Mutex<()>,
+    /// Deduplicated, cancellable waveform requests and their bounded LRU.
+    pub waveform: crate::waveform::WaveformState,
 }
 
 impl Default for AppState {
@@ -395,9 +532,13 @@ impl Default for AppState {
         Self {
             library: Mutex::new(Library::default()),
             prefs: Mutex::new(Prefs::default()),
-            lib_path: Mutex::new(None),
-            prefs_path: Mutex::new(None),
+            library_load_error: Mutex::new(Some("not initialized".into())),
+            prefs_load_error: Mutex::new(Some("not initialized".into())),
             scan_epoch: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            conversion_epoch: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            conversion_commit: Mutex::new(()),
+            library_asset_commit: Mutex::new(()),
+            waveform: crate::waveform::WaveformState::default(),
         }
     }
 }
@@ -405,6 +546,29 @@ impl Default for AppState {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn bounded_pcm_reader_rejects_declared_samples_over_limit() {
+        let path = std::env::temp_dir().join(format!("depoaudio_pcm_limit_{}.wav", uuid::Uuid::new_v4().simple()));
+        let spec = hound::WavSpec {
+            channels: 1,
+            sample_rate: 16_000,
+            bits_per_sample: 16,
+            sample_format: hound::SampleFormat::Int,
+        };
+        let mut writer = hound::WavWriter::create(&path, spec).unwrap();
+        for sample in [0i16, 1, -1, 2] {
+            writer.write_sample(sample).unwrap();
+        }
+        writer.finalize().unwrap();
+
+        assert_eq!(read_pcm16_mono_wav_bounded(&path, 4).unwrap().len(), 4);
+        assert!(read_pcm16_mono_wav_bounded(&path, 3).is_err());
+        assert!(AudioBuffer::from_wav_bounded(&path, 1, 4).is_err());
+        assert!(AudioBuffer::from_wav_bounded(&path, 1024 * 1024, 3).is_err());
+
+        let _ = std::fs::remove_file(path);
+    }
 
     // Wire-contract characterization: the frontend sends camelCase JSON and
     // relies on these defaults for fields older frontends omit. Breaking
@@ -417,7 +581,9 @@ mod tests {
             "format": "wav", "rate": "48000", "labels": [], "chanVols": [],
             "normalize": false, "trim": false, "fade": false, "fadeDur": 0.5,
             "hpf": false, "caseName": null,
-        })).expect("minimal job deserializes");
+        }))
+        .expect("minimal job deserializes");
+        assert_eq!(j.cancel_generation, 0);
         assert_eq!(j.mp3_bitrate, 192);
         assert_eq!(j.denoise_quality, "fast");
         assert!(!j.denoise && !j.auto_level && !j.declip && !j.enhance && !j.dereverb);
@@ -462,7 +628,8 @@ mod tests {
             "theme": "dark", "mode": "split", "format": "mp3", "rate": "44100",
             "outDir": "/out", "labels": ["A"], "chanVols": [1.0],
             "normalize": true, "trim": false, "fade": false, "fadeDur": 0.5, "hpf": false,
-        })).expect("v0.6-era prefs deserialize");
+        }))
+        .expect("v0.6-era prefs deserialize");
         assert_eq!(p.theme, "dark");
         assert_eq!(p.mp3_bitrate, 192);
         assert_eq!(p.max_scan_depth, 5);
@@ -484,7 +651,8 @@ mod tests {
                         "files": [{ "path": "/a.mp3", "format": "mp3", "size": 5 }] }]
                 }]
             }]
-        })).expect("library.json deserializes");
+        }))
+        .expect("library.json deserializes");
         assert_eq!(lib.cases[0].sessions[0].participants[0].files[0].size, 5);
         let back = serde_json::to_value(&lib).unwrap();
         assert!(back["cases"][0].get("createdAt").is_some());

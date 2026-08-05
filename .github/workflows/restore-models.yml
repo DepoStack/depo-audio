@@ -17,8 +17,8 @@ on:
 # The last tree that carried speaker_embed.onnx (v0.7.0). Blob verified:
 # valid ONNX, sha256 matches the models.rs pin.
 env:
-  SPEAKER_EMBED_COMMIT: "b15b28c2d5c5872f073f30370b8facb203949b77"
-  DNSMOS_URL: "https://raw.githubusercontent.com/microsoft/DNS-Challenge/master/DNSMOS/DNSMOS/sig_bak_ovr.onnx"
+  SPEAKER_EMBED_COMMIT: 'b15b28c2d5c5872f073f30370b8facb203949b77'
+  DNSMOS_URL: 'https://raw.githubusercontent.com/microsoft/DNS-Challenge/master/DNSMOS/DNSMOS/sig_bak_ovr.onnx'
 
 jobs:
   restore:
@@ -27,7 +27,7 @@ jobs:
       contents: write
 
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           # speaker_embed.onnx only exists in history
           fetch-depth: 0

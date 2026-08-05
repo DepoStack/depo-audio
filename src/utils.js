@@ -1,18 +1,19 @@
 export function fmtSize(b) {
   if (!b || b === 0) return '—'
-  if (b < 1048576) return `${(b/1024).toFixed(1)} KB`
-  if (b < 1073741824) return `${(b/1048576).toFixed(1)} MB`
-  return `${(b/1073741824).toFixed(2)} GB`
+  if (b < 1048576) return `${(b / 1024).toFixed(1)} KB`
+  if (b < 1073741824) return `${(b / 1048576).toFixed(1)} MB`
+  return `${(b / 1073741824).toFixed(2)} GB`
 }
 
 export function fmtTime(s) {
   if (!s || isNaN(s)) return '0:00'
-  const m = Math.floor(s/60), sec = Math.floor(s%60)
-  return `${m}:${sec.toString().padStart(2,'0')}`
+  const m = Math.floor(s / 60),
+    sec = Math.floor(s % 60)
+  return `${m}:${sec.toString().padStart(2, '0')}`
 }
 
 export function basename(p) {
-  return (p||'').replace(/\\/g,'/').split('/').pop()
+  return (p || '').replace(/\\/g, '/').split('/').pop()
 }
 
 // FTR Gold records court sessions in ~5-minute chunks named
@@ -37,25 +38,32 @@ const CHUNK_EXT_RE = /\.(trm|ftr)$/i
  *
  * Works on plain path strings; pass an accessor for arrays of objects.
  */
-export function sortRecordingChunks(items, getPath = (x) => x) {
+export function sortRecordingChunks(items, getPath = x => x) {
   if (!Array.isArray(items) || items.length < 2) return items
   if (!items.every(it => CHUNK_EXT_RE.test(getPath(it) || ''))) return items
 
   const natural = (a, b) => a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' })
   // Normalize a 4-5 digit time field to 6 digits so HHMM and HHMMSS names
   // collate chronologically in the natural-sort fallback
-  const padTime = (n) => n.replace(/(_\d{8}-)(\d{4,5})(?!\d)/, (_, p, t) => p + t.padEnd(6, '0'))
+  const padTime = n => n.replace(/(_\d{8}-)(\d{4,5})(?!\d)/, (_, p, t) => p + t.padEnd(6, '0'))
 
   return [...items].sort((x, y) => {
-    const na = basename(getPath(x)), nb = basename(getPath(y))
-    const ma = na.match(FTR_NAME_RE), mb = nb.match(FTR_NAME_RE)
+    const na = basename(getPath(x)),
+      nb = basename(getPath(y))
+    const ma = na.match(FTR_NAME_RE),
+      mb = nb.match(FTR_NAME_RE)
     if (ma && mb) {
       // Same courtroom first, then chronological by the FILETIME hex
       const loc = natural(ma[1], mb[1])
       if (loc !== 0) return loc
-      const ha = ma[4].toLowerCase(), hb = mb[4].toLowerCase()
+      const ha = ma[4].toLowerCase(),
+        hb = mb[4].toLowerCase()
       if (ha !== hb) return ha < hb ? -1 : 1
     }
+    // Keep the comparator transitive when a batch mixes canonical FTR names
+    // with vendor-renamed chunks. Comparing canonical pairs by FILETIME but
+    // mixed pairs by filename can otherwise create an A < B < C < A cycle.
+    if (!!ma !== !!mb) return ma ? -1 : 1
     return natural(padTime(na), padTime(nb))
   })
 }

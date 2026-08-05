@@ -11,7 +11,7 @@ import { cn } from '../../lib/utils'
 
 const Segmented = React.forwardRef(function Segmented(
   { options, value, onChange, size = 'md', 'aria-label': ariaLabel, className, ...props },
-  ref
+  ref,
 ) {
   return (
     <div
@@ -21,7 +21,7 @@ const Segmented = React.forwardRef(function Segmented(
       className={cn('inline-flex items-center gap-0.5 rounded-lg bg-secondary/60 p-0.5', className)}
       {...props}
     >
-      {options.map((o) => {
+      {options.map(o => {
         const active = o.value === value
         return (
           <button
@@ -37,7 +37,7 @@ const Segmented = React.forwardRef(function Segmented(
               size === 'sm' ? 'px-2 py-1 text-[11px]' : 'px-3 py-1.5 text-[12px]',
               active
                 ? 'bg-card text-foreground shadow-sm ring-1 ring-border'
-                : 'text-[hsl(var(--sub))] hover:text-foreground'
+                : 'text-[hsl(var(--sub))] hover:text-foreground',
             )}
           >
             {o.icon}

@@ -1,14 +1,14 @@
 mod analysis;
 mod catdetect;
 mod commands;
-mod dereverb;
-mod merge;
 mod conversion;
 mod denoise;
+mod dereverb;
 mod enhance;
 mod ffmpeg;
 mod helpers;
 mod mel;
+mod merge;
 mod models;
 mod persistence;
 mod safety;
@@ -16,9 +16,62 @@ mod scoring;
 mod speakers;
 pub mod types;
 mod vad;
+mod waveform;
 
 use tauri::Manager;
 use types::AppState;
+
+/// Re-authorize only the exact audio files recorded in the durable library.
+/// This keeps the asset protocol's static scope empty while allowing Library
+/// playback after a restart. Asset grants are rebuilt from this source of truth
+/// on every launch rather than being persisted independently.
+fn allow_library_assets(app: &tauri::AppHandle, library: &types::Library) {
+    let scope = app.asset_protocol_scope();
+    for file in library
+        .cases
+        .iter()
+        .flat_map(|case| &case.sessions)
+        .flat_map(|session| &session.participants)
+        .flat_map(|participant| &participant.files)
+    {
+        let path = std::path::Path::new(&file.path);
+        if path.is_file() {
+            if let Err(error) = scope.allow_file(path) {
+                eprintln!("[scope] Could not authorize a library audio file: {error}");
+            }
+        }
+    }
+}
+
+/// Load durable state before any frontend command can mutate it. Corrupt or
+/// unreadable files keep their error marker, which makes persistence commands
+/// fail closed while still allowing the app to open and report the problem.
+fn setup_persistence(app: &tauri::AppHandle) {
+    let state = app.state::<AppState>();
+
+    match persistence::load_library(app) {
+        Ok(library) => {
+            allow_library_assets(app, &library);
+            *state.library.lock().unwrap_or_else(|e| e.into_inner()) = library;
+            *state.library_load_error.lock().unwrap_or_else(|e| e.into_inner()) = None;
+        }
+        Err(error) => {
+            eprintln!("[persistence] Library load failed; writes disabled: {error}");
+            *state.library_load_error.lock().unwrap_or_else(|e| e.into_inner()) = Some(error);
+        }
+    }
+
+    match persistence::load_prefs(app) {
+        Ok(prefs) => {
+            *state.prefs.lock().unwrap_or_else(|e| e.into_inner()) = prefs;
+            *state.prefs_load_error.lock().unwrap_or_else(|e| e.into_inner()) = None;
+        }
+        Err(error) => {
+            eprintln!("[persistence] Preferences load failed; writes disabled: {error}");
+            *state.prefs_load_error.lock().unwrap_or_else(|e| e.into_inner()) = Some(error);
+        }
+    }
+}
 
 /// Set ORT_DYLIB_PATH to the bundled ONNX Runtime library so AI features work
 /// without requiring users to install onnxruntime separately.
@@ -28,21 +81,61 @@ use types::AppState;
 /// the error) when the dylib fails to load, so a bad library must be caught
 /// here — load_session checks the preflight and degrades gracefully.
 fn setup_onnx_runtime(app: &tauri::AppHandle) {
+    // Developer builds may point at a local runtime for model tests. Release
+    // builds must never dlopen a caller-controlled environment path; they load
+    // only the runtime shipped inside the signed application resources.
+    #[cfg(debug_assertions)]
     let preset = std::env::var("ORT_DYLIB_PATH").ok().filter(|s| !s.is_empty());
+    #[cfg(not(debug_assertions))]
+    let preset: Option<String> = None;
     let lib_path = if let Some(p) = preset {
-        std::path::PathBuf::from(p) // already set (e.g. by developer)
+        std::path::PathBuf::from(p) // explicit developer override
     } else if let Ok(resource_dir) = app.path().resource_dir() {
-        let ort_dir = resource_dir.join("resources").join("onnxruntime");
         #[cfg(target_os = "macos")]
-        let lib_name = "libonnxruntime.dylib";
+        let lib_path = match resource_dir.parent() {
+            Some(contents_dir) => contents_dir.join("Frameworks").join("libonnxruntime.dylib"),
+            None => {
+                models::set_ort_preflight(Err("Cannot resolve the app Frameworks directory".into()));
+                return;
+            }
+        };
         #[cfg(target_os = "windows")]
-        let lib_name = "onnxruntime.dll";
+        let lib_path = resource_dir
+            .join("resources")
+            .join("onnxruntime")
+            .join("onnxruntime.dll");
         #[cfg(not(any(target_os = "macos", target_os = "windows")))]
-        let lib_name = "libonnxruntime.so";
+        let lib_path = resource_dir
+            .join("resources")
+            .join("onnxruntime")
+            .join("libonnxruntime.so");
 
-        let lib_path = ort_dir.join(lib_name);
+        // `scripts/setup-dev.sh` intentionally stages ORT under the source
+        // tree instead of mutating Tauri's generated dev resource directory.
+        // Release builds never take this fallback and therefore continue to
+        // load only the library shipped inside the signed application.
+        #[cfg(debug_assertions)]
+        let lib_path = if lib_path.exists() {
+            lib_path
+        } else {
+            #[cfg(target_os = "macos")]
+            let filename = "libonnxruntime.dylib";
+            #[cfg(target_os = "windows")]
+            let filename = "onnxruntime.dll";
+            #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+            let filename = "libonnxruntime.so";
+            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("resources")
+                .join("onnxruntime")
+                .join(filename)
+        };
+
         if !lib_path.exists() {
-            models::set_ort_preflight(Err("ONNX Runtime library not found in app resources".into()));
+            #[cfg(debug_assertions)]
+            let error = "ONNX Runtime library not found in app resources or the local development resources directory";
+            #[cfg(not(debug_assertions))]
+            let error = "ONNX Runtime library not found in signed app resources";
+            models::set_ort_preflight(Err(error.into()));
             return;
         }
         lib_path
@@ -74,18 +167,9 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_opener::init())
-        // Closing the window quits immediately. A long-running analysis or
-        // conversion (synchronous ONNX inference + ffmpeg children) can block a
-        // graceful async shutdown, leaving the app seemingly stuck; exiting the
-        // process directly guarantees "close means close". Completed work
-        // (library entries, converted files) is already persisted to disk.
-        .on_window_event(|_window, event| {
-            if matches!(event, tauri::WindowEvent::CloseRequested { .. }) {
-                std::process::exit(0);
-            }
-        })
         .manage(AppState::default())
         .setup(|app| {
+            setup_persistence(app.handle());
             setup_onnx_runtime(app.handle());
             // Auto-update via GitHub Releases (desktop only)
             #[cfg(desktop)]
@@ -109,10 +193,14 @@ pub fn run() {
             commands::download_model_cmd,
             commands::delete_model_cmd,
             commands::detect_speech_cmd,
+            commands::waveform_peaks_cmd,
+            commands::cancel_waveform_cmd,
             commands::detect_cat_software_cmd,
             commands::scan_cat_jobs_cmd,
             commands::detect_sync_cmd,
             commands::merge_audio_cmd,
+            commands::begin_conversion_batch_cmd,
+            commands::cancel_conversion_cmd,
             commands::convert,
             commands::show_in_folder,
             commands::library_get,
@@ -121,6 +209,7 @@ pub fn run() {
             commands::library_delete_case,
             commands::library_delete_session,
             commands::library_import_file,
+            commands::library_import_files,
             commands::prefs_get,
             commands::prefs_set,
         ])

@@ -10,27 +10,40 @@ export default function FormatTable() {
 
   return (
     <Card>
-      <button className="w-full flex items-center justify-between px-4 py-2.5 cursor-pointer transition-colors hover:bg-secondary/50"
-        onClick={() => setOpen(o => !o)}>
+      <button
+        className="w-full flex items-center justify-between px-4 py-2.5 cursor-pointer transition-colors hover:bg-secondary/50"
+        aria-expanded={open}
+        onClick={() => setOpen(o => !o)}
+      >
         <CardTitle>SUPPORTED FORMATS</CardTitle>
-        {open ? <ChevronDown className="h-3.5 w-3.5 text-[hsl(var(--sub))]" /> : <ChevronRight className="h-3.5 w-3.5 text-[hsl(var(--sub))]" />}
+        {open ? (
+          <ChevronDown className="h-3.5 w-3.5 text-[hsl(var(--sub))]" />
+        ) : (
+          <ChevronRight className="h-3.5 w-3.5 text-[hsl(var(--sub))]" />
+        )}
       </button>
       {open && (
         <div className="border-t border-border/60">
           <div className="px-4 py-1.5 bg-secondary/50">
-            <span className="font-mono text-[9px] tracking-wider uppercase text-[hsl(var(--sub))]">Standard — play, import, and convert</span>
+            <span className="font-mono text-[9px] tracking-wider uppercase text-[hsl(var(--sub))]">
+              Standard — play, import, and convert
+            </span>
           </div>
           {standard.map((r, i) => (
             <FormatRow key={i} r={r} />
           ))}
           <div className="px-4 py-1.5 bg-secondary/50 border-t border-border/60">
-            <span className="font-mono text-[9px] tracking-wider uppercase text-[hsl(var(--sub))]">Court reporting — conversion required</span>
+            <span className="font-mono text-[9px] tracking-wider uppercase text-[hsl(var(--sub))]">
+              Court reporting — conversion required
+            </span>
           </div>
           {court.map((r, i) => (
             <FormatRow key={i} r={r} />
           ))}
           <div className="px-4 py-2 text-[11px] text-[hsl(var(--sub))] border-t border-border/60 bg-secondary">
-            ✕ Eclipse <code className="font-mono text-[10px] text-[hsl(var(--text2))]">.aes</code> and Liberty <code className="font-mono text-[10px] text-[hsl(var(--text2))]">.dcr</code> files must be exported to WAV from their native software first.
+            ✕ Eclipse <code className="font-mono text-[10px] text-[hsl(var(--text2))]">.aes</code> and Liberty{' '}
+            <code className="font-mono text-[10px] text-[hsl(var(--text2))]">.dcr</code> files must be exported to WAV
+            from their native software first.
           </div>
         </div>
       )}
@@ -44,7 +57,9 @@ function FormatRow({ r }) {
       <span className="font-mono text-[11px] text-foreground whitespace-nowrap">{r.ext}</span>
       <span className="text-[11px] text-[hsl(var(--sub))]">{r.vendor}</span>
       <span className="font-mono text-[10px] text-[hsl(var(--sub))] text-right">{r.ch}</span>
-      <span className={`font-mono text-[10px] font-semibold text-right ${r.status === 'supported' ? 'text-success' : r.status === 'experimental' ? 'text-warning' : 'text-destructive'}`}>
+      <span
+        className={`font-mono text-[10px] font-semibold text-right ${r.status === 'supported' ? 'text-success' : r.status === 'experimental' ? 'text-warning' : 'text-destructive'}`}
+      >
         {r.status === 'supported' ? '● Supported' : r.status === 'experimental' ? '◐ Experimental' : '✕ Export first'}
       </span>
     </div>

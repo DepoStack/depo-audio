@@ -1,7 +1,20 @@
 import { describe, it, expect } from 'vitest'
 import {
-  parseTime, splitSpeaker, parseCues, parsePlain, parseTranscript,
-  srtStamp, toPlainText, toSRT, storageKey, loadSegments,
+  parseTime,
+  splitSpeaker,
+  parseCues,
+  parsePlain,
+  parseTranscript,
+  srtStamp,
+  toPlainText,
+  toSRT,
+  canExportSrt,
+  createSegmentAtTime,
+  storageKey,
+  loadSegments,
+  loadStoredSegments,
+  readStoredSegments,
+  saveStoredSegments,
 } from '../lib/transcript'
 
 // Characterization tests: these pin the transcript formats the editor reads
@@ -103,6 +116,20 @@ describe('srtStamp / toSRT', () => {
     expect(srt).not.toContain('unstamped')
     expect(srt).toContain('stamped')
   })
+  it('only enables SRT export when every line has a valid timestamp', () => {
+    expect(
+      canExportSrt([
+        { start: 1, text: 'timed' },
+        { start: null, text: 'would be omitted' },
+      ]),
+    ).toBe(false)
+    expect(
+      canExportSrt([
+        { start: 1, text: 'one' },
+        { start: 2, text: 'two' },
+      ]),
+    ).toBe(true)
+  })
 })
 
 describe('round trips', () => {
@@ -125,6 +152,60 @@ describe('persistence', () => {
     expect(loadSegments(null)).toEqual([])
     expect(loadSegments('not json')).toEqual([])
     expect(loadSegments('{"not":"array"}')).toEqual([])
-    expect(loadSegments('[{"id":"a"}]')).toEqual([{ id: 'a' }])
+    expect(loadSegments('[{"id":"a"}]')).toEqual([{ id: 'a', start: null, speaker: '', text: '' }])
+  })
+  it('filters invalid entries and normalizes malformed segment fields', () => {
+    const segments = loadSegments(
+      JSON.stringify([
+        null,
+        'bad',
+        { id: 'a', start: 0, speaker: 'Witness', text: 'Answer' },
+        { id: 'b', start: -2, speaker: 7, text: null },
+        { id: 'a', start: '3', text: 'duplicate id' },
+      ]),
+    )
+
+    expect(segments).toHaveLength(3)
+    expect(segments[0]).toEqual({ id: 'a', start: 0, speaker: 'Witness', text: 'Answer' })
+    expect(segments[1]).toEqual({ id: 'b', start: null, speaker: '', text: '' })
+    expect(segments[2]).toMatchObject({ start: null, speaker: '', text: 'duplicate id' })
+    expect(new Set(segments.map(segment => segment.id)).size).toBe(3)
+  })
+  it('loads and saves isolated transcript data for each track', () => {
+    const data = new Map([
+      [storageKey('/a.wav'), JSON.stringify([{ id: 'a', text: 'alpha' }])],
+      [storageKey('/b.wav'), JSON.stringify([{ id: 'b', text: 'beta' }])],
+    ])
+    const storage = {
+      getItem: key => data.get(key) ?? null,
+      setItem: (key, value) => data.set(key, value),
+    }
+
+    expect(loadStoredSegments(storage, '/a.wav')[0].text).toBe('alpha')
+    expect(loadStoredSegments(storage, '/b.wav')[0].text).toBe('beta')
+    expect(saveStoredSegments(storage, '/a.wav', [{ id: 'a2', text: 'changed' }])).toBe(true)
+    expect(loadStoredSegments(storage, '/a.wav')[0].text).toBe('changed')
+    expect(loadStoredSegments(storage, '/b.wav')[0].text).toBe('beta')
+  })
+  it('reports unavailable storage and refuses pretend saves', () => {
+    const unavailable = {
+      getItem: () => {
+        throw new Error('blocked')
+      },
+      setItem: () => {
+        throw new Error('blocked')
+      },
+    }
+
+    expect(readStoredSegments(unavailable, '/a.wav')).toEqual({ segments: [], storageAvailable: false })
+    expect(saveStoredSegments(unavailable, '/a.wav', [])).toBe(false)
+    expect(saveStoredSegments(null, '/a.wav', [])).toBe(false)
+  })
+})
+
+describe('new transcript lines', () => {
+  it('preserves a valid playback position at exactly zero', () => {
+    expect(createSegmentAtTime(0)).toMatchObject({ start: 0, speaker: '', text: '' })
+    expect(createSegmentAtTime(Number.NaN).start).toBeNull()
   })
 })

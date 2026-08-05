@@ -7,6 +7,7 @@ export default function StatusChip({ status }) {
     converting: ['active', '● Processing'],
     done: ['done', '✓ Done'],
     error: ['error', '✗ Failed'],
+    cancelled: ['warning', 'Cancelled'],
   }
   const [variant, label] = map[status] || map.waiting
   return <Badge variant={variant}>{label}</Badge>

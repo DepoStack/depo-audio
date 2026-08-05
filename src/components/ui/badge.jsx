@@ -21,7 +21,7 @@ const badgeVariants = cva(
     defaultVariants: {
       variant: 'default',
     },
-  }
+  },
 )
 
 const Badge = React.forwardRef(({ className, variant, ...props }, ref) => (
@@ -29,4 +29,4 @@ const Badge = React.forwardRef(({ className, variant, ...props }, ref) => (
 ))
 Badge.displayName = 'Badge'
 
-export { Badge, badgeVariants }
+export { Badge }
