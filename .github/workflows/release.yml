@@ -585,22 +585,42 @@ jobs:
           $certificate = Get-Item "Cert:\CurrentUser\My\$env:WINDOWS_CERTIFICATE_THUMBPRINT" -ErrorAction Stop
           if (!$certificate.HasPrivateKey) { throw "Windows signing certificate has no private key" }
 
-      # macOS signing identity comes from $GITHUB_ENV so it governs regardless
-      # of the build step's env. With Apple secrets present, use the real
-      # Developer ID identity; otherwise ad-hoc ("-"), which — combined with the
-      # empty APPLE_CERTIFICATE/APPLE_ID below — makes tauri-action skip keychain
-      # import and notarization and ship an unsigned (ad-hoc) app.
+      # macOS signing credentials are exported here via $GITHUB_ENV rather than
+      # the build step's static env, because an unset secret still expands to an
+      # EMPTY (present) variable in a step `env:` block, and the Tauri bundler
+      # treats a present APPLE_CERTIFICATE as "sign with this cert" — it then
+      # runs `security import` on empty data and fails. For an unsigned build we
+      # must leave APPLE_CERTIFICATE / APPLE_ID genuinely UNSET and only pin the
+      # ad-hoc identity ("-"), which is exactly how v1.0.0 / v1.0.1 shipped.
+      # When Apple secrets are present we export the full set so tauri-action
+      # imports the certificate and notarizes.
       - name: Configure macOS code signing identity
         if: runner.os == 'macOS'
         shell: bash
         env:
           PLATFORM_SIGNING: ${{ steps.signing.outputs.platform_signing }}
           APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: |
           set -euo pipefail
           if [ "$PLATFORM_SIGNING" = "true" ]; then
-            echo "APPLE_SIGNING_IDENTITY=$APPLE_SIGNING_IDENTITY" >> "$GITHUB_ENV"
+            {
+              echo "APPLE_SIGNING_IDENTITY=$APPLE_SIGNING_IDENTITY"
+              echo "APPLE_CERTIFICATE<<__DEPOAUDIO_EOF__"
+              echo "$APPLE_CERTIFICATE"
+              echo "__DEPOAUDIO_EOF__"
+              echo "APPLE_CERTIFICATE_PASSWORD=$APPLE_CERTIFICATE_PASSWORD"
+              echo "APPLE_ID=$APPLE_ID"
+              echo "APPLE_PASSWORD=$APPLE_PASSWORD"
+              echo "APPLE_TEAM_ID=$APPLE_TEAM_ID"
+            } >> "$GITHUB_ENV"
           else
+            # Unsigned: ad-hoc identity, and APPLE_CERTIFICATE/APPLE_ID stay
+            # unset so the bundler skips `security import` and notarization.
             echo "APPLE_SIGNING_IDENTITY=-" >> "$GITHUB_ENV"
           fi
 
@@ -609,19 +629,15 @@ jobs:
         uses: tauri-apps/tauri-action@1deb371b0cd8bd54025b384f1cd735e725c4060f # action-v1.0.0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # Signing credentials flow through from secrets. When a capability's
-          # secrets are unset these are empty, so tauri-action skips keychain
-          # import, notarization, and updater signing and ships an unsigned
-          # build. APPLE_SIGNING_IDENTITY is intentionally NOT set here — the
-          # "Configure macOS code signing identity" step sets it via $GITHUB_ENV
-          # (real identity when signing, "-" ad-hoc otherwise).
+          # Updater artifact signing key. Empty when no updater secret is set;
+          # the Tauri bundler only consumes it when createUpdaterArtifacts is
+          # true (i.e. when the updater overlay is active), so an empty value is
+          # inert on an unsigned build. All Apple signing/notarization
+          # credentials are provided instead by the "Configure macOS code
+          # signing identity" step via $GITHUB_ENV — and deliberately left UNSET
+          # (not empty) on an unsigned build so the bundler skips cert import.
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
-          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         with:
           tagName: ${{ inputs.tag || github.ref_name }}
           releaseCommitish: ${{ github.sha }}
