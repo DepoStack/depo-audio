@@ -357,14 +357,19 @@ jobs:
           Copy-Item $dll.FullName "src-tauri/resources/onnxruntime/onnxruntime.dll"
           Get-ChildItem src-tauri/resources/onnxruntime/
 
-      # ── Release signing and signed updater configuration ────────────────
-      # Releases fail closed until updater and platform code signing are
-      # configured. macOS additionally requires notarization credentials.
-      - name: Require release signing configuration
+      # ── Release signing (opt-in) ────────────────────────────────────────
+      # Code signing / notarization and signed auto-updates are OPT-IN and
+      # switch on per-capability once their secrets exist. Until then the
+      # release still ships: an UNSIGNED macOS app (ad-hoc) and UNSIGNED
+      # Windows installer — the documented v1.0.0 / v1.0.1 baseline (a one-time
+      # Gatekeeper/SmartScreen warning on first launch) — with the in-app
+      # updater dormant. Adding the secrets later enables signing/updates with
+      # no workflow change. This detects what's present; it never fails closed.
+      - name: Detect signing configuration
+        id: signing
         shell: bash
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
           TAURI_UPDATER_PUBLIC_KEY: ${{ secrets.TAURI_UPDATER_PUBLIC_KEY }}
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
@@ -377,25 +382,41 @@ jobs:
           WINDOWS_CERTIFICATE_THUMBPRINT: ${{ secrets.WINDOWS_CERTIFICATE_THUMBPRINT }}
         run: |
           set -euo pipefail
-          required=(TAURI_SIGNING_PRIVATE_KEY TAURI_UPDATER_PUBLIC_KEY)
-          if [ "$RUNNER_OS" = "macOS" ]; then
-            required+=(APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_SIGNING_IDENTITY APPLE_ID APPLE_PASSWORD APPLE_TEAM_ID)
-          elif [ "$RUNNER_OS" = "Windows" ]; then
-            required+=(WINDOWS_CERTIFICATE WINDOWS_CERTIFICATE_PASSWORD WINDOWS_CERTIFICATE_THUMBPRINT)
+          have() { for n in "$@"; do [ -n "${!n:-}" ] || return 1; done; return 0; }
+
+          updater=false
+          if have TAURI_SIGNING_PRIVATE_KEY TAURI_UPDATER_PUBLIC_KEY; then
+            updater=true
+          else
+            echo "::notice::Updater signing secrets absent — building without signed auto-update artifacts (updater stays dormant)."
           fi
-          missing=()
-          for name in "${required[@]}"; do
-            [ -n "${!name:-}" ] || missing+=("$name")
-          done
-          [ ${#missing[@]} -eq 0 ] || {
-            echo "::error::Release signing is not configured. Missing: ${missing[*]}"; exit 1;
-          }
+
+          platform_signing=false
+          if [ "$RUNNER_OS" = "macOS" ]; then
+            if have APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_SIGNING_IDENTITY APPLE_ID APPLE_PASSWORD APPLE_TEAM_ID; then
+              platform_signing=true
+            else
+              echo "::notice::Apple signing/notarization secrets absent — building an UNSIGNED macOS app (ad-hoc signature)."
+            fi
+          elif [ "$RUNNER_OS" = "Windows" ]; then
+            if have WINDOWS_CERTIFICATE WINDOWS_CERTIFICATE_PASSWORD WINDOWS_CERTIFICATE_THUMBPRINT; then
+              platform_signing=true
+            else
+              echo "::notice::Windows signing secrets absent — building an UNSIGNED Windows installer."
+            fi
+          fi
+
+          {
+            echo "updater=$updater"
+            echo "platform_signing=$platform_signing"
+          } >> "$GITHUB_OUTPUT"
 
       # The Tauri CLI has a signer but no verify subcommand. Sign a disposable
       # nonce with the exact project-pinned CLI, then verify that signature
       # using the same minisign-verify version/checksum locked by the app's
       # updater dependency. No key material is written or printed.
       - name: Verify updater signing key pair
+        if: steps.signing.outputs.updater == 'true'
         shell: bash
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
@@ -497,9 +518,18 @@ jobs:
           cargo run --locked --quiet --manifest-path "$verify_dir/Cargo.toml" -- \
             "$payload" "$payload.sig"
 
-      - name: Generate signed updater configuration
+      # Release Tauri config overlay, always generated. It stages the ONNX
+      # Runtime library where the runtime loader (src-tauri/src/lib.rs) resolves
+      # it — a macOS framework (Contents/Frameworks/libonnxruntime.dylib) so it
+      # is signed inside-out and survives notarization, and a Windows resource
+      # (resources/onnxruntime/onnxruntime.dll). Signed updater artifacts and
+      # Windows Authenticode signing are layered on ONLY when their secrets are
+      # present. Tauri deep-merges this overlay onto tauri.conf.json.
+      - name: Generate release configuration
         shell: bash
         env:
+          UPDATER_ENABLED: ${{ steps.signing.outputs.updater }}
+          PLATFORM_SIGNING: ${{ steps.signing.outputs.platform_signing }}
           TAURI_UPDATER_PUBLIC_KEY: ${{ secrets.TAURI_UPDATER_PUBLIC_KEY }}
           WINDOWS_CERTIFICATE_THUMBPRINT: ${{ secrets.WINDOWS_CERTIFICATE_THUMBPRINT }}
         run: |
@@ -507,28 +537,40 @@ jobs:
           jq \
             --arg pubkey "$TAURI_UPDATER_PUBLIC_KEY" \
             --arg runner "$RUNNER_OS" \
-            --arg thumbprint "$WINDOWS_CERTIFICATE_THUMBPRINT" '{
-            plugins: { updater: {
-              endpoints: ["https://github.com/DepoStack/depo-audio/releases/latest/download/latest.json"],
-              pubkey: $pubkey
-            } },
-            bundle: ({ createUpdaterArtifacts: true } +
-              (if $runner == "Windows" then {
-                resources: (.bundle.resources + ["resources/onnxruntime/onnxruntime.dll"]),
+            --arg thumbprint "$WINDOWS_CERTIFICATE_THUMBPRINT" \
+            --argjson updater "$UPDATER_ENABLED" \
+            --argjson platformSigning "$PLATFORM_SIGNING" '
+            # ONNX Runtime placement — always, matched to the lib.rs loader.
+            (if $runner == "Windows" then {
+                resources: (.bundle.resources + ["resources/onnxruntime/onnxruntime.dll"])
+              } elif $runner == "macOS" then {
+                macOS: { frameworks: ["resources/onnxruntime/libonnxruntime.dylib"] }
+              } else error("unsupported release runner: " + $runner) end) as $ort
+            # Signed auto-update artifacts — only with updater secrets.
+            | (if $updater then { createUpdaterArtifacts: true } else {} end) as $upd
+            # Windows Authenticode signing — only with the Windows cert.
+            | (if ($platformSigning and $runner == "Windows") then {
                 windows: {
                   certificateThumbprint: $thumbprint,
                   digestAlgorithm: "sha256",
                   timestampUrl: "http://timestamp.digicert.com"
                 }
-              } elif $runner == "macOS" then {
-                macOS: {
-                  frameworks: ["resources/onnxruntime/libonnxruntime.dylib"]
-                }
-              } else error("unsupported release runner: " + $runner) end))
-          }' src-tauri/tauri.conf.json > src-tauri/tauri.release.conf.json
+              } else {} end) as $win
+            | {
+                bundle: ($ort + $upd + $win)
+              }
+              + (if $updater then {
+                  plugins: { updater: {
+                    endpoints: ["https://github.com/DepoStack/depo-audio/releases/latest/download/latest.json"],
+                    pubkey: $pubkey
+                  } }
+                } else {} end)
+          ' src-tauri/tauri.conf.json > src-tauri/tauri.release.conf.json
+          echo "== generated tauri.release.conf.json =="
+          cat src-tauri/tauri.release.conf.json
 
       - name: Import Windows signing certificate
-        if: runner.os == 'Windows'
+        if: runner.os == 'Windows' && steps.signing.outputs.platform_signing == 'true'
         shell: pwsh
         env:
           WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
@@ -543,18 +585,40 @@ jobs:
           $certificate = Get-Item "Cert:\CurrentUser\My\$env:WINDOWS_CERTIFICATE_THUMBPRINT" -ErrorAction Stop
           if (!$certificate.HasPrivateKey) { throw "Windows signing certificate has no private key" }
 
+      # macOS signing identity comes from $GITHUB_ENV so it governs regardless
+      # of the build step's env. With Apple secrets present, use the real
+      # Developer ID identity; otherwise ad-hoc ("-"), which — combined with the
+      # empty APPLE_CERTIFICATE/APPLE_ID below — makes tauri-action skip keychain
+      # import and notarization and ship an unsigned (ad-hoc) app.
+      - name: Configure macOS code signing identity
+        if: runner.os == 'macOS'
+        shell: bash
+        env:
+          PLATFORM_SIGNING: ${{ steps.signing.outputs.platform_signing }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+        run: |
+          set -euo pipefail
+          if [ "$PLATFORM_SIGNING" = "true" ]; then
+            echo "APPLE_SIGNING_IDENTITY=$APPLE_SIGNING_IDENTITY" >> "$GITHUB_ENV"
+          else
+            echo "APPLE_SIGNING_IDENTITY=-" >> "$GITHUB_ENV"
+          fi
+
       # ── Build & release ────────────────────────────────────────────────
       - name: Build and release
         uses: tauri-apps/tauri-action@1deb371b0cd8bd54025b384f1cd735e725c4060f # action-v1.0.0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # Release validation above guarantees updater and platform signing
-          # credentials are present before the build starts.
+          # Signing credentials flow through from secrets. When a capability's
+          # secrets are unset these are empty, so tauri-action skips keychain
+          # import, notarization, and updater signing and ships an unsigned
+          # build. APPLE_SIGNING_IDENTITY is intentionally NOT set here — the
+          # "Configure macOS code signing identity" step sets it via $GITHUB_ENV
+          # (real identity when signing, "-" ad-hoc otherwise).
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
@@ -568,7 +632,9 @@ jobs:
           # v1.0.0-preview.1, -rc.1, -beta.2) is marked as a GitHub prerelease;
           # a clean tag (v1.0.0) ships as a final release.
           prerelease: ${{ contains(inputs.tag || github.ref_name, '-') }}
-          includeUpdaterJson: true
+          # Updater JSON only when updater signing is configured; the config
+          # overlay (which stages ONNX Runtime) is always applied.
+          includeUpdaterJson: ${{ steps.signing.outputs.updater }}
           args: '--config src-tauri/tauri.release.conf.json ${{ matrix.args }}'
 
   # If a draft is published while a later matrix leg is still building, that
