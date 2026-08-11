@@ -13,8 +13,27 @@ updates:
       radix-ui:
         patterns:
           - '@radix-ui/*'
+      tauri-js:
+        patterns:
+          - '@tauri-apps/*'
+      vite-tooling:
+        patterns:
+          - vite
+          - '@vitejs/*'
+          - esbuild
+      lint-tooling:
+        patterns:
+          - eslint
+          - '@eslint/*'
+          - 'eslint-plugin-*'
+          - globals
+      css-tooling:
+        patterns:
+          - postcss
+          - '@tailwindcss/*'
+          - 'tailwindcss*'
     # jsdom 30 requires Node 22.22.2 or newer. Keep major updates gated until
-    # the documented Node 22+ development baseline is intentionally raised.
+    # the documented Node 22.12+ development baseline is intentionally raised.
     ignore:
       - dependency-name: jsdom
         update-types:
