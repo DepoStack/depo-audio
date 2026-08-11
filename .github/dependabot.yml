@@ -5,6 +5,14 @@ updates:
     schedule:
       interval: weekly
     open-pull-requests-limit: 5
+    groups:
+      react-core:
+        patterns:
+          - react
+          - react-dom
+      radix-ui:
+        patterns:
+          - '@radix-ui/*'
     labels:
       - dependencies
 
