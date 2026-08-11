@@ -18,7 +18,7 @@ DepoAudio handles the audio side of a deposition or hearing, end to end:
 
 - 🎧 **Convert** proprietary court formats (Stenograph SGMCA, FTR `.trm`, CourtSmart BWF) and standard audio to WAV, MP3, FLAC, Opus, or M4A — mix to stereo, keep the channel layout, or split one file per source channel and name it by role.
 - ✨ **Clean up** with on-device AI: remove background noise, balance quiet vs. loud speakers, reconstruct clipped peaks, and extend narrow-band phone audio — all recommended automatically by a one-click **Scan**.
-- ▶️ **Play & review** in a built-in player — color-coded speaker tracks, 0.5×–2× speed, A-B loop, and bookmarks.
+- ▶️ **Play & review** in a built-in player — color-coded speaker tracks, 0.5×–2× speed, A-B loop, bookmarks, and a synced transcript editor.
 - 🗂️ **Organize** every conversion into an auto-filed case library, and pull recordings straight from installed court software.
 
 > **100% local.** All processing runs on your machine — no uploads, no accounts, no subscription.
@@ -79,6 +79,7 @@ Scanning is a bounded, cancellable analysis pass; conversion is a two-step pipel
 
 - Color-coded tracks, **0.5×–2× speed**, **A-B loop**, editable **bookmarks**
 - Full keyboard transport
+- **Synced transcript editor** — import SRT, VTT, or TXT, follow the playhead, stamp and edit cues, then export SRT or TXT
 
 ### 🗂️ Library & detection
 
