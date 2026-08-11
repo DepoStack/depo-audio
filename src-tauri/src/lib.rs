@@ -80,6 +80,36 @@ fn setup_persistence(app: &tauri::AppHandle) {
 /// 2.0.0-rc.12 deadlocks (it re-enters its own API OnceLock while building
 /// the error) when the dylib fails to load, so a bad library must be caught
 /// here — load_session checks the preflight and degrades gracefully.
+pub(crate) fn validate_onnx_runtime_api(lib: &libloading::Library) -> Result<String, String> {
+    // Loading the DLL/dylib is not enough: OrtGetApiBase can be present while
+    // the runtime is too old for the C API requested by the Rust binding.
+    unsafe {
+        let get_api_base = lib
+            .get::<unsafe extern "system" fn() -> *const ort::sys::OrtApiBase>(b"OrtGetApiBase\0")
+            .map_err(|e| format!("ONNX Runtime is missing OrtGetApiBase: {e}"))?;
+        let base = get_api_base();
+        let base = base
+            .as_ref()
+            .ok_or_else(|| "ONNX Runtime returned a null API base".to_string())?;
+
+        let version_ptr = (base.GetVersionString)();
+        let version = if version_ptr.is_null() {
+            "unknown".to_string()
+        } else {
+            std::ffi::CStr::from_ptr(version_ptr).to_string_lossy().into_owned()
+        };
+        let api = (base.GetApi)(ort::MINOR_VERSION);
+        if api.is_null() {
+            return Err(format!(
+                "ONNX Runtime {version} does not support required C API {}",
+                ort::MINOR_VERSION
+            ));
+        }
+
+        Ok(version)
+    }
+}
+
 fn setup_onnx_runtime(app: &tauri::AppHandle) {
     // Developer builds may point at a local runtime for model tests. Release
     // builds must never dlopen a caller-controlled environment path; they load
@@ -147,13 +177,21 @@ fn setup_onnx_runtime(app: &tauri::AppHandle) {
     // dlopen exactly what ort will dlopen. Keeping the handle alive means
     // ort's own load of the same path reuses it (no second TLS allocation).
     match unsafe { libloading::Library::new(&lib_path) } {
-        Ok(lib) => {
-            std::mem::forget(lib); // keep loaded for the process lifetime
-            std::env::set_var("ORT_DYLIB_PATH", &lib_path);
-            models::set_ort_preflight(Ok(()));
-        }
+        Ok(lib) => match validate_onnx_runtime_api(&lib) {
+            Ok(version) => {
+                std::mem::forget(lib); // keep loaded for the process lifetime
+                std::env::set_var("ORT_DYLIB_PATH", &lib_path);
+                models::set_ort_preflight(Ok(()));
+                eprintln!("[ort] Loaded ONNX Runtime {version} with C API {}", ort::MINOR_VERSION);
+            }
+            Err(e) => {
+                eprintln!("[ort] ONNX Runtime is incompatible, AI features disabled: {e}");
+                std::env::remove_var("ORT_DYLIB_PATH");
+                models::set_ort_preflight(Err(e));
+            }
+        },
         Err(e) => {
-            eprintln!("[ort] ONNX Runtime failed to load, AI features disabled: {}", e);
+            eprintln!("[ort] ONNX Runtime failed to load, AI features disabled: {e}");
             std::env::remove_var("ORT_DYLIB_PATH");
             models::set_ort_preflight(Err(format!("ONNX Runtime failed to load: {}", e)));
         }

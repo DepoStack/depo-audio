@@ -21,6 +21,10 @@ updates:
     schedule:
       interval: weekly
     open-pull-requests-limit: 5
+    # ORT binding updates must move in lockstep with the signed native runtime,
+    # CoreML feature wiring, and real-model release smoke tests.
+    ignore:
+      - dependency-name: ort
     labels:
       - dependencies
 
