@@ -13,6 +13,12 @@ updates:
       radix-ui:
         patterns:
           - '@radix-ui/*'
+    # jsdom 30 requires Node 22.22.2 or newer. Keep major updates gated until
+    # the documented Node 22+ development baseline is intentionally raised.
+    ignore:
+      - dependency-name: jsdom
+        update-types:
+          - version-update:semver-major
     labels:
       - dependencies
 
