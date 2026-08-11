@@ -2,6 +2,9 @@
   "name": "depo-audio",
   "private": true,
   "version": "1.0.1",
+  "engines": {
+    "node": ">=22.12.0"
+  },
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -30,7 +33,7 @@
     "@radix-ui/react-tabs": "^1.1.21",
     "@radix-ui/react-tooltip": "^1.2.16",
     "@tailwindcss/postcss": "^4.3.1",
-    "@tauri-apps/api": "^2.5.0",
+    "@tauri-apps/api": "^2.11.1",
     "@tauri-apps/plugin-dialog": "^2.7.2",
     "@tauri-apps/plugin-fs": "^2.2.0",
     "@tauri-apps/plugin-opener": "^2.2.0",
@@ -53,7 +56,7 @@
     "@tauri-apps/cli": "^2.11.3",
     "@testing-library/jest-dom": "^7.0.1",
     "@testing-library/react": "^16.3.2",
-    "@vitejs/plugin-react": "^6.0.3",
+    "@vitejs/plugin-react": "^6.0.5",
     "esbuild": "^0.28.1",
     "eslint": "^10.7.0",
     "eslint-plugin-react-hooks": "^7.1.1",
@@ -61,7 +64,7 @@
     "globals": "^17.4.0",
     "jsdom": "^29.1.1",
     "prettier": "^3.9.6",
-    "vite": "^8.1.2",
+    "vite": "^8.2.1",
     "vitest": "^4.1.10"
   }
 }
