@@ -357,6 +357,19 @@ jobs:
           Copy-Item $dll.FullName "src-tauri/resources/onnxruntime/onnxruntime.dll"
           Get-ChildItem src-tauri/resources/onnxruntime/
 
+      - name: Smoke-test bundled ONNX Runtime (macOS)
+        if: runner.os == 'macOS'
+        env:
+          ORT_DYLIB_PATH: ${{ github.workspace }}/src-tauri/resources/onnxruntime/libonnxruntime.dylib
+        run: cargo test --locked --manifest-path src-tauri/Cargo.toml ort_loads_and_runs_silero_vad -- --ignored --nocapture
+
+      - name: Smoke-test bundled ONNX Runtime (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          ORT_DYLIB_PATH: ${{ github.workspace }}\src-tauri\resources\onnxruntime\onnxruntime.dll
+        run: cargo test --locked --manifest-path src-tauri/Cargo.toml ort_loads_and_runs_silero_vad -- --ignored --nocapture
+
       # ── Release signing (opt-in) ────────────────────────────────────────
       # Code signing / notarization and signed auto-updates are OPT-IN and
       # switch on per-capability once their secrets exist. Until then the

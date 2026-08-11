@@ -8,6 +8,7 @@
 
 ### Fixed
 
+- **Bundled ONNX Runtime and the Rust binding now use the same 1.22 C API.** The app no longer requests an API newer than its signed desktop runtime, macOS-specific CoreML code compiles in CI, and release builds run real Silero VAD inference against the staged native library before packaging.
 - **TRM/FTR decoding now uses FFmpeg's native `ftr` decoder** instead of forcing ordinary AAC. The same verified decoder contract is used by scan, conversion, channel splitting, scoring, speaker detection, VAD, and AI preprocessing; release builds smoke-test a real four-channel court recording before packaging.
 - **FTR sessions keep every recording chunk** when imported from court-software detection. Detection and enumeration now share one recursive depth, canonical chunks are grouped into chronological session runs, every result is reachable through pagination, and the combined conversion queue remains deduplicated and ordered across separate drops.
 - **Silence trimming preserves the evidentiary timeline.** It no longer removes pauses from the middle of testimony, and split-channel exports retain their common start time.

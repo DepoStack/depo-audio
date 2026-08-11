@@ -622,6 +622,12 @@ mod tests {
     use super::*;
 
     #[test]
+    fn ort_binding_matches_bundled_runtime_api() {
+        // release.yml and setup-dev.sh both stage ONNX Runtime 1.22.x.
+        assert_eq!(ort::MINOR_VERSION, 22);
+    }
+
+    #[test]
     fn model_filename_accepts_one_plain_component() {
         assert!(validate_model_filename("speaker_embed.onnx").is_ok());
     }
@@ -658,17 +664,18 @@ mod tests {
         let dylib =
             std::env::var("ORT_DYLIB_PATH").expect("set ORT_DYLIB_PATH to a real libonnxruntime to run this test");
         // Pre-flight the dylib ourselves: ort 2.0.0-rc.12 deadlocks instead
-        // of erroring when its dylib fails to load (see setup_onnx_runtime)
-        match unsafe { libloading::Library::new(&dylib) } {
-            Ok(lib) => {
-                std::mem::forget(lib);
-                set_ort_preflight(Ok(()));
-            }
-            Err(e) => {
-                eprintln!("skipping: dylib does not load in this environment: {e}");
-                return;
-            }
-        }
+        // of erroring when its dylib fails to load (see setup_onnx_runtime).
+        // This is a release gate, so a staged library that cannot load must
+        // fail rather than silently skip the smoke test.
+        let lib = unsafe { libloading::Library::new(&dylib) }
+            .unwrap_or_else(|e| panic!("ONNX Runtime dylib failed to load from {dylib}: {e}"));
+        let version = crate::validate_onnx_runtime_api(&lib).expect("bundled runtime should expose the required API");
+        assert!(
+            version.starts_with("1.22."),
+            "unexpected bundled runtime version: {version}"
+        );
+        std::mem::forget(lib);
+        set_ort_preflight(Ok(()));
         let model = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("resources/models/silero_vad.onnx");
         let mut session = load_session(&model).expect("session should load");
 
