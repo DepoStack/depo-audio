@@ -6,7 +6,7 @@
 
 Convert proprietary court-recording formats, clean up noisy audio, and keep every case organized. Recordings are processed on the device and are not uploaded.
 
-[![CI](https://github.com/DepoStack/depo-audio/actions/workflows/ci.yml/badge.svg)](../../actions/workflows/ci.yml) ![Version](https://img.shields.io/badge/version-1.0.1-6E4A9E) ![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Windows-6E4A9E) ![License](https://img.shields.io/badge/license-MIT-2F9E44) ![Runs](https://img.shields.io/badge/recordings-local-C79A3B)
+[![CI](https://github.com/DepoStack/depo-audio/actions/workflows/ci.yml/badge.svg)](../../actions/workflows/ci.yml) ![Version](https://img.shields.io/badge/version-1.0.2-6E4A9E) ![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Windows-6E4A9E) ![License](https://img.shields.io/badge/license-MIT-2F9E44) ![Runs](https://img.shields.io/badge/recordings-local-C79A3B)
 
 [**⬇ Download**](../../releases/latest) · [Website](https://depoaudio.com) · [Install guide](https://depoaudio.com/install/) · [Changelog](CHANGELOG.md) · [Report a bug](../../issues)
 
@@ -191,7 +191,7 @@ gh workflow run release.yml --ref main -f tag=vX.Y.Z
 
 GitHub Actions builds a **universal macOS** `.dmg` and **Windows** installers, then creates a **draft** release with all assets. The workflow verifies the tag, version, and exact release commit; downloads executable dependencies through pinned GitHub asset IDs; smoke-tests native FTR decoding; validates configured signing material; and clears any stale _draft_ with the same tag before building. Signing, notarization, and updater artifacts are enabled independently only when their required credentials are present.
 
-> **Let the workflow finish before publishing the draft.** The platform builds run one after another, so the draft can look complete while a later platform is still building. Published asset names and bytes are immutable: `finalize` may add only non-colliding assets from a draft built for the exact same tag commit and never merges or replaces `latest.json`. Early publication normally leaves both releases with `latest.json`, so finalization intentionally fails closed and retains the stray draft for manual reconciliation.
+> **Let the workflow finish successfully before publishing the draft.** Confirm both packaged-app startup smoke steps are green. The platform builds run one after another, so the draft can look complete while a later platform is still building. Published asset names and bytes are immutable: `finalize` may add only non-colliding assets from a draft built for the exact same tag commit and never merges or replaces `latest.json`. Early publication normally leaves both releases with `latest.json`, so finalization intentionally fails closed and retains the stray draft for manual reconciliation.
 
 ### Release signing configuration (one-time)
 

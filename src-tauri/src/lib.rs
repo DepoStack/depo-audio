@@ -198,6 +198,13 @@ fn setup_onnx_runtime(app: &tauri::AppHandle) {
     }
 }
 
+#[cfg(desktop)]
+fn updater_config_is_valid(config: Option<&serde_json::Value>) -> bool {
+    config
+        .and_then(|value| serde_json::from_value::<tauri_plugin_updater::Config>(value.clone()).ok())
+        .is_some_and(|config| !config.endpoints.is_empty() && !config.pubkey.trim().is_empty())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -209,11 +216,21 @@ pub fn run() {
         .setup(|app| {
             setup_persistence(app.handle());
             setup_onnx_runtime(app.handle());
-            // Auto-update via GitHub Releases (desktop only)
+            // Auto-update is available only when the release overlay contains
+            // a complete signed-updater configuration. Tauri exposes a missing
+            // plugin configuration as JSON null; registering the updater in
+            // that state aborts app setup before the first window can open.
             #[cfg(desktop)]
             {
-                app.handle().plugin(tauri_plugin_updater::Builder::new().build())?;
-                app.handle().plugin(tauri_plugin_process::init())?;
+                let updater_config = app.config().plugins.0.get("updater");
+                if updater_config_is_valid(updater_config) {
+                    app.handle().plugin(tauri_plugin_updater::Builder::new().build())?;
+                    app.handle().plugin(tauri_plugin_process::init())?;
+                } else if updater_config.is_some() {
+                    eprintln!("[updater] Invalid updater configuration; signed in-app updates are disabled");
+                } else {
+                    eprintln!("[updater] No signed updater configuration; signed in-app updates are disabled");
+                }
             }
             Ok(())
         })
@@ -253,4 +270,32 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+#[cfg(all(test, desktop))]
+mod updater_config_tests {
+    use super::updater_config_is_valid;
+
+    #[test]
+    fn updater_requires_a_complete_plugin_config() {
+        assert!(!updater_config_is_valid(None));
+        assert!(!updater_config_is_valid(Some(&serde_json::Value::Null)));
+        assert!(!updater_config_is_valid(Some(&serde_json::json!({}))));
+        assert!(!updater_config_is_valid(Some(&serde_json::json!({
+            "endpoints": [],
+            "pubkey": "test-key"
+        }))));
+        assert!(!updater_config_is_valid(Some(&serde_json::json!({
+            "endpoints": ["https://github.com/DepoStack/depo-audio/releases/latest/download/latest.json"],
+            "pubkey": "  "
+        }))));
+        assert!(!updater_config_is_valid(Some(&serde_json::json!({
+            "endpoints": ["not-a-url"],
+            "pubkey": "test-key"
+        }))));
+        assert!(updater_config_is_valid(Some(&serde_json::json!({
+            "endpoints": ["https://github.com/DepoStack/depo-audio/releases/latest/download/latest.json"],
+            "pubkey": "test-key"
+        }))));
+    }
 }

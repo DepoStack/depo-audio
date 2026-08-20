@@ -310,7 +310,14 @@ function ModelManager() {
 // ── Panel ──────────────────────────────────────────────────────────────────────
 
 export default function SettingsPanel({ open, onOpenChange, prefs, updater = {} }) {
-  const { status: updateStatus, update, progress: updateProgress, checkForUpdate, installUpdate } = updater
+  const {
+    status: updateStatus,
+    update,
+    progress: updateProgress,
+    error: updateError,
+    checkForUpdate,
+    installUpdate,
+  } = updater
   const {
     hpfCutoff,
     setHpfCutoff,
@@ -570,7 +577,7 @@ export default function SettingsPanel({ open, onOpenChange, prefs, updater = {} 
                   <CardContent className="p-4 flex items-center justify-between gap-3">
                     <div className="flex flex-col min-w-0">
                       <span className="text-[12px] font-medium text-foreground">
-                        Updates install automatically from GitHub Releases
+                        Check for updates from GitHub Releases
                       </span>
                       <span className="text-[11px] text-[hsl(var(--sub))] mt-0.5">
                         {updateStatus === 'checking' && 'Checking for updates…'}
@@ -580,7 +587,9 @@ export default function SettingsPanel({ open, onOpenChange, prefs, updater = {} 
                         {updateStatus === 'ready' && 'Update installed — restarting…'}
                         {updateStatus === 'error' && "Couldn't check for updates (offline, or no release published)."}
                         {(!updateStatus || updateStatus === 'idle') &&
-                          'Checked automatically each time you open the app.'}
+                          (updateError
+                            ? 'Automatic update check was unavailable. You can download future versions from GitHub.'
+                            : 'Checked automatically each time you open the app.')}
                       </span>
                     </div>
                     {updateStatus === 'available' ? (
