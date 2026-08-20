@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::path::{Component, Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 
-use ort::session::{builder::AutoDevicePolicy, Session};
+use ort::session::Session;
 use tauri::{AppHandle, Manager};
 
 /// Result of the startup dlopen pre-flight (see lib.rs::setup_onnx_runtime).
@@ -122,12 +122,6 @@ pub(crate) fn load_session(path: &PathBuf) -> Result<Session, String> {
     let _accelerate = !cpu_only(&name);
     let result = std::panic::catch_unwind(|| {
         Session::builder().and_then(|mut b| {
-            if !_accelerate {
-                // ort rc.12 defaults every new session to MaxEfficiency,
-                // which may select an NPU automatically. These recurrent
-                // models are deliberately CPU-only on every platform.
-                b = b.with_auto_device(AutoDevicePolicy::PreferCPU)?;
-            }
             #[cfg(target_os = "macos")]
             if _accelerate {
                 b = match b
@@ -629,8 +623,11 @@ mod tests {
 
     #[test]
     fn ort_binding_matches_bundled_runtime_api() {
-        // release.yml and setup-dev.sh both stage ONNX Runtime 1.22.x.
-        assert_eq!(ort::MINOR_VERSION, 22);
+        // release.yml and setup-dev.sh stage the backward-compatible 1.22.x
+        // runtime. Keep the binding on API 21: API 22 enables ONNX Runtime's
+        // experimental AutoEP path, which is not used by DepoAudio and fails
+        // against Microsoft's macOS universal2 package.
+        assert_eq!(ort::MINOR_VERSION, 21);
     }
 
     #[test]

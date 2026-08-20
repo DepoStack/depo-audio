@@ -36,7 +36,7 @@ nnnoiseless = { version = "0.5", default-features = false, features = ["dasp"] }
 # The signed desktop bundles carry ONNX Runtime 1.22. Keep the Rust binding on
 # the same C API and load only that staged runtime; the crate's defaults target
 # API 24 and also enable its independent binary downloader.
-ort = { version = "=2.0.0-rc.12", default-features = false, features = ["std", "ndarray", "tracing", "load-dynamic", "api-22"] }
+ort = { version = "=2.0.0-rc.12", default-features = false, features = ["std", "ndarray", "tracing", "load-dynamic", "api-21"] }
 hound = "3.5"
 ndarray = "0.17"
 rustfft = "6"
