@@ -681,10 +681,7 @@ mod tests {
             version.starts_with("1.22."),
             "unexpected bundled runtime version: {version}"
         );
-        eprintln!(
-            "[ort-smoke] runtime {version} exposes C API {}",
-            ort::MINOR_VERSION
-        );
+        eprintln!("[ort-smoke] runtime {version} exposes C API {}", ort::MINOR_VERSION);
         std::mem::forget(lib);
         set_ort_preflight(Ok(()));
         eprintln!("[ort-smoke] creating CPU-only Silero VAD session");
