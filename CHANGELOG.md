@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+## [1.0.2] - 2026-08-20
+
+### Fixed
+
+- **Packaged desktop builds open when signed in-app updates are unavailable.** DepoAudio now registers the updater only when the release contains a complete updater configuration; unsigned Windows and macOS builds no longer abort during Tauri setup.
+- **Release validation launches the exact packaged applications.** Windows CI administratively extracts the generated MSI and starts its executable, while macOS CI starts the generated app bundle, so launch-only configuration failures turn the release run red before manual publication.
+
 ## [1.0.1] - 2026-08-20
 
 ### Added

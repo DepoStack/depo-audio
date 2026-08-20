@@ -14,6 +14,7 @@ const cargoToml = read('src-tauri/Cargo.toml')
 const cargoLock = read('src-tauri/Cargo.lock')
 const changelog = read('CHANGELOG.md')
 const releaseWorkflow = read('.github/workflows/release.yml')
+const tauriLib = read('src-tauri/src/lib.rs')
 
 const version = packageJson.version
 const escapedVersion = version.replaceAll('.', '\\.')
@@ -55,6 +56,22 @@ expect(
 expect(
   releaseWorkflow.includes('Delete stale draft release for this tag'),
   'release.yml must remove a stale same-tag draft before rebuilding',
+)
+expect(
+  releaseWorkflow.includes('Smoke-test packaged app startup (Windows)'),
+  'release.yml must launch the packaged Windows app before the release workflow finishes',
+)
+expect(
+  releaseWorkflow.includes("'src-tauri\\target\\release\\bundle\\msi'"),
+  'release.yml must inspect the Windows bundle directory produced without an explicit target argument',
+)
+expect(
+  releaseWorkflow.includes('Smoke-test packaged app startup (macOS)'),
+  'release.yml must launch the packaged macOS app before the release workflow finishes',
+)
+expect(
+  tauriLib.includes('if updater_config_is_valid(updater_config)'),
+  'desktop startup must not register the updater without a valid plugin configuration',
 )
 
 if (failures.length > 0) {

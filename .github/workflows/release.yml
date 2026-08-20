@@ -667,6 +667,89 @@ jobs:
           uploadUpdaterSignatures: ${{ steps.signing.outputs.updater }}
           args: '--config src-tauri/tauri.release.conf.json ${{ matrix.args }}'
 
+      # The component checks above do not exercise Tauri's embedded plugin
+      # configuration. Launch the exact bundled application before the workflow
+      # can finish so a setup panic is visible before anyone publishes the draft.
+      - name: Smoke-test packaged app startup (Windows)
+        if: runner.os == 'Windows'
+        timeout-minutes: 10
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $bundleRoot = Join-Path $env:GITHUB_WORKSPACE 'src-tauri\target\release\bundle\msi'
+          $msi = Get-ChildItem -LiteralPath $bundleRoot -Filter '*.msi' -File | Select-Object -First 1
+          if (-not $msi) { throw "No packaged MSI found under $bundleRoot" }
+
+          $extractDir = Join-Path $env:RUNNER_TEMP 'depoaudio-msi-smoke'
+          $msiLog = Join-Path $env:RUNNER_TEMP 'depoaudio-msi-smoke.log'
+          $extract = Start-Process msiexec.exe -ArgumentList @(
+            '/a', "`"$($msi.FullName)`"", '/qn', "TARGETDIR=`"$extractDir`"", '/L*v', "`"$msiLog`""
+          ) -Wait -PassThru
+          if ($extract.ExitCode -ne 0) {
+            Get-Content -LiteralPath $msiLog -Tail 200
+            throw "MSI administrative extraction failed with exit code $($extract.ExitCode)"
+          }
+
+          $app = Get-ChildItem -LiteralPath $extractDir -Recurse -Filter 'depo-audio.exe' -File | Select-Object -First 1
+          if (-not $app) { throw 'The extracted MSI does not contain depo-audio.exe' }
+          $stdout = Join-Path $env:RUNNER_TEMP 'depoaudio-startup-stdout.txt'
+          $stderr = Join-Path $env:RUNNER_TEMP 'depoaudio-startup-stderr.txt'
+          $process = Start-Process -FilePath $app.FullName -WorkingDirectory $app.DirectoryName -WindowStyle Hidden -RedirectStandardOutput $stdout -RedirectStandardError $stderr -PassThru
+          try {
+            $deadline = [DateTime]::UtcNow.AddSeconds(12)
+            do {
+              Start-Sleep -Milliseconds 500
+              $process.Refresh()
+            } while (-not $process.HasExited -and [DateTime]::UtcNow -lt $deadline)
+
+            if ($process.HasExited) {
+              Write-Host '== packaged app stdout =='
+              if (Test-Path -LiteralPath $stdout) { Get-Content -LiteralPath $stdout }
+              Write-Host '== packaged app stderr =='
+              if (Test-Path -LiteralPath $stderr) { Get-Content -LiteralPath $stderr }
+              throw "Packaged app exited during startup with code $($process.ExitCode)"
+            }
+            Write-Host 'Packaged Windows app remained alive through the startup smoke window.'
+          } finally {
+            if (-not $process.HasExited) {
+              $process.Kill($true)
+              $process.WaitForExit()
+            }
+          }
+
+      - name: Smoke-test packaged app startup (macOS)
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -euo pipefail
+          app=$(find src-tauri/target/universal-apple-darwin/release/bundle/macos \
+            -path '*/DepoAudio.app/Contents/MacOS/depo-audio' -type f -print -quit)
+          test -n "$app" || { echo "ERROR: packaged macOS executable not found"; exit 1; }
+
+          stdout="$RUNNER_TEMP/depoaudio-startup-stdout.txt"
+          stderr="$RUNNER_TEMP/depoaudio-startup-stderr.txt"
+          "$app" >"$stdout" 2>"$stderr" &
+          pid=$!
+          cleanup() {
+            if kill -0 "$pid" 2>/dev/null; then
+              kill "$pid" 2>/dev/null || true
+              wait "$pid" 2>/dev/null || true
+            fi
+          }
+          trap cleanup EXIT
+
+          for _ in {1..24}; do
+            sleep 0.5
+            if ! kill -0 "$pid" 2>/dev/null; then
+              wait "$pid" || status=$?
+              echo '== packaged app stdout =='; cat "$stdout" || true
+              echo '== packaged app stderr =='; cat "$stderr" || true
+              echo "ERROR: packaged app exited during startup with code ${status:-0}"
+              exit 1
+            fi
+          done
+          echo 'Packaged macOS app remained alive through the startup smoke window.'
+
   # If a draft is published while a later matrix leg is still building, that
   # leg can strand its artifacts in a new draft. Copy only asset names absent
   # from the published release after verifying draft/release/tag commit
