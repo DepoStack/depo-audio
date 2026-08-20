@@ -73,13 +73,10 @@ fn setup_persistence(app: &tauri::AppHandle) {
     }
 }
 
-/// Set ORT_DYLIB_PATH to the bundled ONNX Runtime library so AI features work
-/// without requiring users to install onnxruntime separately.
-///
-/// The dylib is pre-flighted with dlopen before ort ever sees it: ort
-/// 2.0.0-rc.12 deadlocks (it re-enters its own API OnceLock while building
-/// the error) when the dylib fails to load, so a bad library must be caught
-/// here — load_session checks the preflight and degrades gracefully.
+/// Validate and register the bundled ONNX Runtime with `ort` before any
+/// session is created. `ort::init_from` owns the process-lifetime library
+/// handle; a separate short-lived handle is used only to verify the exact C
+/// API and report the runtime version.
 pub(crate) fn validate_onnx_runtime_api(lib: &libloading::Library) -> Result<String, String> {
     // Loading the DLL/dylib is not enough: OrtGetApiBase can be present while
     // the runtime is too old for the C API requested by the Rust binding.
@@ -108,6 +105,32 @@ pub(crate) fn validate_onnx_runtime_api(lib: &libloading::Library) -> Result<Str
 
         Ok(version)
     }
+}
+
+pub(crate) fn initialize_onnx_runtime(lib_path: &std::path::Path) -> Result<String, String> {
+    // `init_from` is the supported load-dynamic entry point. It installs the
+    // library in ort's process-global OnceLock before any API or Session use.
+    let environment = ort::init_from(lib_path).map_err(|e| {
+        format!(
+            "ONNX Runtime failed to initialize from {}: {e}",
+            lib_path.display()
+        )
+    })?;
+
+    // Verify more than dlopen: OrtGetApiBase can exist while the runtime is too
+    // old for the C API requested by the Rust binding.
+    let lib = unsafe { libloading::Library::new(lib_path) }
+        .map_err(|e| format!("ONNX Runtime failed to load from {}: {e}", lib_path.display()))?;
+    let version = validate_onnx_runtime_api(&lib)?;
+    drop(lib);
+
+    if !environment.commit() {
+        return Err(
+            "ONNX Runtime was already initialized before the bundled runtime was registered".into(),
+        );
+    }
+
+    Ok(version)
 }
 
 fn setup_onnx_runtime(app: &tauri::AppHandle) {
@@ -174,26 +197,15 @@ fn setup_onnx_runtime(app: &tauri::AppHandle) {
         return;
     };
 
-    // dlopen exactly what ort will dlopen. Keeping the handle alive means
-    // ort's own load of the same path reuses it (no second TLS allocation).
-    match unsafe { libloading::Library::new(&lib_path) } {
-        Ok(lib) => match validate_onnx_runtime_api(&lib) {
-            Ok(version) => {
-                std::mem::forget(lib); // keep loaded for the process lifetime
-                std::env::set_var("ORT_DYLIB_PATH", &lib_path);
-                models::set_ort_preflight(Ok(()));
-                eprintln!("[ort] Loaded ONNX Runtime {version} with C API {}", ort::MINOR_VERSION);
-            }
-            Err(e) => {
-                eprintln!("[ort] ONNX Runtime is incompatible, AI features disabled: {e}");
-                std::env::remove_var("ORT_DYLIB_PATH");
-                models::set_ort_preflight(Err(e));
-            }
-        },
+    match initialize_onnx_runtime(&lib_path) {
+        Ok(version) => {
+            models::set_ort_preflight(Ok(()));
+            eprintln!("[ort] Loaded ONNX Runtime {version} with C API {}", ort::MINOR_VERSION);
+        }
         Err(e) => {
-            eprintln!("[ort] ONNX Runtime failed to load, AI features disabled: {e}");
+            eprintln!("[ort] ONNX Runtime unavailable, AI features disabled: {e}");
             std::env::remove_var("ORT_DYLIB_PATH");
-            models::set_ort_preflight(Err(format!("ONNX Runtime failed to load: {}", e)));
+            models::set_ort_preflight(Err(e));
         }
     }
 }

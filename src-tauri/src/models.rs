@@ -106,9 +106,25 @@ pub(crate) fn load_session(path: &PathBuf) -> Result<Session, String> {
     match ORT_PREFLIGHT.get() {
         Some(Ok(())) => {}
         Some(Err(e)) => return Err(format!("AI features unavailable: {}", e)),
-        // Preflight never ran (tests, tooling): allow an explicit env override
-        None if std::env::var("ORT_DYLIB_PATH").is_ok() => {}
-        None => return Err("AI features unavailable: ONNX Runtime was not initialized".into()),
+        // Preflight never ran (tests, tooling): initialize an explicit developer
+        // runtime through ort's supported dynamic-loading entry point.
+        None => {
+            let dylib = std::env::var("ORT_DYLIB_PATH")
+                .map_err(|_| "AI features unavailable: ONNX Runtime was not initialized".to_string())?;
+            match crate::initialize_onnx_runtime(Path::new(&dylib)) {
+                Ok(version) => {
+                    set_ort_preflight(Ok(()));
+                    eprintln!(
+                        "[ort] Loaded ONNX Runtime {version} with C API {}",
+                        ort::MINOR_VERSION
+                    );
+                }
+                Err(error) => {
+                    set_ort_preflight(Err(error.clone()));
+                    return Err(format!("AI features unavailable: {error}"));
+                }
+            }
+        }
     }
 
     let name = crate::safety::safe_display(path);
@@ -663,21 +679,18 @@ mod tests {
     fn ort_loads_and_runs_silero_vad() {
         let dylib =
             std::env::var("ORT_DYLIB_PATH").expect("set ORT_DYLIB_PATH to a real libonnxruntime to run this test");
-        // Pre-flight the dylib ourselves: ort 2.0.0-rc.12 deadlocks instead
-        // of erroring when its dylib fails to load (see setup_onnx_runtime).
-        // This is a release gate, so a staged library that cannot load must
-        // fail rather than silently skip the smoke test.
-        let lib = unsafe { libloading::Library::new(&dylib) }
-            .unwrap_or_else(|e| panic!("ONNX Runtime dylib failed to load from {dylib}: {e}"));
-        let version = crate::validate_onnx_runtime_api(&lib).expect("bundled runtime should expose the required API");
+        eprintln!("[ort-smoke] initializing bundled runtime: {dylib}");
+        let version = crate::initialize_onnx_runtime(Path::new(&dylib))
+            .expect("bundled runtime should initialize and expose the required API");
         assert!(
             version.starts_with("1.22."),
             "unexpected bundled runtime version: {version}"
         );
-        std::mem::forget(lib);
         set_ort_preflight(Ok(()));
+        eprintln!("[ort-smoke] creating Silero VAD session with ONNX Runtime {version}");
         let model = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("resources/models/silero_vad.onnx");
         let mut session = load_session(&model).expect("session should load");
+        eprintln!("[ort-smoke] session created; running inference");
 
         let chunk = ndarray::Array2::<f32>::zeros((1, 512));
         let state = ndarray::Array3::<f32>::zeros((2, 1, 128));
@@ -697,5 +710,8 @@ mod tests {
             .and_then(|t| t.1.first().copied())
             .expect("output tensor");
         assert!(prob.is_finite() && (0.0..=1.0).contains(&prob), "prob = {}", prob);
+        drop(outputs);
+        drop(session);
+        eprintln!("[ort-smoke] inference and session cleanup completed");
     }
 }
