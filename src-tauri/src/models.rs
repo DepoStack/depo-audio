@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::path::{Component, Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 
-use ort::session::Session;
+use ort::session::{builder::AutoDevicePolicy, Session};
 use tauri::{AppHandle, Manager};
 
 /// Result of the startup dlopen pre-flight (see lib.rs::setup_onnx_runtime).
@@ -106,25 +106,9 @@ pub(crate) fn load_session(path: &PathBuf) -> Result<Session, String> {
     match ORT_PREFLIGHT.get() {
         Some(Ok(())) => {}
         Some(Err(e)) => return Err(format!("AI features unavailable: {}", e)),
-        // Preflight never ran (tests, tooling): initialize an explicit developer
-        // runtime through ort's supported dynamic-loading entry point.
-        None => {
-            let dylib = std::env::var("ORT_DYLIB_PATH")
-                .map_err(|_| "AI features unavailable: ONNX Runtime was not initialized".to_string())?;
-            match crate::initialize_onnx_runtime(Path::new(&dylib)) {
-                Ok(version) => {
-                    set_ort_preflight(Ok(()));
-                    eprintln!(
-                        "[ort] Loaded ONNX Runtime {version} with C API {}",
-                        ort::MINOR_VERSION
-                    );
-                }
-                Err(error) => {
-                    set_ort_preflight(Err(error.clone()));
-                    return Err(format!("AI features unavailable: {error}"));
-                }
-            }
-        }
+        // Preflight never ran (tests, tooling): allow an explicit env override
+        None if std::env::var("ORT_DYLIB_PATH").is_ok() => {}
+        None => return Err("AI features unavailable: ONNX Runtime was not initialized".into()),
     }
 
     let name = crate::safety::safe_display(path);
@@ -138,6 +122,12 @@ pub(crate) fn load_session(path: &PathBuf) -> Result<Session, String> {
     let _accelerate = !cpu_only(&name);
     let result = std::panic::catch_unwind(|| {
         Session::builder().and_then(|mut b| {
+            if !_accelerate {
+                // ort rc.12 defaults every new session to MaxEfficiency,
+                // which may select an NPU automatically. These recurrent
+                // models are deliberately CPU-only on every platform.
+                b = b.with_auto_device(AutoDevicePolicy::PreferCPU)?;
+            }
             #[cfg(target_os = "macos")]
             if _accelerate {
                 b = match b
@@ -679,15 +669,25 @@ mod tests {
     fn ort_loads_and_runs_silero_vad() {
         let dylib =
             std::env::var("ORT_DYLIB_PATH").expect("set ORT_DYLIB_PATH to a real libonnxruntime to run this test");
-        eprintln!("[ort-smoke] initializing bundled runtime: {dylib}");
-        let version = crate::initialize_onnx_runtime(Path::new(&dylib))
-            .expect("bundled runtime should initialize and expose the required API");
+        eprintln!("[ort-smoke] preflighting bundled runtime: {dylib}");
+        // Pre-flight the dylib ourselves: ort 2.0.0-rc.12 deadlocks instead
+        // of erroring when its dylib fails to load (see setup_onnx_runtime).
+        // This is a release gate, so a staged library that cannot load must
+        // fail rather than silently skip the smoke test.
+        let lib = unsafe { libloading::Library::new(&dylib) }
+            .unwrap_or_else(|e| panic!("ONNX Runtime dylib failed to load from {dylib}: {e}"));
+        let version = crate::validate_onnx_runtime_api(&lib).expect("bundled runtime should expose the required API");
         assert!(
             version.starts_with("1.22."),
             "unexpected bundled runtime version: {version}"
         );
+        eprintln!(
+            "[ort-smoke] runtime {version} exposes C API {}",
+            ort::MINOR_VERSION
+        );
+        std::mem::forget(lib);
         set_ort_preflight(Ok(()));
-        eprintln!("[ort-smoke] creating Silero VAD session with ONNX Runtime {version}");
+        eprintln!("[ort-smoke] creating CPU-only Silero VAD session");
         let model = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("resources/models/silero_vad.onnx");
         let mut session = load_session(&model).expect("session should load");
         eprintln!("[ort-smoke] session created; running inference");
