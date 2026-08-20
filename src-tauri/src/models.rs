@@ -623,8 +623,11 @@ mod tests {
 
     #[test]
     fn ort_binding_matches_bundled_runtime_api() {
-        // release.yml and setup-dev.sh both stage ONNX Runtime 1.22.x.
-        assert_eq!(ort::MINOR_VERSION, 22);
+        // release.yml and setup-dev.sh stage the backward-compatible 1.22.x
+        // runtime. Keep the binding on API 21: API 22 enables ONNX Runtime's
+        // experimental AutoEP path, which is not used by DepoAudio and fails
+        // against Microsoft's macOS universal2 package.
+        assert_eq!(ort::MINOR_VERSION, 21);
     }
 
     #[test]
@@ -663,6 +666,7 @@ mod tests {
     fn ort_loads_and_runs_silero_vad() {
         let dylib =
             std::env::var("ORT_DYLIB_PATH").expect("set ORT_DYLIB_PATH to a real libonnxruntime to run this test");
+        eprintln!("[ort-smoke] preflighting bundled runtime: {dylib}");
         // Pre-flight the dylib ourselves: ort 2.0.0-rc.12 deadlocks instead
         // of erroring when its dylib fails to load (see setup_onnx_runtime).
         // This is a release gate, so a staged library that cannot load must
@@ -674,10 +678,13 @@ mod tests {
             version.starts_with("1.22."),
             "unexpected bundled runtime version: {version}"
         );
+        eprintln!("[ort-smoke] runtime {version} exposes C API {}", ort::MINOR_VERSION);
         std::mem::forget(lib);
         set_ort_preflight(Ok(()));
+        eprintln!("[ort-smoke] creating CPU-only Silero VAD session");
         let model = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("resources/models/silero_vad.onnx");
         let mut session = load_session(&model).expect("session should load");
+        eprintln!("[ort-smoke] session created; running inference");
 
         let chunk = ndarray::Array2::<f32>::zeros((1, 512));
         let state = ndarray::Array3::<f32>::zeros((2, 1, 128));
@@ -697,5 +704,8 @@ mod tests {
             .and_then(|t| t.1.first().copied())
             .expect("output tensor");
         assert!(prob.is_finite() && (0.0..=1.0).contains(&prob), "prob = {}", prob);
+        drop(outputs);
+        drop(session);
+        eprintln!("[ort-smoke] inference and session cleanup completed");
     }
 }

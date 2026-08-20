@@ -95,6 +95,9 @@ jobs:
   rust-macos:
     name: Rust (macOS compile)
     runs-on: macos-latest
+    env:
+      ORT_MAC_ID: '253300416'
+      ORT_MAC_SIZE: '54820264'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -112,3 +115,31 @@ jobs:
 
       - name: Compile macOS-specific Rust paths
         run: cargo check --locked --manifest-path src-tauri/Cargo.toml --lib
+
+      - name: Download pinned universal ONNX Runtime
+        env:
+          GH_DOWNLOAD_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p src-tauri/resources/onnxruntime
+          curl -fL --retry 5 --retry-all-errors --retry-delay 2 \
+            -H "Accept: application/octet-stream" \
+            -H "Authorization: Bearer ${GH_DOWNLOAD_TOKEN}" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/microsoft/onnxruntime/releases/assets/${ORT_MAC_ID}" \
+            -o ort.tgz
+          actual_size=$(stat -f%z ort.tgz)
+          test "$actual_size" = "$ORT_MAC_SIZE" || { echo "ERROR: pinned ONNX Runtime archive size mismatch"; exit 1; }
+          tar xzf ort.tgz
+          ort_dir=$(ls -d onnxruntime-osx-universal2-*)
+          cp -L "$ort_dir/lib/libonnxruntime.dylib" src-tauri/resources/onnxruntime/libonnxruntime.dylib
+          archs=$(lipo -archs src-tauri/resources/onnxruntime/libonnxruntime.dylib)
+          case "$archs" in
+            *x86_64*arm64*|*arm64*x86_64*) : ;;
+            *) echo "ERROR: ONNX Runtime is not universal (got: $archs)"; exit 1 ;;
+          esac
+
+      - name: Run bundled ONNX Runtime inference smoke test
+        env:
+          ORT_DYLIB_PATH: ${{ github.workspace }}/src-tauri/resources/onnxruntime/libonnxruntime.dylib
+        run: cargo test --locked --manifest-path src-tauri/Cargo.toml ort_loads_and_runs_silero_vad -- --ignored --nocapture
