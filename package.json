@@ -16,6 +16,7 @@
     "format": "prettier --write \"src/**/*.{js,jsx,css}\" \"!src/styles/tokens.css\"",
     "format:check": "prettier --check \"src/**/*.{js,jsx,css}\" \"!src/styles/tokens.css\"",
     "tokens": "node scripts/build-tokens.mjs",
+    "release:check": "node scripts/release-contract-check.mjs",
     "test": "vitest run",
     "test:watch": "vitest"
   },

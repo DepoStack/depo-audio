@@ -373,11 +373,11 @@ jobs:
       # ── Release signing (opt-in) ────────────────────────────────────────
       # Code signing / notarization and signed auto-updates are OPT-IN and
       # switch on per-capability once their secrets exist. Until then the
-      # release still ships: an UNSIGNED macOS app (ad-hoc) and UNSIGNED
-      # Windows installer — the documented v1.0.0 / v1.0.1 baseline (a one-time
-      # Gatekeeper/SmartScreen warning on first launch) — with the in-app
-      # updater dormant. Adding the secrets later enables signing/updates with
-      # no workflow change. This detects what's present; it never fails closed.
+      # release still ships: an ad-hoc-signed macOS app and unsigned Windows
+      # installers, with the in-app updater dormant. Platform warnings may
+      # appear, but their exact behavior must be verified for each published
+      # asset. Adding the secrets later enables signing/updates with no workflow
+      # change. This detects what's present; it never fails closed.
       - name: Detect signing configuration
         id: signing
         shell: bash
@@ -604,7 +604,7 @@ jobs:
       # treats a present APPLE_CERTIFICATE as "sign with this cert" — it then
       # runs `security import` on empty data and fails. For an unsigned build we
       # must leave APPLE_CERTIFICATE / APPLE_ID genuinely UNSET and only pin the
-      # ad-hoc identity ("-"), which is exactly how v1.0.0 / v1.0.1 shipped.
+      # ad-hoc identity ("-"), matching v1.0.0 and the earlier v1.0.1 draft.
       # When Apple secrets are present we export the full set so tauri-action
       # imports the certificate and notarizes.
       - name: Configure macOS code signing identity
@@ -661,9 +661,10 @@ jobs:
           # v1.0.0-preview.1, -rc.1, -beta.2) is marked as a GitHub prerelease;
           # a clean tag (v1.0.0) ships as a final release.
           prerelease: ${{ contains(inputs.tag || github.ref_name, '-') }}
-          # Updater JSON only when updater signing is configured; the config
-          # overlay (which stages ONNX Runtime) is always applied.
-          includeUpdaterJson: ${{ steps.signing.outputs.updater }}
+          # Updater metadata/signatures only when updater signing is configured;
+          # the config overlay (which stages ONNX Runtime) is always applied.
+          uploadUpdaterJson: ${{ steps.signing.outputs.updater }}
+          uploadUpdaterSignatures: ${{ steps.signing.outputs.updater }}
           args: '--config src-tauri/tauri.release.conf.json ${{ matrix.args }}'
 
   # If a draft is published while a later matrix leg is still building, that
