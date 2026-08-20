@@ -4,9 +4,9 @@
 
 **Desktop audio converter & enhancer for court reporters — and anyone with tricky audio.**
 
-Convert proprietary court-recording formats, clean up noisy audio with on-device AI, and keep every case organized — 100% locally, no cloud.
+Convert proprietary court-recording formats, clean up noisy audio, and keep every case organized. Recordings are processed on the device and are not uploaded.
 
-[![CI](https://github.com/DepoStack/depo-audio/actions/workflows/ci.yml/badge.svg)](../../actions/workflows/ci.yml) ![Version](https://img.shields.io/badge/version-1.0.1-6E4A9E) ![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Windows-6E4A9E) ![License](https://img.shields.io/badge/license-MIT-2F9E44) ![Runs](https://img.shields.io/badge/100%25-local-C79A3B)
+[![CI](https://github.com/DepoStack/depo-audio/actions/workflows/ci.yml/badge.svg)](../../actions/workflows/ci.yml) ![Version](https://img.shields.io/badge/version-1.0.1-6E4A9E) ![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Windows-6E4A9E) ![License](https://img.shields.io/badge/license-MIT-2F9E44) ![Runs](https://img.shields.io/badge/recordings-local-C79A3B)
 
 [**⬇ Download**](../../releases/latest) · [Website](https://depoaudio.com) · [Install guide](https://depoaudio.com/install/) · [Changelog](CHANGELOG.md) · [Report a bug](../../issues)
 
@@ -21,7 +21,7 @@ DepoAudio handles the audio side of a deposition or hearing, end to end:
 - ▶️ **Play & review** in a built-in player — color-coded speaker tracks, 0.5×–2× speed, A-B loop, bookmarks, and a synced transcript editor.
 - 🗂️ **Organize** every conversion into an auto-filed case library, and pull recordings straight from installed court software.
 
-> **100% local.** All processing runs on your machine — no uploads, no accounts, no subscription.
+> **Recordings stay local.** Conversion, playback, analysis, and cleanup run on your machine. Optional update checks and model downloads may use the network, but audio is not uploaded. No account or subscription is required.
 
 ---
 
@@ -34,7 +34,7 @@ DepoAudio handles the audio side of a deposition or hearing, end to end:
 
 **➡️ [Get the latest release](../../releases/latest)**
 
-> Current release automation fails closed unless both the application and updater artifacts can be signed. Historical downloads may predate that policy; verify the release notes before installing one.
+> Code signing, notarization, and signed updater artifacts are enabled only when their credentials are configured. Verify each published release's signing status before installing it.
 
 ---
 
@@ -183,20 +183,19 @@ See [`PARITY.md`](PARITY.md) for the full capability/contract inventory that the
 
 ## Releasing
 
-Push a version tag matching `version` in `src-tauri/tauri.conf.json`:
+After the intended release commit is merged to `main`, dispatch the release workflow with a tag matching `version` in `src-tauri/tauri.conf.json`:
 
 ```bash
-git tag vX.Y.Z
-git push origin vX.Y.Z
+gh workflow run release.yml --ref main -f tag=vX.Y.Z
 ```
 
-GitHub Actions builds a **universal macOS** `.dmg` and signed **Windows** installers, then creates a **draft** release with all assets. The workflow verifies the tag, version, and exact release commit; downloads executable dependencies through pinned GitHub asset IDs; smoke-tests native FTR decoding; cryptographically checks that the updater private/public keys match; requires platform code-signing credentials; and clears any stale _draft_ with the same tag before building.
+GitHub Actions builds a **universal macOS** `.dmg` and **Windows** installers, then creates a **draft** release with all assets. The workflow verifies the tag, version, and exact release commit; downloads executable dependencies through pinned GitHub asset IDs; smoke-tests native FTR decoding; validates configured signing material; and clears any stale _draft_ with the same tag before building. Signing, notarization, and updater artifacts are enabled independently only when their required credentials are present.
 
 > **Let the workflow finish before publishing the draft.** The platform builds run one after another, so the draft can look complete while a later platform is still building. Published asset names and bytes are immutable: `finalize` may add only non-colliding assets from a draft built for the exact same tag commit and never merges or replaces `latest.json`. Early publication normally leaves both releases with `latest.json`, so finalization intentionally fails closed and retains the stray draft for manual reconciliation.
 
 ### Release signing configuration (one-time)
 
-Release builds fail closed until updater signing and the selected platform's code-signing credentials are configured. Local/development builds intentionally contain no updater key or endpoint.
+Release builds remain publishable without signing credentials, but produce an ad-hoc-signed macOS app, unsigned Windows installers, and no updater manifest. Local/development builds intentionally contain no updater key or endpoint. Record and verify the actual artifact state before publication.
 
 1. **Generate a keypair** (keep the private key safe — losing it means you can't ship updates):
    ```bash

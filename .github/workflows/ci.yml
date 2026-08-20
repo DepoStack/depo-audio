@@ -30,6 +30,9 @@ jobs:
       - name: Dependency audit
         run: npm audit --audit-level=high
 
+      - name: Release contract
+        run: npm run release:check
+
       - name: Lint
         run: npm run lint
 

@@ -300,7 +300,7 @@ function ModelManager() {
         </div>
 
         <p className="text-[11px] text-[hsl(var(--sub))] border-t border-border/60 pt-2.5">
-          Models run 100% locally. No audio ever leaves your machine.
+          Models process audio locally. Optional model downloads use the network; audio never leaves your machine.
         </p>
       </CardContent>
     </Card>
