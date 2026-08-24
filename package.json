@@ -17,6 +17,7 @@
     "format:check": "prettier --check \"src/**/*.{js,jsx,css}\" \"!src/styles/tokens.css\"",
     "tokens": "node scripts/build-tokens.mjs",
     "release:check": "node scripts/release-contract-check.mjs",
+    "size:check": "node scripts/check-client-size.mjs",
     "test": "vitest run",
     "test:watch": "vitest"
   },

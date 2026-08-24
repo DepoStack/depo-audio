@@ -1,0 +1,66 @@
+# Dependency policy for the Rust application graph. This is intentionally
+# limited to Cargo-resolved packages; release sidecars, native runtimes, model
+# weights, and installer-added payloads are governed by THIRD_PARTY_LICENSES.md.
+
+[graph]
+targets = [
+  "aarch64-apple-darwin",
+  "x86_64-apple-darwin",
+  "x86_64-pc-windows-msvc",
+]
+all-features = true
+
+[advisories]
+# Exceptions require an advisory ID, an owner, a reason, and a removal date in
+# the same pull request. Keep this empty rather than silently accepting risk.
+ignore = []
+
+[licenses]
+# This allowlist is the smallest set needed by the current locked release-target
+# graph. An allowed license can still carry attribution, notice, source, or
+# file-level copyleft obligations; cargo-deny is a policy gate, not a notice
+# generator or legal conclusion.
+allow = [
+  "Apache-2.0",
+  "Apache-2.0 WITH LLVM-exception",
+  "BSD-3-Clause",
+  "CDLA-Permissive-2.0",
+  "ISC",
+  "MIT",
+  "MPL-2.0",
+  "Unicode-3.0",
+  "Zlib",
+]
+confidence-threshold = 0.8
+exceptions = []
+
+[licenses.private]
+ignore = false
+registries = []
+
+[bans]
+# Tauri's graph currently resolves some crates at multiple versions. Surface
+# that debt without turning an unrelated ecosystem convergence issue into an
+# emergency release blocker.
+multiple-versions = "warn"
+wildcards = "deny"
+highlight = "all"
+workspace-default-features = "allow"
+external-default-features = "allow"
+allow = []
+deny = []
+skip = []
+skip-tree = []
+
+[sources]
+# Release builds may resolve Rust crates only from crates.io. Any future git or
+# alternate-registry dependency must receive an explicit, reviewed exception.
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []
+
+[sources.allow-org]
+github = []
+gitlab = []
+bitbucket = []

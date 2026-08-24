@@ -89,7 +89,7 @@ Scanning is a bounded, cancellable analysis pass; conversion is a two-step pipel
 
 ### ⚙️ General
 
-- **Dark & light** themes (system-aware) · **auto-updates** from GitHub Releases (signed, in-place)
+- **Dark & light** themes (system-aware) · v1.0.2 does not include signed in-place updates; download newer releases manually from GitHub Releases
 
 ---
 
@@ -147,10 +147,29 @@ Download from [ffmpeg.org](https://ffmpeg.org/download.html) or [evermeet.cx/ffm
 ### Run & build
 
 ```bash
-npm install
+npm ci
 npm run tauri dev     # develop
 npm run tauri build   # package installers
 ```
+
+### Quality gates
+
+```bash
+npm run release:check
+npm run lint
+npm run format:check
+npm test
+npm run build
+npm run size:check
+cargo test --locked --manifest-path src-tauri/Cargo.toml
+cargo deny --manifest-path src-tauri/Cargo.toml --locked --all-features check bans licenses sources
+```
+
+The deterministic size check protects the emitted desktop frontend from accidental JavaScript or CSS growth. Rust
+license, source, and dependency policy lives in [`deny.toml`](deny.toml). Native binaries, installer payloads, and model
+weights require the separate evidence ledger in [`THIRD_PARTY_LICENSES.md`](THIRD_PARTY_LICENSES.md); a green Cargo
+check is not redistribution clearance for those artifacts. The proposed packaged-app automation remains deferred until
+its dependency graph passes the documented gate in [`docs/PACKAGED-APP-TESTING.md`](docs/PACKAGED-APP-TESTING.md).
 
 ### Project layout
 
