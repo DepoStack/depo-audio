@@ -40,6 +40,9 @@ const settingsPanel = read('src/components/SettingsPanel.jsx')
 const installerLicense = read('src-tauri/installer/license.rtf')
 const tauriLib = read('src-tauri/src/lib.rs')
 const modelsSource = read('src-tauri/src/models.rs')
+const canonicalReleaseUrl = 'https://github.com/DepoStack/depo-audio/releases'
+const configuredReleaseUrl = appConstants.match(/^export const DEPOAUDIO_RELEASES_URL = ['"]([^'"]+)['"]$/m)?.[1]
+const installerReleaseUrl = installerLicense.match(/^(https:\/\/[^\s]+)\. DepoAudio's MIT license does\\par$/m)?.[1]
 const requiresPublishedHeading = process.argv.includes('--published')
 const candidateIsGo = releaseCandidate.includes('Status: **GO for publication**')
 const candidateIsNoGo = releaseCandidate.includes('Status: **NO-GO for publication; private RC evidence only**')
@@ -620,11 +623,11 @@ expect(
   'release.yml and extracted-artifact checks must preserve Windows FFmpeg license, configuration, and source evidence',
 )
 expect(
-  appConstants.includes('https://github.com/DepoStack/depo-audio/releases') &&
+  configuredReleaseUrl === canonicalReleaseUrl &&
     settingsPanel.includes('uses FFmpeg under LGPL v2.1 or later') &&
     settingsPanel.includes('DEPOAUDIO_RELEASES_URL') &&
     installerLicense.includes('FFmpeg project under the GNU Lesser General') &&
-    installerLicense.includes('https://github.com/DepoStack/depo-audio/releases'),
+    installerReleaseUrl === canonicalReleaseUrl,
   'the app About surface and installer license must attribute FFmpeg and route users to matching release source',
 )
 expect(

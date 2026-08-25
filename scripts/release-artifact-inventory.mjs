@@ -385,8 +385,8 @@ async function selfTest() {
     const contract = {
       schemaVersion: 1,
       platform: 'windows',
-      sourceCommit: '0123456789abcdef0123456789abcdef01234567',
-      releaseTag: 'v1.0.3-rc.test',
+      sourceCommit: process.env.GITHUB_SHA ?? '0123456789abcdef0123456789abcdef01234567',
+      releaseTag: process.env.RELEASE_TAG ?? 'v1.0.3-rc.test',
       files: contractFiles,
     }
     const contractPath = path.join(temporaryRoot, 'BINARY-CONTRACT-windows.json')
