@@ -16,7 +16,7 @@
     "format": "prettier --write \"src/**/*.{js,jsx,css}\" \"!src/styles/tokens.css\"",
     "format:check": "prettier --check \"src/**/*.{js,jsx,css}\" \"!src/styles/tokens.css\"",
     "tokens": "node scripts/build-tokens.mjs",
-    "release:check": "node scripts/release-contract-check.mjs",
+    "release:check": "node scripts/release-contract-check.mjs && node scripts/release-artifact-inventory.mjs --self-test && node scripts/normalize-release-sbom.mjs --self-test && node scripts/normalize-cargo-about-report.mjs --self-test && node scripts/upload-draft-release-assets.mjs --self-test && node scripts/prepare-release-publication.mjs --self-test",
     "size:check": "node scripts/check-client-size.mjs",
     "test": "vitest run",
     "test:watch": "vitest"

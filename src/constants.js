@@ -14,6 +14,7 @@ export const FORMATS_OUT = [
 
 // DepoStack is the umbrella brand; DepoAudio is one open-source tool in it.
 export const DEPOSTACK_URL = 'https://www.depostack.com'
+export const DEPOAUDIO_RELEASES_URL = 'https://github.com/DepoStack/depo-audio/releases'
 
 // Selectable MP3 bitrates (kbps), shown when MP3 output is chosen.
 export const MP3_BITRATES = [

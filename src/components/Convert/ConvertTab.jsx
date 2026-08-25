@@ -137,6 +137,17 @@ export default function ConvertTab({
   const dereverbEffective = dereverb && capabilities?.dereverbAvailable === true
   const anyProc = normalize || trimEffective || fade || hpf
   const anyAi = denoise || autoLevelEffective || declip || enhance || dereverbEffective
+  const hardwareDetails = capabilities
+    ? [
+        Number.isFinite(capabilities.cpuCores) && capabilities.cpuCores > 0 ? `${capabilities.cpuCores} cores` : null,
+        Number.isFinite(capabilities.ramMb) && capabilities.ramMb > 0
+          ? `${Math.round(capabilities.ramMb / 1024)} GB RAM`
+          : null,
+        capabilities.appleSilicon ? 'Apple Silicon' : null,
+      ]
+        .filter(Boolean)
+        .join(' · ')
+    : ''
   const [analysis, setAnalysis] = useState(null)
   const [scanning, setScanning] = useState(false)
   const [scanProgress, setScanProgress] = useState({ current: 0, total: 0, fileName: '', phase: '', filePct: 0 })
@@ -1140,10 +1151,7 @@ export default function ConvertTab({
               <p className="px-4 py-2 text-[10px] text-[hsl(var(--sub))] border-t border-border/60">
                 All processing runs on your machine — nothing is uploaded or sent anywhere.
                 {capabilities && (
-                  <span
-                    className="opacity-60"
-                    title={`${capabilities.cpuCores} cores · ${Math.round(capabilities.ramMb / 1024)}GB RAM${capabilities.appleSilicon ? ' · Apple Silicon' : ''}`}
-                  >
+                  <span className="opacity-60" title={hardwareDetails || undefined}>
                     {' '}
                     ·{' '}
                     {capabilities.tier === 'high'

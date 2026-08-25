@@ -1,30 +1,37 @@
-name: Restore AI models release
+name: Verify AI models release
 
-# Rebuilds the `models-v1` release that the app's Model Manager downloads
-# from (the release object was deleted during repo cleanup; the tag
-# survived). Assets are assembled from sources whose bytes are provable:
-#   - 7 models come from src-tauri/resources/models/ in the current tree
+# Verifies the published `models-v1` byte contract used by already-published
+# app versions. This workflow is deliberately read-only: a future model set must
+# use a new versioned release tag and catalog URL, never replace published
+# model bytes. The expected assets remain independently provable:
+#   - 4 active bundled models come from resources/models/ in the current tree
+#   - 3 retired DeepFilterNet files are reconstructed from the last published
+#     app commit that bundled them
 #   - speaker_embed.onnx was removed from the tree when it went
 #     download-only, but the byte-identical blob is still in git history
 #   - dnsmos_sig_bak_ovr.onnx was NEVER validly committed (the historical
 #     file was a saved HTML error page), so it is fetched from Microsoft's
 #     DNS-Challenge repo
-# Every asset is verified against the same SHA-256 pins the app enforces
-# in models.rs before anything is uploaded.
+# Every asset is verified against a reviewed SHA-256 value below. The active
+# catalog values are also enforced by models.rs; retired assets are retained
+# only in this verification contract for already-published app versions.
 on:
   workflow_dispatch:
 
 # The last tree that carried speaker_embed.onnx (v0.7.0). Blob verified:
-# valid ONNX, sha256 matches the models.rs pin.
+# valid ONNX; SHA-256 matches the reviewed legacy value below.
 env:
+  LEGACY_DFN_COMMIT: '6113fac8d8bac8f240dd2b10de6e77cd79cc772c'
   SPEAKER_EMBED_COMMIT: 'b15b28c2d5c5872f073f30370b8facb203949b77'
-  DNSMOS_URL: 'https://raw.githubusercontent.com/microsoft/DNS-Challenge/master/DNSMOS/DNSMOS/sig_bak_ovr.onnx'
+  # Immutable upstream commit. The downloaded bytes are also checked against
+  # the app's reviewed SHA-256 pin below.
+  DNSMOS_URL: 'https://raw.githubusercontent.com/microsoft/DNS-Challenge/82f1b17e7776a43eee395d0f45bae8abb700ad00/DNSMOS/DNSMOS/sig_bak_ovr.onnx'
 
 jobs:
   restore:
     runs-on: ubuntu-latest
     permissions:
-      contents: write
+      contents: read
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -32,23 +39,50 @@ jobs:
           # speaker_embed.onnx only exists in history
           fetch-depth: 0
 
-      - name: Assemble the nine model assets
+      - name: Download the published model contract
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          mkdir -p assets
-          for f in silero_vad smart-turn-v3-int8 dfn3_enc dfn3_erb_dec dfn3_df_dec flashsr speaker_seg_int8; do
-            cp "src-tauri/resources/models/$f.onnx" assets/
+          mkdir -p published
+          gh release download models-v1 \
+            --repo "$GITHUB_REPOSITORY" \
+            --dir published
+          find published -maxdepth 1 -type f -printf '%f\n' | sort > actual-assets.txt
+          sort > expected-assets.txt <<'EOF'
+          dfn3_df_dec.onnx
+          dfn3_enc.onnx
+          dfn3_erb_dec.onnx
+          dnsmos_sig_bak_ovr.onnx
+          flashsr.onnx
+          silero_vad.onnx
+          smart-turn-v3-int8.onnx
+          speaker_embed.onnx
+          speaker_seg_int8.onnx
+          EOF
+          diff -u expected-assets.txt actual-assets.txt
+
+      - name: Reconstruct the reviewed source bytes
+        run: |
+          set -euo pipefail
+          mkdir -p expected
+          for f in silero_vad smart-turn-v3-int8 flashsr speaker_seg_int8; do
+            cp "src-tauri/resources/models/$f.onnx" expected/
+          done
+          for f in dfn3_enc dfn3_erb_dec dfn3_df_dec; do
+            git cat-file -p "${LEGACY_DFN_COMMIT}:src-tauri/resources/models/$f.onnx" \
+              > "expected/$f.onnx"
           done
           git cat-file -p "${SPEAKER_EMBED_COMMIT}:src-tauri/resources/models/speaker_embed.onnx" \
-            > assets/speaker_embed.onnx
+            > expected/speaker_embed.onnx
           curl -fL --retry 5 --retry-all-errors --retry-delay 2 \
-            "$DNSMOS_URL" -o assets/dnsmos_sig_bak_ovr.onnx
-          ls -l assets/
+            "$DNSMOS_URL" -o expected/dnsmos_sig_bak_ovr.onnx
+          ls -l expected/
 
-      - name: Verify integrity (same pins the app enforces in models.rs)
+      - name: Verify published integrity and source identity
         run: |
           set -euo pipefail
-          cd assets
+          cd published
           sha256sum -c <<'EOF'
           a4a068cd6cf1ea8355b84327595838ca748ec29a25bc91fc82e6c299ccdc5808  silero_vad.onnx
           3d072c8fb04446955a365b533686e7e06015ad09929bb824b910c72ff89f5be1  smart-turn-v3-int8.onnx
@@ -66,19 +100,9 @@ jobs:
               echo "ERROR: $f looks like text, not a model"; exit 1
             fi
           done
-
-      - name: Create release on the existing models-v1 tag and upload
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          set -euo pipefail
-          # Idempotent: create if missing, then (re)upload all assets.
-          gh release view models-v1 --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 || \
-            gh release create models-v1 \
-              --repo "$GITHUB_REPOSITORY" \
-              --verify-tag \
-              --latest=false \
-              --title "AI Models v1" \
-              --notes "ONNX models downloaded on demand by the DepoAudio Model Manager. Do not delete this release: the app's model download URLs point at these assets. All assets are integrity-pinned (SHA-256) in the app."
-          gh release upload models-v1 assets/*.onnx --clobber --repo "$GITHUB_REPOSITORY"
-          gh release view models-v1 --repo "$GITHUB_REPOSITORY"
+          cd ..
+          for f in expected/*.onnx; do
+            cmp --silent "$f" "published/${f#expected/}" || {
+              echo "ERROR: published ${f#expected/} differs from its reviewed source bytes"; exit 1;
+            }
+          done

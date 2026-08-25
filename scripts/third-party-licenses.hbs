@@ -1,0 +1,69 @@
+<html lang='en'>
+  <head>
+    <meta charset='utf-8' />
+    <meta name='viewport' content='width=device-width, initial-scale=1' />
+    <title>DepoAudio Rust third-party licenses</title>
+    <style>
+      body {
+        color: #231c24;
+        background: #fffaf3;
+        font:
+          16px/1.5 system-ui,
+          sans-serif;
+        margin: 0;
+      }
+      main {
+        max-width: 70rem;
+        margin: 0 auto;
+        padding: 2rem;
+      }
+      a {
+        color: #5c255b;
+      }
+      pre {
+        overflow: auto;
+        padding: 1rem;
+        border: 1px solid #d9ccd6;
+        background: #fff;
+        white-space: pre-wrap;
+      }
+      .used-by {
+        margin-block: 0.5rem 1.5rem;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>DepoAudio Rust third-party licenses</h1>
+      <p>
+        Generated from the locked Rust dependency union for supported release targets, including build dependencies.
+        This report covers Cargo packages; native runtimes, codecs, models, JavaScript packages, and installer payloads
+        have separate evidence.
+      </p>
+      <h2>License overview</h2>
+      <ul>
+        {{#each overview}}
+          <li><a href='#{{id}}'>{{name}}</a> ({{count}})</li>
+        {{/each}}
+      </ul>
+      <h2>License texts and packages</h2>
+      {{#each licenses}}
+        <section>
+          {{#if first_of_kind}}<h3 id='{{id}}'>{{name}}</h3>{{/if}}
+          <h4>Packages covered</h4>
+          <ul class='used-by'>
+            {{#each used_by}}
+              <li>
+                <a href='https://crates.io/crates/{{crate.name}}/{{crate.version}}'>
+                  {{crate.name}}
+                  {{crate.version}}
+                </a>
+              </li>
+            {{/each}}
+          </ul>
+          <pre>{{text}}</pre>
+        </section>
+      {{/each}}
+    </main>
+  </body>
+</html>

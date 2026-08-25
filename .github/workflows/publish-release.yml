@@ -1,0 +1,208 @@
+name: Publish approved release
+
+# Publication is deliberately separate from the release build. This workflow
+# cannot build, replace, or delete release assets. It may publish only the exact
+# private draft bound to a fully closed machine-readable release gate.
+# Repository administrators must configure `release-publication` with required
+# reviewers and prevent self-review; repository YAML cannot enforce that
+# external environment policy.
+on:
+  workflow_dispatch:
+    inputs:
+      operation:
+        description: 'Inspect the private draft or publish an approved candidate'
+        required: true
+        default: inspect
+        type: choice
+        options:
+          - inspect
+          - publish
+      confirmation:
+        description: 'Type INSPECT v1.0.3 or PUBLISH v1.0.3 exactly'
+        required: true
+        type: string
+
+concurrency:
+  # This is the same group used by release.yml for tag v1.0.3, so candidate
+  # construction and publication cannot mutate the private draft concurrently.
+  group: release-v1.0.3
+  cancel-in-progress: false
+
+jobs:
+  inspect:
+    if: inputs.operation == 'inspect'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - name: Require main and explicit inspection confirmation
+        env:
+          CONFIRMATION: ${{ inputs.confirmation }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REF" = 'refs/heads/main' || {
+            echo "ERROR: inspection must be dispatched from main (got $GITHUB_REF)"; exit 1;
+          }
+          test "$CONFIRMATION" = 'INSPECT v1.0.3' || {
+            echo 'ERROR: exact confirmation INSPECT v1.0.3 is required'; exit 1;
+          }
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '22.23.1'
+
+      - name: Verify candidate source is contained in main
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA" || {
+            echo 'ERROR: checkout does not match the immutable dispatch commit'; exit 1;
+          }
+          git fetch --no-tags origin main
+          git merge-base --is-ancestor "$GITHUB_SHA" refs/remotes/origin/main || {
+            echo "ERROR: inspected approval commit $GITHUB_SHA is no longer contained in main"; exit 1;
+          }
+          source_commit=$(node -p "require('./docs/V1.0.3-RELEASE-GATE.json').candidate.sourceCommit")
+          [[ "$source_commit" =~ ^[0-9a-f]{40}$ ]] || {
+            echo 'ERROR: record the exact candidate source commit before inspection'; exit 1;
+          }
+          git merge-base --is-ancestor "$source_commit" "$GITHUB_SHA" || {
+            echo "ERROR: candidate source $source_commit is not contained in main"; exit 1;
+          }
+          git config --local --unset-all http.https://github.com/.extraheader || true
+
+      - name: Build a read-only candidate manifest receipt
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          node scripts/prepare-release-publication.mjs \
+            --phase inspect \
+            --repo "$GITHUB_REPOSITORY" \
+            --output-dir "$RUNNER_TEMP/release-inspection"
+
+      - name: Preserve the candidate inspection receipt
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-candidate-inspection-${{ github.run_id }}
+          path: |
+            ${{ runner.temp }}/release-inspection/PREPUBLICATION-ASSET-MANIFEST.txt
+            ${{ runner.temp }}/release-inspection/RELEASE-CANDIDATE-INSPECTION.json
+          if-no-files-found: error
+          retention-days: 30
+
+  publish:
+    if: inputs.operation == 'publish'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: release-publication
+    permissions:
+      contents: write
+    steps:
+      - name: Require main and explicit publication confirmation
+        env:
+          CONFIRMATION: ${{ inputs.confirmation }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REF" = 'refs/heads/main' || {
+            echo "ERROR: publication must be dispatched from main (got $GITHUB_REF)"; exit 1;
+          }
+          test "$CONFIRMATION" = 'PUBLISH v1.0.3' || {
+            echo 'ERROR: exact confirmation PUBLISH v1.0.3 is required'; exit 1;
+          }
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '22.23.1'
+          cache: npm
+
+      - name: Verify publication release contract
+        run: node scripts/release-contract-check.mjs --published
+
+      - name: Verify approved source is contained in main
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA" || {
+            echo 'ERROR: checkout does not match the immutable approved commit'; exit 1;
+          }
+          git fetch --no-tags origin main
+          git merge-base --is-ancestor "$GITHUB_SHA" refs/remotes/origin/main || {
+            echo "ERROR: approval commit $GITHUB_SHA is no longer contained in main"; exit 1;
+          }
+          source_commit=$(node -p "require('./docs/V1.0.3-RELEASE-GATE.json').candidate.sourceCommit")
+          git merge-base --is-ancestor "$source_commit" "$GITHUB_SHA" || {
+            echo "ERROR: approved source $source_commit is not contained in main"; exit 1;
+          }
+          git config --local --unset-all http.https://github.com/.extraheader || true
+
+      - name: Download and verify the exact approved private draft
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          APPROVAL_COMMIT: ${{ github.sha }}
+          APPROVAL_ACTOR: ${{ github.actor }}
+          APPROVAL_ACTOR_ID: ${{ github.actor_id }}
+          APPROVAL_RUN_ID: ${{ github.run_id }}
+          APPROVAL_RUN_ATTEMPT: ${{ github.run_attempt }}
+          APPROVAL_WORKFLOW_REF: ${{ github.workflow_ref }}
+        run: |
+          set -euo pipefail
+          node scripts/prepare-release-publication.mjs \
+            --phase prepare \
+            --repo "$GITHUB_REPOSITORY" \
+            --output-dir "$RUNNER_TEMP/release-publication"
+
+      - name: Attach immutable publication evidence to the verified draft
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          release_id=$(node -p "require('./docs/V1.0.3-RELEASE-GATE.json').candidate.releaseId")
+          tag=$(node -p "require('./docs/V1.0.3-RELEASE-GATE.json').candidate.tag")
+          commit=$(node -p "require('./docs/V1.0.3-RELEASE-GATE.json').candidate.sourceCommit")
+          mapfile -t upload_names < <(
+            jq -r '.[]' "$RUNNER_TEMP/release-publication/PUBLICATION-UPLOAD-PLAN.json"
+          )
+          files=()
+          for name in "${upload_names[@]}"; do
+            case "$name" in
+              RELEASE-APPROVAL.json|latest.json) ;;
+              *) echo "ERROR: unsafe publication upload plan entry $name"; exit 1 ;;
+            esac
+            files+=("$RUNNER_TEMP/release-publication/$name")
+          done
+          if [ "${#files[@]}" -gt 0 ]; then
+            node scripts/upload-draft-release-assets.mjs \
+              --repo "$GITHUB_REPOSITORY" \
+              --release-id "$release_id" \
+              --tag "$tag" \
+              --commit "$commit" \
+              -- "${files[@]}"
+          else
+            echo 'Verified existing publication evidence; no upload needed'
+          fi
+
+      - name: Re-download, reverify, and publish the exact release ID
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          APPROVAL_COMMIT: ${{ github.sha }}
+          APPROVAL_ACTOR: ${{ github.actor }}
+          APPROVAL_ACTOR_ID: ${{ github.actor_id }}
+          APPROVAL_RUN_ID: ${{ github.run_id }}
+          APPROVAL_RUN_ATTEMPT: ${{ github.run_attempt }}
+          APPROVAL_WORKFLOW_REF: ${{ github.workflow_ref }}
+        run: |
+          set -euo pipefail
+          node scripts/prepare-release-publication.mjs \
+            --phase publish \
+            --repo "$GITHUB_REPOSITORY" \
+            --output-dir "$RUNNER_TEMP/release-publication"
