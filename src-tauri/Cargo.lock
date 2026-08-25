@@ -844,7 +844,7 @@ dependencies = [
 
 [[package]]
 name = "depo-audio"
-version = "1.0.2"
+version = "1.0.3"
 dependencies = [
  "chrono",
  "dirs-next",
