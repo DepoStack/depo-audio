@@ -13,7 +13,7 @@
 
 ### Changed
 
-- **Maintenance dependencies and the paired CodeQL actions were refreshed without changing product behavior.** The locked `uuid` crate, frontend `globals` definitions, and both CodeQL initialization and analysis steps use their current patch releases.
+- **Maintenance dependencies and the paired CodeQL actions were refreshed without changing product behavior.** The release graph now uses `uuid` 1.24.1, `globals` 17.11.0, and CodeQL Action 4.37.7 for both initialization and analysis.
 
 ### Fixed
 
