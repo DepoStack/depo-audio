@@ -312,9 +312,11 @@ fn samples_to_peaks(bytes: &[u8], bucket_limit: usize) -> Result<Vec<WaveformPea
         return Err("Waveform decoder returned invalid PCM data".into());
     }
 
-    let samples = bytes
-        .chunks_exact(4)
-        .map(|chunk| f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
+    let (sample_bytes, remainder) = bytes.as_chunks::<4>();
+    debug_assert!(remainder.is_empty());
+    let samples = sample_bytes
+        .iter()
+        .map(|chunk| f32::from_le_bytes(*chunk))
         .collect::<Vec<_>>();
     let bucket_count = bucket_limit.min(samples.len()).max(1);
     let samples_per_bucket = samples.len().div_ceil(bucket_count);
