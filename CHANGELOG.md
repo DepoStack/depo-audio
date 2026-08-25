@@ -10,15 +10,34 @@
 - **Frontend size budgets and release-target dependency policy now run in CI.** Deterministic JavaScript and CSS limits catch bundle regressions, while Cargo license, source, wildcard, and duplicate-dependency rules cover the macOS and Windows release graph.
 - **Distribution evidence is tracked separately from dependency policy.** A third-party ledger records native binaries, installer payloads, CI fixtures, and model weights that still require provenance, notices, hashes, or redistribution review before publication.
 - **The release workflow revalidates the complete version contract before building.** A draft cannot be prepared when npm, Cargo, Tauri, or changelog versions have drifted.
+- **Publication now has a machine-readable, fail-closed approval contract.** The gate records every open blocker and, before publication, must bind a reviewed private release ID, source commit, asset-manifest digest, updater decision, publication date, and accountable approver.
 
 ### Changed
 
 - **Maintenance dependencies and the paired CodeQL actions were refreshed without changing product behavior.** The release graph now uses `uuid` 1.24.1, `globals` 17.11.0, and CodeQL Action 4.37.7 for both initialization and analysis.
+- **DNSMOS restoration now uses an immutable upstream revision.** The existing app-enforced SHA-256 pin remains authoritative, while the release workflow no longer depends on a moving branch URL.
+- **Release builds now pin the exact Node and Rust toolchains exercised by the private candidate.** A later hosted-run image update can no longer silently change the compiler or JavaScript runtime used for final artifacts.
+- **macOS FFmpeg/ffprobe now build from one hash-pinned LGPL source set for Apple Silicon and Intel.** The release no longer consumes the prior community binaries, which enabled FFmpeg's nonfree/unredistributable mode and mixed major versions. The build rejects GPL/nonfree configuration, verifies the released FTR/codec/filter surface, preserves exact source/configuration/toolchain/license evidence in the app, and publishes the complete corresponding source beside the installers.
+- **Windows now uses the retained, hash-pinned BtbN LGPL FFmpeg build instead of its GPL variant.** Native FTR decoding and every released output encoder were verified before the workflow pin changed; the exact archive license, binary configuration, source commit, and asset digest are bundled for final installer review.
+- **The legacy `models-v1` verification workflow is now read-only.** It checks every published model against the app pins and reviewed source bytes but can no longer replace public model assets with `--clobber`; future model sets require a new versioned release.
+- **Rust advisory policy is blocking with one narrow, expiring maintenance exception.** Only the five INFO/unmaintained `unic-*` findings inherited through released Tauri 2.11.5 are excepted, with a named owner and 2026-09-30 deadline; any new advisory fails CI, and the exception ends sooner if Tauri publishes its merged `urlpattern` fix.
+- **Release dispatches now fail closed unless their commit is on `main`.** Manual runs must use the main branch, and tag-triggered builds must resolve to a commit contained in main.
+- **Drafts now carry the versioned changelog section and per-platform SHA-256 manifests.** Reviewers can verify the exact MSI, EXE, DMG, and app archive instead of publishing a generic release body with unrecorded hashes.
+- **Installer builds and release uploads are separated.** Tauri runs without a release ID, tag, or GitHub mutation token; every installer, signature, and evidence asset is uploaded only through a fail-closed helper that rechecks the exact private draft, source commit, tag, state, and asset-name uniqueness before and after each upload.
+- **Packaged native smoke tests now exercise both downloadable containers on each platform.** The workflow extracts the MSI, NSIS installer, DMG, and app archive, inspects the private FTR fixture with packaged ffprobe, exercises released encoders and ONNX Runtime, checks macOS signatures and universal binaries, and removes fixture credentials before candidate processes start.
+- **Signing credentials are scoped to packaging.** The imported Windows certificate and private key are removed before candidate execution, while updater signatures are retained as private-draft evidence and `latest.json` remains reserved for a separate publication-only approval path.
+- **ONNX Runtime's exact license and third-party notices now remain in each packaged application.** The release workflow preserves the files from the hash-pinned platform archive instead of copying only the runtime library.
+- **Dependency evidence is reproducible and generated before packaging.** Hash-pinned cargo-about and cargo-cyclonedx binaries regenerate the bundled Rust notice and target-specific SBOMs; npm and Rust SBOM normalization removes checkout identity, binds timestamps to the release commit, and verifies two independent generations byte-for-byte. SBOMs remain inventories rather than substitutes for unresolved JavaScript notices.
+- **Draft evidence now inventories the contents extracted from the DMG, app archive, MSI, and NSIS installer.** The gate requires the ONNX Runtime and FFmpeg distribution evidence, rejects packaged TRM fixtures and retired model bytes even when renamed, and proves the two macOS containers carry the same app payload.
+- **Artifact inventories enforce exact packaged paths as well as filenames and hashes.** A native runtime or application executable in an unexpected location now fails the binary contract instead of passing through basename-only matching.
+- **Unused DeepFilterNet and speaker-embedding files are no longer bundled in or installable from v1.0.3.** The released RNNoise/FlashSR/analysis paths are unchanged; an exact obsolete app-data file from an earlier build appears only as user-removable legacy storage. The public `models-v1` assets remain untouched for already-published v1.0.2 compatibility.
 
 ### Fixed
 
 - **Rust dependency advisories in `plist` and `quick-xml` were resolved** by updating the locked packages, removing `RUSTSEC-2026-0194` and `RUSTSEC-2026-0195` from the release graph.
 - **Waveform PCM decoding passes the Rust 1.98 Clippy gate** by using the Rust 1.88 fixed-size slice API after the existing byte-alignment validation; the decoded samples and output peaks are unchanged.
+- **Release documentation no longer treats a narrow automated smoke test as complete product verification.** Installed conversion, player, library, transcript, model, installer, signing, and hardware behavior remain explicit manual candidate gates.
+- **Security and product documentation now use the canonical DepoStack repository and precise privacy language.** Public issue reports no longer request vulnerability details, optional update traffic is distinguished from local recording processing, and unsupported response-time and absolute reliability promises were removed.
 
 ### Release scope
 
@@ -61,7 +80,7 @@
 
 - Model deletion and Merge now validate catalog entries, local source paths, output names, and destination containment to block traversal, arbitrary deletion, and FFmpeg URL/device input.
 - The WebView now has a restrictive CSP, no frontend shell execution permission, a narrowly scoped external URL opener, and persisted access only to paths selected by the user instead of a static whole-disk asset scope.
-- Release dependencies are downloaded through immutable GitHub asset IDs and checked for expected size/hash where available. Updater artifacts are generated only when a verified updater key pair is configured; platform signing remains opt-in and its published-asset state must be verified separately. The Windows FFmpeg pin now targets a retained month-end build instead of BtbN's short-lived rolling asset. Published assets are never replaced or uploaded with `--clobber`.
+- Manually fetched native binaries and source archives use immutable asset IDs or versioned upstream URLs where available, with reviewed size and SHA-256 contracts. This does not pin hosted runner images, registry packages, or Tauri's moving WebView2 offline-installer resolution; those require separate final-artifact evidence. Updater artifacts are generated only when a verified updater key pair is configured, and platform signing remains opt-in. The Windows LGPL FFmpeg pin targets a retained month-end build instead of BtbN's short-lived rolling asset. Published assets are never replaced or uploaded with `--clobber`.
 - Frontend dependency advisories were resolved without force-upgrading major versions.
 
 ### Changed

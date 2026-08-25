@@ -1,0 +1,128 @@
+{
+  "schemaVersion": 2,
+  "version": "1.0.3",
+  "reviewedDate": "2026-08-25",
+  "status": "NO-GO",
+  "candidate": {
+    "tag": "v1.0.3",
+    "releaseId": null,
+    "sourceCommit": null,
+    "assetManifestSha256": null,
+    "updater": "undecided",
+    "updaterPublicKey": null,
+    "publicationDate": null,
+    "approvedBy": null
+  },
+  "blockers": [
+    {
+      "id": "shipped-model-commercial-rights",
+      "status": "open",
+      "version": "1.0.3",
+      "reviewedDate": "2026-08-25",
+      "evidenceNeeded": [
+        "Archive the exact immutable upstream revision and digest, weight license, export or quantization lineage, training-dataset terms, required notices, and commercial redistribution approval for every bundled or on-demand active model.",
+        "Resolve the FlashSR training-data restriction and document the complete speaker-segmentation corpus rights chain before either model is distributed."
+      ]
+    },
+    {
+      "id": "javascript-runtime-notices",
+      "status": "open",
+      "version": "1.0.3",
+      "reviewedDate": "2026-08-25",
+      "evidenceNeeded": [
+        "Generate, review, bundle, and extract-test a deterministic notice report for the production JavaScript and generated-CSS runtime closure.",
+        "Obtain an exact reviewed notice or explicit exception for react-remove-scroll-bar@2.3.8 and preserve all required Tauri, tslib, Tailwind CSS, and tailwindcss-animate notices."
+      ]
+    },
+    {
+      "id": "macos-ffmpeg-rc2-evidence",
+      "status": "open",
+      "version": "1.0.3",
+      "reviewedDate": "2026-08-25",
+      "evidenceNeeded": [
+        "Build a new private candidate from the exact intended main commit using the source-built FFmpeg 7.1.5, LAME 3.100, and Opus 1.6.1 inputs.",
+        "Extract both downloadable macOS containers and verify universal sidecars, LGPL-only configuration, system-library linkage, native FTR and released-encoder smoke tests, and matching source, configuration, toolchain, license, and checksum evidence."
+      ]
+    },
+    {
+      "id": "windows-ffmpeg-source-and-notices",
+      "status": "open",
+      "version": "1.0.3",
+      "reviewedDate": "2026-08-25",
+      "evidenceNeeded": [
+        "Extract the final MSI and NSIS payloads and match the packaged FFmpeg and ffprobe files to the reviewed BtbN LGPL build evidence.",
+        "Establish compliant corresponding-source delivery and preserve the exact license, configuration, source reference, and required notices for the distributed Windows binaries."
+      ]
+    },
+    {
+      "id": "webview2-final-installer-evidence",
+      "status": "open",
+      "version": "1.0.3",
+      "reviewedDate": "2026-08-25",
+      "evidenceNeeded": [
+        "Extract the final MSI Binary table and NSIS payload, match both embedded WebView2 installers to the recorded Microsoft-signed build-input digest, and retain the extraction evidence.",
+        "Review and record the exact Microsoft redistribution terms that apply to the embedded runtime."
+      ]
+    },
+    {
+      "id": "private-ftr-fixture-permission",
+      "status": "open",
+      "version": "1.0.3",
+      "reviewedDate": "2026-08-25",
+      "evidenceNeeded": [
+        "Provide the owner-approved evidence record referenced by FTR_FIXTURE_EVIDENCE_ID, including provenance, confidentiality review, permitted CI use, and authority to use the fixture.",
+        "Confirm the approved fixture and every derived output are absent from all logs, artifacts, installers, and release assets."
+      ]
+    },
+    {
+      "id": "packaged-install-and-upgrade-validation",
+      "status": "open",
+      "version": "1.0.3",
+      "reviewedDate": "2026-08-25",
+      "evidenceNeeded": [
+        "Reconcile the exact final MSI, NSIS EXE, DMG, and app archive payloads against the binary contract, third-party ledger, checksums, and expected resource inventory.",
+        "Install and start both Windows installers on clean supported Windows systems, start both macOS deliverables on Apple Silicon and Intel, exercise the released workflows, and verify upgrades from v1.0.2."
+      ]
+    },
+    {
+      "id": "signing-notarization-and-updater-decision",
+      "status": "open",
+      "version": "1.0.3",
+      "reviewedDate": "2026-08-25",
+      "evidenceNeeded": [
+        "Verify Authenticode, Apple code-signing, notarization, stapling, Gatekeeper, and SmartScreen behavior from the exact final assets, or record an explicit owner publication decision for each unavailable protection.",
+        "Verify whether updater metadata and signatures are generated, distributed, and accepted by an installed v1.0.2 application; otherwise document that the updater is unavailable."
+      ]
+    },
+    {
+      "id": "rust-advisory-exception-acceptance",
+      "status": "open",
+      "version": "1.0.3",
+      "reviewedDate": "2026-08-25",
+      "evidenceNeeded": [
+        "Record release-owner acceptance of the five exact rust-unic INFO or unmaintained advisory exceptions in deny.toml.",
+        "Recheck that the exceptions have not expired and that no fixed Tauri release requiring their removal is available at publication time."
+      ]
+    },
+    {
+      "id": "codec-patent-review",
+      "status": "open",
+      "version": "1.0.3",
+      "reviewedDate": "2026-08-25",
+      "evidenceNeeded": [
+        "Complete and retain a codec and patent-pool review appropriate to the intended commercial distribution territories for the enabled AAC, MP3, Opus, FLAC, WAV, and FTR processing path.",
+        "Record the release-owner decision separately from the open-source copyright-license review."
+      ]
+    },
+    {
+      "id": "release-changelog-finalization",
+      "status": "open",
+      "version": "1.0.3",
+      "reviewedDate": "2026-08-25",
+      "evidenceNeeded": [
+        "Replace the v1.0.3 Unpublished changelog marker with the actual publication date only after every other publication blocker is closed.",
+        "Bind the final release notes, source commit, installer inventories, and downloadable asset checksums to the exact publication candidate."
+      ]
+    }
+  ]
+}

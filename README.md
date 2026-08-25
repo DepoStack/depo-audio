@@ -17,8 +17,8 @@ Convert proprietary court-recording formats, clean up noisy audio, and keep ever
 DepoAudio handles the audio side of a deposition or hearing, end to end:
 
 - 🎧 **Convert** proprietary court formats (Stenograph SGMCA, FTR `.trm`, CourtSmart BWF) and standard audio to WAV, MP3, FLAC, Opus, or M4A — mix to stereo, keep the channel layout, or split one file per source channel and name it by role.
-- ✨ **Clean up** with on-device AI: remove background noise, balance quiet vs. loud speakers, reconstruct clipped peaks, and extend narrow-band phone audio — all recommended automatically by a one-click **Scan**.
-- ▶️ **Play & review** in a built-in player — color-coded speaker tracks, 0.5×–2× speed, A-B loop, bookmarks, and a synced transcript editor.
+- ✨ **Clean up** with on-device AI: remove background noise, balance quiet vs. loud microphone channels, reconstruct clipped peaks, and extend narrow-band phone audio — all recommended automatically by a one-click **Scan**.
+- ▶️ **Play & review** in a built-in player — color-coded audio tracks, 0.5×–2× speed, A-B loop, bookmarks, and a synced transcript editor.
 - 🗂️ **Organize** every conversion into an auto-filed case library, and pull recordings straight from installed court software.
 
 > **Recordings stay local.** Conversion, playback, analysis, and cleanup run on your machine. Optional update checks and model downloads may use the network, but audio is not uploaded. No account or subscription is required.
@@ -52,7 +52,7 @@ flowchart LR
     G --> H([Output + auto-filed<br/>in the case Library])
 ```
 
-Scanning is a bounded, cancellable analysis pass; conversion is a two-step pipeline — a Rust AI stage feeds a clean signal into FFmpeg for the final format and channel layout. Everything is local and reproducible.
+Scanning is a bounded, cancellable analysis pass; conversion is a two-step pipeline — a Rust AI stage feeds a clean signal into FFmpeg for the final format and channel layout. Recording processing remains local.
 
 ---
 
@@ -68,12 +68,12 @@ Scanning is a bounded, cancellable analysis pass; conversion is a two-step pipel
 ### ✨ Smart cleanup (on-device AI)
 
 - **Scan** detects noise, level imbalance, clipping, and narrow bandwidth
-- **Denoise** with RNNoise; DeepFilterNet files are reserved for a future complete spectral pipeline
+- **Denoise** with RNNoise; DeepFilterNet is not part of the released processing pipeline
 - **Auto-level** — balances per-channel loudness from a bounded representative sample
 - **De-clip** distorted peaks · **Clarity** (FlashSR bandwidth extension)
 - **Turn / speaker-activity estimate / quality (DNSMOS)** detection; speaker activity is not voice identification
-- **Hardware-aware** — CoreML acceleration on Apple Silicon; the bundled Windows runtime uses the CPU
-- **Live progress** with a Cancel button; stuck files never freeze the app
+- **Hardware-aware** — Apple Silicon can use CoreML for eligible models with CPU fallback; the bundled Windows runtime uses the CPU
+- **Live progress** with a Cancel button; analysis and sidecar operations use bounded samples, timeouts, and cancellation paths
 
 ### ▶️ Built-in player
 
@@ -109,19 +109,18 @@ Scanning is a bounded, cancellable analysis pass; conversion is a two-step pipel
 
 ## AI models
 
-Light models ship bundled. Larger and optional models can be installed from **Settings → AI Models**.
-DepoAudio downloads them from the [`models-v1`](../../releases/tag/models-v1) release into the app data
-directory and verifies their SHA-256 checksums, keeping the installer small.
+Released light models ship bundled. Optional DNSMOS quality scoring can be installed from
+**Settings → AI Models**. DepoAudio downloads it from the legacy-compatible
+[`models-v1`](../../releases/tag/models-v1) release into the app data directory and verifies
+its size and SHA-256 checksum.
 
-| Model                       | Size   | Purpose                                   | Delivery           |
-| --------------------------- | ------ | ----------------------------------------- | ------------------ |
-| Silero VAD                  | 2.1 MB | Voice activity detection                  | Bundled            |
-| Smart Turn v3 (int8)        | 8.2 MB | Speaker turn detection                    | Bundled            |
-| FlashSR                     | 487 KB | Bandwidth extension (16→48 kHz)           | Bundled            |
-| DeepFilterNet3 (3 files)    | 8.2 MB | Future pipeline; not used by this release | Bundled            |
-| Speaker segmentation (int8) | 1.5 MB | Active speaker-slot estimate              | Bundled            |
-| Speaker embedding           | 38 MB  | Future voice clustering; unused in v1     | Download on demand |
-| DNSMOS                      | 1.1 MB | Audio quality scoring                     | Download on demand |
+| Model                       | Size   | Purpose                         | Delivery           |
+| --------------------------- | ------ | ------------------------------- | ------------------ |
+| Silero VAD                  | 2.1 MB | Voice activity detection        | Bundled            |
+| Smart Turn v3 (int8)        | 8.2 MB | Speaker turn detection          | Bundled            |
+| FlashSR                     | 487 KB | Bandwidth extension (16→48 kHz) | Bundled            |
+| Speaker segmentation (int8) | 1.5 MB | Active speaker-slot estimate    | Bundled            |
+| DNSMOS                      | 1.1 MB | Audio quality scoring           | Download on demand |
 
 ---
 
@@ -142,7 +141,9 @@ Place FFmpeg/FFprobe binaries in `src-tauri/binaries/` with target-triple names 
 | macOS Intel | `ffmpeg-x86_64-apple-darwin`, `ffprobe-x86_64-apple-darwin`               |
 | Windows x64 | `ffmpeg-x86_64-pc-windows-msvc.exe`, `ffprobe-x86_64-pc-windows-msvc.exe` |
 
-Download from [ffmpeg.org](https://ffmpeg.org/download.html) or [evermeet.cx/ffmpeg](https://evermeet.cx/ffmpeg/) (macOS).
+For local development, `scripts/setup-dev.sh` can stage system FFmpeg binaries;
+confirm the staged build exposes the native `ftr` decoder. Release sidecars are
+created only by the reviewed, hash-pinned release workflow.
 
 ### Run & build
 
@@ -208,13 +209,13 @@ After the intended release commit is merged to `main`, dispatch the release work
 gh workflow run release.yml --ref main -f tag=vX.Y.Z
 ```
 
-GitHub Actions builds a **universal macOS** `.dmg` and **Windows** installers, then creates a **draft** release with all assets. The workflow verifies the tag, version, and exact release commit; downloads executable dependencies through pinned GitHub asset IDs; smoke-tests native FTR decoding; validates configured signing material; and clears any stale _draft_ with the same tag before building. Signing, notarization, and updater artifacts are enabled independently only when their required credentials are present.
+GitHub Actions verifies the private-candidate contract, rejects a same-tag stale draft, and creates one commit-bound **private draft** before building. It regenerates commit-bound dependency evidence, builds a **universal macOS** `.dmg` and both **Windows** installers, tests the extracted downloadable containers, and routes every installer and evidence upload through a helper that rechecks the exact draft ID, tag, source commit, private state, and asset-name uniqueness. The Tauri action runs in build-only mode with no release ID, tag, or GitHub token, so it cannot replace release assets. Signing, notarization, and updater signatures are enabled independently only when their complete credential sets are present.
 
-> **Let the workflow finish successfully before publishing the draft.** Confirm both packaged-app startup smoke steps are green. The platform builds run one after another, so the draft can look complete while a later platform is still building. Published asset names and bytes are immutable: `finalize` may add only non-colliding assets from a draft built for the exact same tag commit and never merges or replaces `latest.json`. Early publication normally leaves both releases with `latest.json`, so finalization intentionally fails closed and retains the stray draft for manual reconciliation.
+> **The build workflow never publishes.** Its final job requires the exact MSI, NSIS EXE, DMG, app archive, inventories, source evidence, notices, SBOMs, and toolchain record to remain on the same private draft. It rejects `latest.json`; signed updater metadata belongs to a separate publication-approval step after exact-asset installation tests. Do not use GitHub's manual Publish button while any entry in `docs/V1.0.3-RELEASE-GATE.json` is open.
 
 ### Release signing configuration (one-time)
 
-Release builds remain publishable without signing credentials, but produce an ad-hoc-signed macOS app, unsigned Windows installers, and no updater manifest. Local/development builds intentionally contain no updater key or endpoint. Record and verify the actual artifact state before publication.
+Without platform-signing credentials, private candidates contain an ad-hoc-signed macOS app and unsigned Windows installers. Without a verified updater keypair, the release overlay omits the updater endpoint and generates no updater signatures. Neither state is publication approval; record and accept the exact artifact state through the release gate. Local/development builds intentionally contain no updater key or endpoint.
 
 1. **Generate a keypair** (keep the private key safe — losing it means you can't ship updates):
    ```bash
@@ -224,7 +225,7 @@ Release builds remain publishable without signing credentials, but produce an ad
 3. **Add macOS secrets**: `APPLE_CERTIFICATE`, `APPLE_CERTIFICATE_PASSWORD`, `APPLE_SIGNING_IDENTITY`, `APPLE_ID`, `APPLE_PASSWORD`, and `APPLE_TEAM_ID`.
 4. **Add Windows secrets**: `WINDOWS_CERTIFICATE` (the PFX encoded as base64), `WINDOWS_CERTIFICATE_PASSWORD`, and `WINDOWS_CERTIFICATE_THUMBPRINT`.
 
-The release workflow imports the platform certificate, signs the installers and updater artifacts, and publishes `latest.json` into the draft. **Publish** the completed draft release for installed clients to see it.
+The private-candidate workflow scopes signing credentials to packaging, removes the imported Windows private key before executing candidate binaries, and uploads generated signatures through the verified draft helper. It deliberately does not generate or publish `latest.json`, and it never publishes the draft. The manual [`publish-release.yml`](.github/workflows/publish-release.yml) workflow first supports a read-only manifest inspection, then permits publication only from a protected `release-publication` environment after the committed gate binds the exact draft, assets, source and approval commits, updater decision, and current UTC release date. It never rebuilds, deletes, or replaces an installer. Follow the exact [candidate-to-publication runbook](docs/V1.0.3-RELEASE-CANDIDATE.md#exact-candidate-to-publication-sequence); GitHub environment reviewers and prevent-self-review remain required dashboard configuration.
 
 ---
 

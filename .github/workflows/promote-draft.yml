@@ -1,15 +1,15 @@
-name: Promote draft assets
+name: Audit release draft
 
-# Copies only new, non-colliding assets from a stray draft into an already
-# published release carrying the same tag, then deletes the drained draft.
-# Published assets are immutable: a name collision (including latest.json) is
-# an error, and uploads never use --clobber. Commit identity and asset
-# inventories are checked before any published release is changed.
+# Historical versions of this workflow copied late assets into an already
+# published release. That made a public release mutable and could expose a
+# temporarily incomplete asset set. Publication is now deliberately separate:
+# this workflow only verifies one commit-bound private draft and never uploads,
+# deletes, promotes, or publishes release data.
 on:
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Release tag whose stray draft assets should be promoted'
+        description: 'Private release draft tag to audit'
         required: true
         type: string
   workflow_call:
@@ -19,272 +19,47 @@ on:
         type: string
 
 jobs:
-  promote:
+  audit:
     runs-on: ubuntu-latest
     permissions:
-      contents: write
+      contents: read
     steps:
-      - name: Promote non-colliding draft assets
+      - name: Verify one private, immutable-candidate draft
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # Env indirection keeps the dispatch input out of shell source.
           TAG: ${{ inputs.tag }}
         run: |
           set -euo pipefail
-          tag="$TAG"
-          [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z][0-9A-Za-z.-]*)?$ ]] || {
-            echo "ERROR: invalid release tag"; exit 1;
+          [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z][0-9A-Za-z.-]*)?$ ]] || {
+            echo 'ERROR: invalid release tag'; exit 1;
           }
-
-          tmp_dir=$(mktemp -d "${RUNNER_TEMP}/depoaudio-promote.XXXXXX")
-          trap 'rm -rf -- "$tmp_dir"' EXIT
-          published_json="$tmp_dir/published.json"
-          published_error="$tmp_dir/published.error"
-
-          # Establish repository access first so an authorization failure that
-          # GitHub masks as 404 cannot be mistaken for "no published release."
-          gh api "repos/$GITHUB_REPOSITORY" >/dev/null
-          if ! gh api "repos/$GITHUB_REPOSITORY/releases/tags/$tag" > "$published_json" 2> "$published_error"; then
-            if grep -q 'HTTP 404' "$published_error"; then
-              echo "No published release for tag $tag - nothing to promote."
-              exit 0
-            fi
-            echo "ERROR: failed to query the published release" >&2
-            sed 's/^/  /' "$published_error" >&2
-            exit 1
-          fi
-          jq -e --arg tag "$tag" '
-            .draft == false and .tag_name == $tag and (.id | type == "number")
-          ' "$published_json" >/dev/null || {
-            echo "ERROR: the tag endpoint did not return the expected published release"; exit 1;
-          }
-          published_id=$(jq -r '.id' "$published_json")
-
-          resolve_commit() {
-            local ref="$1" encoded sha
-            encoded=$(jq -rn --arg ref "$ref" '$ref | @uri')
-            sha=$(gh api "repos/$GITHUB_REPOSITORY/commits/$encoded" --jq .sha) || {
-              echo "ERROR: cannot resolve commitish $ref" >&2
-              return 1
-            }
-            [[ "$sha" =~ ^[0-9a-f]{40}$ ]] || {
-              echo "ERROR: GitHub returned an invalid commit SHA for $ref" >&2
-              return 1
-            }
-            printf '%s\n' "$sha"
-          }
-
-          release_commit() {
-            local release_json="$1" target
-            target=$(jq -er '.target_commitish | select(type == "string" and length > 0)' "$release_json") || {
-              echo "ERROR: release has no usable target_commitish" >&2
-              return 1
-            }
-            resolve_commit "$target"
-          }
-
-          release_fingerprint() {
-            jq -Sc '{
-              id, draft, tag_name, target_commitish,
-              assets: ([.assets[] | {id, name, size, state, digest}] | sort_by(.id))
-            }' "$1"
-          }
-
-          tag_commit=$(resolve_commit "$tag")
-          published_commit=$(release_commit "$published_json")
-          if [ "$published_commit" != "$tag_commit" ]; then
-            echo "ERROR: published release target resolves to $published_commit, but tag $tag resolves to $tag_commit"
+          if gh api "repos/$GITHUB_REPOSITORY/releases/tags/$TAG" >/dev/null 2>&1; then
+            echo 'ERROR: the release is already published; published assets are immutable'
             exit 1
           fi
 
-          release_pages="$tmp_dir/release-pages.json"
-          gh api "repos/$GITHUB_REPOSITORY/releases" --paginate > "$release_pages"
-          draft_ids_file="$tmp_dir/draft-ids.txt"
-          jq -sr --arg tag "$tag" '
-            add | .[] | select(.draft == true and .tag_name == $tag) | .id
-          ' "$release_pages" > "$draft_ids_file"
-          mapfile -t draft_ids < "$draft_ids_file"
-          if [ ${#draft_ids[@]} -eq 0 ]; then
-            echo "No matching stray draft for $tag - nothing to promote."
-            exit 0
-          fi
-
-          assets_ndjson="$tmp_dir/assets.ndjson"
-          : > "$assets_ndjson"
-          for draft_id in "${draft_ids[@]}"; do
-            [[ "$draft_id" =~ ^[0-9]+$ ]] || { echo "ERROR: invalid draft release id"; exit 1; }
-            draft_json="$tmp_dir/draft-$draft_id.json"
-            gh api "repos/$GITHUB_REPOSITORY/releases/$draft_id" > "$draft_json"
-            jq -e --arg tag "$tag" --argjson id "$draft_id" '
-              .id == $id and .draft == true and .tag_name == $tag
-            ' "$draft_json" >/dev/null || {
-              echo "ERROR: release $draft_id is not the expected draft for $tag"; exit 1;
-            }
-            draft_commit=$(release_commit "$draft_json")
-            if [ "$draft_commit" != "$tag_commit" ]; then
-              echo "ERROR: draft $draft_id target resolves to $draft_commit, but tag $tag resolves to $tag_commit"
-              exit 1
-            fi
-            jq -c --argjson release_id "$draft_id" '
-              .assets[] | {
-                release_id: $release_id,
-                id, name, size, state,
-                digest: (.digest // null)
-              }
-            ' "$draft_json" >> "$assets_ndjson"
-          done
-
-          assets_json="$tmp_dir/assets.json"
-          if [ -s "$assets_ndjson" ]; then
-            jq -s '.' "$assets_ndjson" > "$assets_json"
-          else
-            printf '[]\n' > "$assets_json"
-          fi
+          releases=$(gh api "repos/$GITHUB_REPOSITORY/releases" --paginate --slurp)
+          drafts=$(jq -s --arg tag "$TAG" '
+            add | flatten | map(select(.draft == true and .tag_name == $tag))
+          ' <<<"$releases")
           jq -e '
-            all(.[];
-              (.release_id | type == "number") and
+            length == 1 and
+            (.[0].id | type == "number" and . > 0) and
+            (.[0].target_commitish | type == "string" and test("^[0-9a-f]{40}$")) and
+            (.[0].assets | length > 0) and
+            all(.[0].assets[];
               (.id | type == "number" and . > 0) and
-              (.name | type == "string" and length > 0 and . != "." and . != "..") and
-              (.name | ([explode[] | select(. < 32 or . == 47 or . == 92 or . == 127)] | length == 0)) and
+              (.name | type == "string" and length > 0) and
               (.size | type == "number" and . > 0) and
-              .state == "uploaded" and
-              (.digest == null or (.digest | test("^sha256:[0-9a-f]{64}$")))
-            )
-          ' "$assets_json" >/dev/null || {
-            echo "ERROR: a draft contains an unsafe or incomplete asset"; exit 1;
+              .state == "uploaded"
+            ) and
+            (([.[0].assets[].name] | unique | length) == (.[0].assets | length))
+          ' <<<"$drafts" >/dev/null || {
+            echo 'ERROR: expected exactly one complete commit-bound private draft'; exit 1;
           }
 
-          collisions=$(jq -nr \
-            --slurpfile published "$published_json" \
-            --slurpfile incoming "$assets_json" '
-              [$published[0].assets[].name] as $existing |
-              [$incoming[0][].name] as $new |
-              (
-                ($new | group_by(.) | map(select(length > 1) | .[0])) +
-                ($new | map(. as $name | select($existing | index($name))))
-              ) | unique | .[]
-            ')
-          if [ -n "$collisions" ]; then
-            echo "ERROR: refusing to overwrite or ambiguously promote release assets:"
-            while IFS= read -r name; do echo "  $name"; done <<< "$collisions"
-            echo "Published release assets, including latest.json, are immutable."
-            exit 1
-          fi
-
-          # Download every immutable asset ID and verify its API-reported size
-          # (and digest where GitHub supplies one) before changing the release.
-          assets_tsv="$tmp_dir/assets.tsv"
-          jq -r '.[] | [
-            .release_id, .id, .name, .size, (.digest // "")
-          ] | @tsv' "$assets_json" > "$assets_tsv"
-          while IFS=$'\t' read -r release_id asset_id name expected_size expected_digest; do
-            destination="$tmp_dir/$name"
-            gh api -H "Accept: application/octet-stream" \
-              "repos/$GITHUB_REPOSITORY/releases/assets/$asset_id" > "$destination"
-            actual_size=$(wc -c < "$destination" | tr -d '[:space:]')
-            [ "$actual_size" = "$expected_size" ] || {
-              echo "ERROR: downloaded size mismatch for $name"; exit 1;
-            }
-            if [ -n "$expected_digest" ]; then
-              actual_digest="sha256:$(sha256sum "$destination" | awk '{print $1}')"
-              [ "$actual_digest" = "$expected_digest" ] || {
-                echo "ERROR: downloaded digest mismatch for $name"; exit 1;
-              }
-            fi
-            if [ "$name" = "latest.json" ]; then
-              jq -e --arg tag "$tag" '
-                type == "object" and
-                (.version | type == "string" and ltrimstr("v") == ($tag | ltrimstr("v"))) and
-                (.platforms | type == "object" and length > 0) and
-                all(.platforms[];
-                  (.url | type == "string" and startswith("https://")) and
-                  (.signature | type == "string" and length > 0)
-                )
-              ' "$destination" >/dev/null || {
-                echo "ERROR: draft latest.json is not a complete updater manifest for $tag"; exit 1;
-              }
-            fi
-          done < "$assets_tsv"
-
-          # Re-read every release after downloads. Any changed target, tag,
-          # draft state, or asset inventory invalidates this promotion.
-          current_published="$tmp_dir/current-published.json"
-          gh api "repos/$GITHUB_REPOSITORY/releases/tags/$tag" > "$current_published"
-          published_fingerprint=$(release_fingerprint "$published_json")
-          current_published_fingerprint=$(release_fingerprint "$current_published")
-          [ "$current_published_fingerprint" = "$published_fingerprint" ] || {
-            echo "ERROR: published release changed during promotion preflight"; exit 1;
-          }
-          [ "$(resolve_commit "$tag")" = "$tag_commit" ] || {
-            echo "ERROR: tag $tag moved during promotion preflight"; exit 1;
-          }
-          [ "$(release_commit "$current_published")" = "$tag_commit" ] || {
-            echo "ERROR: published release target changed during promotion preflight"; exit 1;
-          }
-          for draft_id in "${draft_ids[@]}"; do
-            current_draft="$tmp_dir/current-draft-$draft_id.json"
-            gh api "repos/$GITHUB_REPOSITORY/releases/$draft_id" > "$current_draft"
-            draft_fingerprint=$(release_fingerprint "$tmp_dir/draft-$draft_id.json")
-            current_draft_fingerprint=$(release_fingerprint "$current_draft")
-            [ "$current_draft_fingerprint" = "$draft_fingerprint" ] || {
-              echo "ERROR: draft $draft_id changed during promotion preflight"; exit 1;
-            }
-            [ "$(release_commit "$current_draft")" = "$tag_commit" ] || {
-              echo "ERROR: draft $draft_id target changed during promotion preflight"; exit 1;
-            }
-          done
-
-          upload_names="$tmp_dir/upload-names.txt"
-          jq -r '.[].name' "$assets_json" > "$upload_names"
-          while IFS= read -r name; do
-            echo "Uploading new asset $name to published release $published_id"
-            # Deliberately no --clobber: a concurrent name collision fails.
-            gh release upload "$tag" "$tmp_dir/$name" --repo "$GITHUB_REPOSITORY"
-          done < "$upload_names"
-
-          final_published="$tmp_dir/final-published.json"
-          gh api "repos/$GITHUB_REPOSITORY/releases/tags/$tag" > "$final_published"
-          jq -e --arg tag "$tag" \
-            --slurpfile before "$published_json" \
-            --slurpfile incoming "$assets_json" '
-              . as $release |
-              $release.id == $before[0].id and
-              $release.draft == false and
-              $release.tag_name == $tag and
-              $release.target_commitish == $before[0].target_commitish and
-              ([ $before[0].assets[] | {id, name, size, state, digest} ] -
-               [ $release.assets[] | {id, name, size, state, digest} ] | length == 0) and
-              all($incoming[0][];
-                . as $asset |
-                ([$release.assets[] | select(
-                  .name == $asset.name and .size == $asset.size and .state == "uploaded"
-                )] | length) == 1
-              )
-          ' "$final_published" >/dev/null || {
-            echo "ERROR: published release verification failed after upload; drafts were retained"; exit 1;
-          }
-          [ "$(resolve_commit "$tag")" = "$tag_commit" ] || {
-            echo "ERROR: tag $tag moved after upload; drafts were retained"; exit 1;
-          }
-          [ "$(release_commit "$final_published")" = "$tag_commit" ] || {
-            echo "ERROR: published release target changed after upload; drafts were retained"; exit 1;
-          }
-
-          for draft_id in "${draft_ids[@]}"; do
-            current_draft="$tmp_dir/delete-check-$draft_id.json"
-            gh api "repos/$GITHUB_REPOSITORY/releases/$draft_id" > "$current_draft"
-            draft_fingerprint=$(release_fingerprint "$tmp_dir/draft-$draft_id.json")
-            current_draft_fingerprint=$(release_fingerprint "$current_draft")
-            [ "$current_draft_fingerprint" = "$draft_fingerprint" ] || {
-              echo "ERROR: draft $draft_id changed before deletion; it was retained"; exit 1;
-            }
-            [ "$(release_commit "$current_draft")" = "$tag_commit" ] || {
-              echo "ERROR: draft $draft_id target changed before deletion; it was retained"; exit 1;
-            }
-            gh api -X DELETE "repos/$GITHUB_REPOSITORY/releases/$draft_id"
-            echo "Deleted drained draft $draft_id."
-          done
-
-          echo "Published release $published_id now holds:"
-          gh api "repos/$GITHUB_REPOSITORY/releases/$published_id" \
-            --jq '.assets[] | "  \(.name)  (\(.size) bytes)"'
+          release_id=$(jq -r '.[0].id' <<<"$drafts")
+          target=$(jq -r '.[0].target_commitish' <<<"$drafts")
+          echo "Verified private draft $release_id for $TAG at $target"
+          jq -r '.[0].assets[] | "  \(.name)  (\(.size) bytes)"' <<<"$drafts"
+          echo 'No release data was changed. Publication remains a separate human decision.'

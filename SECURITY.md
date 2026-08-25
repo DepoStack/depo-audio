@@ -2,23 +2,35 @@
 
 ## Supported Versions
 
-| Version | Supported |
-|---------|-----------|
-| 1.0.x   | ✅ Current |
-| 0.8.x   | ✅ Security fixes only |
-| < 0.8   | ❌ No longer supported |
+| Version | Supported              |
+| ------- | ---------------------- |
+| 1.0.x   | ✅ Current             |
+| < 1.0   | ❌ No longer supported |
 
 ## Reporting a Vulnerability
 
-If you discover a security vulnerability in DepoAudio, please report it responsibly:
+If you discover a security vulnerability in DepoAudio, please use GitHub's
+[private vulnerability report](https://github.com/DepoStack/depo-audio/security/advisories/new).
+Do not put exploit details, private recordings, filenames, case information, or
+other sensitive material in a public issue. If the private report form is not
+available, open a minimal issue in the
+[canonical repository](https://github.com/DepoStack/depo-audio/issues) asking
+for a private contact channel without disclosing the vulnerability.
 
-1. **Open a GitHub Issue** at [github.com/mayes/depo-audio/issues](https://github.com/mayes/depo-audio/issues) with the label `security`
-2. **Do not** include exploit details in public issues — just note that it's security-related and we'll coordinate privately
-
-We aim to acknowledge reports within 48 hours and provide a fix or mitigation plan within 7 days for confirmed vulnerabilities.
+Response timing depends on maintainer availability and the severity and scope
+of the report. The repository does not promise a fixed response or remediation
+deadline.
 
 ## Scope
 
-DepoAudio processes audio files locally on your machine. It does not transmit audio data to any external servers. The only network activity is:
-- **Optional AI model downloads** — fetches ONNX model files from GitHub Releases when you install a model from Settings (SHA-256 verified)
-- **FFmpeg sidecars** — bundled locally, no network calls during conversion
+DepoAudio processes audio files locally on your machine and does not upload
+recordings for conversion, playback, analysis, or cleanup. Runtime network
+activity is limited to features the user or release configuration enables:
+
+- **Optional AI model downloads** — fetches ONNX model files from GitHub
+  Releases when you install a model from Settings (size and SHA-256 verified).
+- **Optional update checks and downloads** — available only when a published
+  build contains a verified updater configuration. Releases without signed
+  updater metadata keep this path dormant.
+- **FFmpeg sidecars** — bundled locally; conversion does not download them or
+  send recording data over the network.

@@ -11,9 +11,22 @@ targets = [
 all-features = true
 
 [advisories]
-# Exceptions require an advisory ID, an owner, a reason, and a removal date in
-# the same pull request. Keep this empty rather than silently accepting risk.
-ignore = []
+# Time-bounded v1.0.3 maintenance exception.
+# Owner: Andrew Mayes (DepoStack release maintainer)
+# Review/remove by: 2026-09-30, or immediately when the first published Tauri
+# release includes tauri-apps/tauri#15660 (urlpattern 0.6), whichever is sooner.
+# Rationale: these five INFO/unmaintained advisories have no patched unic 0.9
+# versions. They enter only through urlpattern 0.3 -> tauri-utils 2.9.3. The
+# released capability contract has no Capability.remote URLs, so the parser is
+# distributed but has no configured untrusted-input path. Every other current
+# or future advisory remains blocking.
+ignore = [
+  "RUSTSEC-2025-0081",
+  "RUSTSEC-2025-0075",
+  "RUSTSEC-2025-0080",
+  "RUSTSEC-2025-0100",
+  "RUSTSEC-2025-0098",
+]
 
 [licenses]
 # This allowlist is the smallest set needed by the current locked release-target

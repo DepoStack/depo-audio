@@ -49,14 +49,11 @@
     "copyright": "2025 Andrew Mayes",
     "licenseFile": "installer/license.rtf",
     "resources": [
-      "resources/models/dfn3_config.ini",
-      "resources/models/dfn3_df_dec.onnx",
-      "resources/models/dfn3_enc.onnx",
-      "resources/models/dfn3_erb_dec.onnx",
       "resources/models/flashsr.onnx",
       "resources/models/silero_vad.onnx",
       "resources/models/smart-turn-v3-int8.onnx",
-      "resources/models/speaker_seg_int8.onnx"
+      "resources/models/speaker_seg_int8.onnx",
+      "resources/third-party/rust"
     ],
     "externalBin": ["binaries/ffmpeg", "binaries/ffprobe"],
     "macOS": {

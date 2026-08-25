@@ -19,10 +19,40 @@ pub(crate) fn set_ort_preflight(result: Result<(), String>) {
 // Lazily loads ONNX models on first use. The light models ship bundled in the
 // app's resource directory under resources/models/.
 //
-// Heavier and optional catalog models (the 38 MB speaker_embed.onnx and
-// DNSMOS) are not bundled; users can install them from the models release.
-// The experimental DCCRN+ dereverb model is developer-provisioned only and is
-// deliberately absent from the downloadable catalog.
+// Optional DNSMOS is not bundled; users can install it from the models
+// release. The experimental DCCRN+ dereverb model is developer-provisioned
+// only and is deliberately absent from the downloadable catalog.
+
+struct ObsoleteModelDownload {
+    filename: &'static str,
+    display_name: &'static str,
+}
+
+/// Exact filenames formerly exposed by the model catalog but never used by a
+/// released workflow. An existing app-data copy is shown only as removable
+/// legacy storage; these files remain absent from availability and downloads.
+const OBSOLETE_MODEL_DOWNLOADS: &[ObsoleteModelDownload] = &[
+    ObsoleteModelDownload {
+        filename: "dfn3_enc.onnx",
+        display_name: "DeepFilterNet3 encoder (legacy)",
+    },
+    ObsoleteModelDownload {
+        filename: "dfn3_erb_dec.onnx",
+        display_name: "DeepFilterNet3 ERB decoder (legacy)",
+    },
+    ObsoleteModelDownload {
+        filename: "dfn3_df_dec.onnx",
+        display_name: "DeepFilterNet3 DF decoder (legacy)",
+    },
+    ObsoleteModelDownload {
+        filename: "speaker_embed.onnx",
+        display_name: "Speaker embedding (legacy)",
+    },
+];
+
+fn obsolete_model_download(filename: &str) -> Option<&'static ObsoleteModelDownload> {
+    OBSOLETE_MODEL_DOWNLOADS.iter().find(|model| model.filename == filename)
+}
 
 /// Resolve a model file path. User-downloaded models live in the app data
 /// directory (writable on installed apps — the resource dir is read-only in
@@ -151,14 +181,10 @@ fn known_model_hash(filename: &str) -> Option<&'static str> {
         "silero_vad.onnx" => Some("a4a068cd6cf1ea8355b84327595838ca748ec29a25bc91fc82e6c299ccdc5808"),
         "smart-turn-v3-int8.onnx" => Some("3d072c8fb04446955a365b533686e7e06015ad09929bb824b910c72ff89f5be1"),
         "flashsr.onnx" => Some("e255c76b227f16f7f392cc43677c38bd2c5aa129f042a2ba3eb03fb29e470c7a"),
-        "dfn3_enc.onnx" => Some("7c5399d3da8a50ebef1c1a0ae421b33376aa5e45d0e92df16da7e83c9c131916"),
-        "dfn3_erb_dec.onnx" => Some("ab669a1d10afe20911728b33053a452071042317a90581092b325da7b2f9d895"),
-        "dfn3_df_dec.onnx" => Some("23114ce3b0f6464b763ee62f7bb8aab6b2a129a21eabd5bcfe59413db05f278a"),
         // Upstream sig_bak_ovr.onnx from microsoft/DNS-Challenge (the file
         // once committed here was an HTML error page — this is the real one)
         "dnsmos_sig_bak_ovr.onnx" => Some("269fbebdb513aa23cddfbb593542ecc540284a91849ac50516870e1ac78f6edd"),
         "speaker_seg_int8.onnx" => Some("d582f4b4c6b48205de7e0643c57df0df5615a3c176189be3fc461e9d18827b5d"),
-        "speaker_embed.onnx" => Some("1a331345f04805badbb495c775a6ddffcdd1a732567d5ec8b3d5749e3c7a5e4b"),
         _ => None,
     }
 }
@@ -196,24 +222,75 @@ fn verify_model_hash(path: &PathBuf, expected: &str) -> Result<(), String> {
     Ok(())
 }
 
+struct ModelSpec {
+    filename: &'static str,
+    display_name: &'static str,
+    description: &'static str,
+    size_mb: f64,
+    feature: &'static str,
+    required: bool,
+}
+
+const MODEL_DOWNLOAD_BASE_URL: &str = "https://github.com/DepoStack/depo-audio/releases/download/models-v1";
+
+// This single reviewed list backs availability reporting, the Settings model
+// catalog, and the download allowlist.
+const RELEASED_MODEL_SPECS: &[ModelSpec] = &[
+    ModelSpec {
+        filename: "silero_vad.onnx",
+        display_name: "Silero VAD",
+        description: "Voice activity detection — identifies speech vs silence",
+        size_mb: 2.1,
+        feature: "Speech Detection",
+        required: true,
+    },
+    ModelSpec {
+        filename: "smart-turn-v3-int8.onnx",
+        display_name: "Smart Turn v3",
+        description: "Detects speaker turns in court recordings",
+        size_mb: 8.2,
+        feature: "Turn Detection",
+        required: false,
+    },
+    ModelSpec {
+        filename: "flashsr.onnx",
+        display_name: "FlashSR",
+        description: "Neural bandwidth extension for phone/narrow-band audio",
+        size_mb: 0.5,
+        feature: "Clarity Enhancement",
+        required: false,
+    },
+    ModelSpec {
+        filename: "dnsmos_sig_bak_ovr.onnx",
+        display_name: "DNSMOS",
+        description: "Audio quality scoring (1-5 scale)",
+        size_mb: 1.1,
+        feature: "Quality Scoring",
+        required: false,
+    },
+    ModelSpec {
+        filename: "speaker_seg_int8.onnx",
+        display_name: "Speaker Segmentation",
+        description: "Estimates active speaker slots; does not identify voices",
+        size_mb: 1.5,
+        feature: "Speaker Activity",
+        required: false,
+    },
+];
+
+fn released_model_spec(filename: &str) -> Option<&'static ModelSpec> {
+    RELEASED_MODEL_SPECS.iter().find(|model| model.filename == filename)
+}
+
 // ── Model availability check ────────────────────────────────────────────────
 
 /// Check which models are available on this installation.
 /// Useful for UI to show/hide features based on bundled models.
 pub(crate) fn available_models(app: &AppHandle) -> Vec<String> {
-    let models = [
-        "silero_vad.onnx",
-        "smart-turn-v3-int8.onnx",
-        "flashsr.onnx",
-        "dfn3_enc.onnx",
-        "dnsmos_sig_bak_ovr.onnx",
-        "speaker_seg_int8.onnx",
-        "speaker_embed.onnx",
-    ];
-    models
+    RELEASED_MODEL_SPECS
         .iter()
-        .filter(|m| model_path(app, m).is_ok())
-        .map(|m| m.to_string())
+        .filter(|model| model_path(app, model.filename).is_ok())
+        .map(|model| model.filename.to_string())
         .collect()
 }
 
@@ -237,141 +314,85 @@ pub struct ModelInfo {
     pub download_url: String,
 }
 
+fn legacy_model_catalog(models_dir: &Path) -> Vec<ModelInfo> {
+    OBSOLETE_MODEL_DOWNLOADS
+        .iter()
+        .filter_map(|obsolete| {
+            let path = models_dir.join(obsolete.filename);
+            let metadata = std::fs::symlink_metadata(&path).ok()?;
+            if !metadata.file_type().is_file() {
+                return None;
+            }
+            Some(ModelInfo {
+                filename: obsolete.filename.to_string(),
+                display_name: obsolete.display_name.to_string(),
+                description: "Legacy unused file — not used by this release. Remove it to reclaim storage".to_string(),
+                size_mb: (metadata.len() as f64 / (1024.0 * 1024.0) * 10.0).round() / 10.0,
+                feature: "Legacy unused file".to_string(),
+                required: false,
+                installed: true,
+                removable: true,
+                recommended: false,
+                download_url: String::new(),
+            })
+        })
+        .collect()
+}
+
 /// Full model catalog with install status and recommendations.
 pub(crate) fn model_catalog(app: &AppHandle) -> Vec<ModelInfo> {
     let caps = detect_capabilities(app);
 
-    const BASE_URL: &str = "https://github.com/DepoStack/depo-audio/releases/download/models-v1";
-
-    // size_mb values reflect the actual model files on disk
-    let catalog = vec![
-        (
-            "silero_vad.onnx",
-            "Silero VAD",
-            "Voice activity detection — identifies speech vs silence",
-            2.1,
-            "Speech Detection",
-            true,
-            format!("{}/silero_vad.onnx", BASE_URL),
-        ),
-        (
-            "smart-turn-v3-int8.onnx",
-            "Smart Turn v3",
-            "Detects speaker turns in court recordings",
-            8.2,
-            "Turn Detection",
-            false,
-            format!("{}/smart-turn-v3-int8.onnx", BASE_URL),
-        ),
-        (
-            "dfn3_enc.onnx",
-            "DeepFilterNet3 Encoder",
-            "Reserved for a future DeepFilterNet pipeline; not used by this release",
-            1.9,
-            "Future / Not Available",
-            false,
-            format!("{}/dfn3_enc.onnx", BASE_URL),
-        ),
-        (
-            "dfn3_erb_dec.onnx",
-            "DeepFilterNet3 ERB Decoder",
-            "Reserved for a future DeepFilterNet pipeline; not used by this release",
-            3.1,
-            "Future / Not Available",
-            false,
-            format!("{}/dfn3_erb_dec.onnx", BASE_URL),
-        ),
-        (
-            "dfn3_df_dec.onnx",
-            "DeepFilterNet3 DF Decoder",
-            "Reserved for a future DeepFilterNet pipeline; not used by this release",
-            3.2,
-            "Future / Not Available",
-            false,
-            format!("{}/dfn3_df_dec.onnx", BASE_URL),
-        ),
-        (
-            "flashsr.onnx",
-            "FlashSR",
-            "Neural bandwidth extension for phone/narrow-band audio",
-            0.5,
-            "Clarity Enhancement",
-            false,
-            format!("{}/flashsr.onnx", BASE_URL),
-        ),
-        (
-            "dnsmos_sig_bak_ovr.onnx",
-            "DNSMOS",
-            "Audio quality scoring (1-5 scale)",
-            1.1,
-            "Quality Scoring",
-            false,
-            format!("{}/dnsmos_sig_bak_ovr.onnx", BASE_URL),
-        ),
-        (
-            "speaker_seg_int8.onnx",
-            "Speaker Segmentation",
-            "Estimates active speaker slots; does not identify voices",
-            1.5,
-            "Speaker Activity",
-            false,
-            format!("{}/speaker_seg_int8.onnx", BASE_URL),
-        ),
-        (
-            "speaker_embed.onnx",
-            "Speaker Embedding",
-            "Reserved for future voice clustering; not used by this release",
-            37.8,
-            "Future / Not Available",
-            false,
-            format!("{}/speaker_embed.onnx", BASE_URL),
-        ),
-    ];
-
-    catalog
-        .into_iter()
-        .map(|(filename, name, desc, size, feature, required, url)| {
-            let installed = model_path(app, filename).is_ok();
+    let mut catalog: Vec<ModelInfo> = RELEASED_MODEL_SPECS
+        .iter()
+        .map(|model| {
+            let installed = model_path(app, model.filename).is_ok();
             let removable = app
                 .path()
                 .app_data_dir()
                 .ok()
-                .map(|dir| dir.join("models").join(filename).is_file())
+                .map(|dir| dir.join("models").join(model.filename).is_file())
                 .unwrap_or(false);
-            let recommended = if filename == "speaker_embed.onnx" {
-                false
-            } else {
-                match feature {
-                    "Speech Detection" => true,
-                    // DeepFilterNet model files are published, but the production
-                    // STFT/ERB/DF pipeline is not implemented yet.
-                    "Future / Not Available" => false,
-                    "Turn Detection" => true,
-                    "Clarity Enhancement" => caps.tier != "low",
-                    "Quality Scoring" => true,
-                    "Speaker Activity" => caps.tier != "low",
-                    _ => false,
-                }
+            let recommended = match model.feature {
+                "Speech Detection" => true,
+                "Turn Detection" => true,
+                "Clarity Enhancement" => caps.tier != "low",
+                "Quality Scoring" => true,
+                "Speaker Activity" => caps.tier != "low",
+                _ => false,
             };
             ModelInfo {
-                filename: filename.to_string(),
-                display_name: name.to_string(),
-                description: desc.to_string(),
-                size_mb: size,
-                feature: feature.to_string(),
-                required,
+                filename: model.filename.to_string(),
+                display_name: model.display_name.to_string(),
+                description: model.description.to_string(),
+                size_mb: model.size_mb,
+                feature: model.feature.to_string(),
+                required: model.required,
                 installed,
                 removable,
                 recommended,
-                download_url: url.to_string(),
+                download_url: format!("{}/{}", MODEL_DOWNLOAD_BASE_URL, model.filename),
             }
         })
-        .collect()
+        .collect();
+
+    // Earlier builds allowed these unused files to be downloaded. Surface an
+    // entry only when the exact regular file is already in writable app data,
+    // giving the user a Remove action without exposing an install path.
+    if let Ok(data_dir) = app.path().app_data_dir() {
+        let models_dir = data_dir.join("models");
+        catalog.extend(legacy_model_catalog(&models_dir));
+    }
+
+    catalog
 }
 
 /// Download a model from its URL to the models directory.
 pub(crate) async fn download_model(app: &AppHandle, filename: &str) -> Result<String, String> {
     const MAX_MODEL_DOWNLOAD_BYTES: usize = 64 * 1024 * 1024;
+    if obsolete_model_download(filename).is_some() {
+        return Err("Legacy unused models cannot be downloaded".into());
+    }
     let catalog = model_catalog(app);
     let info = catalog
         .iter()
@@ -459,16 +480,15 @@ pub(crate) async fn download_model(app: &AppHandle, filename: &str) -> Result<St
 pub(crate) fn delete_model(app: &AppHandle, filename: &str) -> Result<(), String> {
     validate_model_filename(filename)?;
 
-    // Only exact optional catalog entries may be deleted. Unknown names must
-    // fail closed rather than being passed to model_path, which also searches
-    // outside the writable download directory for bundled resources.
-    let catalog = model_catalog(app);
-    let info = catalog
-        .iter()
-        .find(|m| m.filename == filename)
-        .ok_or_else(|| format!("Unknown model: {}", filename))?;
-    if info.required {
-        return Err("Cannot delete required model".into());
+    // Only exact optional catalog entries and the narrowly allowlisted legacy
+    // downloads may be deleted. Unknown names must fail closed rather than
+    // being passed to model_path, which also searches outside the writable
+    // download directory for bundled resources.
+    match released_model_spec(filename) {
+        Some(model) if model.required => return Err("Cannot delete required model".into()),
+        Some(_) => {}
+        None if obsolete_model_download(filename).is_some() => {}
+        None => return Err(format!("Unknown model: {}", filename)),
     }
 
     let data_dir = app
@@ -488,15 +508,16 @@ pub(crate) fn delete_model(app: &AppHandle, filename: &str) -> Result<(), String
 #[derive(Debug, serde::Serialize, serde::Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct SystemCapabilities {
-    /// Number of logical CPU cores.
-    pub cpu_cores: usize,
-    /// Available RAM in MB.
-    pub ram_mb: u64,
-    /// Whether the system is Apple Silicon (CoreML acceleration).
+    /// Number of logical CPU cores, when the operating system reports it.
+    pub cpu_cores: Option<usize>,
+    /// Total physical RAM in MB, when the operating system reports it.
+    pub ram_mb: Option<u64>,
+    /// Whether this build is running on Apple Silicon.
     pub apple_silicon: bool,
-    /// Execution provider used by this build: "cpu", "coreml", "rocm", or "openvino".
+    /// Inference capability: "cpu" or "coreml-eligible".
+    /// Eligibility does not prove that a particular model used CoreML.
     pub accelerator: String,
-    /// Human-readable accelerator description.
+    /// Human-readable inference capability and fallback description.
     pub accelerator_desc: String,
     /// Recommended denoise quality. Only "fast" (RNNoise) is implemented.
     pub recommended_denoise: String,
@@ -514,7 +535,7 @@ pub struct SystemCapabilities {
 
 /// Detect system capabilities and recommend features.
 pub(crate) fn detect_capabilities(app: &AppHandle) -> SystemCapabilities {
-    let cpu_cores = std::thread::available_parallelism().map(|p| p.get()).unwrap_or(2);
+    let cpu_cores = std::thread::available_parallelism().ok().map(|p| p.get());
 
     // Estimate available RAM (platform-specific)
     let ram_mb = estimate_ram_mb();
@@ -525,15 +546,8 @@ pub(crate) fn detect_capabilities(app: &AppHandle) -> SystemCapabilities {
     // Detect available hardware accelerator
     let (accelerator, accelerator_desc) = detect_accelerator(apple_silicon);
 
-    // Performance tier — accelerators boost the tier
-    let has_accel = accelerator != "cpu";
-    let tier = if has_accel || (cpu_cores >= 8 && ram_mb >= 8000) {
-        "high"
-    } else if cpu_cores >= 4 && ram_mb >= 4000 {
-        "mid"
-    } else {
-        "low"
-    };
+    // Performance tier is based only on measured CPU and memory capacity.
+    let tier = performance_tier(cpu_cores, ram_mb);
 
     // DeepFilterNet3 is not a usable waveform pipeline yet. Recommend only
     // the implemented RNNoise path, regardless of hardware tier.
@@ -560,31 +574,28 @@ pub(crate) fn detect_capabilities(app: &AppHandle) -> SystemCapabilities {
     }
 }
 
-/// Detect available hardware accelerator for AI inference.
-/// Returns (id, human description).
+/// Describe hardware-provider eligibility without asserting runtime use.
+/// Returns (id, human description). ONNX Runtime can still fall back to CPU.
 fn detect_accelerator(apple_silicon: bool) -> (&'static str, &'static str) {
-    // Apple Silicon: CoreML via ANE (Apple Neural Engine)
     if apple_silicon {
-        return ("coreml", "Apple Neural Engine (CoreML)");
+        return ("coreml-eligible", "CoreML for eligible models; CPU fallback");
     }
 
-    // Linux: check for ROCm (AMD GPU)
-    #[cfg(target_os = "linux")]
-    {
-        if std::path::Path::new("/opt/rocm").exists() {
-            return ("rocm", "AMD ROCm (GPU acceleration)");
-        }
-        // Check for Intel OpenVINO
-        if std::path::Path::new("/opt/intel/openvino").exists() {
-            return ("openvino", "Intel OpenVINO");
-        }
-    }
+    ("cpu", "CPU")
+}
 
-    ("cpu", "CPU only")
+/// Classify measured hardware for conservative feature recommendations.
+/// Missing either measurement cannot justify a higher tier.
+fn performance_tier(cpu_cores: Option<usize>, ram_mb: Option<u64>) -> &'static str {
+    match (cpu_cores, ram_mb) {
+        (Some(cores), Some(ram)) if cores >= 8 && ram >= 8000 => "high",
+        (Some(cores), Some(ram)) if cores >= 4 && ram >= 4000 => "mid",
+        _ => "low",
+    }
 }
 
 #[cfg(target_os = "macos")]
-fn estimate_ram_mb() -> u64 {
+fn estimate_ram_mb() -> Option<u64> {
     use std::process::Command;
     Command::new("sysctl")
         .arg("-n")
@@ -593,28 +604,31 @@ fn estimate_ram_mb() -> u64 {
         .ok()
         .and_then(|o| String::from_utf8_lossy(&o.stdout).trim().parse::<u64>().ok())
         .map(|bytes| bytes / (1024 * 1024))
-        .unwrap_or(4096)
 }
 
 #[cfg(target_os = "windows")]
-fn estimate_ram_mb() -> u64 {
-    // On Windows, use systeminfo or WMI — simplified fallback
-    8192
+fn estimate_ram_mb() -> Option<u64> {
+    use std::mem::size_of;
+    use windows_sys::Win32::System::SystemInformation::{GlobalMemoryStatusEx, MEMORYSTATUSEX};
+
+    let mut status = MEMORYSTATUSEX {
+        dwLength: size_of::<MEMORYSTATUSEX>() as u32,
+        ..Default::default()
+    };
+    let succeeded = unsafe { GlobalMemoryStatusEx(&mut status) };
+    (succeeded != 0).then_some(status.ullTotalPhys / (1024 * 1024))
 }
 
 #[cfg(not(any(target_os = "macos", target_os = "windows")))]
-fn estimate_ram_mb() -> u64 {
+fn estimate_ram_mb() -> Option<u64> {
     // Linux: read /proc/meminfo
-    std::fs::read_to_string("/proc/meminfo")
-        .ok()
-        .and_then(|s| {
-            s.lines()
-                .find(|l| l.starts_with("MemTotal:"))
-                .and_then(|l| l.split_whitespace().nth(1))
-                .and_then(|v| v.parse::<u64>().ok())
-                .map(|kb| kb / 1024)
-        })
-        .unwrap_or(4096)
+    std::fs::read_to_string("/proc/meminfo").ok().and_then(|s| {
+        s.lines()
+            .find(|l| l.starts_with("MemTotal:"))
+            .and_then(|l| l.split_whitespace().nth(1))
+            .and_then(|v| v.parse::<u64>().ok())
+            .map(|kb| kb / 1024)
+    })
 }
 
 #[cfg(test)]
@@ -631,8 +645,100 @@ mod tests {
     }
 
     #[test]
+    fn performance_tier_requires_measured_cpu_and_ram() {
+        assert_eq!(performance_tier(Some(8), Some(8000)), "high");
+        assert_eq!(performance_tier(Some(4), Some(4000)), "mid");
+        assert_eq!(performance_tier(Some(16), None), "low");
+        assert_eq!(performance_tier(None, Some(32768)), "low");
+        assert_eq!(performance_tier(None, None), "low");
+    }
+
+    #[test]
+    fn accelerator_description_states_eligibility_and_fallback() {
+        assert_eq!(
+            detect_accelerator(true),
+            ("coreml-eligible", "CoreML for eligible models; CPU fallback")
+        );
+        assert_eq!(detect_accelerator(false), ("cpu", "CPU"));
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_reports_real_physical_memory() {
+        assert!(estimate_ram_mb().is_some_and(|ram_mb| ram_mb > 0));
+    }
+
+    #[test]
     fn model_filename_accepts_one_plain_component() {
         assert!(validate_model_filename("speaker_embed.onnx").is_ok());
+    }
+
+    #[test]
+    fn obsolete_download_cleanup_is_exact_and_not_a_catalog_wildcard() {
+        for filename in [
+            "dfn3_enc.onnx",
+            "dfn3_erb_dec.onnx",
+            "dfn3_df_dec.onnx",
+            "speaker_embed.onnx",
+        ] {
+            assert!(obsolete_model_download(filename).is_some());
+            assert!(RELEASED_MODEL_SPECS.iter().all(|model| model.filename != filename));
+        }
+        assert!(obsolete_model_download("silero_vad.onnx").is_none());
+        assert!(obsolete_model_download("anything.onnx").is_none());
+    }
+
+    #[test]
+    fn released_registry_is_the_exact_hash_pinned_five_model_set() {
+        let filenames: Vec<_> = RELEASED_MODEL_SPECS.iter().map(|model| model.filename).collect();
+        assert_eq!(
+            filenames,
+            vec![
+                "silero_vad.onnx",
+                "smart-turn-v3-int8.onnx",
+                "flashsr.onnx",
+                "dnsmos_sig_bak_ovr.onnx",
+                "speaker_seg_int8.onnx",
+            ]
+        );
+        for model in RELEASED_MODEL_SPECS {
+            assert!(
+                known_model_hash(model.filename).is_some(),
+                "missing reviewed hash for {}",
+                model.filename
+            );
+        }
+        assert!(released_model_spec("silero_vad.onnx").is_some_and(|model| model.required));
+        assert!(RELEASED_MODEL_SPECS
+            .iter()
+            .filter(|model| model.required)
+            .all(|model| model.filename == "silero_vad.onnx"));
+        assert!(released_model_spec("dfn3_enc.onnx").is_none());
+        assert!(released_model_spec("speaker_embed.onnx").is_none());
+    }
+
+    #[test]
+    fn existing_legacy_file_is_removal_only_and_disappears_after_deletion() {
+        let models_dir =
+            std::env::temp_dir().join(format!("depoaudio-legacy-model-test-{}", uuid::Uuid::new_v4().simple()));
+        std::fs::create_dir_all(&models_dir).unwrap();
+        let legacy_file = models_dir.join("speaker_embed.onnx");
+        std::fs::write(&legacy_file, vec![0_u8; 1024]).unwrap();
+
+        let catalog = legacy_model_catalog(&models_dir);
+        assert_eq!(catalog.len(), 1);
+        let legacy = &catalog[0];
+        assert_eq!(legacy.filename, "speaker_embed.onnx");
+        assert_eq!(legacy.feature, "Legacy unused file");
+        assert!(legacy.installed);
+        assert!(legacy.removable);
+        assert!(!legacy.required);
+        assert!(!legacy.recommended);
+        assert!(legacy.download_url.is_empty());
+
+        std::fs::remove_file(&legacy_file).unwrap();
+        assert!(legacy_model_catalog(&models_dir).is_empty());
+        std::fs::remove_dir_all(models_dir).unwrap();
     }
 
     #[test]

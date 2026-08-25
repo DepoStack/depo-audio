@@ -84,6 +84,7 @@ describe('ConvertTab scan cancellation', () => {
   beforeEach(() => {
     preferencesContext.current = preferences()
     invoke.mockReset()
+    invoke.mockResolvedValue()
     listen.mockReset()
     listen.mockResolvedValue(vi.fn())
   })
@@ -144,5 +145,39 @@ describe('ConvertTab scan cancellation', () => {
     cancellationAllowed = true
     fireEvent.click(screen.getByRole('button', { name: 'Retry cancel' }))
     await waitFor(() => expect(screen.getByRole('button', { name: 'Scan' })).toBeEnabled())
+  })
+
+  it('omits unavailable hardware measurements from the performance summary', () => {
+    render(
+      <ConvertTab
+        {...props()}
+        capabilities={{
+          dereverbAvailable: false,
+          tier: 'low',
+          cpuCores: null,
+          ramMb: null,
+          appleSilicon: false,
+        }}
+      />,
+    )
+
+    expect(screen.getByText(/Lightweight mode/)).not.toHaveAttribute('title')
+  })
+
+  it('includes only measured hardware details in the performance summary', () => {
+    render(
+      <ConvertTab
+        {...props()}
+        capabilities={{
+          dereverbAvailable: false,
+          tier: 'high',
+          cpuCores: 12,
+          ramMb: 32768,
+          appleSilicon: true,
+        }}
+      />,
+    )
+
+    expect(screen.getByText(/High performance/)).toHaveAttribute('title', '12 cores · 32 GB RAM · Apple Silicon')
   })
 })

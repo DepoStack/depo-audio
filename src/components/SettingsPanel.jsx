@@ -16,7 +16,7 @@ import {
   AppWindow,
   DownloadCloud,
 } from 'lucide-react'
-import { DEPOSTACK_URL } from '../constants'
+import { DEPOAUDIO_RELEASES_URL, DEPOSTACK_URL } from '../constants'
 import { Dialog, DialogContent, DialogTitle, DialogClose, DialogDescription } from './ui/dialog'
 import { Button } from './ui/button'
 import { Input } from './ui/input'
@@ -207,15 +207,18 @@ function ModelManager() {
   models.forEach(m => {
     ;(groups[m.feature] ||= []).push(m)
   })
-  const installedCount = models.filter(m => m.installed).length
-  const totalSize = models.filter(m => m.installed).reduce((s, m) => s + m.sizeMb, 0)
+  const activeModels = models.filter(m => m.feature !== 'Legacy unused file')
+  const legacyModels = models.filter(m => m.feature === 'Legacy unused file')
+  const installedCount = activeModels.filter(m => m.installed).length
+  const totalSize = activeModels.filter(m => m.installed).reduce((s, m) => s + m.sizeMb, 0)
+  const legacySize = legacyModels.reduce((s, m) => s + m.sizeMb, 0)
 
   return (
     <Card>
       <CardHeader>
         <CardTitle>AI Models</CardTitle>
         <span className="font-mono text-[10px] text-[hsl(var(--sub))]">
-          {installedCount}/{models.length} installed · {totalSize.toFixed(1)} MB
+          {installedCount}/{activeModels.length} active installed · {totalSize.toFixed(1)} MB
         </span>
       </CardHeader>
       <CardContent className="p-4 flex flex-col gap-3">
@@ -224,14 +227,31 @@ function ModelManager() {
             <Cpu size={13} className="text-[hsl(var(--sub))]" />
             <span className="font-medium">{caps.acceleratorDesc}</span>
             <Badge variant="default">{caps.tier} tier</Badge>
-            <Badge variant="default">{caps.cpuCores} cores</Badge>
-            <Badge variant="default">{Math.round(caps.ramMb / 1024)} GB RAM</Badge>
+            {Number.isFinite(caps.cpuCores) && caps.cpuCores > 0 && (
+              <Badge variant="default">{caps.cpuCores} cores</Badge>
+            )}
+            {Number.isFinite(caps.ramMb) && caps.ramMb > 0 && (
+              <Badge variant="default">{Math.round(caps.ramMb / 1024)} GB RAM</Badge>
+            )}
           </div>
         )}
 
         {error && (
           <div className="flex items-center gap-2 px-3 py-2 rounded-md bg-destructive/10 text-destructive text-[11px]">
             <AlertCircle size={13} className="shrink-0" /> {error}
+          </div>
+        )}
+
+        {legacyModels.length > 0 && (
+          <div
+            role="status"
+            className="flex items-start gap-2 rounded-md border border-warning/40 bg-warning/10 px-3 py-2 text-[11px] text-foreground"
+          >
+            <AlertCircle size={13} className="mt-0.5 shrink-0 text-warning" />
+            <span>
+              {legacyModels.length} legacy unused {legacyModels.length === 1 ? 'file' : 'files'} (
+              {legacySize.toFixed(1)} MB) can be removed below. These files are not used by this release.
+            </span>
           </div>
         )}
 
@@ -244,11 +264,17 @@ function ModelManager() {
               {items.map(m => (
                 <div
                   key={m.filename}
-                  className="flex items-center gap-3 px-2 py-2 rounded-md hover:bg-secondary/50 transition-colors"
+                  className={`flex items-center gap-3 px-2 py-2 rounded-md transition-colors ${
+                    m.feature === 'Legacy unused file'
+                      ? 'border border-warning/30 bg-warning/10'
+                      : 'hover:bg-secondary/50'
+                  }`}
                 >
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-1.5 text-[12px] font-medium text-foreground">
-                      {m.installed ? (
+                      {m.feature === 'Legacy unused file' ? (
+                        <AlertCircle size={13} className="text-warning shrink-0" />
+                      ) : m.installed ? (
                         <CheckCircle size={13} className="text-[hsl(var(--success))] shrink-0" />
                       ) : (
                         <Download size={13} className="text-[hsl(var(--sub))] shrink-0" />
@@ -624,16 +650,38 @@ export default function SettingsPanel({ open, onOpenChange, prefs, updater = {} 
                   <CardHeader>
                     <CardTitle>About</CardTitle>
                   </CardHeader>
-                  <CardContent className="p-4 flex items-center justify-between gap-3">
-                    <div className="flex flex-col min-w-0">
-                      <span className="text-[12px] font-medium text-foreground">DepoAudio is part of DepoStack</span>
-                      <span className="text-[11px] text-[hsl(var(--sub))] mt-0.5">
-                        A growing suite of tools built for court reporters. DepoAudio itself stays free and open source.
-                      </span>
+                  <CardContent className="p-4 flex flex-col gap-3">
+                    <div className="flex items-center justify-between gap-3">
+                      <div className="flex flex-col min-w-0">
+                        <span className="text-[12px] font-medium text-foreground">DepoAudio is part of DepoStack</span>
+                        <span className="text-[11px] text-[hsl(var(--sub))] mt-0.5">
+                          A growing suite of tools built for court reporters. DepoAudio itself stays free and open
+                          source.
+                        </span>
+                      </div>
+                      <Button size="sm" variant="outline" className="shrink-0" onClick={() => openUrl(DEPOSTACK_URL)}>
+                        <ExternalLink size={12} /> depostack.com
+                      </Button>
                     </div>
-                    <Button size="sm" variant="outline" className="shrink-0" onClick={() => openUrl(DEPOSTACK_URL)}>
-                      <ExternalLink size={12} /> depostack.com
-                    </Button>
+
+                    <div className="flex items-center justify-between gap-3 border-t border-border pt-3">
+                      <div className="flex flex-col min-w-0">
+                        <span className="text-[12px] font-medium text-foreground">FFmpeg and audio codecs</span>
+                        <span className="text-[11px] text-[hsl(var(--sub))] mt-0.5">
+                          DepoAudio uses FFmpeg under LGPL v2.1 or later. License notices and reviewed build/source
+                          references are included; corresponding-source delivery is verified before publication.
+                        </span>
+                      </div>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="shrink-0"
+                        aria-label="Open DepoAudio releases with FFmpeg source and license evidence"
+                        onClick={() => openUrl(DEPOAUDIO_RELEASES_URL)}
+                      >
+                        <ExternalLink size={12} /> Evidence
+                      </Button>
+                    </div>
                   </CardContent>
                 </Card>
               </>

@@ -17,64 +17,82 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  # Static, self-contained ffmpeg/ffprobe assets. Homebrew's ffmpeg is
-  # dynamically linked against Cellar dylibs and would fail on a clean Mac.
-  # GitHub release asset IDs are immutable. Replacement assets receive new
-  # IDs, so these downloads fail closed if an upstream release is re-cut.
-  FFMPEG_MAC_ARM64_ID: '202650084'
-  FFMPEG_MAC_ARM64_SIZE: '47078120'
-  FFMPEG_MAC_X64_ID: '202650083'
-  FFMPEG_MAC_X64_SIZE: '75991688'
-  FFPROBE_MAC_ARM64_ID: '202650098'
-  FFPROBE_MAC_ARM64_SIZE: '47037128'
-  FFPROBE_MAC_X64_ID: '202650090'
-  FFPROBE_MAC_X64_SIZE: '75917176'
+  # Pin the compiler and Node runtime used by the verified candidate. Action
+  # commits alone do not pin the toolchains they install.
+  NODE_VERSION: '22.23.1'
+  RUST_VERSION: '1.98.0'
+  CARGO_ABOUT_URL: 'https://github.com/EmbarkStudios/cargo-about/releases/download/0.9.2/cargo-about-0.9.2-x86_64-unknown-linux-musl.tar.gz'
+  CARGO_ABOUT_SIZE: '6732751'
+  CARGO_ABOUT_SHA256: '9099a59e820c38a68b9d65f300662a567d56562f9a10f6aa4c7e86c17c2566af'
+  CARGO_CYCLONEDX_URL: 'https://github.com/CycloneDX/cyclonedx-rust-cargo/releases/download/cargo-cyclonedx-0.5.9/cargo-cyclonedx-x86_64-unknown-linux-musl.tar.xz'
+  CARGO_CYCLONEDX_SIZE: '1766496'
+  CARGO_CYCLONEDX_SHA256: '9bd3e599314f50810c9d98b8b68a617ff9d3cc20873968d90b29d121f6b226ff'
+  # Build both macOS slices from one reviewed LGPL source set. The prior
+  # community binaries enabled FFmpeg's nonfree/unredistributable mode and
+  # mixed major versions, so release builds must never consume them again.
+  FFMPEG_SOURCE_URL: 'https://ffmpeg.org/releases/ffmpeg-7.1.5.tar.xz'
+  FFMPEG_SOURCE_SIZE: '11050340'
+  FFMPEG_SOURCE_SHA256: 'de668509caf9e35e3cd162473441fdb29538c6d96ed080292b3cf9e6fc5d558f'
+  LAME_SOURCE_URL: 'https://downloads.sourceforge.net/project/lame/lame/3.100/lame-3.100.tar.gz'
+  LAME_SOURCE_SIZE: '1524133'
+  LAME_SOURCE_SHA256: 'ddfe36cab873794038ae2c1210557ad34857a4b6bdc515785d1da9e175b1da1e'
+  OPUS_SOURCE_URL: 'https://downloads.xiph.org/releases/opus/opus-1.6.1.tar.gz'
+  OPUS_SOURCE_SIZE: '10472813'
+  OPUS_SOURCE_SHA256: '6ffcb593207be92584df15b32466ed64bbec99109f007c82205f0194572411a1'
   # BtbN deletes ordinary daily assets after its rolling retention window.
   # Pin the 2026-07-31 month-end build, which upstream retains for two years,
   # instead of an asset from the short-lived `latest` release.
-  FFMPEG_WIN_ID: '496767003'
-  FFMPEG_WIN_SIZE: '169718043'
-  FFMPEG_WIN_SHA256: '68a5e966533002785c3e4b9a98327e21d5277802668bf889d94086cb6426cbb4'
+  # Static LGPL build. The exact archive, included LGPL text, build
+  # configuration, required FTR decoder, and released output encoders are
+  # verified before its sidecars can enter an installer.
+  FFMPEG_WIN_ID: '496767001'
+  FFMPEG_WIN_SIZE: '147672337'
+  FFMPEG_WIN_SHA256: '5d65df0c0ca5346d82df8ade9c2e12db45d1f978f18ff908b42f03f5223dfc90'
   ORT_MAC_ID: '253300416'
   ORT_MAC_SIZE: '54820264'
+  ORT_MAC_SHA256: 'cfa6f6584d87555ed9f6e7e8a000d3947554d589efe3723b8bfa358cd263d03c'
   ORT_WIN_ID: '253300435'
   ORT_WIN_SIZE: '72368545'
-  FTR_SMOKE_URL: 'https://samples.ffmpeg.org/ffmpeg-bugs/trac/ticket7279/t1.trm'
-  FTR_SMOKE_SIZE: '3775794'
-  FTR_SMOKE_SHA256: '60993c1f5379d56d43f231ea5391504f9c808daf8978fba80e5ad60e81c4c4d7'
+  ORT_WIN_SHA256: '174c616efc0271194488642a72f1a514e01487da4dfe84c49296d66e40ebe0da'
 
 jobs:
   # Guard the release before any build starts:
   #  - the tag must match the configured app version, so binaries can't ship
   #    self-reporting a different version than their tag
-  #  - any stale DRAFT release carrying this tag is deleted, so tauri-action
-  #    creates a fresh draft whose target_commitish is THIS run's commit (a
-  #    reused draft keeps its old commitish, and publishing it would mint the
-  #    git tag at the wrong commit) and whose assets can't mix with an older
-  #    build's. Published releases are never touched.
+  #  - any stale DRAFT carrying this tag fails the run for manual review; the
+  #    workflow never deletes it. A fresh private draft is created explicitly
+  #    for this commit, while tauri-action remains build-only. Published
+  #    releases are never touched.
   prepare:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+    outputs:
+      release_id: ${{ steps.create-draft.outputs.release_id }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
 
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-        with:
-          node-version: 22
-
-      - name: Verify complete release contract
-        env:
-          TAG: ${{ inputs.tag || github.ref_name }}
+      - name: Verify release source is main
         run: |
           set -euo pipefail
-          if [[ "$TAG" == *-* ]]; then
-            node scripts/release-contract-check.mjs
-          else
-            node scripts/release-contract-check.mjs --published
+          if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ] && [ "$GITHUB_REF" != "refs/heads/main" ]; then
+            echo "ERROR: release workflow_dispatch must run from refs/heads/main (got $GITHUB_REF)"
+            exit 1
           fi
+          git fetch --no-tags origin main
+          git merge-base --is-ancestor "$GITHUB_SHA" refs/remotes/origin/main || {
+            echo "ERROR: release commit $GITHUB_SHA is not contained in origin/main"
+            exit 1
+          }
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Verify private-draft build contract
+        run: node scripts/release-contract-check.mjs
 
       - name: Verify tag matches the configured app version
         env:
@@ -95,6 +113,15 @@ jobs:
               )
           print(f"Tag {tag} matches app version {version}")
           PY
+
+      - name: Verify permission-cleared private FTR fixture contract
+        env:
+          FTR_FIXTURE_URL: ${{ secrets.FTR_FIXTURE_URL }}
+          FTR_FIXTURE_AUTHORIZATION: ${{ secrets.FTR_FIXTURE_AUTHORIZATION }}
+          FTR_FIXTURE_SIZE: ${{ secrets.FTR_FIXTURE_SIZE }}
+          FTR_FIXTURE_SHA256: ${{ secrets.FTR_FIXTURE_SHA256 }}
+          FTR_FIXTURE_EVIDENCE_ID: ${{ secrets.FTR_FIXTURE_EVIDENCE_ID }}
+        run: node scripts/private-ftr-fixture.mjs --check
 
       - name: Verify release commit and published-release immutability
         env:
@@ -118,32 +145,80 @@ jobs:
             echo "Tag $tag does not exist yet and may be created at $GITHUB_SHA"
           fi
 
-      - name: Delete stale draft release for this tag
+      - name: Reject a stale draft release for this tag
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ inputs.tag || github.ref_name }}
         run: |
           set -euo pipefail
           tag="$TAG"
-          gh api "repos/$GITHUB_REPOSITORY/releases" --paginate |
-            jq -r --arg tag "$tag" '.[] | select(.draft == true and .tag_name == $tag) | .id' |
-            while IFS= read -r id; do
-              echo "Deleting stale draft release $id (tag_name $tag). Assets it held:"
-              gh api "repos/$GITHUB_REPOSITORY/releases/$id" \
-                --jq '.assets[] | "  \(.name)  (\(.download_count) downloads)"' || echo "  (no assets)"
-              gh api -X DELETE "repos/$GITHUB_REPOSITORY/releases/$id"
-            done
+          stale=$(gh api "repos/$GITHUB_REPOSITORY/releases" --paginate --slurp | jq -s --arg tag "$tag" '
+            add | flatten | map(select(.draft == true and .tag_name == $tag))
+          ')
+          if [ "$(jq 'length' <<<"$stale")" != '0' ]; then
+            echo "ERROR: an existing private draft already uses $tag"
+            jq -r '.[] | "  draft \(.id), target \(.target_commitish), assets \(.assets | length)"' <<<"$stale"
+            echo 'Review and reconcile it manually; the release workflow never deletes drafts.'
+            exit 1
+          fi
+
+      - name: Create one commit-bound draft release
+        id: create-draft
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ inputs.tag || github.ref_name }}
+        run: |
+          set -euo pipefail
+          prerelease=false
+          if [[ "$TAG" == *-* ]]; then prerelease=true; fi
+          notes=$(node --input-type=module <<'NODE'
+          import { readFileSync } from 'node:fs'
+
+          const version = JSON.parse(readFileSync('package.json', 'utf8')).version
+          const changelog = readFileSync('CHANGELOG.md', 'utf8')
+          const marker = `## [${version}] - `
+          const start = changelog.indexOf(marker)
+          if (start < 0) throw new Error(`Missing CHANGELOG section for ${version}`)
+          const next = changelog.indexOf('\n## [', start + marker.length)
+          const section = changelog.slice(start, next < 0 ? undefined : next).trim()
+          if (!section.includes('### Release scope')) throw new Error('Release notes have no release scope')
+          process.stdout.write(section)
+          NODE
+          )
+          payload=$(jq -n \
+            --arg tag "$TAG" \
+            --arg name "DepoAudio $TAG" \
+            --arg commit "$GITHUB_SHA" \
+            --arg body "$notes" \
+            --argjson prerelease "$prerelease" \
+            '{
+              tag_name: $tag,
+              name: $name,
+              target_commitish: $commit,
+              body: $body,
+              draft: true,
+              prerelease: $prerelease
+            }')
+          release=$(gh api -X POST "repos/$GITHUB_REPOSITORY/releases" --input - <<<"$payload")
+          release_id=$(jq -er \
+            --arg tag "$TAG" --arg commit "$GITHUB_SHA" \
+            'select(.draft == true and .tag_name == $tag and .target_commitish == $commit) | .id' \
+            <<<"$release")
+          [[ "$release_id" =~ ^[1-9][0-9]*$ ]] || {
+            echo 'ERROR: GitHub did not return a valid commit-bound draft release ID'; exit 1;
+          }
+          echo "release_id=$release_id" >> "$GITHUB_OUTPUT"
+          echo "Created private draft release $release_id for $TAG at $GITHUB_SHA"
 
   release:
-    needs: prepare
+    needs: [prepare, dependency-evidence]
     permissions:
       contents: write
 
     strategy:
       fail-fast: false
-      # Serialize the platform builds: tauri-action does a read-modify-write of
-      # the draft release's latest.json, so two jobs writing it concurrently
-      # would clobber one platform's updater keys. One-at-a-time is safe.
+      # Keep candidate builds serialized so draft uploads and evidence remain
+      # easy to audit. Tauri itself is build-only and never writes latest.json.
       max-parallel: 1
       matrix:
         include:
@@ -165,12 +240,33 @@ jobs:
       - name: Install Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: 22
+          node-version: ${{ env.NODE_VERSION }}
           cache: npm
+
+      - name: Download verified dependency evidence
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: dependency-evidence-${{ github.sha }}
+          path: ${{ runner.temp }}/depoaudio-dependency-evidence
+
+      - name: Stage the regenerated Rust license report
+        shell: bash
+        run: |
+          set -euo pipefail
+          version=$(node -p "require('./package.json').version")
+          evidence_dir="$RUNNER_TEMP/depoaudio-dependency-evidence"
+          (
+            cd "$evidence_dir"
+            sha256sum -c SHA256SUMS-dependency-evidence.txt
+          )
+          source="$evidence_dir/DepoAudio_${version}_rust-third-party-licenses.html"
+          test -s "$source"
+          cp "$source" src-tauri/resources/third-party/rust/THIRD-PARTY-LICENSES.html
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable (2026-08-05)
         with:
+          toolchain: ${{ env.RUST_VERSION }}
           targets: ${{ matrix.rust-targets }}
 
       - name: Rust cache
@@ -185,75 +281,17 @@ jobs:
         run: mkdir -p src-tauri/binaries
 
       # ── FFmpeg sidecars ─────────────────────────────────────────────────
-      # macOS: download STATIC per-arch ffmpeg + ffprobe, verify each is
-      # self-contained (no Homebrew/Cellar deps), and stage them for the
-      # universal build. Tauri's --target universal-apple-darwin compiles each
-      # arch as a SEPARATE sub-build and resolves each externalBin by that
-      # arch's own triple, so the per-arch names (ffmpeg-aarch64-apple-darwin /
-      # ffmpeg-x86_64-apple-darwin) are what's actually required; the CLI lipos
-      # them for the final universal bundle. We also emit the -universal-apple-
-      # darwin fat binary as a harmless belt-and-suspenders fallback.
+      # macOS: compile the same reviewed LGPL FFmpeg/LAME/Opus sources for both
+      # architectures. The script rejects GPL/nonfree configurations, checks
+      # every released codec/filter contract, preserves notices and source
+      # hashes, then stages thin and universal sidecars for Tauri.
+      - name: Install macOS FFmpeg build prerequisites
+        if: runner.os == 'macOS'
+        run: brew install nasm pkg-config
+
       - name: Build universal FFmpeg sidecars (macOS)
         if: runner.os == 'macOS'
-        env:
-          GH_DOWNLOAD_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          mkdir -p ffbin
-          download_asset() {
-            repo="$1"; asset_id="$2"; output="$3"; expected_size="$4"
-            curl -fL --retry 5 --retry-all-errors --retry-delay 2 \
-              -H "Accept: application/octet-stream" \
-              -H "Authorization: Bearer ${GH_DOWNLOAD_TOKEN}" \
-              -H "X-GitHub-Api-Version: 2022-11-28" \
-              "https://api.github.com/repos/${repo}/releases/assets/${asset_id}" \
-              -o "$output"
-            actual_size=$(stat -f%z "$output")
-            test "$actual_size" = "$expected_size" || {
-              echo "ERROR: $output size $actual_size does not match pinned size $expected_size"; exit 1;
-            }
-          }
-          download_asset descriptinc/ffmpeg-ffprobe-static "$FFMPEG_MAC_ARM64_ID" ffbin/ffmpeg-arm64 "$FFMPEG_MAC_ARM64_SIZE"
-          download_asset descriptinc/ffmpeg-ffprobe-static "$FFMPEG_MAC_X64_ID" ffbin/ffmpeg-x64 "$FFMPEG_MAC_X64_SIZE"
-          download_asset descriptinc/ffmpeg-ffprobe-static "$FFPROBE_MAC_ARM64_ID" ffbin/ffprobe-arm64 "$FFPROBE_MAC_ARM64_SIZE"
-          download_asset descriptinc/ffmpeg-ffprobe-static "$FFPROBE_MAC_X64_ID" ffbin/ffprobe-x64 "$FFPROBE_MAC_X64_SIZE"
-          chmod +x ffbin/*
-          echo "== pinned sidecar sha256 =="; shasum -a 256 ffbin/*
-          # Guard (allowlist, not denylist): a real static sidecar may only
-          # depend on system libraries under /usr/lib or /System/Library. Any
-          # other dependency — Homebrew, /usr/local, or an @rpath/@loader_path
-          # reference — means it would dyld-fail on a clean end-user Mac, so
-          # fail the build instead of shipping it. Checked per thin binary
-          # BEFORE lipo.
-          for f in ffbin/ffmpeg-arm64 ffbin/ffmpeg-x64 ffbin/ffprobe-arm64 ffbin/ffprobe-x64; do
-            echo "== $f =="; file "$f"; otool -L "$f"
-            bad=$(otool -L "$f" | tail -n +2 | awk '{print $1}' | grep -vE '^/usr/lib/|^/System/Library/' || true)
-            if [ -n "$bad" ]; then
-              echo "ERROR: $f is not self-contained — non-system dependencies:"; echo "$bad"; exit 1
-            fi
-          done
-          for name in ffmpeg ffprobe; do
-            # Per-arch thin sidecars under Tauri's target triples — REQUIRED:
-            # each per-arch sub-build of the universal target resolves the
-            # externalBin by its own triple (arm64 static -> aarch64 triple,
-            # x64 static -> x86_64 triple).
-            cp "ffbin/$name-arm64" "src-tauri/binaries/$name-aarch64-apple-darwin"
-            cp "ffbin/$name-x64"   "src-tauri/binaries/$name-x86_64-apple-darwin"
-            chmod +x "src-tauri/binaries/$name-aarch64-apple-darwin" \
-                     "src-tauri/binaries/$name-x86_64-apple-darwin"
-            # Universal fat binary — fallback in case a Tauri version resolves
-            # the externalBin by the universal triple at final assembly.
-            lipo -create "ffbin/$name-arm64" "ffbin/$name-x64" \
-              -output "src-tauri/binaries/$name-universal-apple-darwin"
-            chmod +x "src-tauri/binaries/$name-universal-apple-darwin"
-            archs=$(lipo -archs "src-tauri/binaries/$name-universal-apple-darwin")
-            echo "$name universal archs: $archs"
-            case "$archs" in
-              *x86_64*arm64*|*arm64*x86_64*) : ;;
-              *) echo "ERROR: $name is not universal (got: $archs)"; exit 1 ;;
-            esac
-            "src-tauri/binaries/$name-aarch64-apple-darwin" -version | head -1
-          done
+        run: bash scripts/build-ffmpeg-macos.sh
 
       - name: Download FFmpeg (Windows x64)
         if: matrix.platform == 'windows-latest'
@@ -277,8 +315,31 @@ jobs:
           Expand-Archive ffmpeg.zip -DestinationPath ffmpeg_tmp -Force
           $bin   = Get-ChildItem ffmpeg_tmp -Recurse -Filter "ffmpeg.exe"  | Select-Object -First 1
           $probe = Get-ChildItem ffmpeg_tmp -Recurse -Filter "ffprobe.exe" | Select-Object -First 1
+          if (-not $bin -or -not $probe) { throw "Pinned FFmpeg archive is missing ffmpeg.exe or ffprobe.exe" }
+          $archiveRoot = $bin.Directory.Parent
+          $license = Join-Path $archiveRoot.FullName 'LICENSE.txt'
+          if (-not (Test-Path -LiteralPath $license -PathType Leaf)) {
+            throw "Pinned FFmpeg archive is missing LICENSE.txt"
+          }
+          $licenseHash = (Get-FileHash -LiteralPath $license -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($licenseHash -ne 'da7eabb7bafdf7d3ae5e9f223aa5bdc1eece45ac569dc21b3b037520b4464768') {
+            throw "Pinned FFmpeg LICENSE.txt hash mismatch: $licenseHash"
+          }
           Copy-Item $bin.FullName   src-tauri/binaries/ffmpeg-x86_64-pc-windows-msvc.exe
           Copy-Item $probe.FullName src-tauri/binaries/ffprobe-x86_64-pc-windows-msvc.exe
+          $noticeDir = 'src-tauri/resources/third-party/ffmpeg'
+          New-Item -ItemType Directory -Force -Path $noticeDir | Out-Null
+          Copy-Item -LiteralPath $license -Destination (Join-Path $noticeDir 'LICENSE.txt')
+          & $bin.FullName -version | Set-Content -LiteralPath (Join-Path $noticeDir 'BUILD-CONFIGURATION.txt') -Encoding utf8
+          if ($LASTEXITCODE -ne 0) { throw "Pinned FFmpeg binary could not report its build configuration" }
+          @(
+            'Binary distribution: BtbN/FFmpeg-Builds'
+            'Release: https://github.com/BtbN/FFmpeg-Builds/releases/tag/autobuild-2026-07-31-14-10'
+            'Asset: ffmpeg-N-125875-g5d4d3bdc61-win64-lgpl.zip'
+            'Asset SHA-256: 5d65df0c0ca5346d82df8ade9c2e12db45d1f978f18ff908b42f03f5223dfc90'
+            'Upstream FFmpeg source: https://github.com/FFmpeg/FFmpeg/commit/5d4d3bdc61412641883a45e060e810f80ea7f4b5'
+            'This file records provenance; it is not a legal compliance determination.'
+          ) | Set-Content -LiteralPath (Join-Path $noticeDir 'SOURCE.txt') -Encoding utf8
 
       - name: Verify FFmpeg sidecars (macOS)
         if: runner.os == 'macOS'
@@ -292,32 +353,77 @@ jobs:
         shell: pwsh
         run: Get-ChildItem src-tauri/binaries/
 
-      - name: Smoke-test native FTR decoding (macOS)
+      - name: Fetch permission-cleared private FTR fixture
+        env:
+          FTR_FIXTURE_URL: ${{ secrets.FTR_FIXTURE_URL }}
+          FTR_FIXTURE_AUTHORIZATION: ${{ secrets.FTR_FIXTURE_AUTHORIZATION }}
+          FTR_FIXTURE_SIZE: ${{ secrets.FTR_FIXTURE_SIZE }}
+          FTR_FIXTURE_SHA256: ${{ secrets.FTR_FIXTURE_SHA256 }}
+          FTR_FIXTURE_EVIDENCE_ID: ${{ secrets.FTR_FIXTURE_EVIDENCE_ID }}
+        run: node scripts/private-ftr-fixture.mjs --download
+
+      - name: Smoke-test native FTR decoding and released encoders (macOS)
         if: runner.os == 'macOS'
         run: |
           set -euo pipefail
-          curl -fL --retry 5 --retry-all-errors --retry-delay 2 "$FTR_SMOKE_URL" -o ftr-smoke.trm
-          test "$(stat -f%z ftr-smoke.trm)" = "$FTR_SMOKE_SIZE" || { echo "ERROR: FTR fixture size mismatch"; exit 1; }
-          echo "$FTR_SMOKE_SHA256  ftr-smoke.trm" | shasum -a 256 -c -
           for ffmpeg in \
             src-tauri/binaries/ffmpeg-aarch64-apple-darwin \
             src-tauri/binaries/ffmpeg-x86_64-apple-darwin
           do
             "$ffmpeg" -hide_banner -v error \
               -c:a ftr -t 5 -i ftr-smoke.trm -map 0:a:0 -f null -
+            arch=$(basename "$ffmpeg")
+            for spec in \
+              'wav:pcm_s16le' \
+              'mp3:libmp3lame' \
+              'flac:flac' \
+              'opus:libopus' \
+              'm4a:aac'
+            do
+              extension=${spec%%:*}
+              codec=${spec#*:}
+              output="$RUNNER_TEMP/$arch-smoke.$extension"
+              "$ffmpeg" -hide_banner -v error -xerror \
+                -c:a ftr -t 1 -i ftr-smoke.trm -map 0:a:0 -ac 1 \
+                -c:a "$codec" -y "$output"
+              test -s "$output" || { echo "ERROR: $arch produced no $extension output"; exit 1; }
+              rm -f -- "$output"
+            done
           done
 
-      - name: Smoke-test native FTR decoding (Windows)
+      - name: Smoke-test native FTR decoding and released encoders (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          Invoke-WebRequest $env:FTR_SMOKE_URL -OutFile ftr-smoke.trm
-          if ((Get-Item ftr-smoke.trm).Length -ne [int64]$env:FTR_SMOKE_SIZE) { throw "FTR fixture size mismatch" }
-          $hash = (Get-FileHash ftr-smoke.trm -Algorithm SHA256).Hash.ToLowerInvariant()
-          if ($hash -ne $env:FTR_SMOKE_SHA256) { throw "FTR fixture hash mismatch: $hash" }
           & src-tauri/binaries/ffmpeg-x86_64-pc-windows-msvc.exe -hide_banner -v error `
             -c:a ftr -t 5 -i ftr-smoke.trm -map 0:a:0 -f null NUL
           if ($LASTEXITCODE -ne 0) { throw "Bundled FFmpeg failed native FTR decode smoke test" }
+          $ffmpeg = Resolve-Path 'src-tauri/binaries/ffmpeg-x86_64-pc-windows-msvc.exe'
+          $variants = @(
+            @{ Extension = 'wav'; Codec = 'pcm_s16le' }
+            @{ Extension = 'mp3'; Codec = 'libmp3lame' }
+            @{ Extension = 'flac'; Codec = 'flac' }
+            @{ Extension = 'opus'; Codec = 'libopus' }
+            @{ Extension = 'm4a'; Codec = 'aac' }
+          )
+          foreach ($variant in $variants) {
+            $output = Join-Path $env:RUNNER_TEMP "depoaudio-encoder-smoke.$($variant.Extension)"
+            $arguments = @(
+              '-hide_banner', '-v', 'error', '-xerror',
+              '-c:a', 'ftr', '-t', '1', '-i', 'ftr-smoke.trm',
+              '-map', '0:a:0', '-ac', '1', '-c:a', $variant.Codec,
+              '-y', $output
+            )
+            & $ffmpeg @arguments
+            if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $output) -or (Get-Item $output).Length -eq 0) {
+              throw "Bundled FFmpeg failed $($variant.Extension) encoder smoke test"
+            }
+            Remove-Item -LiteralPath $output -Force
+          }
+
+      - name: Remove private FTR fixture from the release workspace
+        if: always()
+        run: node scripts/private-ftr-fixture.mjs --clean
 
       # ── ONNX Runtime ────────────────────────────────────────────────────
       # macOS: Microsoft ships a ready-made universal2 (fat) dylib — no lipo
@@ -340,9 +446,14 @@ jobs:
             -o ort.tgz
           actual_size=$(stat -f%z ort.tgz)
           test "$actual_size" = "$ORT_MAC_SIZE" || { echo "ERROR: pinned ONNX Runtime archive size mismatch"; exit 1; }
+          echo "$ORT_MAC_SHA256  ort.tgz" | shasum -a 256 -c -
           tar xzf ort.tgz
           ort_dir=$(ls -d onnxruntime-osx-universal2-*)
           cp -L "$ort_dir/lib/libonnxruntime.dylib" src-tauri/resources/onnxruntime/libonnxruntime.dylib
+          mkdir -p src-tauri/resources/third-party/onnxruntime
+          cp "$ort_dir/LICENSE" src-tauri/resources/third-party/onnxruntime/LICENSE
+          cp "$ort_dir/ThirdPartyNotices.txt" \
+            src-tauri/resources/third-party/onnxruntime/ThirdPartyNotices.txt
           file src-tauri/resources/onnxruntime/libonnxruntime.dylib
           archs=$(lipo -archs src-tauri/resources/onnxruntime/libonnxruntime.dylib)
           echo "ORT dylib archs: $archs"
@@ -367,9 +478,17 @@ jobs:
           if ((Get-Item ort.zip).Length -ne [int64]$env:ORT_WIN_SIZE) {
             throw "Pinned ONNX Runtime archive size mismatch"
           }
+          if ((Get-FileHash ort.zip -Algorithm SHA256).Hash.ToLowerInvariant() -ne $env:ORT_WIN_SHA256) {
+            throw "Pinned ONNX Runtime archive SHA-256 mismatch"
+          }
           Expand-Archive ort.zip -DestinationPath ort_tmp -Force
           $dll = Get-ChildItem ort_tmp -Recurse -Filter "onnxruntime.dll" | Select-Object -First 1
           Copy-Item $dll.FullName "src-tauri/resources/onnxruntime/onnxruntime.dll"
+          $ortRoot = $dll.Directory.Parent.FullName
+          $noticeDir = "src-tauri/resources/third-party/onnxruntime"
+          New-Item -ItemType Directory -Force -Path $noticeDir | Out-Null
+          Copy-Item (Join-Path $ortRoot 'LICENSE') (Join-Path $noticeDir 'LICENSE')
+          Copy-Item (Join-Path $ortRoot 'ThirdPartyNotices.txt') (Join-Path $noticeDir 'ThirdPartyNotices.txt')
           Get-ChildItem src-tauri/resources/onnxruntime/
 
       - name: Smoke-test bundled ONNX Runtime (macOS)
@@ -384,6 +503,23 @@ jobs:
         env:
           ORT_DYLIB_PATH: ${{ github.workspace }}\src-tauri\resources\onnxruntime\onnxruntime.dll
         run: cargo test --locked --manifest-path src-tauri/Cargo.toml ort_loads_and_runs_silero_vad -- --ignored --nocapture
+
+      - name: Write the pre-package binary and model contract
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+        run: |
+          set -euo pipefail
+          case "$RUNNER_OS" in
+            macOS) platform=macos ;;
+            Windows) platform=windows ;;
+            *) echo "ERROR: unsupported release runner $RUNNER_OS"; exit 1 ;;
+          esac
+          node scripts/release-artifact-inventory.mjs \
+            --write-contract \
+            --root src-tauri \
+            --platform "$platform" \
+            --output src-tauri/resources/third-party/release/BINARY-CONTRACT.json
 
       # ── Release signing (opt-in) ────────────────────────────────────────
       # Code signing / notarization and signed auto-updates are OPT-IN and
@@ -570,8 +706,18 @@ jobs:
             --argjson platformSigning "$PLATFORM_SIGNING" '
             # ONNX Runtime placement — always, matched to the lib.rs loader.
             (if $runner == "Windows" then {
-                resources: (.bundle.resources + ["resources/onnxruntime/onnxruntime.dll"])
+                resources: (.bundle.resources + [
+                  "resources/onnxruntime/onnxruntime.dll",
+                  "resources/third-party/onnxruntime",
+                  "resources/third-party/ffmpeg",
+                  "resources/third-party/release"
+                ])
               } elif $runner == "macOS" then {
+                resources: (.bundle.resources + [
+                  "resources/third-party/onnxruntime",
+                  "resources/third-party/ffmpeg",
+                  "resources/third-party/release"
+                ]),
                 macOS: { frameworks: ["resources/onnxruntime/libonnxruntime.dylib"] }
               } else error("unsupported release runner: " + $runner) end) as $ort
             # Signed auto-update artifacts — only with updater secrets.
@@ -613,50 +759,38 @@ jobs:
           $certificate = Get-Item "Cert:\CurrentUser\My\$env:WINDOWS_CERTIFICATE_THUMBPRINT" -ErrorAction Stop
           if (!$certificate.HasPrivateKey) { throw "Windows signing certificate has no private key" }
 
-      # macOS signing credentials are exported here via $GITHUB_ENV rather than
-      # the build step's static env, because an unset secret still expands to an
-      # EMPTY (present) variable in a step `env:` block, and the Tauri bundler
-      # treats a present APPLE_CERTIFICATE as "sign with this cert" — it then
-      # runs `security import` on empty data and fails. For an unsigned build we
-      # must leave APPLE_CERTIFICATE / APPLE_ID genuinely UNSET and only pin the
-      # ad-hoc identity ("-"), matching v1.0.0 and the earlier v1.0.1 draft.
-      # When Apple secrets are present we export the full set so tauri-action
-      # imports the certificate and notarizes.
-      - name: Configure macOS code signing identity
-        if: runner.os == 'macOS'
-        shell: bash
+      # Signing credentials remain scoped to their packaging step. Candidate
+      # executables never inherit them during post-package validation.
+      - name: Build unsigned macOS packages
+        if: runner.os == 'macOS' && steps.signing.outputs.platform_signing != 'true'
+        uses: tauri-apps/tauri-action@1deb371b0cd8bd54025b384f1cd735e725c4060f # action-v1.0.0
         env:
-          PLATFORM_SIGNING: ${{ steps.signing.outputs.platform_signing }}
+          APPLE_SIGNING_IDENTITY: '-'
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          args: '--config src-tauri/tauri.release.conf.json ${{ matrix.args }}'
+
+      - name: Build signed and notarized macOS packages
+        if: runner.os == 'macOS' && steps.signing.outputs.platform_signing == 'true'
+        uses: tauri-apps/tauri-action@1deb371b0cd8bd54025b384f1cd735e725c4060f # action-v1.0.0
+        env:
           APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-        run: |
-          set -euo pipefail
-          if [ "$PLATFORM_SIGNING" = "true" ]; then
-            {
-              echo "APPLE_SIGNING_IDENTITY=$APPLE_SIGNING_IDENTITY"
-              echo "APPLE_CERTIFICATE<<__DEPOAUDIO_EOF__"
-              echo "$APPLE_CERTIFICATE"
-              echo "__DEPOAUDIO_EOF__"
-              echo "APPLE_CERTIFICATE_PASSWORD=$APPLE_CERTIFICATE_PASSWORD"
-              echo "APPLE_ID=$APPLE_ID"
-              echo "APPLE_PASSWORD=$APPLE_PASSWORD"
-              echo "APPLE_TEAM_ID=$APPLE_TEAM_ID"
-            } >> "$GITHUB_ENV"
-          else
-            # Unsigned: ad-hoc identity, and APPLE_CERTIFICATE/APPLE_ID stay
-            # unset so the bundler skips `security import` and notarization.
-            echo "APPLE_SIGNING_IDENTITY=-" >> "$GITHUB_ENV"
-          fi
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          args: '--config src-tauri/tauri.release.conf.json ${{ matrix.args }}'
 
       # ── Build & release ────────────────────────────────────────────────
-      - name: Build and release
+      - name: Build Windows packages
+        if: runner.os == 'Windows'
         uses: tauri-apps/tauri-action@1deb371b0cd8bd54025b384f1cd735e725c4060f # action-v1.0.0
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # Updater artifact signing key. Empty when no updater secret is set;
           # the Tauri bundler only consumes it when createUpdaterArtifacts is
           # true (i.e. when the updater overlay is active), so an empty value is
@@ -667,20 +801,31 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
-          tagName: ${{ inputs.tag || github.ref_name }}
-          releaseCommitish: ${{ github.sha }}
-          releaseName: 'DepoAudio ${{ inputs.tag || github.ref_name }}'
-          releaseBody: 'See CHANGELOG.md for details.'
-          releaseDraft: true
-          # Preview releases: a tag with a pre-release suffix (e.g.
-          # v1.0.0-preview.1, -rc.1, -beta.2) is marked as a GitHub prerelease;
-          # a clean tag (v1.0.0) ships as a final release.
-          prerelease: ${{ contains(inputs.tag || github.ref_name, '-') }}
-          # Updater metadata/signatures only when updater signing is configured;
-          # the config overlay (which stages ONNX Runtime) is always applied.
-          uploadUpdaterJson: ${{ steps.signing.outputs.updater }}
-          uploadUpdaterSignatures: ${{ steps.signing.outputs.updater }}
           args: '--config src-tauri/tauri.release.conf.json ${{ matrix.args }}'
+
+      - name: Remove Windows signing certificate before candidate execution
+        if: always() && runner.os == 'Windows' && steps.signing.outputs.platform_signing == 'true'
+        shell: pwsh
+        env:
+          WINDOWS_CERTIFICATE_THUMBPRINT: ${{ secrets.WINDOWS_CERTIFICATE_THUMBPRINT }}
+        run: |
+          $certificatePath = "Cert:\CurrentUser\My\$env:WINDOWS_CERTIFICATE_THUMBPRINT"
+          if (Test-Path -LiteralPath $certificatePath) {
+            Remove-Item -LiteralPath $certificatePath -DeleteKey -Force
+          }
+          if (Test-Path -LiteralPath $certificatePath) {
+            throw 'Windows signing certificate remained in the user store after packaging'
+          }
+
+      - name: Verify WebView2 offline-installer build inputs (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+        run: |
+          & ./scripts/windows-webview2-evidence.ps1 `
+            -OutputPath (Join-Path $env:RUNNER_TEMP 'WEBVIEW2-EVIDENCE-windows.json') `
+            -SignatureReportPath (Join-Path $env:RUNNER_TEMP 'WEBVIEW2-SIGNATURE-windows.txt')
 
       # The component checks above do not exercise Tauri's embedded plugin
       # configuration. Launch the exact bundled application before the workflow
@@ -732,48 +877,471 @@ jobs:
             }
           }
 
-      - name: Smoke-test packaged app startup (macOS)
+      - name: Smoke-test downloadable macOS containers
         if: runner.os == 'macOS'
         shell: bash
+        env:
+          EXPECT_PLATFORM_SIGNING: ${{ steps.signing.outputs.platform_signing }}
+          FTR_FIXTURE_URL: ${{ secrets.FTR_FIXTURE_URL }}
+          FTR_FIXTURE_AUTHORIZATION: ${{ secrets.FTR_FIXTURE_AUTHORIZATION }}
+          FTR_FIXTURE_SIZE: ${{ secrets.FTR_FIXTURE_SIZE }}
+          FTR_FIXTURE_SHA256: ${{ secrets.FTR_FIXTURE_SHA256 }}
+          FTR_FIXTURE_EVIDENCE_ID: ${{ secrets.FTR_FIXTURE_EVIDENCE_ID }}
+        run: bash scripts/macos-packaged-smoke.sh
+
+      - name: Smoke-test packaged native payloads and NSIS startup (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          FTR_FIXTURE_URL: ${{ secrets.FTR_FIXTURE_URL }}
+          FTR_FIXTURE_AUTHORIZATION: ${{ secrets.FTR_FIXTURE_AUTHORIZATION }}
+          FTR_FIXTURE_SIZE: ${{ secrets.FTR_FIXTURE_SIZE }}
+          FTR_FIXTURE_SHA256: ${{ secrets.FTR_FIXTURE_SHA256 }}
+          FTR_FIXTURE_EVIDENCE_ID: ${{ secrets.FTR_FIXTURE_EVIDENCE_ID }}
+        run: ./scripts/windows-packaged-smoke.ps1
+
+      - name: Publish macOS inventory and checksum evidence to the draft
+        if: runner.os == 'macOS'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ inputs.tag || github.ref_name }}
+          RELEASE_ID: ${{ needs.prepare.outputs.release_id }}
         run: |
           set -euo pipefail
-          app=$(find src-tauri/target/universal-apple-darwin/release/bundle/macos \
-            -path '*/DepoAudio.app/Contents/MacOS/depo-audio' -type f -print -quit)
-          test -n "$app" || { echo "ERROR: packaged macOS executable not found"; exit 1; }
-
-          stdout="$RUNNER_TEMP/depoaudio-startup-stdout.txt"
-          stderr="$RUNNER_TEMP/depoaudio-startup-stderr.txt"
-          "$app" >"$stdout" 2>"$stderr" &
-          pid=$!
-          cleanup() {
-            if kill -0 "$pid" 2>/dev/null; then
-              kill "$pid" 2>/dev/null || true
-              wait "$pid" 2>/dev/null || true
-            fi
+          dmg=$(find src-tauri/target/universal-apple-darwin/release/bundle -type f -name '*.dmg' -print -quit)
+          app_archive=$(find src-tauri/target/universal-apple-darwin/release/bundle -type f -name '*.app.tar.gz' -print -quit)
+          test -n "$dmg" && test -n "$app_archive" || {
+            echo "ERROR: macOS artifact pair is incomplete"; exit 1;
           }
-          trap cleanup EXIT
 
-          for _ in {1..24}; do
-            sleep 0.5
-            if ! kill -0 "$pid" 2>/dev/null; then
-              wait "$pid" || status=$?
-              echo '== packaged app stdout =='; cat "$stdout" || true
-              echo '== packaged app stderr =='; cat "$stderr" || true
-              echo "ERROR: packaged app exited during startup with code ${status:-0}"
-              exit 1
-            fi
+          mount_point="$RUNNER_TEMP/depoaudio-dmg-audit"
+          archive_root="$RUNNER_TEMP/depoaudio-app-archive-audit"
+          mkdir -p "$mount_point" "$archive_root"
+          mounted=false
+          cleanup_audit() {
+            if [ "$mounted" = "true" ]; then hdiutil detach "$mount_point" -quiet || true; fi
+          }
+          trap cleanup_audit EXIT
+          hdiutil attach "$dmg" -readonly -nobrowse -mountpoint "$mount_point" -quiet
+          mounted=true
+          dmg_app=$(find "$mount_point" -maxdepth 2 -type d -name 'DepoAudio.app' -print -quit)
+          test -n "$dmg_app" || { echo "ERROR: DMG contains no DepoAudio.app"; exit 1; }
+          tar xzf "$app_archive" -C "$archive_root"
+          archive_app=$(find "$archive_root" -maxdepth 2 -type d -name 'DepoAudio.app' -print -quit)
+          test -n "$archive_app" || { echo "ERROR: app archive contains no DepoAudio.app"; exit 1; }
+
+          dmg_inventory="$RUNNER_TEMP/RELEASE-INVENTORY-macos-dmg.json"
+          archive_inventory="$RUNNER_TEMP/RELEASE-INVENTORY-macos-app-archive.json"
+          node scripts/release-artifact-inventory.mjs \
+            --root "$dmg_app" --platform macos --output "$dmg_inventory" \
+            --contract src-tauri/resources/third-party/release/BINARY-CONTRACT.json
+          node scripts/release-artifact-inventory.mjs \
+            --root "$archive_app" --platform macos --output "$archive_inventory" \
+            --contract src-tauri/resources/third-party/release/BINARY-CONTRACT.json
+          cmp "$dmg_inventory" "$archive_inventory" || {
+            echo "ERROR: DMG and app archive inventories differ"; exit 1;
+          }
+          hdiutil detach "$mount_point" -quiet
+          mounted=false
+
+          manifest="$RUNNER_TEMP/SHA256SUMS-macos.txt"
+          while IFS= read -r artifact; do
+            hash=$(shasum -a 256 "$artifact" | awk '{print $1}')
+            printf '%s  %s\n' "$hash" "$(basename "$artifact")"
+          done < <(find src-tauri/target/universal-apple-darwin/release/bundle -type f \
+            \( -name '*.dmg' -o -name '*.app.tar.gz' \) | sort) > "$manifest"
+          test "$(wc -l < "$manifest" | tr -d '[:space:]')" = "2" || {
+            echo "ERROR: expected exactly one DMG and one app archive"; cat "$manifest"; exit 1;
+          }
+          cat "$manifest"
+
+          source_dir="$RUNNER_TEMP/depoaudio-third-party-source"
+          test -d "$source_dir" || { echo "ERROR: corresponding-source directory is missing"; exit 1; }
+          for source in \
+            sources/ffmpeg-7.1.5.tar.xz \
+            sources/lame-3.100.tar.gz \
+            sources/opus-1.6.1.tar.gz \
+            build-ffmpeg-macos.sh \
+            changes.diff \
+            notices/SOURCE.txt
+          do
+            test -f "$source_dir/$source" || { echo "ERROR: source bundle is missing $source"; exit 1; }
           done
-          echo 'Packaged macOS app remained alive through the startup smoke window.'
+          test ! -s "$source_dir/changes.diff" || {
+            echo "ERROR: no-patch changes.diff must be empty"; exit 1;
+          }
+          version=$(node -p "require('./package.json').version")
+          source_archive="$RUNNER_TEMP/DepoAudio_${version}_third-party-source.tar.gz"
+          tar czf "$source_archive" -C "$RUNNER_TEMP" depoaudio-third-party-source
+          source_manifest="$RUNNER_TEMP/SHA256SUMS-third-party-source.txt"
+          source_hash=$(shasum -a 256 "$source_archive" | awk '{print $1}')
+          printf '%s  %s\n' "$source_hash" "$(basename "$source_archive")" > "$source_manifest"
+          cat "$source_manifest"
 
-  # If a draft is published while a later matrix leg is still building, that
-  # leg can strand its artifacts in a new draft. Copy only asset names absent
-  # from the published release after verifying draft/release/tag commit
-  # identity. Any collision (especially latest.json) fails closed; published
-  # assets are never merged, replaced, or uploaded with --clobber.
-  finalize:
-    needs: release
+          release_assets=("$dmg" "$app_archive")
+          while IFS= read -r signature; do
+            release_assets+=("$signature")
+          done < <(find src-tauri/target/universal-apple-darwin/release/bundle \
+            -type f -name '*.sig' | sort)
+          node scripts/upload-draft-release-assets.mjs \
+            --repo "$GITHUB_REPOSITORY" --release-id "$RELEASE_ID" \
+            --tag "$TAG" --commit "$GITHUB_SHA" -- \
+            "${release_assets[@]}" \
+            "$manifest" "$source_manifest" "$source_archive" "$dmg_inventory" "$archive_inventory"
+
+      - name: Publish Windows inventories and checksum evidence to the draft
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ inputs.tag || github.ref_name }}
+          RELEASE_ID: ${{ needs.prepare.outputs.release_id }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $bundleRoot = Join-Path $env:GITHUB_WORKSPACE 'src-tauri\target\release\bundle'
+          $artifacts = @(
+            Get-ChildItem -LiteralPath (Join-Path $bundleRoot 'msi') -Filter '*.msi' -File
+            Get-ChildItem -LiteralPath (Join-Path $bundleRoot 'nsis') -Filter '*.exe' -File
+          ) | Sort-Object Name
+          if ($artifacts.Count -ne 2) {
+            throw "Expected exactly one MSI and one NSIS installer; found $($artifacts.Count)"
+          }
+
+          $msiRoot = Join-Path $env:RUNNER_TEMP 'depoaudio-msi-smoke'
+          if (-not (Test-Path -LiteralPath $msiRoot -PathType Container)) {
+            throw 'The MSI startup smoke extraction is unavailable for inventory'
+          }
+          $msiInventory = Join-Path $env:RUNNER_TEMP 'RELEASE-INVENTORY-windows-msi.json'
+          $binaryContract = 'src-tauri/resources/third-party/release/BINARY-CONTRACT.json'
+          node scripts/release-artifact-inventory.mjs `
+            --root $msiRoot --platform windows --output $msiInventory --contract $binaryContract
+
+          $nsis = $artifacts | Where-Object Extension -eq '.exe' | Select-Object -First 1
+          $nsisRoot = Join-Path $env:RUNNER_TEMP 'depoaudio-nsis-audit'
+          if (-not (Test-Path -LiteralPath $nsisRoot -PathType Container)) {
+            throw 'The NSIS smoke extraction is unavailable for inventory'
+          }
+          $nsisApp = Get-ChildItem -LiteralPath $nsisRoot -Recurse -Filter 'depo-audio.exe' -File | Select-Object -First 1
+          if (-not $nsisApp) { throw 'The extracted NSIS payload does not contain depo-audio.exe' }
+          $nsisInventory = Join-Path $env:RUNNER_TEMP 'RELEASE-INVENTORY-windows-nsis.json'
+          node scripts/release-artifact-inventory.mjs `
+            --root $nsisRoot --platform windows --output $nsisInventory --contract $binaryContract
+
+          $lines = $artifacts | ForEach-Object {
+            $hash = (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+            "$hash  $($_.Name)"
+          }
+          $manifest = Join-Path $env:RUNNER_TEMP 'SHA256SUMS-windows.txt'
+          [IO.File]::WriteAllLines($manifest, $lines, [Text.UTF8Encoding]::new($false))
+          Get-Content -LiteralPath $manifest
+          $webviewEvidence = Join-Path $env:RUNNER_TEMP 'WEBVIEW2-EVIDENCE-windows.json'
+          $webviewSignature = Join-Path $env:RUNNER_TEMP 'WEBVIEW2-SIGNATURE-windows.txt'
+          if (-not (Test-Path -LiteralPath $webviewEvidence -PathType Leaf)) {
+            throw 'WebView2 build-input evidence is missing'
+          }
+          if (-not (Test-Path -LiteralPath $webviewSignature -PathType Leaf)) {
+            throw 'WebView2 signature verification report is missing'
+          }
+          $signatureArtifacts = @(Get-ChildItem -LiteralPath $bundleRoot -Recurse -Filter '*.sig' -File | Sort-Object FullName)
+          $uploadArguments = @(
+            'scripts/upload-draft-release-assets.mjs'
+            '--repo', $env:GITHUB_REPOSITORY
+            '--release-id', $env:RELEASE_ID
+            '--tag', $env:TAG
+            '--commit', $env:GITHUB_SHA
+            '--'
+          ) + @($artifacts.FullName) + @($signatureArtifacts.FullName) + @(
+            $manifest, $msiInventory, $nsisInventory, $webviewEvidence, $webviewSignature
+          )
+          & node @uploadArguments
+          if ($LASTEXITCODE -ne 0) { throw 'Windows draft asset upload failed' }
+
+  dependency-evidence:
+    needs: prepare
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable (2026-08-05)
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+
+      - name: Fetch the locked Cargo graph
+        run: cargo fetch --locked --manifest-path src-tauri/Cargo.toml
+
+      - name: Install hash-pinned dependency-evidence tools
+        run: |
+          set -euo pipefail
+          archive_dir="$RUNNER_TEMP/dependency-tool-archives"
+          extract_dir="$RUNNER_TEMP/dependency-tool-extract"
+          bin_dir="$RUNNER_TEMP/dependency-tool-bin"
+          mkdir -p "$archive_dir" "$extract_dir/about" "$extract_dir/cyclonedx" "$bin_dir"
+
+          about_archive="$archive_dir/cargo-about.tar.gz"
+          cyclonedx_archive="$archive_dir/cargo-cyclonedx.tar.xz"
+          curl --proto '=https' --tlsv1.2 -fL --retry 5 --retry-all-errors --retry-delay 2 \
+            "$CARGO_ABOUT_URL" -o "$about_archive"
+          curl --proto '=https' --tlsv1.2 -fL --retry 5 --retry-all-errors --retry-delay 2 \
+            "$CARGO_CYCLONEDX_URL" -o "$cyclonedx_archive"
+          test "$(stat -c%s "$about_archive")" = "$CARGO_ABOUT_SIZE"
+          test "$(stat -c%s "$cyclonedx_archive")" = "$CARGO_CYCLONEDX_SIZE"
+          echo "$CARGO_ABOUT_SHA256  $about_archive" | sha256sum -c -
+          echo "$CARGO_CYCLONEDX_SHA256  $cyclonedx_archive" | sha256sum -c -
+
+          tar -xzf "$about_archive" -C "$extract_dir/about"
+          tar -xJf "$cyclonedx_archive" -C "$extract_dir/cyclonedx"
+          about_bin=$(find "$extract_dir/about" -type f -name cargo-about -print -quit)
+          cyclonedx_bin=$(find "$extract_dir/cyclonedx" -type f -name cargo-cyclonedx -print -quit)
+          test -n "$about_bin"
+          test -n "$cyclonedx_bin"
+          install -m 0755 "$about_bin" "$bin_dir/cargo-about"
+          install -m 0755 "$cyclonedx_bin" "$bin_dir/cargo-cyclonedx"
+          echo "$bin_dir" >> "$GITHUB_PATH"
+
+      - name: Verify dependency-evidence tool versions
+        run: |
+          set -euo pipefail
+          test "$(cargo about --version)" = 'cargo-about 0.9.2'
+          test "$(cargo cyclonedx --version)" = 'cargo-cyclonedx-cyclonedx 0.5.9'
+
+      - name: Generate release dependency evidence
+        env:
+          SOURCE_COMMIT: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          version=$(node -p "require('./package.json').version")
+          source_epoch=$(git show -s --format=%ct "$SOURCE_COMMIT")
+          evidence_dir="$RUNNER_TEMP/depoaudio-dependency-evidence"
+          generated_notice="$RUNNER_TEMP/THIRD-PARTY-LICENSES.generated.html"
+          mkdir -p "$evidence_dir"
+
+          npm ci
+          node scripts/normalize-release-sbom.mjs --self-test
+          CARGO_NET_OFFLINE=true cargo about generate \
+            --config about.toml \
+            --manifest-path src-tauri/Cargo.toml \
+            --locked --offline --fail \
+            --output-file "$generated_notice" \
+            scripts/third-party-licenses.hbs
+          node scripts/normalize-cargo-about-report.mjs \
+            --input "$generated_notice" \
+            --output "$generated_notice"
+          cmp "$generated_notice" src-tauri/resources/third-party/rust/THIRD-PARTY-LICENSES.html || {
+            echo "ERROR: committed Rust third-party license report is stale"
+            exit 1
+          }
+          cp src-tauri/resources/third-party/rust/THIRD-PARTY-LICENSES.html \
+            "$evidence_dir/DepoAudio_${version}_rust-third-party-licenses.html"
+          cp THIRD_PARTY_LICENSES.md \
+            "$evidence_dir/DepoAudio_${version}_third-party-review.md"
+
+          for target in \
+            aarch64-apple-darwin \
+            x86_64-apple-darwin \
+            x86_64-pc-windows-msvc
+          do
+            prefix="DepoAudio_${version}_rust"
+            generated="src-tauri/${prefix}_${target}.cdx.json"
+            normalized="$evidence_dir/DepoAudio_${version}_rust_${target}.cdx.json"
+            first="$RUNNER_TEMP/rust-${target}-first.cdx.json"
+            second="$RUNNER_TEMP/rust-${target}-second.cdx.json"
+            for output in "$first" "$second"
+            do
+              SOURCE_DATE_EPOCH="$source_epoch" CARGO_NET_OFFLINE=true cargo cyclonedx \
+                --manifest-path src-tauri/Cargo.toml \
+                --format json \
+                --target "$target" \
+                --target-in-filename \
+                --spec-version 1.5 \
+                --no-build-deps \
+                --override-filename "$prefix"
+              test -s "$generated"
+              node scripts/normalize-release-sbom.mjs \
+                --input "$generated" \
+                --output "$output" \
+                --source-commit "$SOURCE_COMMIT" \
+                --source-date-epoch "$source_epoch" \
+                --ecosystem rust
+            done
+            cmp "$first" "$second" || {
+              echo "ERROR: Rust SBOM is not reproducible for $target"
+              exit 1
+            }
+            mv "$first" "$normalized"
+          done
+
+          npm_first="$RUNNER_TEMP/npm-first.cdx.json"
+          npm_second="$RUNNER_TEMP/npm-second.cdx.json"
+          for output in "$npm_first" "$npm_second"
+          do
+            npm_raw="$RUNNER_TEMP/npm-raw.cdx.json"
+            npm sbom \
+              --omit=dev \
+              --package-lock-only \
+              --sbom-format=cyclonedx \
+              --sbom-type=application > "$npm_raw"
+            node scripts/normalize-release-sbom.mjs \
+              --input "$npm_raw" \
+              --output "$output" \
+              --source-commit "$SOURCE_COMMIT" \
+              --source-date-epoch "$source_epoch" \
+              --ecosystem npm
+          done
+          cmp "$npm_first" "$npm_second" || {
+            echo 'ERROR: npm SBOM is not reproducible'
+            exit 1
+          }
+          mv "$npm_first" "$evidence_dir/DepoAudio_${version}_npm.cdx.json"
+
+          {
+            node --version
+            npm --version
+            rustc --version
+            cargo --version
+            cargo about --version
+            cargo cyclonedx --version
+            echo "cargo-about archive: $CARGO_ABOUT_URL"
+            echo "cargo-about SHA-256: $CARGO_ABOUT_SHA256"
+            echo "cargo-cyclonedx archive: $CARGO_CYCLONEDX_URL"
+            echo "cargo-cyclonedx SHA-256: $CARGO_CYCLONEDX_SHA256"
+          } > "$evidence_dir/DEPENDENCY-EVIDENCE-TOOLCHAIN.txt"
+
+          manifest="$evidence_dir/SHA256SUMS-dependency-evidence.txt"
+          (
+            cd "$evidence_dir"
+            find . -maxdepth 1 -type f ! -name 'SHA256SUMS-dependency-evidence.txt' -print0 \
+              | LC_ALL=C sort -z \
+              | xargs -0 sha256sum
+          ) > "$manifest"
+          cat "$manifest"
+
+      - name: Preserve verified dependency evidence for release builds
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: dependency-evidence-${{ github.sha }}
+          path: ${{ runner.temp }}/depoaudio-dependency-evidence
+          if-no-files-found: error
+          retention-days: 7
+
+  publish-dependency-evidence:
+    needs: [prepare, release, dependency-evidence]
+    runs-on: ubuntu-latest
     permissions:
       contents: write
-    uses: ./.github/workflows/promote-draft.yml
-    with:
-      tag: ${{ inputs.tag || github.ref_name }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Download verified dependency evidence
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: dependency-evidence-${{ github.sha }}
+          path: ${{ runner.temp }}/depoaudio-dependency-evidence
+
+      - name: Publish dependency evidence to the draft
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ inputs.tag || github.ref_name }}
+          RELEASE_ID: ${{ needs.prepare.outputs.release_id }}
+        run: |
+          set -euo pipefail
+          evidence_dir="$RUNNER_TEMP/depoaudio-dependency-evidence"
+          (
+            cd "$evidence_dir"
+            sha256sum -c SHA256SUMS-dependency-evidence.txt
+          )
+          node scripts/upload-draft-release-assets.mjs \
+            --repo "$GITHUB_REPOSITORY" --release-id "$RELEASE_ID" \
+            --tag "$TAG" --commit "$GITHUB_SHA" -- "$evidence_dir"/*
+
+  # Leave one complete, commit-bound release private for human installation
+  # review. Publication is a separate decision after the clean-machine gates.
+  finalize:
+    needs: [prepare, release, publish-dependency-evidence]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Verify the complete release remains a private draft
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ inputs.tag || github.ref_name }}
+          RELEASE_ID: ${{ needs.prepare.outputs.release_id }}
+        run: |
+          set -euo pipefail
+          release=$(gh api "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID")
+          jq -e --argjson id "$RELEASE_ID" --arg tag "$TAG" --arg commit "$GITHUB_SHA" '
+            .id == $id and
+            .draft == true and
+            .tag_name == $tag and
+            .target_commitish == $commit and
+            (.assets | length > 0) and
+            all(.assets[]; .state == "uploaded" and .size > 0) and
+            (([.assets[].name] | unique | length) == (.assets | length))
+          ' <<<"$release" >/dev/null || {
+            echo 'ERROR: the exact release is no longer a complete private draft'; exit 1;
+          }
+          if gh api "repos/$GITHUB_REPOSITORY/releases/tags/$TAG" >/dev/null 2>&1; then
+            echo 'ERROR: a published release appeared before final draft verification'; exit 1;
+          fi
+          names=$(printf '%s' "$release" | jq -r '.assets[].name')
+          require_one() {
+            local description="$1" pattern="$2" count
+            count=$(grep -Ec "$pattern" <<<"$names" || true)
+            [ "$count" = '1' ] || {
+              echo "ERROR: expected exactly one $description asset (found $count)"; exit 1;
+            }
+          }
+          version=${TAG#v}
+          version=${version%%-*}
+          escaped_version=${version//./\\.}
+          require_one 'macOS DMG' "^DepoAudio_${escaped_version}_universal\\.dmg$"
+          require_one 'macOS app archive' "^DepoAudio_${escaped_version}_universal\\.app\\.tar\\.gz$"
+          require_one 'Windows MSI' "^DepoAudio_${escaped_version}_x64_en-US\\.msi$"
+          require_one 'Windows NSIS installer' "^DepoAudio_${escaped_version}_x64-setup\\.exe$"
+          for required in \
+            SHA256SUMS-macos.txt \
+            SHA256SUMS-windows.txt \
+            SHA256SUMS-third-party-source.txt \
+            SHA256SUMS-dependency-evidence.txt \
+            RELEASE-INVENTORY-macos-dmg.json \
+            RELEASE-INVENTORY-macos-app-archive.json \
+            RELEASE-INVENTORY-windows-msi.json \
+            RELEASE-INVENTORY-windows-nsis.json \
+            WEBVIEW2-EVIDENCE-windows.json \
+            WEBVIEW2-SIGNATURE-windows.txt
+          do
+            require_one "$required" "^${required//./\\.}$"
+          done
+          require_one 'macOS third-party source archive' "^DepoAudio_${escaped_version}_third-party-source\\.tar\\.gz$"
+          require_one 'Rust third-party license report' "^DepoAudio_${escaped_version}_rust-third-party-licenses\\.html$"
+          require_one 'reviewed third-party ledger' "^DepoAudio_${escaped_version}_third-party-review\\.md$"
+          require_one 'dependency evidence toolchain record' '^DEPENDENCY-EVIDENCE-TOOLCHAIN\\.txt$'
+          require_one 'production npm SBOM' "^DepoAudio_${escaped_version}_npm\\.cdx\\.json$"
+          for target in aarch64-apple-darwin x86_64-apple-darwin x86_64-pc-windows-msvc; do
+            require_one "Rust $target SBOM" "^DepoAudio_${escaped_version}_rust_${target}\\.cdx\\.json$"
+          done
+
+          signature_count=$(grep -Ec '\\.sig$' <<<"$names" || true)
+          latest_count=$(grep -Ec '^latest\\.json$' <<<"$names" || true)
+          [ "$latest_count" = '0' ] || {
+            echo 'ERROR: latest.json must be generated only by the separate publication approval step'; exit 1;
+          }
+          if [ "$signature_count" != '0' ]; then
+            require_one 'universal macOS updater signature' '\\.app\\.tar\\.gz\\.sig$'
+            windows_signatures=$(grep -Ec '\\.(msi|exe)\\.sig$' <<<"$names" || true)
+            [ "$windows_signatures" -ge 1 ] || {
+              echo 'ERROR: updater signing is incomplete across platforms'; exit 1;
+            }
+          fi
+          printf '%s' "$release" | jq -r '.assets[] | "  \(.name)  (\(.size) bytes)"'
+          echo "Verified private draft $RELEASE_ID for $TAG at $GITHUB_SHA"
