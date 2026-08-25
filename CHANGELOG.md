@@ -2,6 +2,25 @@
 
 ## [Unreleased]
 
+## [1.0.3] - Unpublished
+
+### Added
+
+- **Unhandled interface rendering failures have an explicit recovery path.** A root-level React recovery screen explains the failure and offers a user-initiated reload without uploading diagnostics, filenames, recording data, or case information.
+- **Frontend size budgets and release-target dependency policy now run in CI.** Deterministic JavaScript and CSS limits catch bundle regressions, while Cargo license, source, wildcard, and duplicate-dependency rules cover the macOS and Windows release graph.
+- **Distribution evidence is tracked separately from dependency policy.** A third-party ledger records native binaries, installer payloads, CI fixtures, and model weights that still require provenance, notices, hashes, or redistribution review before publication.
+- **The release workflow revalidates the complete version contract before building.** A draft cannot be prepared when npm, Cargo, Tauri, or changelog versions have drifted.
+
+### Fixed
+
+- **Rust dependency advisories in `plist` and `quick-xml` were resolved** by updating the locked packages, removing `RUSTSEC-2026-0194` and `RUSTSEC-2026-0195` from the release graph.
+- **Waveform PCM decoding passes the Rust 1.98 Clippy gate** by using the Rust 1.88 fixed-size slice API after the existing byte-alignment validation; the decoded samples and output peaks are unchanged.
+
+### Release scope
+
+- This maintenance release does not change conversion, format support, cleanup models, player behavior, the case library, Merge, or transcript capabilities.
+- Five upstream unmaintained `rust-unic` advisories remain visible through Tauri's `urlpattern` dependency. They are not suppressed and require a documented risk decision before publication.
+
 ## [1.0.2] - 2026-08-20
 
 ### Fixed

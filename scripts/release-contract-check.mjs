@@ -15,6 +15,7 @@ const cargoLock = read('src-tauri/Cargo.lock')
 const changelog = read('CHANGELOG.md')
 const releaseWorkflow = read('.github/workflows/release.yml')
 const tauriLib = read('src-tauri/src/lib.rs')
+const requiresPublishedHeading = process.argv.includes('--published')
 
 const version = packageJson.version
 const escapedVersion = version.replaceAll('.', '\\.')
@@ -30,14 +31,24 @@ expect(cargoPackageVersion === version, 'Cargo.toml package version must match p
 expect(cargoLockVersion === version, 'Cargo.lock depo-audio version must match package.json')
 
 const unreleasedPosition = changelog.indexOf('## [Unreleased]')
-const releaseHeading = new RegExp(`^## \\[${escapedVersion}\\] - \\d{4}-\\d{2}-\\d{2}$`, 'm')
+const datedReleaseHeading = new RegExp(`^## \\[${escapedVersion}\\] - \\d{4}-\\d{2}-\\d{2}$`, 'm')
+const releaseHeading = requiresPublishedHeading
+  ? datedReleaseHeading
+  : new RegExp(`^## \\[${escapedVersion}\\] - (?:\\d{4}-\\d{2}-\\d{2}|Unpublished)$`, 'm')
 const releaseMatch = changelog.match(releaseHeading)
 expect(unreleasedPosition >= 0, 'CHANGELOG.md must retain an Unreleased heading')
-expect(releaseMatch, `CHANGELOG.md must contain a dated ${version} release heading`)
 expect(
-  releaseMatch && unreleasedPosition < releaseMatch.index,
-  'The Unreleased changelog heading must precede the current release heading',
+  releaseMatch,
+  requiresPublishedHeading
+    ? `CHANGELOG.md must contain a dated ${version} release heading before a final build`
+    : `CHANGELOG.md must contain a dated or explicitly Unpublished ${version} heading`,
 )
+if (releaseMatch) {
+  expect(
+    unreleasedPosition < releaseMatch.index,
+    'The Unreleased changelog heading must precede the current release heading',
+  )
+}
 
 expect(!releaseWorkflow.includes('includeUpdaterJson:'), 'release.yml uses an invalid tauri-action input: includeUpdaterJson')
 expect(
