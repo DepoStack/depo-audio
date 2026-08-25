@@ -11,6 +11,10 @@
 - **Distribution evidence is tracked separately from dependency policy.** A third-party ledger records native binaries, installer payloads, CI fixtures, and model weights that still require provenance, notices, hashes, or redistribution review before publication.
 - **The release workflow revalidates the complete version contract before building.** A draft cannot be prepared when npm, Cargo, Tauri, or changelog versions have drifted.
 
+### Changed
+
+- **Maintenance dependencies and the paired CodeQL actions were refreshed without changing product behavior.** The locked `uuid` crate, frontend `globals` definitions, and both CodeQL initialization and analysis steps use their current patch releases.
+
 ### Fixed
 
 - **Rust dependency advisories in `plist` and `quick-xml` were resolved** by updating the locked packages, removing `RUSTSEC-2026-0194` and `RUSTSEC-2026-0195` from the release graph.
