@@ -23,8 +23,8 @@ import Transcript from './Transcript'
 
 // ── Global Audio Player ─────────────────────────────────────────────────────
 //
-// Play any audio file directly — no conversion needed. Multi-channel files get
-// color-coded speaker tracks (colors from the --speaker-N design tokens).
+// Play any audio file directly — no conversion needed. Playlist tracks get
+// colors from the existing --speaker-N design tokens without inferring who is speaking.
 //
 // Layout: a Now Playing surface (large seekable waveform) + a playlist/
 // bookmarks rail scroll above a PERSISTENT transport bar (controls + a thin
@@ -66,6 +66,7 @@ export default function PlayerTab({ dropHandlerRef, onConvertFiles }) {
   const [playbackError, setPlaybackError] = useState('')
   const [bookmarks, setBookmarks] = useState(initialStorage.bookmarks)
   const [storageError, setStorageError] = useState(initialStorage.error)
+  const [transcriptStorageError, setTranscriptStorageError] = useState('')
   useEffect(() => {
     let nextError = ''
     try {
@@ -117,7 +118,7 @@ export default function PlayerTab({ dropHandlerRef, onConvertFiles }) {
       path,
       name: path.split('/').pop().split('\\').pop(),
       colorIndex: (tracksRef.current.length + i) % SPEAKER_COUNT,
-      label: `Speaker ${tracksRef.current.length + i + 1}`,
+      label: `Track ${tracksRef.current.length + i + 1}`,
     }))
     if (!newTracks.length) return
     const merged = [...tracksRef.current, ...newTracks]
@@ -366,12 +367,29 @@ export default function PlayerTab({ dropHandlerRef, onConvertFiles }) {
     </div>
   )
 
+  const transcriptStorageNotice = transcriptStorageError && (
+    <div
+      role="alert"
+      className="mb-3 flex items-start gap-2 rounded-lg border border-warning/40 bg-warning/10 px-3 py-2 text-[11px] text-foreground"
+    >
+      <span className="flex-1">{transcriptStorageError}</span>
+      <button
+        type="button"
+        aria-label="Dismiss transcript storage warning"
+        onClick={() => setTranscriptStorageError('')}
+      >
+        <X size={12} />
+      </button>
+    </div>
+  )
+
   // ── Empty state ───────────────────────────────────────────────────────────
   if (tracks.length === 0) {
     return (
       <div className="flex-1 overflow-y-auto overflow-x-hidden">
         <div className="w-full max-w-[1100px] mx-auto px-5 md:px-8 py-5">
           {storageNotice}
+          {transcriptStorageNotice}
           {convertFirstNotice}
           <div
             role="button"
@@ -416,6 +434,7 @@ export default function PlayerTab({ dropHandlerRef, onConvertFiles }) {
       <div className="flex-1 overflow-y-auto overflow-x-hidden">
         <div className="w-full max-w-[1100px] mx-auto px-5 md:px-8 py-5 grid gap-3.5 md:grid-cols-[minmax(0,1fr)_300px]">
           {storageNotice && <div className="md:col-span-2">{storageNotice}</div>}
+          {transcriptStorageNotice && <div className="md:col-span-2">{transcriptStorageNotice}</div>}
           {convertFirstNotice && <div className="md:col-span-2">{convertFirstNotice}</div>}
 
           {/* Now Playing — the main surface: a large seekable waveform */}
@@ -505,8 +524,8 @@ export default function PlayerTab({ dropHandlerRef, onConvertFiles }) {
                       <input
                         className="text-[10px] text-[hsl(var(--text2))] bg-transparent border-none p-0 font-mono w-full focus:text-foreground focus:outline-hidden"
                         value={t.label}
-                        aria-label={`Speaker label for ${t.name}`}
-                        placeholder="Speaker name"
+                        aria-label={`Track label for ${t.name}`}
+                        placeholder="Track or participant name"
                         onClick={e => e.stopPropagation()}
                         onChange={e => {
                           const label = e.target.value
@@ -543,21 +562,26 @@ export default function PlayerTab({ dropHandlerRef, onConvertFiles }) {
                 <CardHeader>
                   <CardTitle>Bookmarks</CardTitle>
                   {trackBookmarks.length > 0 && (
-                    <button
-                      onClick={copyBookmarks}
-                      title="Copy bookmarks to clipboard as timestamped lines"
-                      className="flex items-center gap-1 text-[11px] text-[hsl(var(--sub))] hover:text-foreground transition-colors focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring rounded px-1"
-                    >
-                      {copied ? (
-                        <>
-                          <Check size={11} /> Copied
-                        </>
-                      ) : (
-                        <>
-                          <Copy size={11} /> Copy
-                        </>
-                      )}
-                    </button>
+                    <>
+                      <button
+                        onClick={copyBookmarks}
+                        title="Copy bookmarks to clipboard as timestamped lines"
+                        className="flex items-center gap-1 text-[11px] text-[hsl(var(--sub))] hover:text-foreground transition-colors focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring rounded px-1"
+                      >
+                        {copied ? (
+                          <>
+                            <Check size={11} /> Copied
+                          </>
+                        ) : (
+                          <>
+                            <Copy size={11} /> Copy
+                          </>
+                        )}
+                      </button>
+                      <span role="status" aria-live="polite" className="sr-only">
+                        {copied ? 'Bookmarks copied to clipboard.' : ''}
+                      </span>
+                    </>
                   )}
                 </CardHeader>
                 <CardContent className="p-2">
@@ -588,7 +612,7 @@ export default function PlayerTab({ dropHandlerRef, onConvertFiles }) {
                               }
                             />
                             <button
-                              className="text-[hsl(var(--sub))] opacity-0 group-hover:opacity-100 hover:text-destructive transition-all shrink-0"
+                              className="text-[hsl(var(--sub))] opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 hover:text-destructive transition-all shrink-0 rounded focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring"
                               aria-label="Remove bookmark"
                               onClick={() => setBookmarks(prev => prev.filter(x => x !== b))}
                             >
@@ -611,6 +635,7 @@ export default function PlayerTab({ dropHandlerRef, onConvertFiles }) {
                 currentTime={currentTime}
                 playing={playing}
                 onSeek={seekTo}
+                onStorageError={setTranscriptStorageError}
               />
             </div>
           )}

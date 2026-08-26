@@ -24,7 +24,7 @@ const TabsTrigger = React.forwardRef(({ className, ...props }, ref) => (
       // accent (unreadable as text on light surfaces), so the active state
       // reads through the gold-dim fill + foreground text, not gold text.
       'data-[state=active]:bg-[hsl(var(--gold-dim))] data-[state=active]:text-foreground',
-      'focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring',
+      'focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1',
       className,
     )}
     {...props}
@@ -33,7 +33,14 @@ const TabsTrigger = React.forwardRef(({ className, ...props }, ref) => (
 TabsTrigger.displayName = 'TabsTrigger'
 
 const TabsContent = React.forwardRef(({ className, ...props }, ref) => (
-  <TabsPrimitive.Content ref={ref} className={cn('contents focus-visible:outline-hidden', className)} {...props} />
+  <TabsPrimitive.Content
+    ref={ref}
+    className={cn(
+      'flex min-h-0 flex-1 flex-col focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring',
+      className,
+    )}
+    {...props}
+  />
 ))
 TabsContent.displayName = 'TabsContent'
 

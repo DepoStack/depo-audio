@@ -33,7 +33,7 @@ const Segmented = React.forwardRef(function Segmented(
             onClick={() => onChange(o.value)}
             className={cn(
               'inline-flex items-center gap-1.5 rounded-md font-medium transition-colors cursor-pointer',
-              'focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring',
+              'focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1',
               size === 'sm' ? 'px-2 py-1 text-[11px]' : 'px-3 py-1.5 text-[12px]',
               active
                 ? 'bg-card text-foreground shadow-sm ring-1 ring-border'

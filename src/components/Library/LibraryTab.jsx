@@ -1,4 +1,4 @@
-import { useState, useMemo } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import {
   Search,
@@ -18,6 +18,7 @@ import { useSpeakerColors, speakerColorAt } from '../../lib/speakerColors'
 import { usePreferencesContext } from '../../hooks/PreferencesContext'
 import { Button } from '../ui/button'
 import { Input } from '../ui/input'
+import { Label } from '../ui/label'
 import { Badge } from '../ui/badge'
 import { Card, CardHeader, CardTitle, CardContent } from '../ui/card'
 import { Segmented } from '../ui/segmented'
@@ -52,12 +53,27 @@ export default function LibraryTab({
   const [scanningCat, setScanningCat] = useState(false)
   const [confirm, setConfirm] = useState(null) // { title, description, onConfirm }
   const [operationWarning, setOperationWarning] = useState('')
+  const renameButtonRefs = useRef(new Map())
+  const returnFocusCaseRef = useRef(null)
   const speakerColors = useSpeakerColors()
+
+  useEffect(() => {
+    if (editingCase !== null || returnFocusCaseRef.current === null) return
+    const caseId = returnFocusCaseRef.current
+    returnFocusCaseRef.current = null
+    renameButtonRefs.current.get(caseId)?.focus()
+  }, [editingCase])
+
+  const finishRenaming = id => {
+    returnFocusCaseRef.current = id
+    setEditingCase(null)
+  }
 
   const detectSoftware = async () => {
     setScanningCat(true)
     setCatJobs([])
     setVisibleCatJobCount(CAT_JOB_PAGE_SIZE)
+    setOperationWarning('')
     try {
       const sw = await invoke('detect_cat_software_cmd', { maxDepth: maxScanDepth })
       setCatSoftware(sw)
@@ -68,7 +84,10 @@ export default function LibraryTab({
     } catch (e) {
       console.error('CAT detection failed:', e)
       setCatSoftware([])
-      setOperationWarning(`Court-software detection failed: ${String(e)}`)
+      setOperationWarning({
+        summary: 'Court-software detection could not finish. Try again, or import audio manually.',
+        detail: String(e),
+      })
     }
     setScanningCat(false)
   }
@@ -126,7 +145,7 @@ export default function LibraryTab({
     try {
       await invoke('library_rename_case', { caseId: id, name: editName.trim() })
       setCases(p => p.map(c => (c.id === id ? { ...c, name: editName.trim() } : c)))
-      setEditingCase(null)
+      finishRenaming(id)
     } catch (e) {
       console.error('Rename case failed:', e)
       onStorageError?.(e)
@@ -163,14 +182,34 @@ export default function LibraryTab({
 
   const activeCount = cases.filter(c => !c.archived).length
   const archivedCount = cases.filter(c => c.archived).length
+  const visibleCaseLabel = showArchived ? 'archived' : 'active'
+  const searchStatus = readOnly
+    ? 'Library data is unavailable.'
+    : `${filtered.length} ${visibleCaseLabel} case${filtered.length === 1 ? '' : 's'}${
+        search.trim() ? ` ${filtered.length === 1 ? 'matches' : 'match'} the search.` : '.'
+      }`
+  const catStatus = scanningCat
+    ? 'Scanning for court software and jobs.'
+    : catSoftware === null
+      ? ''
+      : catSoftware.length === 0
+        ? 'No court-software installations were found.'
+        : `Found ${catSoftware.length} court-software installation${catSoftware.length === 1 ? '' : 's'} and ${catJobs.length} job${catJobs.length === 1 ? '' : 's'}.`
 
   return (
     <div className="flex-1 overflow-y-auto overflow-x-hidden">
       {/* Sticky toolbar — search stays put while the list scrolls */}
-      <div className="sticky top-0 z-10 flex flex-wrap items-center gap-2.5 px-5 md:px-8 py-3 border-b border-border bg-[hsl(var(--surface))]">
-        <div className="flex-1 min-w-[220px] max-w-[420px] relative flex items-center">
-          <Search size={14} className="absolute left-2.5 text-[hsl(var(--sub))]" />
+      <div className="library-toolbar sticky top-0 z-10 flex flex-wrap items-center gap-2.5 px-5 md:px-8 py-3 border-b border-border bg-[hsl(var(--surface))]">
+        <div className="library-search flex-1 min-w-[220px] max-w-[420px] relative flex items-center">
+          <Label htmlFor="library-search" className="sr-only">
+            Search Library cases and participants
+          </Label>
+          <Search size={14} aria-hidden="true" className="absolute left-2.5 text-[hsl(var(--sub))]" />
           <Input
+            id="library-search"
+            type="search"
+            aria-controls="library-case-list"
+            aria-describedby="library-search-status"
             className="pl-8 pr-8"
             placeholder="Search cases, participants…"
             value={search}
@@ -178,17 +217,20 @@ export default function LibraryTab({
           />
           {search && (
             <button
-              className="absolute right-2 text-[hsl(var(--sub))] hover:text-foreground transition-colors"
+              type="button"
+              className="absolute right-2 rounded-sm p-1 text-[hsl(var(--sub))] hover:text-foreground transition-colors focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1"
               aria-label="Clear search"
               onClick={() => setSearch('')}
             >
-              <X size={14} />
+              <X size={14} aria-hidden="true" />
             </button>
           )}
         </div>
         <Segmented
           size="sm"
+          className="library-filter"
           aria-label="Show active or archived cases"
+          aria-controls="library-case-list"
           value={showArchived ? 'archived' : 'active'}
           onChange={v => setShowArchived(v === 'archived')}
           options={[
@@ -196,42 +238,77 @@ export default function LibraryTab({
             { value: 'archived', label: `Archived${archivedCount ? ` ${archivedCount}` : ''}` },
           ]}
         />
-        <div className="flex-1" />
+        <div className="library-toolbar-spacer flex-1" />
         <Button
+          type="button"
           size="sm"
+          className="library-toolbar-action"
           onClick={() => setImportModal(true)}
           disabled={readOnly}
           title={readOnly ? 'Library storage is read-only until repaired' : undefined}
         >
-          <Download size={12} className="shrink-0" /> Import audio
+          <Download size={12} aria-hidden="true" className="shrink-0" /> Import audio
         </Button>
-        <Button variant="ghost" size="sm" onClick={detectSoftware} disabled={scanningCat}>
+        <Button
+          type="button"
+          variant="ghost"
+          size="sm"
+          className="library-toolbar-action"
+          onClick={detectSoftware}
+          disabled={scanningCat}
+          aria-describedby="library-cat-status"
+        >
           {scanningCat ? (
             <>
-              <Loader2 className="h-3.5 w-3.5 animate-spin" /> Scanning…
+              <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" /> Scanning…
             </>
           ) : (
             <>
-              <FolderSearch size={13} /> Find court software
+              <FolderSearch size={13} aria-hidden="true" /> Find court software
             </>
           )}
         </Button>
+        <span
+          id="library-cat-status"
+          role="status"
+          aria-label="Court software scan status"
+          aria-live="polite"
+          aria-atomic="true"
+          className="sr-only"
+        >
+          {catStatus}
+        </span>
       </div>
 
-      <div className="w-full max-w-[1100px] mx-auto px-5 md:px-8 py-5 flex flex-col gap-3.5">
+      <div className="library-content w-full max-w-[1100px] mx-auto px-5 md:px-8 py-5 flex flex-col gap-3.5">
+        <span id="library-search-status" role="status" aria-live="polite" aria-atomic="true" className="sr-only">
+          {searchStatus}
+        </span>
         {operationWarning && (
           <div
-            role="status"
+            role="alert"
             className="flex items-start gap-2 rounded-md border border-warning/30 bg-warning/10 px-3 py-2 text-xs text-foreground"
           >
-            <span className="flex-1">{operationWarning}</span>
+            <div className="flex-1">
+              <span>{typeof operationWarning === 'string' ? operationWarning : operationWarning.summary}</span>
+              {typeof operationWarning !== 'string' && operationWarning.detail && (
+                <details className="mt-1.5">
+                  <summary className="w-fit cursor-pointer font-semibold text-[hsl(var(--text2))] focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1">
+                    Technical details
+                  </summary>
+                  <p className="mt-1 whitespace-pre-wrap break-words text-[10px] text-[hsl(var(--sub))]">
+                    {operationWarning.detail}
+                  </p>
+                </details>
+              )}
+            </div>
             <button
               type="button"
               aria-label="Dismiss Library warning"
-              className="text-[hsl(var(--sub))] hover:text-foreground"
+              className="rounded-sm p-1 text-[hsl(var(--sub))] hover:text-foreground focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1"
               onClick={() => setOperationWarning('')}
             >
-              <X size={13} />
+              <X size={13} aria-hidden="true" />
             </button>
           </div>
         )}
@@ -242,7 +319,8 @@ export default function LibraryTab({
             <CardHeader>
               <CardTitle>Court reporting software</CardTitle>
               <button
-                className="text-[hsl(var(--sub))] hover:text-foreground transition-colors rounded p-0.5 focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring"
+                type="button"
+                className="text-[hsl(var(--sub))] hover:text-foreground transition-colors rounded p-1 focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1"
                 aria-label="Dismiss court-software results"
                 onClick={() => {
                   setCatSoftware(null)
@@ -250,7 +328,7 @@ export default function LibraryTab({
                   setVisibleCatJobCount(CAT_JOB_PAGE_SIZE)
                 }}
               >
-                <X size={14} />
+                <X size={14} aria-hidden="true" />
               </button>
             </CardHeader>
             <CardContent className="p-4 flex flex-col gap-3">
@@ -262,7 +340,8 @@ export default function LibraryTab({
                     {catSoftware.map((sw, i) => (
                       <button
                         key={i}
-                        className="flex items-center gap-2 px-2.5 py-1.5 bg-secondary rounded-md text-[12px] hover:bg-secondary/70 transition-colors focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring"
+                        type="button"
+                        className="flex items-center gap-2 px-2.5 py-1.5 bg-secondary rounded-md text-[12px] hover:bg-secondary/70 transition-colors focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1"
                         onClick={async () => {
                           setCatJobs([])
                           setVisibleCatJobCount(CAT_JOB_PAGE_SIZE)
@@ -270,7 +349,11 @@ export default function LibraryTab({
                             setCatJobs(await invoke('scan_cat_jobs_cmd', { path: sw.path, maxDepth: maxScanDepth }))
                           } catch (error) {
                             setCatJobs([])
-                            setOperationWarning(`Court-job scan failed: ${String(error)}`)
+                            setOperationWarning({
+                              summary:
+                                'Court-job scanning could not finish. Choose the software again or import audio manually.',
+                              detail: String(error),
+                            })
                           }
                         }}
                       >
@@ -297,7 +380,9 @@ export default function LibraryTab({
                         {catJobs.slice(0, visibleCatJobCount).map((job, i) => (
                           <button
                             key={`${job.path}:${job.name}:${i}`}
-                            className="flex items-center gap-3 px-2 py-2 rounded-md transition-colors hover:bg-secondary/50 text-[12px] text-left focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring"
+                            type="button"
+                            aria-label={`Queue ${job.files.length} file${job.files.length === 1 ? '' : 's'} from ${job.name}`}
+                            className="flex items-center gap-3 px-2 py-2 rounded-md transition-colors hover:bg-secondary/50 text-[12px] text-left focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1"
                             disabled={conversionLocked || job.files.length === 0}
                             title={
                               conversionLocked
@@ -342,8 +427,12 @@ export default function LibraryTab({
 
         {/* Cases */}
         {filtered.length === 0 ? (
-          <div className="flex flex-col items-center justify-center gap-2.5 py-20 text-center">
-            <Briefcase size={44} className="text-[hsl(var(--sub))] opacity-40" />
+          <div
+            id="library-case-list"
+            aria-label={`${visibleCaseLabel} Library cases`}
+            className="flex flex-col items-center justify-center gap-2.5 py-20 text-center"
+          >
+            <Briefcase size={44} aria-hidden="true" className="text-[hsl(var(--sub))] opacity-40" />
             <p className="text-[13px] font-semibold text-foreground">
               {readOnly
                 ? 'Library unavailable'
@@ -364,7 +453,7 @@ export default function LibraryTab({
             </p>
           </div>
         ) : (
-          <Card>
+          <Card id="library-case-list" aria-label={`${visibleCaseLabel} Library cases`}>
             <CardHeader>
               <CardTitle>{showArchived ? 'Archived cases' : 'Cases'}</CardTitle>
               <span className="font-mono text-[10px] text-[hsl(var(--sub))]">{filtered.length}</span>
@@ -372,51 +461,28 @@ export default function LibraryTab({
             <CardContent>
               {filtered.map((c, ci) => {
                 const expanded = !!expandedCases[c.id]
+                const panelId = `library-case-${ci}-sessions`
                 return (
                   <div key={c.id} className={cn(ci > 0 && 'border-t border-border/50', c.archived && 'opacity-70')}>
                     {/* Case row header — a real button for keyboard access */}
-                    <div className="flex items-center gap-2.5 px-4 py-3">
+                    <div className="library-case-header flex items-center gap-2.5 px-4 py-3">
                       <button
-                        className="flex items-center gap-2.5 flex-1 min-w-0 text-left focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring rounded"
+                        type="button"
+                        className="library-case-toggle flex items-center gap-2.5 flex-1 min-w-0 text-left focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 rounded"
                         aria-expanded={expanded}
+                        aria-controls={panelId}
+                        aria-label={`${expanded ? 'Collapse' : 'Expand'} ${c.name}, ${c.sessions.length} session${c.sessions.length === 1 ? '' : 's'}`}
                         onClick={() => toggleCase(c.id)}
                       >
                         {expanded ? (
-                          <ChevronDown size={13} className="text-[hsl(var(--sub))] shrink-0" />
+                          <ChevronDown size={13} aria-hidden="true" className="text-[hsl(var(--sub))] shrink-0" />
                         ) : (
-                          <ChevronRight size={13} className="text-[hsl(var(--sub))] shrink-0" />
+                          <ChevronRight size={13} aria-hidden="true" className="text-[hsl(var(--sub))] shrink-0" />
                         )}
                         <div className="flex flex-col flex-1 min-w-0">
-                          {editingCase === c.id ? (
-                            <div
-                              className="flex items-center gap-2"
-                              onClick={e => {
-                                e.stopPropagation()
-                                e.preventDefault()
-                              }}
-                            >
-                              <Input
-                                className="h-7 text-[13px]"
-                                value={editName}
-                                autoFocus
-                                onChange={e => setEditName(e.target.value)}
-                                onKeyDown={e => {
-                                  if (e.key === 'Enter') renameCase(c.id)
-                                  if (e.key === 'Escape') setEditingCase(null)
-                                }}
-                              />
-                              <Button size="sm" disabled={readOnly} onClick={() => renameCase(c.id)}>
-                                Save
-                              </Button>
-                              <Button variant="ghost" size="sm" onClick={() => setEditingCase(null)}>
-                                Cancel
-                              </Button>
-                            </div>
-                          ) : (
-                            <span className="text-[14px] font-semibold text-foreground font-serif truncate">
-                              {c.name}
-                            </span>
-                          )}
+                          <span className="text-[14px] font-semibold text-foreground font-serif truncate">
+                            {c.name}
+                          </span>
                           <span className="text-[11px] text-[hsl(var(--sub))] flex items-center gap-2">
                             {c.sessions.length} session{c.sessions.length !== 1 ? 's' : ''} ·{' '}
                             {new Date(c.createdAt).toLocaleDateString()}
@@ -424,22 +490,28 @@ export default function LibraryTab({
                           </span>
                         </div>
                       </button>
-                      <div className="flex items-center gap-0.5 shrink-0">
+                      <div className="library-case-actions flex items-center gap-0.5 shrink-0">
                         <Button
+                          ref={node => {
+                            if (node) renameButtonRefs.current.set(c.id, node)
+                            else renameButtonRefs.current.delete(c.id)
+                          }}
+                          type="button"
                           variant="ghost"
                           size="icon"
                           className="h-7 w-7"
                           title="Rename"
                           aria-label={`Rename ${c.name}`}
-                          disabled={readOnly}
+                          disabled={readOnly || editingCase === c.id}
                           onClick={() => {
                             setEditingCase(c.id)
                             setEditName(c.name)
                           }}
                         >
-                          <Pencil size={12} />
+                          <Pencil size={12} aria-hidden="true" />
                         </Button>
                         <Button
+                          type="button"
                           variant="ghost"
                           size="icon"
                           className="h-7 w-7"
@@ -448,9 +520,14 @@ export default function LibraryTab({
                           disabled={readOnly}
                           onClick={() => archiveCase(c.id, !c.archived)}
                         >
-                          {c.archived ? <RotateCcw size={12} /> : <Archive size={12} />}
+                          {c.archived ? (
+                            <RotateCcw size={12} aria-hidden="true" />
+                          ) : (
+                            <Archive size={12} aria-hidden="true" />
+                          )}
                         </Button>
                         <Button
+                          type="button"
                           variant="ghost"
                           size="icon"
                           className="h-7 w-7 hover:text-destructive"
@@ -459,22 +536,58 @@ export default function LibraryTab({
                           aria-label={`Delete ${c.name}`}
                           onClick={() => deleteCase(c.id, c.name)}
                         >
-                          <X size={12} />
+                          <X size={12} aria-hidden="true" />
                         </Button>
                       </div>
+                      {editingCase === c.id && (
+                        <form
+                          className="library-case-rename flex min-w-0 items-center gap-2"
+                          onSubmit={event => {
+                            event.preventDefault()
+                            renameCase(c.id)
+                          }}
+                        >
+                          <Label htmlFor={`library-case-${ci}-name`} className="sr-only">
+                            Rename {c.name}
+                          </Label>
+                          <Input
+                            id={`library-case-${ci}-name`}
+                            className="h-7 min-w-0 text-[13px]"
+                            value={editName}
+                            autoFocus
+                            onChange={event => setEditName(event.target.value)}
+                            onKeyDown={event => {
+                              if (event.key === 'Escape') {
+                                event.preventDefault()
+                                finishRenaming(c.id)
+                              }
+                            }}
+                          />
+                          <Button type="submit" size="sm" disabled={readOnly || !editName.trim()}>
+                            Save
+                          </Button>
+                          <Button type="button" variant="ghost" size="sm" onClick={() => finishRenaming(c.id)}>
+                            Cancel
+                          </Button>
+                        </form>
+                      )}
                     </div>
 
-                    {expanded && (
-                      <div className="bg-secondary/30 border-t border-border/50">
-                        {c.sessions.map(s => (
+                    <div id={panelId} hidden={!expanded} className="bg-secondary/30 border-t border-border/50">
+                      {expanded &&
+                        c.sessions.map(s => (
                           <div key={s.id} className="px-4 py-3 border-b border-border/40 last:border-b-0">
-                            <div className="flex items-center gap-2.5 mb-2">
+                            <div className="library-session-header flex items-center gap-2.5 mb-2">
                               <Badge variant="active">{s.date}</Badge>
-                              <span className="text-[11px] text-[hsl(var(--text2))] truncate" title={s.sourceFile}>
+                              <span
+                                className="library-session-name text-[11px] text-[hsl(var(--text2))] truncate"
+                                title={s.sourceFile}
+                              >
                                 {s.sourceName}
                               </span>
-                              <div className="flex items-center gap-1 ml-auto shrink-0">
+                              <div className="library-session-actions flex items-center gap-1 ml-auto shrink-0">
                                 <Button
+                                  type="button"
                                   variant="ghost"
                                   size="sm"
                                   className="h-6 text-[10px]"
@@ -484,18 +597,19 @@ export default function LibraryTab({
                                   disabled={conversionLocked}
                                   onClick={() => onReexport(s.sourceFile, c.name)}
                                 >
-                                  <RotateCcw size={10} /> Re-export
+                                  <RotateCcw size={10} aria-hidden="true" /> Re-export
                                 </Button>
                                 <Button
+                                  type="button"
                                   variant="ghost"
                                   size="icon"
                                   className="h-6 w-6 hover:text-destructive"
                                   title="Remove session"
                                   disabled={readOnly}
-                                  aria-label="Remove session"
+                                  aria-label={`Remove ${s.sourceName} from ${c.name}`}
                                   onClick={() => deleteSession(c.id, s.id, s.sourceName)}
                                 >
-                                  <X size={10} />
+                                  <X size={10} aria-hidden="true" />
                                 </Button>
                               </div>
                             </div>
@@ -504,6 +618,7 @@ export default function LibraryTab({
                                 <div key={pi} className="flex flex-col gap-1">
                                   <div className="flex items-center gap-2">
                                     <span
+                                      aria-hidden="true"
                                       className="w-2 h-2 rounded-full shrink-0"
                                       style={{ background: speakerColorAt(speakerColors, pi) }}
                                     />
@@ -511,7 +626,7 @@ export default function LibraryTab({
                                       {p.label}
                                     </span>
                                   </div>
-                                  <div className="flex flex-col gap-1 ml-4">
+                                  <div className="library-participant-files flex flex-col gap-1 ml-4">
                                     {p.files.map((f, fi) => (
                                       <LibraryFile key={fi} file={f} />
                                     ))}
@@ -521,8 +636,7 @@ export default function LibraryTab({
                             </div>
                           </div>
                         ))}
-                      </div>
-                    )}
+                    </div>
                   </div>
                 )
               })}

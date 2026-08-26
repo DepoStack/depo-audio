@@ -103,6 +103,8 @@ describe('ConvertTab scan cancellation', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Scan' }))
     await waitFor(() => expect(invoke).toHaveBeenCalledWith('analyze_audio_cmd', { path: firstFile.path }))
+    expect(screen.getByRole('status', { name: 'Recording scan status' })).toHaveTextContent('Scanning 1 of 1')
+    expect(screen.getByRole('progressbar', { name: 'Recording scan progress' })).toHaveAttribute('aria-valuenow', '0')
 
     fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
     await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent('Could not stop the scan'))
@@ -162,6 +164,15 @@ describe('ConvertTab scan cancellation', () => {
     )
 
     expect(screen.getByText(/Lightweight mode/)).not.toHaveAttribute('title')
+  })
+
+  it('marks the guided workflow for compact three-column reflow', () => {
+    render(<ConvertTab {...props([])} />)
+
+    const progress = screen.getByRole('list', { name: 'Conversion progress' })
+    expect(progress).toHaveClass('conversion-stepper')
+    expect(progress.children).toHaveLength(3)
+    expect([...progress.children].every(step => step.classList.contains('conversion-step'))).toBe(true)
   })
 
   it('includes only measured hardware details in the performance summary', () => {

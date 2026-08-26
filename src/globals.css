@@ -366,3 +366,177 @@
     transform: rotate(360deg);
   }
 }
+
+/* Keep raw controls as visible on the keyboard as the shared UI primitives. */
+:where(button, summary, a[href], [role='button'], [role='slider'], input, select, textarea):not(
+    [class*='focus-visible:ring']
+  ):focus-visible {
+  outline: 2px solid hsl(var(--ring));
+  outline-offset: 2px;
+}
+
+/* A single app-wide fallback covers Tailwind utilities, Radix transitions,
+   progress loops, and native smooth scrolling without component opt-ins. */
+@media (prefers-reduced-motion: reduce) {
+  html:focus-within {
+    scroll-behavior: auto;
+  }
+
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    transition-delay: 0s !important;
+  }
+
+  .animate-spin,
+  .animate-pulse,
+  .animate-progress-pulse,
+  .animate-dot-pulse {
+    animation: none !important;
+  }
+}
+
+/* At 150-200% scaling the minimum native window becomes a compact CSS
+   viewport. Preserve the vertical Tauri navigation contract while returning
+   width to the active workspace and letting Library controls form clear rows. */
+@media (max-width: 560px) {
+  .app-sidebar {
+    width: 3rem;
+  }
+
+  .app-brand {
+    padding: 0.5rem;
+  }
+
+  .app-navigation {
+    padding-inline: 0.375rem;
+  }
+
+  .app-navigation [role='tab'] {
+    justify-content: center;
+    padding-inline: 0.5rem;
+  }
+
+  .app-sidebar-actions {
+    flex-direction: column;
+    padding: 0.375rem;
+  }
+
+  .app-main > [role='alert'] {
+    margin-inline: 0.75rem;
+  }
+
+  .conversion-stepper {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    width: 100%;
+    gap: 0.25rem;
+  }
+
+  .conversion-step {
+    min-width: 0;
+    flex-direction: column;
+    gap: 0.25rem;
+    text-align: center;
+  }
+
+  .conversion-step-line {
+    display: none;
+  }
+
+  .conversion-step > span:nth-child(2) {
+    overflow-wrap: anywhere;
+  }
+
+  .library-toolbar {
+    gap: 0.5rem;
+    padding: 0.625rem 0.75rem;
+  }
+
+  .library-search {
+    flex: 1 0 100%;
+    min-width: 0;
+    max-width: none;
+  }
+
+  .library-filter {
+    flex: 1 0 100%;
+    width: 100%;
+  }
+
+  .library-filter [role='tab'] {
+    flex: 1;
+  }
+
+  .library-toolbar-spacer {
+    display: none;
+  }
+
+  .library-toolbar-action {
+    flex: 1 1 calc(50% - 0.25rem);
+    min-width: 0;
+  }
+
+  .library-content {
+    padding: 0.75rem;
+  }
+
+  .library-case-header {
+    flex-wrap: wrap;
+    padding: 0.625rem 0.75rem;
+  }
+
+  .library-case-toggle {
+    flex: 1 1 calc(100% - 6.5rem);
+  }
+
+  .library-case-actions {
+    margin-left: auto;
+  }
+
+  .library-case-rename {
+    order: 3;
+    flex: 1 0 100%;
+  }
+
+  .library-session-header {
+    flex-wrap: wrap;
+  }
+
+  .library-session-name {
+    flex: 1 1 8rem;
+  }
+
+  .library-session-actions {
+    width: 100%;
+    justify-content: flex-end;
+    margin-left: 0;
+  }
+
+  .library-participant-files {
+    margin-left: 0;
+  }
+
+  .library-file {
+    flex-wrap: wrap;
+    padding-block: 0.375rem;
+  }
+
+  .library-file-name {
+    flex: 1 1 7rem;
+  }
+
+  .library-file-seek {
+    order: 10;
+    flex: 1 1 calc(100% - 3rem);
+    width: auto !important;
+  }
+
+  .library-file-time {
+    order: 11;
+  }
+}

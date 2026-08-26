@@ -42,6 +42,12 @@ describe('updated UI primitives', () => {
 
     await waitFor(() => expect(player).toHaveFocus())
     expect(player).toHaveAttribute('aria-selected', 'true')
-    expect(screen.getByText('Player panel')).toBeVisible()
+    const panel = screen.getByRole('tabpanel', { name: 'Player' })
+    expect(panel).toHaveTextContent('Player panel')
+    expect(panel).toBeVisible()
+    panel.focus()
+    expect(panel).toHaveFocus()
+    expect(panel).toHaveClass('focus-visible:ring-2')
+    expect(panel).not.toHaveClass('contents')
   })
 })

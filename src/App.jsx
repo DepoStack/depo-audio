@@ -167,14 +167,21 @@ export default function App() {
           ? 'Installing update…'
           : 'Up to date'
 
+  const storageSummary = [prefsError && 'preferences', libraryReadError && 'Library data'].filter(Boolean).join(' and ')
+  const systemErrorSummary = systemError.startsWith('Could not open DepoStack')
+    ? 'The DepoStack website could not be opened. Check your connection or open depostack.com in a browser.'
+    : systemError.startsWith('System capabilities')
+      ? 'System recommendations are unavailable. You can keep working, but review settings before converting.'
+      : 'The audio engine check is unavailable. Verify the engine status before starting a conversion.'
+
   return (
-    <Tabs value={tab} onValueChange={setTab} orientation="vertical" className="flex h-screen overflow-hidden">
+    <Tabs value={tab} onValueChange={setTab} orientation="vertical" className="app-shell flex h-screen overflow-hidden">
       {/* ── Sidebar ── */}
       <aside
-        className="w-16 md:w-56 shrink-0 flex flex-col bg-card border-r border-border select-none"
+        className="app-sidebar w-16 md:w-56 shrink-0 flex flex-col bg-card border-r border-border select-none"
         data-tauri-drag-region
       >
-        <div className="flex items-center gap-2.5 px-3 md:px-4 pt-4 pb-5">
+        <div className="app-brand flex items-center gap-2.5 px-3 md:px-4 pt-4 pb-5">
           <LogoSvg />
           <div className="hidden md:flex flex-col leading-none">
             <span className="font-serif text-[16px] font-semibold text-foreground">DepoAudio</span>
@@ -184,7 +191,7 @@ export default function App() {
 
         <TabsList
           aria-label="Main navigation"
-          className="flex-col items-stretch gap-1 bg-transparent border-none rounded-none p-0 px-2 md:px-3 h-auto"
+          className="app-navigation flex-col items-stretch gap-1 bg-transparent border-none rounded-none p-0 px-2 md:px-3 h-auto"
         >
           {NAV.map(({ id, label, Icon }, i) => (
             <TabsTrigger
@@ -210,10 +217,16 @@ export default function App() {
           ))}
         </TabsList>
 
-        <div className="flex-1" />
+        <div className="app-sidebar-spacer flex-1" />
 
         {/* System health */}
-        <div className="hidden md:block mx-3 mb-2 px-3 py-2.5 rounded-lg border border-border/70 bg-[hsl(var(--surface))]">
+        <div
+          role="status"
+          aria-live="polite"
+          aria-atomic="true"
+          aria-label="Audio engine and update status"
+          className="hidden md:block mx-3 mb-2 px-3 py-2.5 rounded-lg border border-border/70 bg-[hsl(var(--surface))]"
+        >
           <div className="flex items-center gap-2 py-0.5 text-[11px] font-medium text-[hsl(var(--text2))]">
             <span
               aria-hidden="true"
@@ -245,7 +258,7 @@ export default function App() {
           A <span className="font-semibold text-[hsl(var(--text2))]">DepoStack</span> project&nbsp;↗
         </button>
 
-        <div className="flex md:justify-start justify-center items-center gap-1 px-2 md:px-3 pb-3">
+        <div className="app-sidebar-actions flex md:justify-start justify-center items-center gap-1 px-2 md:px-3 pb-3">
           <Button
             variant="ghost"
             size="icon"
@@ -272,7 +285,13 @@ export default function App() {
       </aside>
 
       {/* ── Main column ── */}
-      <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
+      <main
+        className="app-main flex-1 flex flex-col min-w-0 overflow-hidden"
+        aria-labelledby="depoaudio-workspace-title"
+      >
+        <h1 id="depoaudio-workspace-title" className="sr-only">
+          DepoAudio workspace
+        </h1>
         <UpdateBanner updater={updater} />
 
         {(prefsError || libraryReadError) && (
@@ -280,8 +299,16 @@ export default function App() {
             role="alert"
             className="mx-5 md:mx-8 mt-3 rounded-lg border border-destructive/40 bg-destructive/10 px-3 py-2 text-[11px] text-foreground"
           >
-            <span className="font-semibold">Storage protection active.</span>{' '}
-            {[prefsError, libraryReadError].filter(Boolean).join(' ')}
+            <span className="font-semibold">Storage protection active.</span> {storageSummary || 'Storage'} could not be
+            loaded. Changes that could overwrite existing data are disabled.
+            <details className="mt-1.5">
+              <summary className="w-fit cursor-pointer font-semibold text-[hsl(var(--text2))] focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1">
+                Technical details
+              </summary>
+              <p className="mt-1 whitespace-pre-wrap break-words text-[10px] text-[hsl(var(--sub))]">
+                {[prefsError, libraryReadError].filter(Boolean).join(' ')}
+              </p>
+            </details>
           </div>
         )}
 
@@ -290,7 +317,15 @@ export default function App() {
             role="alert"
             className="mx-5 md:mx-8 mt-3 rounded-lg border border-warning/40 bg-warning/10 px-3 py-2 text-[11px] text-foreground"
           >
-            <span className="font-semibold">Library change not saved.</span> {libraryOperationError}
+            <span className="font-semibold">Library change not saved.</span> Existing Library data remains unchanged.
+            <details className="mt-1.5">
+              <summary className="w-fit cursor-pointer font-semibold text-[hsl(var(--text2))] focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1">
+                Technical details
+              </summary>
+              <p className="mt-1 whitespace-pre-wrap break-words text-[10px] text-[hsl(var(--sub))]">
+                {libraryOperationError}
+              </p>
+            </details>
           </div>
         )}
 
@@ -299,15 +334,32 @@ export default function App() {
             role="alert"
             className="mx-5 md:mx-8 mt-3 flex items-start gap-2 rounded-lg border border-warning/40 bg-warning/10 px-3 py-2 text-[11px] text-foreground"
           >
-            <span className="flex-1">{systemError}</span>
-            <button type="button" aria-label="Dismiss system warning" onClick={() => setSystemError('')}>
+            <div className="flex-1">
+              <span>{systemErrorSummary}</span>
+              <details className="mt-1.5">
+                <summary className="w-fit cursor-pointer font-semibold text-[hsl(var(--text2))] focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1">
+                  Technical details
+                </summary>
+                <p className="mt-1 whitespace-pre-wrap break-words text-[10px] text-[hsl(var(--sub))]">{systemError}</p>
+              </details>
+            </div>
+            <button
+              type="button"
+              className="rounded-sm p-1 focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1"
+              aria-label="Dismiss system warning"
+              onClick={() => setSystemError('')}
+            >
               ×
             </button>
           </div>
         )}
 
         {!prefsReady && (
-          <div className="flex flex-1 items-center justify-center gap-2 text-sm text-[hsl(var(--sub))]">
+          <div
+            role="status"
+            aria-live="polite"
+            className="flex flex-1 items-center justify-center gap-2 text-sm text-[hsl(var(--sub))]"
+          >
             <Spinner className="h-5 w-5" /> Loading preferences…
           </div>
         )}
@@ -347,8 +399,9 @@ export default function App() {
             <TabsContent value="player">
               <Suspense
                 fallback={
-                  <div className="flex items-center justify-center py-12">
+                  <div role="status" className="flex items-center justify-center gap-2 py-12">
                     <Spinner className="h-5 w-5" />
+                    <span className="sr-only">Loading Player workspace</span>
                   </div>
                 }
               >
@@ -366,8 +419,9 @@ export default function App() {
             <TabsContent value="library">
               <Suspense
                 fallback={
-                  <div className="flex items-center justify-center py-12">
+                  <div role="status" className="flex items-center justify-center gap-2 py-12">
                     <Spinner className="h-5 w-5" />
+                    <span className="sr-only">Loading Library workspace</span>
                   </div>
                 }
               >
@@ -387,7 +441,7 @@ export default function App() {
             </TabsContent>
           </>
         )}
-      </div>
+      </main>
 
       <Suspense fallback={null}>
         <SettingsPanel

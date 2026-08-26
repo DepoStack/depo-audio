@@ -422,19 +422,30 @@ export default function ConvertTab({
   ].filter(Boolean)
   const resultCount = doneCount + failCount + cancelledCount
   const resultVariant = failCount > 0 ? 'error' : cancelledCount > 0 ? 'warning' : 'done'
+  const scanProgressPercent =
+    scanProgress.total > 0
+      ? Math.min(
+          100,
+          Math.max(0, Math.round(((scanProgress.current + (scanProgress.filePct || 0)) / scanProgress.total) * 100)),
+        )
+      : 0
 
   return (
     <>
       <div className="flex-1 overflow-y-auto overflow-x-hidden scrollbar-thin scrollbar-thumb-border scrollbar-track-transparent">
         <div className="w-full max-w-[1100px] mx-auto px-5 md:px-8 py-5 flex flex-col gap-3.5">
           {/* ── STEPPER (state-driven, purely informational) ─────────────── */}
-          <ol className="flex items-center gap-2.5 mb-1" aria-label="Conversion progress">
+          <ol className="conversion-stepper flex items-center gap-2.5 mb-1" aria-label="Conversion progress">
             {['Add recording', 'Choose settings', 'Convert'].map((label, i) => {
               const n = i + 1
               const done = stepDone(n)
               const now = !done && n === step
               return (
-                <li key={label} className="flex items-center gap-2.5" aria-current={now ? 'step' : undefined}>
+                <li
+                  key={label}
+                  className="conversion-step flex items-center gap-2.5"
+                  aria-current={now ? 'step' : undefined}
+                >
                   <span
                     aria-hidden="true"
                     className={`w-6 h-6 rounded-full grid place-items-center text-[11px] font-semibold border transition-colors ${
@@ -455,7 +466,7 @@ export default function ConvertTab({
                   {n < 3 && (
                     <span
                       aria-hidden="true"
-                      className={`w-9 h-px ${done ? 'bg-[hsl(var(--success))]' : 'bg-border'}`}
+                      className={`conversion-step-line w-9 h-px ${done ? 'bg-[hsl(var(--success))]' : 'bg-border'}`}
                     />
                   )}
                 </li>
@@ -796,8 +807,17 @@ export default function ConvertTab({
               {scanning && (
                 <div className="px-4 py-2.5">
                   <div className="flex items-center justify-between gap-2 mb-1.5">
-                    <p className="text-[11px] text-[hsl(var(--sub))] flex items-center gap-1.5 min-w-0">
-                      <Loader2 className="animate-spin h-3.5 w-3.5 shrink-0" />
+                    <p
+                      role="status"
+                      aria-label="Recording scan status"
+                      aria-live="polite"
+                      aria-atomic="true"
+                      className="text-[11px] text-[hsl(var(--sub))] flex items-center gap-1.5 min-w-0"
+                    >
+                      <Loader2
+                        aria-hidden="true"
+                        className="animate-spin motion-reduce:animate-none h-3.5 w-3.5 shrink-0"
+                      />
                       <span className="shrink-0">
                         Scanning {Math.min(scanProgress.current + 1, scanProgress.total)} of {scanProgress.total}
                       </span>
@@ -825,11 +845,18 @@ export default function ConvertTab({
                       {scanError}
                     </p>
                   )}
-                  <div className="w-full h-1 bg-border rounded-full overflow-hidden">
+                  <div
+                    role="progressbar"
+                    aria-label="Recording scan progress"
+                    aria-valuemin={0}
+                    aria-valuemax={100}
+                    aria-valuenow={scanProgressPercent}
+                    className="w-full h-1 bg-border rounded-full overflow-hidden"
+                  >
                     <div
-                      className="h-full bg-primary rounded-full transition-all duration-300"
+                      className="h-full bg-primary rounded-full transition-all motion-reduce:transition-none duration-300"
                       style={{
-                        width: `${scanProgress.total > 0 ? ((scanProgress.current + (scanProgress.filePct || 0)) / scanProgress.total) * 100 : 0}%`,
+                        width: `${scanProgressPercent}%`,
                       }}
                     />
                   </div>
@@ -837,7 +864,13 @@ export default function ConvertTab({
               )}
 
               {analysis && (
-                <div className="flex flex-wrap gap-1.5 px-4 py-2.5">
+                <div
+                  role="status"
+                  aria-label="Recording scan results"
+                  aria-live="polite"
+                  aria-atomic="true"
+                  className="flex flex-wrap gap-1.5 px-4 py-2.5"
+                >
                   {analysis.qualityScore && (
                     <Badge
                       variant="outline"
@@ -944,11 +977,11 @@ export default function ConvertTab({
                     {showAutoLevel && (
                       <ProcessingToggle
                         smart
-                        name="Balance Speaker Volume"
+                        name="Balance Microphone Levels"
                         desc={
                           mode === 'keep'
                             ? 'Unavailable while preserving the original channel layout'
-                            : 'Evens out volume so quiet speakers are easier to hear'
+                            : 'Evens out channel levels so quiet microphones are easier to hear'
                         }
                         checked={autoLevelEffective}
                         disabled={mode === 'keep'}
@@ -1029,7 +1062,7 @@ export default function ConvertTab({
                         name="Trim Leading Silence"
                         desc={
                           mode === 'split'
-                            ? 'Skipped in Split by Speaker mode to preserve cross-channel alignment'
+                            ? 'Skipped in Split Channels mode to preserve cross-channel alignment'
                             : 'Remove leading dead air only (below –50 dB); interior pauses and the ending are preserved'
                         }
                         checked={trim}
@@ -1209,10 +1242,19 @@ export default function ConvertTab({
       </div>
 
       <footer className="flex items-center justify-between gap-4 px-7 py-3 border-t border-border/60 bg-card shrink-0">
-        <div className="flex items-center gap-2 min-w-0">
+        <div
+          role="status"
+          aria-label="Conversion status"
+          aria-live="polite"
+          aria-atomic="true"
+          className="flex items-center gap-2 min-w-0"
+        >
           {converting && (
             <Badge variant="active">
-              <span className="w-1.5 h-1.5 rounded-full bg-primary animate-pulse mr-1.5" />
+              <span
+                aria-hidden="true"
+                className="w-1.5 h-1.5 rounded-full bg-primary animate-pulse motion-reduce:animate-none mr-1.5"
+              />
               {cancelling ? 'Cancelling…' : doneCount > 0 ? `${doneCount} / ${files.length} done` : 'Converting…'}
             </Badge>
           )}
@@ -1236,7 +1278,9 @@ export default function ConvertTab({
         {converting ? (
           <Button variant="destructive" size="lg" className="shrink-0" onClick={cancelConversion} disabled={cancelling}>
             <>
-              {cancelling && <Loader2 className="animate-spin h-3.5 w-3.5" />}
+              {cancelling && (
+                <Loader2 aria-hidden="true" className="animate-spin motion-reduce:animate-none h-3.5 w-3.5" />
+              )}
               {cancelling ? 'Cancelling…' : 'Cancel conversion'}
             </>
           </Button>

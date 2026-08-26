@@ -1,8 +1,6 @@
 name: Release
 
 on:
-  push:
-    tags: ['v*']
   workflow_dispatch:
     inputs:
       tag:
@@ -13,7 +11,7 @@ on:
 # One release run per tag at a time: overlapping runs for the same tag can
 # split platforms across drafts (each leg looks the release up independently).
 concurrency:
-  group: release-${{ inputs.tag || github.ref_name }}
+  group: release-${{ inputs.tag }}
   cancel-in-progress: false
 
 env:
@@ -77,8 +75,8 @@ jobs:
       - name: Verify release source is main
         run: |
           set -euo pipefail
-          if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ] && [ "$GITHUB_REF" != "refs/heads/main" ]; then
-            echo "ERROR: release workflow_dispatch must run from refs/heads/main (got $GITHUB_REF)"
+          if [ "$GITHUB_REF" != "refs/heads/main" ]; then
+            echo "ERROR: release workflow must be dispatched from refs/heads/main (got $GITHUB_REF)"
             exit 1
           fi
           git fetch --no-tags origin main
@@ -98,7 +96,7 @@ jobs:
         env:
           # env indirection: never interpolate the expression into shell
           # source, so the value can't be parsed as script
-          TAG: ${{ inputs.tag || github.ref_name }}
+          TAG: ${{ inputs.tag }}
         run: |
           set -euo pipefail
           python3 - <<'PY'
@@ -126,29 +124,26 @@ jobs:
       - name: Verify release commit and published-release immutability
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAG: ${{ inputs.tag || github.ref_name }}
+          TAG: ${{ inputs.tag }}
         run: |
           set -euo pipefail
           tag="$TAG"
           tagged_commit=$(git rev-parse -q --verify "refs/tags/$tag^{commit}" 2>/dev/null || true)
-          if [ -n "$tagged_commit" ] && [ "$tagged_commit" != "$GITHUB_SHA" ]; then
-            echo "ERROR: existing tag $tag resolves to $tagged_commit, not this run's $GITHUB_SHA"
-            exit 1
-          fi
           if gh api "repos/$GITHUB_REPOSITORY/releases/tags/$tag" >/dev/null 2>&1; then
             echo "ERROR: a published release already exists for $tag; refusing to replace its assets"
             exit 1
           fi
           if [ -n "$tagged_commit" ]; then
-            echo "Existing tag $tag resolves to this run's commit $GITHUB_SHA"
-          else
-            echo "Tag $tag does not exist yet and may be created at $GITHUB_SHA"
+            echo "ERROR: tag $tag already exists at $tagged_commit before candidate construction"
+            echo 'The protected publication workflow must create or verify the approved tag.'
+            exit 1
           fi
+          echo "Tag $tag does not exist yet and may be bound during protected publication"
 
       - name: Reject a stale draft release for this tag
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAG: ${{ inputs.tag || github.ref_name }}
+          TAG: ${{ inputs.tag }}
         run: |
           set -euo pipefail
           tag="$TAG"
@@ -166,7 +161,7 @@ jobs:
         id: create-draft
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAG: ${{ inputs.tag || github.ref_name }}
+          TAG: ${{ inputs.tag }}
         run: |
           set -euo pipefail
           prerelease=false
@@ -507,7 +502,7 @@ jobs:
       - name: Write the pre-package binary and model contract
         shell: bash
         env:
-          RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+          RELEASE_TAG: ${{ inputs.tag }}
         run: |
           set -euo pipefail
           case "$RUNNER_OS" in
@@ -821,7 +816,7 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         env:
-          RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+          RELEASE_TAG: ${{ inputs.tag }}
         run: |
           & ./scripts/windows-webview2-evidence.ps1 `
             -OutputPath (Join-Path $env:RUNNER_TEMP 'WEBVIEW2-EVIDENCE-windows.json') `
@@ -905,7 +900,7 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAG: ${{ inputs.tag || github.ref_name }}
+          TAG: ${{ inputs.tag }}
           RELEASE_ID: ${{ needs.prepare.outputs.release_id }}
         run: |
           set -euo pipefail
@@ -995,7 +990,7 @@ jobs:
         shell: pwsh
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAG: ${{ inputs.tag || github.ref_name }}
+          TAG: ${{ inputs.tag }}
           RELEASE_ID: ${{ needs.prepare.outputs.release_id }}
         run: |
           $ErrorActionPreference = 'Stop'
@@ -1250,7 +1245,7 @@ jobs:
       - name: Publish dependency evidence to the draft
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAG: ${{ inputs.tag || github.ref_name }}
+          TAG: ${{ inputs.tag }}
           RELEASE_ID: ${{ needs.prepare.outputs.release_id }}
         run: |
           set -euo pipefail
@@ -1274,7 +1269,7 @@ jobs:
       - name: Verify the complete release remains a private draft
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAG: ${{ inputs.tag || github.ref_name }}
+          TAG: ${{ inputs.tag }}
           RELEASE_ID: ${{ needs.prepare.outputs.release_id }}
         run: |
           set -euo pipefail

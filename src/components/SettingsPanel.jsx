@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useId } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import { openUrl } from '@tauri-apps/plugin-opener'
 import {
@@ -74,6 +74,8 @@ const NAV = [
 // ── Field helpers (token-styled) ───────────────────────────────────────────────
 
 function NumberField({ label, hint, unit, value, setValue, min, max, step = 1, defaultVal }) {
+  const fieldId = useId()
+  const hintId = hint ? `${fieldId}-hint` : undefined
   // Hold the raw text locally so intermediate keystrokes aren't reverted by the
   // controlled input; clamp on blur.
   const [text, setText] = useState(String(value))
@@ -96,13 +98,20 @@ function NumberField({ label, hint, unit, value, setValue, min, max, step = 1, d
 
   return (
     <div className="flex flex-col gap-1">
-      <Label className="text-[12px] font-medium text-foreground">
+      <Label htmlFor={fieldId} className="text-[12px] font-medium text-foreground">
         {label}
         {unit && <span className="ml-1 text-[hsl(var(--sub))] font-normal">({unit})</span>}
       </Label>
-      {hint && <p className="text-[11px] leading-snug text-[hsl(var(--sub))]">{hint}</p>}
+      {hint && (
+        <p id={hintId} className="text-[11px] leading-snug text-[hsl(var(--sub))]">
+          {hint}
+        </p>
+      )}
       <Input
+        id={fieldId}
         type="number"
+        aria-label={`${label}${unit ? ` (${unit})` : ''}`}
+        aria-describedby={hintId}
         className="h-8 text-[12px] max-w-[140px]"
         value={text}
         min={min}
@@ -165,6 +174,8 @@ function ModelManager() {
   const [caps, setCaps] = useState(null)
   const [downloading, setDownloading] = useState({})
   const [error, setError] = useState(null)
+  const [modelsLoading, setModelsLoading] = useState(true)
+  const [modelLoadError, setModelLoadError] = useState('')
 
   const loadModels = useCallback(
     () =>
@@ -172,14 +183,24 @@ function ModelManager() {
         .then(([catalog, capabilities]) => {
           setModels(catalog)
           setCaps(capabilities)
+          setModelLoadError('')
         })
-        .catch(() => setModels([])),
+        .catch(loadError => {
+          setModelLoadError(`Couldn't load the model catalog or system capabilities: ${String(loadError)}`)
+        })
+        .finally(() => setModelsLoading(false)),
     [],
   )
 
   useEffect(() => {
     loadModels()
   }, [loadModels])
+
+  const retryLoadModels = () => {
+    setModelsLoading(true)
+    setModelLoadError('')
+    loadModels()
+  }
 
   const handleDownload = async filename => {
     setDownloading(d => ({ ...d, [filename]: true }))
@@ -217,12 +238,33 @@ function ModelManager() {
     <Card>
       <CardHeader>
         <CardTitle>AI Models</CardTitle>
-        <span className="font-mono text-[10px] text-[hsl(var(--sub))]">
-          {installedCount}/{activeModels.length} active installed · {totalSize.toFixed(1)} MB
-        </span>
+        {modelsLoading ? (
+          <span role="status" aria-live="polite" className="font-mono text-[10px] text-[hsl(var(--sub))]">
+            Loading model catalog…
+          </span>
+        ) : (
+          !modelLoadError && (
+            <span className="font-mono text-[10px] text-[hsl(var(--sub))]">
+              {installedCount}/{activeModels.length} active installed · {totalSize.toFixed(1)} MB
+            </span>
+          )
+        )}
       </CardHeader>
       <CardContent className="p-4 flex flex-col gap-3">
-        {caps && (
+        {modelLoadError && (
+          <div
+            role="alert"
+            className="flex items-center gap-2 px-3 py-2 rounded-md bg-destructive/10 text-destructive text-[11px]"
+          >
+            <AlertCircle size={13} className="shrink-0" />
+            <span className="flex-1">{modelLoadError}</span>
+            <Button variant="outline" size="sm" onClick={retryLoadModels} disabled={modelsLoading}>
+              <RefreshCw size={12} /> Retry
+            </Button>
+          </div>
+        )}
+
+        {!modelLoadError && caps && (
           <div className="flex flex-wrap items-center gap-1.5 text-[11px] text-[hsl(var(--text2))]">
             <Cpu size={13} className="text-[hsl(var(--sub))]" />
             <span className="font-medium">{caps.acceleratorDesc}</span>
@@ -237,12 +279,15 @@ function ModelManager() {
         )}
 
         {error && (
-          <div className="flex items-center gap-2 px-3 py-2 rounded-md bg-destructive/10 text-destructive text-[11px]">
+          <div
+            role="alert"
+            className="flex items-center gap-2 px-3 py-2 rounded-md bg-destructive/10 text-destructive text-[11px]"
+          >
             <AlertCircle size={13} className="shrink-0" /> {error}
           </div>
         )}
 
-        {legacyModels.length > 0 && (
+        {!modelLoadError && legacyModels.length > 0 && (
           <div
             role="status"
             className="flex items-start gap-2 rounded-md border border-warning/40 bg-warning/10 px-3 py-2 text-[11px] text-foreground"
@@ -255,75 +300,78 @@ function ModelManager() {
           </div>
         )}
 
-        <div className="flex flex-col gap-3">
-          {Object.entries(groups).map(([feature, items]) => (
-            <div key={feature} className="flex flex-col gap-1">
-              <span className="font-mono text-[9px] font-medium tracking-[1.2px] uppercase text-[hsl(var(--sub))] px-1">
-                {feature}
-              </span>
-              {items.map(m => (
-                <div
-                  key={m.filename}
-                  className={`flex items-center gap-3 px-2 py-2 rounded-md transition-colors ${
-                    m.feature === 'Legacy unused file'
-                      ? 'border border-warning/30 bg-warning/10'
-                      : 'hover:bg-secondary/50'
-                  }`}
-                >
-                  <div className="flex-1 min-w-0">
-                    <div className="flex items-center gap-1.5 text-[12px] font-medium text-foreground">
-                      {m.feature === 'Legacy unused file' ? (
-                        <AlertCircle size={13} className="text-warning shrink-0" />
-                      ) : m.installed ? (
-                        <CheckCircle size={13} className="text-[hsl(var(--success))] shrink-0" />
-                      ) : (
-                        <Download size={13} className="text-[hsl(var(--sub))] shrink-0" />
-                      )}
-                      <span className="truncate">{m.displayName}</span>
-                      {m.required && <Badge variant="active">Required</Badge>}
-                      {m.recommended && !m.required && <Badge variant="done">Recommended</Badge>}
-                    </div>
-                    <div className="text-[11px] text-[hsl(var(--sub))] mt-0.5 ml-[19px]">
-                      {m.description} — {m.sizeMb} MB
-                    </div>
-                  </div>
-                  <div className="shrink-0">
-                    {!m.installed && (
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        disabled={downloading[m.filename]}
-                        onClick={() => handleDownload(m.filename)}
-                        aria-label={`Download ${m.displayName}`}
-                      >
-                        {downloading[m.filename] ? (
-                          <>
-                            <Loader2 size={12} className="animate-spin" /> Downloading…
-                          </>
+        {!modelLoadError && (
+          <div className="flex flex-col gap-3">
+            {Object.entries(groups).map(([feature, items]) => (
+              <div key={feature} className="flex flex-col gap-1">
+                <span className="font-mono text-[9px] font-medium tracking-[1.2px] uppercase text-[hsl(var(--sub))] px-1">
+                  {feature}
+                </span>
+                {items.map(m => (
+                  <div
+                    key={m.filename}
+                    className={`flex items-center gap-3 px-2 py-2 rounded-md transition-colors ${
+                      m.feature === 'Legacy unused file'
+                        ? 'border border-warning/30 bg-warning/10'
+                        : 'hover:bg-secondary/50'
+                    }`}
+                  >
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-1.5 text-[12px] font-medium text-foreground">
+                        {m.feature === 'Legacy unused file' ? (
+                          <AlertCircle size={13} className="text-warning shrink-0" />
+                        ) : m.installed ? (
+                          <CheckCircle size={13} className="text-[hsl(var(--success))] shrink-0" />
                         ) : (
-                          <>
-                            <Download size={12} /> Install
-                          </>
+                          <Download size={13} className="text-[hsl(var(--sub))] shrink-0" />
                         )}
-                      </Button>
-                    )}
-                    {m.installed && m.removable && !m.required && (
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        className="h-7 w-7 hover:text-destructive"
-                        onClick={() => handleDelete(m.filename)}
-                        aria-label={`Delete ${m.displayName}`}
-                      >
-                        <Trash2 size={12} />
-                      </Button>
-                    )}
+                        <span className="truncate">{m.displayName}</span>
+                        {m.required && <Badge variant="active">Required</Badge>}
+                        {m.recommended && !m.required && <Badge variant="done">Recommended</Badge>}
+                      </div>
+                      <div className="text-[11px] text-[hsl(var(--sub))] mt-0.5 ml-[19px]">
+                        {m.description} — {m.sizeMb} MB
+                      </div>
+                    </div>
+                    <div className="shrink-0">
+                      {!m.installed && (
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          disabled={downloading[m.filename]}
+                          aria-busy={downloading[m.filename] || undefined}
+                          onClick={() => handleDownload(m.filename)}
+                          aria-label={`Download ${m.displayName}`}
+                        >
+                          {downloading[m.filename] ? (
+                            <>
+                              <Loader2 size={12} className="animate-spin" /> Downloading…
+                            </>
+                          ) : (
+                            <>
+                              <Download size={12} /> Install
+                            </>
+                          )}
+                        </Button>
+                      )}
+                      {m.installed && m.removable && !m.required && (
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="h-7 w-7 hover:text-destructive"
+                          onClick={() => handleDelete(m.filename)}
+                          aria-label={`Delete ${m.displayName}`}
+                        >
+                          <Trash2 size={12} />
+                        </Button>
+                      )}
+                    </div>
                   </div>
-                </div>
-              ))}
-            </div>
-          ))}
-        </div>
+                ))}
+              </div>
+            ))}
+          </div>
+        )}
 
         <p className="text-[11px] text-[hsl(var(--sub))] border-t border-border/60 pt-2.5">
           Models process audio locally. Optional model downloads use the network; audio never leaves your machine.
@@ -367,6 +415,17 @@ export default function SettingsPanel({ open, onOpenChange, prefs, updater = {} 
     setDefaultOutputMode,
   } = prefs
   const [section, setSection] = useState('models')
+  const [externalLinkError, setExternalLinkError] = useState('')
+  const updateProgressPercent = Math.min(100, Math.max(0, Math.round((updateProgress || 0) * 100)))
+
+  const openExternalUrl = async (url, label) => {
+    setExternalLinkError('')
+    try {
+      await openUrl(url)
+    } catch (error) {
+      setExternalLinkError(`Couldn't open ${label}: ${String(error)}`)
+    }
+  }
 
   const applyPreset = preset => {
     const v = preset.values
@@ -406,8 +465,12 @@ export default function SettingsPanel({ open, onOpenChange, prefs, updater = {} 
             {NAV.map(({ id, label, Icon }) => (
               <button
                 key={id}
+                type="button"
                 onClick={() => setSection(id)}
+                aria-label={label}
+                aria-pressed={section === id}
                 aria-current={section === id ? 'true' : undefined}
+                title={label}
                 className={`flex items-center gap-2.5 px-2.5 md:px-3 py-2 rounded-lg text-[12.5px] font-medium transition-colors focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring ${
                   section === id
                     ? 'bg-[hsl(var(--gold-dim))] text-foreground'
@@ -548,7 +611,7 @@ export default function SettingsPanel({ open, onOpenChange, prefs, updater = {} 
                         { value: 'last', label: 'Remember last used' },
                         { value: 'stereo', label: 'Mix to Stereo' },
                         { value: 'keep', label: 'Keep Original Channels' },
-                        { value: 'split', label: 'Split by Speaker' },
+                        { value: 'split', label: 'Split Channels' },
                       ]}
                     />
                   </div>
@@ -606,17 +669,28 @@ export default function SettingsPanel({ open, onOpenChange, prefs, updater = {} 
                         Check for updates from GitHub Releases
                       </span>
                       <span className="text-[11px] text-[hsl(var(--sub))] mt-0.5">
-                        {updateStatus === 'checking' && 'Checking for updates…'}
-                        {updateStatus === 'available' && `Version ${update?.version} is available.`}
-                        {updateStatus === 'uptodate' && "You're on the latest version."}
-                        {updateStatus === 'downloading' && `Downloading… ${Math.round((updateProgress || 0) * 100)}%`}
-                        {updateStatus === 'ready' && 'Update installed — restarting…'}
-                        {updateStatus === 'error' && "Couldn't check for updates (offline, or no release published)."}
-                        {(!updateStatus || updateStatus === 'idle') &&
-                          (updateError
-                            ? 'Automatic update check was unavailable. You can download future versions from GitHub.'
-                            : 'Checked automatically each time you open the app.')}
+                        <span role="status" aria-live="polite" aria-atomic="true">
+                          {updateStatus === 'checking' && 'Checking for updates…'}
+                          {updateStatus === 'available' && `Version ${update?.version} is available.`}
+                          {updateStatus === 'uptodate' && "You're on the latest version."}
+                          {updateStatus === 'downloading' && 'Downloading…'}
+                          {updateStatus === 'ready' && 'Update installed — restarting…'}
+                          {updateStatus === 'error' && "Couldn't check for updates (offline, or no release published)."}
+                          {(!updateStatus || updateStatus === 'idle') &&
+                            (updateError
+                              ? 'Automatic update check was unavailable. You can download future versions from GitHub.'
+                              : 'Checked automatically each time you open the app.')}
+                        </span>
+                        {updateStatus === 'downloading' && <span aria-hidden="true"> {updateProgressPercent}%</span>}
                       </span>
+                      {updateStatus === 'downloading' && (
+                        <progress
+                          className="sr-only"
+                          aria-label="Update download progress"
+                          max="100"
+                          value={updateProgressPercent}
+                        />
+                      )}
                     </div>
                     {updateStatus === 'available' ? (
                       <Button size="sm" variant="primary" className="shrink-0" onClick={() => installUpdate?.()}>
@@ -659,7 +733,12 @@ export default function SettingsPanel({ open, onOpenChange, prefs, updater = {} 
                           source.
                         </span>
                       </div>
-                      <Button size="sm" variant="outline" className="shrink-0" onClick={() => openUrl(DEPOSTACK_URL)}>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="shrink-0"
+                        onClick={() => openExternalUrl(DEPOSTACK_URL, 'depostack.com')}
+                      >
                         <ExternalLink size={12} /> depostack.com
                       </Button>
                     </div>
@@ -677,11 +756,19 @@ export default function SettingsPanel({ open, onOpenChange, prefs, updater = {} 
                         variant="outline"
                         className="shrink-0"
                         aria-label="Open DepoAudio releases with FFmpeg source and license evidence"
-                        onClick={() => openUrl(DEPOAUDIO_RELEASES_URL)}
+                        onClick={() => openExternalUrl(DEPOAUDIO_RELEASES_URL, 'DepoAudio release evidence')}
                       >
                         <ExternalLink size={12} /> Evidence
                       </Button>
                     </div>
+                    {externalLinkError && (
+                      <p
+                        role="alert"
+                        className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-[11px] text-destructive"
+                      >
+                        {externalLinkError}
+                      </p>
+                    )}
                   </CardContent>
                 </Card>
               </>
