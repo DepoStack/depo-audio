@@ -47,5 +47,7 @@ describe('Player transcript wiring', () => {
       'data-track-path',
       'C:\\recordings\\hearing.wav',
     )
+    expect(screen.getByRole('textbox', { name: 'Track label for hearing.wav' })).toHaveValue('Track 1')
+    expect(screen.queryByDisplayValue('Speaker 1')).not.toBeInTheDocument()
   })
 })

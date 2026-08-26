@@ -21,7 +21,10 @@
 - **Windows now uses the retained, hash-pinned BtbN LGPL FFmpeg build instead of its GPL variant.** Native FTR decoding and every released output encoder were verified before the workflow pin changed; the exact archive license, binary configuration, source commit, and asset digest are bundled for final installer review.
 - **The legacy `models-v1` verification workflow is now read-only.** It checks every published model against the app pins and reviewed source bytes but can no longer replace public model assets with `--clobber`; future model sets require a new versioned release.
 - **Rust advisory policy is blocking with one narrow, expiring maintenance exception.** Only the five INFO/unmaintained `unic-*` findings inherited through released Tauri 2.11.5 are excepted, with a named owner and 2026-09-30 deadline; any new advisory fails CI, and the exception ends sooner if Tauri publishes its merged `urlpattern` fix.
-- **Release dispatches now fail closed unless their commit is on `main`.** Manual runs must use the main branch, and tag-triggered builds must resolve to a commit contained in main.
+- **Release candidates now use one deliberate dispatch path.** Candidate builds must be started manually from `main`; pushing a version tag no longer starts or mutates a private draft, and the protected publication workflow alone binds the approved tag.
+- **Publication now fails closed when GitHub environment protection is missing.** Before any release write, the protected workflow verifies that `release-publication` has a required reviewer, prevents self-review, and carries a deployment branch policy. Its strict local contract is named `--publication-ready` to describe what it actually verifies.
+- **Library file-picker failures are no longer treated as cancellation.** A failed native picker now produces a focused, actionable error while retaining technical diagnostics behind disclosure.
+- **Keyboard focus remains visible on workspace tab panels.** Active panels keep their layout wrapper and display the shared two-pixel focus treatment when they receive focus.
 - **Drafts now carry the versioned changelog section and per-platform SHA-256 manifests.** Reviewers can verify the exact MSI, EXE, DMG, and app archive instead of publishing a generic release body with unrecorded hashes.
 - **Installer builds and release uploads are separated.** Tauri runs without a release ID, tag, or GitHub mutation token; every installer, signature, and evidence asset is uploaded only through a fail-closed helper that rechecks the exact private draft, source commit, tag, state, and asset-name uniqueness before and after each upload.
 - **Packaged native smoke tests now exercise both downloadable containers on each platform.** The workflow extracts the MSI, NSIS installer, DMG, and app archive, inspects the private FTR fixture with packaged ffprobe, exercises released encoders and ONNX Runtime, checks macOS signatures and universal binaries, and removes fixture credentials before candidate processes start.
@@ -31,6 +34,9 @@
 - **Draft evidence now inventories the contents extracted from the DMG, app archive, MSI, and NSIS installer.** The gate requires the ONNX Runtime and FFmpeg distribution evidence, rejects packaged TRM fixtures and retired model bytes even when renamed, and proves the two macOS containers carry the same app payload.
 - **Artifact inventories enforce exact packaged paths as well as filenames and hashes.** A native runtime or application executable in an unexpected location now fails the binary contract instead of passing through basename-only matching.
 - **Unused DeepFilterNet and speaker-embedding files are no longer bundled in or installable from v1.0.3.** The released RNNoise/FlashSR/analysis paths are unchanged; an exact obsolete app-data file from an earlier build appears only as user-removable legacy storage. The public `models-v1` assets remain untouched for already-published v1.0.2 compatibility.
+- **Existing workflows now use clearer, more accessible interface semantics without adding capabilities.** The normal shell has a main landmark and accessible heading; search, scan, conversion, update, model, copy, and error states announce useful summaries; focus treatments and compact-window reflow are consistent; and reduced-motion preferences apply app-wide.
+- **Channel and microphone language replaces inferred-person wording.** Split output, automatic level balancing, default track labels, and supporting descriptions no longer imply that DepoAudio identifies a speaker's voice.
+- **Startup no longer requests blocked Google Fonts, and approved trust links are exact.** The app uses its local/system font stack, permits only the canonical DepoStack and DepoAudio Releases URLs, and reports opener failures instead of silently doing nothing.
 
 ### Fixed
 
@@ -38,10 +44,13 @@
 - **Waveform PCM decoding passes the Rust 1.98 Clippy gate** by using the Rust 1.88 fixed-size slice API after the existing byte-alignment validation; the decoded samples and output peaks are unchanged.
 - **Release documentation no longer treats a narrow automated smoke test as complete product verification.** Installed conversion, player, library, transcript, model, installer, signing, and hardware behavior remain explicit manual candidate gates.
 - **Security and product documentation now use the canonical DepoStack repository and precise privacy language.** Public issue reports no longer request vulnerability details, optional update traffic is distinguished from local recording processing, and unsupported response-time and absolute reliability promises were removed.
+- **Model-manager failures no longer resemble an empty successful catalog.** Catalog or capability errors hide stale controls, explain the failure, and offer an explicit retry.
+- **Transcript following and persistence are bounded and failure-aware.** Active-line lookup handles unsorted and duplicate timestamps through a cached index, edits are debounced and flushed on track changes or unmount, storage failures preserve a recoverable in-session draft, and one warning tells the user to export before closing.
+- **The guided conversion steps remain readable at high display scaling.** At compact effective widths, all three steps use an unclipped three-column layout.
 
 ### Release scope
 
-- This maintenance release does not change conversion, format support, cleanup models, player behavior, the case library, Merge, or transcript capabilities.
+- This maintenance release does not add a conversion, format, cleanup-model, player, case-library, Merge, or transcript capability. Its interface, accessibility, failure handling, and persistence safeguards are improved within the existing capability boundary.
 - Five upstream unmaintained `rust-unic` advisories remain visible through Tauri's `urlpattern` dependency. They are not suppressed and require a documented risk decision before publication.
 
 ## [1.0.2] - 2026-08-20

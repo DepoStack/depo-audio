@@ -8,14 +8,20 @@ export default function UpdateBanner({ updater }) {
   const { update, status, progress, dismissed, installUpdate, dismiss } = updater
   const showAvailable = status === 'available' && !dismissed && !!update
   const showError = status === 'error' && !dismissed
+  const progressPercent = Math.min(100, Math.max(0, Math.round((progress || 0) * 100)))
   if (!showAvailable && status !== 'downloading' && status !== 'ready' && !showError) return null
 
   return (
-    <div className="shrink-0 flex items-center gap-3 px-5 py-2 bg-[hsl(var(--gold-dim))] border-b border-primary/30 text-[12px]">
+    <div
+      role={showError ? 'alert' : undefined}
+      aria-live={showError ? 'assertive' : undefined}
+      aria-atomic={showError ? 'true' : undefined}
+      className="shrink-0 flex items-center gap-3 px-5 py-2 bg-[hsl(var(--gold-dim))] border-b border-primary/30 text-[12px]"
+    >
       {showAvailable && (
         <>
           <RefreshCw size={14} className="text-foreground shrink-0" />
-          <span className="text-foreground">
+          <span role="status" aria-live="polite" aria-atomic="true" className="text-foreground">
             <strong className="font-semibold">DepoAudio {update.version}</strong> is available
             {update.currentVersion ? ` — you have ${update.currentVersion}` : ''}.
           </span>
@@ -36,18 +42,31 @@ export default function UpdateBanner({ updater }) {
 
       {status === 'downloading' && (
         <>
-          <Loader2 size={14} className="text-foreground animate-spin shrink-0" />
-          <span className="text-foreground">
-            Downloading update…{progress > 0 ? ` ${Math.round(progress * 100)}%` : ''}
+          <Loader2
+            aria-hidden="true"
+            size={14}
+            className="text-foreground animate-spin motion-reduce:animate-none shrink-0"
+          />
+          <span role="status" aria-live="polite" aria-atomic="true" className="text-foreground">
+            Downloading update…
           </span>
-          <div className="ml-auto w-40 h-1.5 bg-border rounded-full overflow-hidden">
+          {progress > 0 && <span aria-hidden="true">{progressPercent}%</span>}
+          <div
+            role="progressbar"
+            aria-label="Update download progress"
+            aria-valuemin={0}
+            aria-valuemax={100}
+            aria-valuenow={progress > 0 ? progressPercent : undefined}
+            aria-valuetext={progress > 0 ? `${progressPercent}% downloaded` : 'Downloading update'}
+            className="ml-auto w-40 h-1.5 bg-border rounded-full overflow-hidden"
+          >
             <div
               className={
                 progress > 0
-                  ? 'h-full bg-primary rounded-full transition-all'
-                  : 'h-full bg-primary/60 rounded-full animate-pulse w-1/3'
+                  ? 'h-full bg-primary rounded-full transition-all motion-reduce:transition-none'
+                  : 'h-full bg-primary/60 rounded-full animate-pulse motion-reduce:animate-none w-1/3'
               }
-              style={progress > 0 ? { width: `${Math.round(progress * 100)}%` } : undefined}
+              style={progress > 0 ? { width: `${progressPercent}%` } : undefined}
             />
           </div>
         </>
@@ -55,8 +74,14 @@ export default function UpdateBanner({ updater }) {
 
       {status === 'ready' && (
         <>
-          <Loader2 size={14} className="text-foreground animate-spin shrink-0" />
-          <span className="text-foreground">Update installed — restarting…</span>
+          <Loader2
+            aria-hidden="true"
+            size={14}
+            className="text-foreground animate-spin motion-reduce:animate-none shrink-0"
+          />
+          <span role="status" aria-live="polite" aria-atomic="true" className="text-foreground">
+            Update installed — restarting…
+          </span>
         </>
       )}
 

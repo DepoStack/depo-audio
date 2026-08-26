@@ -14,7 +14,7 @@
     "fs:allow-write-text-file",
     {
       "identifier": "opener:allow-open-url",
-      "allow": [{ "url": "https://www.depostack.com" }]
+      "allow": [{ "url": "https://www.depostack.com" }, { "url": "https://github.com/DepoStack/depo-audio/releases" }]
     },
     "updater:default",
     "process:default"

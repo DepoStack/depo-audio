@@ -57,6 +57,9 @@ describe('LibraryTab court-software jobs', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Find court software' }))
 
     await waitFor(() => expect(screen.getByText('Showing 20 of 25')).toBeInTheDocument())
+    expect(screen.getByRole('status', { name: 'Court software scan status' })).toHaveTextContent(
+      'Found 1 court-software installation and 25 jobs.',
+    )
     expect(invoke).toHaveBeenCalledWith('detect_cat_software_cmd', { maxDepth: 7 })
     expect(invoke).toHaveBeenCalledWith('scan_cat_jobs_cmd', { path: 'C:\\FTR', maxDepth: 7 })
     expect(screen.getByText('26 files')).toBeInTheDocument()

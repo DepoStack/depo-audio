@@ -16,6 +16,7 @@ export default function FileRow({ file, job, onRemove, converting }) {
 
   return (
     <div
+      aria-busy={status === 'converting'}
       className={cn(
         'bg-card border border-border rounded-lg overflow-hidden transition-colors',
         status === 'converting' && 'border-primary',
@@ -69,26 +70,36 @@ export default function FileRow({ file, job, onRemove, converting }) {
           // while work continues reads as stuck. AI phases (no seconds yet)
           // stay indeterminate.
           const pct = job?.total > 0 && job?.seconds > 0 ? Math.min((job.seconds / job.total) * 100, 99) : null
+          const phaseLabel =
+            job?.phase === 'analyzing'
+              ? 'Analyzing audio…'
+              : job?.phase === 'processing'
+                ? 'Removing noise…'
+                : 'Encoding…'
+          const progressText = `${phaseLabel}${
+            pct != null ? ` ${Math.round(pct)}%` : job?.seconds > 0 ? ` ${Math.round(job.seconds)}s` : ''
+          }`
           return (
             <div className="px-3 pb-2.5">
               {(job?.phase || pct != null || job?.seconds > 0) && (
-                <span className="text-[10px] text-[hsl(var(--sub))] block mb-1">
-                  {job.phase === 'analyzing'
-                    ? 'Analyzing audio…'
-                    : job.phase === 'processing'
-                      ? 'Removing noise…'
-                      : 'Encoding…'}
-                  {pct != null ? ` ${Math.round(pct)}%` : job.seconds > 0 ? ` ${Math.round(job.seconds)}s` : ''}
-                </span>
+                <span className="text-[10px] text-[hsl(var(--sub))] block mb-1">{progressText}</span>
               )}
-              <div className="w-full h-1 bg-border rounded-full overflow-hidden">
+              <div
+                role="progressbar"
+                aria-label={`Conversion progress for ${file.name}`}
+                aria-valuemin={0}
+                aria-valuemax={100}
+                aria-valuenow={pct == null ? undefined : Math.round(pct)}
+                aria-valuetext={progressText}
+                className="w-full h-1 bg-border rounded-full overflow-hidden"
+              >
                 {pct != null ? (
                   <div
-                    className="h-full bg-primary rounded-full transition-all duration-300"
+                    className="h-full bg-primary rounded-full transition-all motion-reduce:transition-none duration-300"
                     style={{ width: `${pct}%` }}
                   />
                 ) : (
-                  <div className="h-full bg-primary rounded-full animate-[loading_1.2s_ease-in-out_infinite]" />
+                  <div className="h-full bg-primary rounded-full animate-[loading_1.2s_ease-in-out_infinite] motion-reduce:animate-none" />
                 )}
               </div>
             </div>

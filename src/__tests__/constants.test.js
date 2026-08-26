@@ -15,6 +15,14 @@ describe('MODES', () => {
     const ids = MODES.map(m => m.id)
     expect(ids).toEqual(['stereo', 'keep', 'split'])
   })
+
+  it('describes split output as channels without inferring speakers', () => {
+    expect(MODES.find(mode => mode.id === 'split')).toMatchObject({
+      label: 'Split Channels',
+      desc: 'One file per channel, named by role',
+    })
+    expect(MODES.map(mode => `${mode.label} ${mode.desc}`).join(' ')).not.toMatch(/speaker/i)
+  })
 })
 
 describe('FORMATS_OUT', () => {

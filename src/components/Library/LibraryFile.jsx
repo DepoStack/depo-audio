@@ -26,7 +26,7 @@ export default function LibraryFile({ file }) {
   }
 
   return (
-    <div className="flex items-center gap-2 px-2 py-1 bg-secondary rounded-md">
+    <div className="library-file flex items-center gap-2 px-2 py-1 bg-secondary rounded-md">
       <audio
         ref={audioRef}
         src={src}
@@ -43,32 +43,43 @@ export default function LibraryFile({ file }) {
       />
       <span
         className={cn(
-          'inline-flex items-center font-mono text-[9.5px] whitespace-nowrap rounded-sm px-1.5 py-0.5',
+          'library-file-format inline-flex items-center font-mono text-[9.5px] whitespace-nowrap rounded-sm px-1.5 py-0.5',
           fmtBadgeClass[file.format] || 'bg-secondary text-[hsl(var(--sub))]',
         )}
       >
         {file.format.toUpperCase()}
       </span>
-      <span className="text-[11px] text-[hsl(var(--text2))] flex-1 min-w-0 truncate" title={file.path}>
+      <span
+        className="library-file-name text-[11px] text-[hsl(var(--text2))] flex-1 min-w-0 truncate"
+        title={file.path}
+      >
         {basename(file.path)}
       </span>
-      <span className="font-mono text-[10px] text-[hsl(var(--sub))] shrink-0">{fmtSize(file.size)}</span>
+      <span className="library-file-size font-mono text-[10px] text-[hsl(var(--sub))] shrink-0">
+        {fmtSize(file.size)}
+      </span>
       <button
-        className="w-[22px] h-[22px] rounded-full bg-[hsl(var(--gold-dim))] border border-primary/30 text-foreground flex items-center justify-center shrink-0 transition-colors hover:bg-primary/20 hover:border-primary"
+        type="button"
+        className="library-file-play w-7 h-7 rounded-full bg-[hsl(var(--gold-dim))] border border-primary/30 text-foreground flex items-center justify-center shrink-0 transition-colors hover:bg-primary/20 hover:border-primary focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1"
         aria-label={playing ? `Pause ${basename(file.path)}` : `Play ${basename(file.path)}`}
         onClick={toggle}
       >
-        {playing ? <Pause size={10} fill="currentColor" /> : <Play size={10} fill="currentColor" />}
+        {playing ? (
+          <Pause size={11} fill="currentColor" aria-hidden="true" />
+        ) : (
+          <Play size={11} fill="currentColor" aria-hidden="true" />
+        )}
       </button>
       {duration > 0 && (
         <div
-          className="relative h-1 bg-border rounded-full cursor-pointer overflow-hidden"
+          className="library-file-seek relative h-2 bg-border rounded-full cursor-pointer overflow-hidden focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
           style={{ width: '80px' }}
           role="slider"
           aria-label={`Seek ${basename(file.path)}`}
           aria-valuemin={0}
           aria-valuemax={Math.round(duration)}
           aria-valuenow={Math.round(current)}
+          aria-valuetext={`${fmtTime(current)} of ${fmtTime(duration)}`}
           tabIndex={0}
           onKeyDown={e => {
             if (!audioRef.current || !duration) return
@@ -79,6 +90,14 @@ export default function LibraryFile({ file }) {
             if (e.key === 'ArrowRight' || e.key === 'ArrowUp') {
               e.preventDefault()
               audioRef.current.currentTime = Math.min(duration, current + 5)
+            }
+            if (e.key === 'Home') {
+              e.preventDefault()
+              audioRef.current.currentTime = 0
+            }
+            if (e.key === 'End') {
+              e.preventDefault()
+              audioRef.current.currentTime = duration
             }
           }}
           onClick={e => {
@@ -93,7 +112,9 @@ export default function LibraryFile({ file }) {
         </div>
       )}
       {duration > 0 && (
-        <span className="font-mono text-[10px] text-[hsl(var(--sub))] shrink-0">{fmtTime(current)}</span>
+        <span className="library-file-time font-mono text-[10px] text-[hsl(var(--sub))] shrink-0">
+          {fmtTime(current)}
+        </span>
       )}
     </div>
   )

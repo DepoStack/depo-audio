@@ -10,8 +10,10 @@ import {
   toPlainText,
   toSRT,
   canExportSrt,
+  findActiveTranscriptIndex,
   readStoredSegments,
   saveStoredSegments,
+  TRANSCRIPT_SAVE_DEBOUNCE_MS,
 } from '../../lib/transcript'
 import { Card, CardHeader, CardTitle } from '../ui/card'
 import { Button } from '../ui/button'
@@ -29,7 +31,21 @@ import { Button } from '../ui/button'
 // Transcripts persist per track in localStorage, keyed by file path.
 
 const STORAGE_WARNING =
-  'Transcript autosave is unavailable. Changes are kept only in this open session; export them before leaving this track.'
+  'Transcript autosave is unavailable. Unsaved changes are retained only in this open session; export them before closing DepoAudio.'
+const volatileTranscriptDrafts = new Map()
+const failedTranscriptDrafts = new Set()
+
+function persistTranscriptDraft(path, segments) {
+  const saved = saveStoredSegments(browserStorage(), path, segments)
+  if (saved) {
+    if (volatileTranscriptDrafts.get(path) === segments) volatileTranscriptDrafts.delete(path)
+    failedTranscriptDrafts.delete(path)
+  } else {
+    volatileTranscriptDrafts.set(path, segments)
+    failedTranscriptDrafts.add(path)
+  }
+  return saved
+}
 
 function browserStorage() {
   try {
@@ -39,16 +55,25 @@ function browserStorage() {
   }
 }
 
-function loadTrackState(path) {
-  const stored = readStoredSegments(browserStorage(), path)
-  return {
-    path,
-    segments: stored.segments,
-    storageError: stored.storageAvailable ? '' : STORAGE_WARNING,
+function reducedMotionRequested() {
+  try {
+    return window.matchMedia?.('(prefers-reduced-motion: reduce)').matches === true
+  } catch {
+    return false
   }
 }
 
-export default function Transcript({ trackPath, currentTime, playing, onSeek }) {
+function loadTrackState(path) {
+  const stored = readStoredSegments(browserStorage(), path)
+  const volatileDraft = volatileTranscriptDrafts.get(path)
+  return {
+    path,
+    segments: volatileDraft ?? stored.segments,
+    storageError: stored.storageAvailable && !failedTranscriptDrafts.has(path) ? '' : STORAGE_WARNING,
+  }
+}
+
+export default function Transcript({ trackPath, currentTime, playing, onSeek, onStorageError }) {
   const [trackState, setTrackState] = useState(() => loadTrackState(trackPath))
   if (trackState.path !== trackPath) {
     setTrackState(loadTrackState(trackPath))
@@ -71,46 +96,74 @@ export default function Transcript({ trackPath, currentTime, playing, onSeek }) 
   const [operationError, setOperationError] = useState('')
   const rowRefs = useRef({})
   const focusId = useRef(null)
+  const saveTimerRef = useRef(null)
+  const pendingSaveRef = useRef(null)
 
-  // Persist per track
+  // Persist per track after typing settles. A track switch flushes the previous
+  // snapshot, and unmount cleanup flushes once more so the debounce never loses
+  // the user's last edit.
   useEffect(() => {
-    if (trackState.path === trackPath) {
-      const saved = saveStoredSegments(browserStorage(), trackState.path, trackState.segments)
-      const nextError = saved ? '' : STORAGE_WARNING
-      const statusTimer = window.setTimeout(() => {
-        setTrackState(previous =>
-          previous.path === trackState.path && previous.storageError !== nextError
-            ? { ...previous, storageError: nextError }
-            : previous,
-        )
-      }, 0)
-      return () => window.clearTimeout(statusTimer)
+    if (trackState.path !== trackPath) return undefined
+
+    if (pendingSaveRef.current && pendingSaveRef.current.path !== trackState.path) {
+      const previous = pendingSaveRef.current
+      pendingSaveRef.current = null
+      persistTranscriptDraft(previous.path, previous.segments)
+      onStorageError?.(failedTranscriptDrafts.size > 0 ? STORAGE_WARNING : '')
     }
-    return undefined
-  }, [trackState.path, trackState.segments, trackPath])
+
+    volatileTranscriptDrafts.set(trackState.path, trackState.segments)
+    pendingSaveRef.current = { path: trackState.path, segments: trackState.segments }
+    window.clearTimeout(saveTimerRef.current)
+    saveTimerRef.current = window.setTimeout(() => {
+      const pending = pendingSaveRef.current
+      if (!pending || pending.path !== trackState.path) return
+      pendingSaveRef.current = null
+      saveTimerRef.current = null
+      const saved = persistTranscriptDraft(pending.path, pending.segments)
+      const nextError = saved ? '' : STORAGE_WARNING
+      onStorageError?.(failedTranscriptDrafts.size > 0 ? STORAGE_WARNING : '')
+      setTrackState(previous =>
+        previous.path === pending.path && previous.storageError !== nextError
+          ? { ...previous, storageError: nextError }
+          : previous,
+      )
+    }, TRANSCRIPT_SAVE_DEBOUNCE_MS)
+
+    return () => window.clearTimeout(saveTimerRef.current)
+  }, [trackState.path, trackState.segments, trackPath, onStorageError])
+
+  useEffect(
+    () => () => {
+      window.clearTimeout(saveTimerRef.current)
+      const pending = pendingSaveRef.current
+      pendingSaveRef.current = null
+      if (pending) {
+        persistTranscriptDraft(pending.path, pending.segments)
+        onStorageError?.(failedTranscriptDrafts.size > 0 ? STORAGE_WARNING : '')
+      }
+    },
+    [onStorageError],
+  )
+
+  useEffect(() => {
+    if (!onStorageError) return
+    onStorageError(failedTranscriptDrafts.size > 0 ? STORAGE_WARNING : storageError)
+  }, [onStorageError, storageError])
 
   // The active (currently-playing) timed segment
   const activeId = useMemo(() => {
-    let id = null
-    for (const s of segments) {
-      if (s.start != null && s.start <= currentTime + 0.05) id = s.id
-    }
-    // segments aren't guaranteed sorted; take the latest start <= currentTime
-    let best = null,
-      bestStart = -1
-    for (const s of segments) {
-      if (s.start != null && s.start <= currentTime + 0.05 && s.start > bestStart) {
-        bestStart = s.start
-        best = s.id
-      }
-    }
-    return best ?? id
+    const activeIndex = findActiveTranscriptIndex(segments, currentTime)
+    return activeIndex < 0 ? null : segments[activeIndex]?.id
   }, [segments, currentTime])
 
   // Auto-scroll the active line into view while following playback
   useEffect(() => {
     if (!follow || !playing || !activeId) return
-    rowRefs.current[activeId]?.scrollIntoView({ block: 'nearest', behavior: 'smooth' })
+    rowRefs.current[activeId]?.scrollIntoView({
+      block: 'nearest',
+      behavior: reducedMotionRequested() ? 'auto' : 'smooth',
+    })
   }, [activeId, follow, playing])
 
   // Focus a newly created row's text field
@@ -222,6 +275,9 @@ export default function Transcript({ trackPath, currentTime, playing, onSeek }) 
                   </>
                 )}
               </button>
+              <span role="status" aria-live="polite" className="sr-only">
+                {copied ? 'Transcript copied to clipboard.' : ''}
+              </span>
               <div className="relative">
                 <Button size="sm" variant="ghost" onClick={() => setShowExport(s => !s)} title="Export transcript">
                   <Download size={12} /> Export
@@ -255,7 +311,7 @@ export default function Transcript({ trackPath, currentTime, playing, onSeek }) 
         </div>
       </CardHeader>
 
-      {storageError && (
+      {storageError && !onStorageError && (
         <p
           role="alert"
           className="mx-4 mt-3 rounded-md border border-warning/40 bg-warning/10 px-3 py-2 text-[11px] text-foreground"
@@ -280,6 +336,7 @@ export default function Transcript({ trackPath, currentTime, playing, onSeek }) 
             one.
           </p>
           <textarea
+            aria-label="Transcript text to paste"
             className="w-full h-24 bg-secondary/40 border border-border rounded-md p-2.5 text-[12px] text-foreground resize-y focus:outline-hidden focus:border-primary"
             placeholder="Paste transcript text here…"
             value={paste}
@@ -297,7 +354,7 @@ export default function Transcript({ trackPath, currentTime, playing, onSeek }) 
       ) : (
         <div className="flex flex-col">
           <div className="max-h-[420px] overflow-y-auto px-2 py-1.5">
-            {segments.map(s => {
+            {segments.map((s, index) => {
               const active = s.id === activeId
               return (
                 <div
@@ -335,6 +392,7 @@ export default function Transcript({ trackPath, currentTime, playing, onSeek }) 
 
                   {/* Speaker (optional) */}
                   <input
+                    aria-label={`Speaker or role for transcript line ${index + 1}`}
                     className="shrink-0 w-16 bg-transparent border-none p-0 pt-0.5 text-[10px] font-mono text-[hsl(var(--text2))] focus:text-foreground focus:outline-hidden placeholder:text-[hsl(var(--sub))]"
                     value={s.speaker}
                     placeholder="speaker"
@@ -343,6 +401,7 @@ export default function Transcript({ trackPath, currentTime, playing, onSeek }) 
 
                   {/* Text */}
                   <textarea
+                    aria-label={`Transcript text for line ${index + 1}`}
                     rows={1}
                     className="flex-1 min-w-0 bg-transparent border-none p-0 text-[12px] leading-snug text-foreground resize-none focus:outline-hidden overflow-hidden"
                     value={s.text}

@@ -43,7 +43,8 @@ const modelsSource = read('src-tauri/src/models.rs')
 const canonicalReleaseUrl = 'https://github.com/DepoStack/depo-audio/releases'
 const configuredReleaseUrl = appConstants.match(/^export const DEPOAUDIO_RELEASES_URL = ['"]([^'"]+)['"]$/m)?.[1]
 const installerReleaseUrl = installerLicense.match(/^(https:\/\/[^\s]+)\. DepoAudio's MIT license does\\par$/m)?.[1]
-const requiresPublishedHeading = process.argv.includes('--published')
+expect(!process.argv.includes('--published'), 'use --publication-ready; --published no longer describes this check')
+const requiresPublicationReadyHeading = process.argv.includes('--publication-ready')
 const candidateIsGo = releaseCandidate.includes('Status: **GO for publication**')
 const candidateIsNoGo = releaseCandidate.includes('Status: **NO-GO for publication; private RC evidence only**')
 
@@ -184,7 +185,7 @@ expect(
     (releaseGate.status === 'NO-GO' && openGateBlockers.length > 0),
   'GO requires zero open blockers; NO-GO requires at least one open blocker',
 )
-if (requiresPublishedHeading) {
+if (requiresPublicationReadyHeading) {
   expect(releaseGate.status === 'GO', 'the machine-readable release gate must be GO before publication')
   expect(openGateBlockers.length === 0, 'every machine-readable release blocker must be closed before publication')
   expect(
@@ -305,14 +306,14 @@ for (const hash of [
 
 const unreleasedPosition = changelog.indexOf('## [Unreleased]')
 const datedReleaseHeading = new RegExp(`^## \\[${escapedVersion}\\] - \\d{4}-\\d{2}-\\d{2}$`, 'm')
-const releaseHeading = requiresPublishedHeading
+const releaseHeading = requiresPublicationReadyHeading
   ? datedReleaseHeading
   : new RegExp(`^## \\[${escapedVersion}\\] - (?:\\d{4}-\\d{2}-\\d{2}|Unpublished)$`, 'm')
 const releaseMatch = changelog.match(releaseHeading)
 expect(unreleasedPosition >= 0, 'CHANGELOG.md must retain an Unreleased heading')
 expect(
   releaseMatch,
-  requiresPublishedHeading
+  requiresPublicationReadyHeading
     ? `CHANGELOG.md must contain a dated ${version} release heading before publication`
     : `CHANGELOG.md must contain a dated or explicitly Unpublished ${version} heading`,
 )
@@ -323,11 +324,11 @@ if (releaseMatch) {
   )
 }
 expect(
-  requiresPublishedHeading
+  requiresPublicationReadyHeading
     ? candidateIsGo
     : releaseCandidate.includes('Status: **NO-GO for publication; private RC evidence only**') ||
         releaseCandidate.includes('Status: **GO for publication**'),
-  requiresPublishedHeading
+  requiresPublicationReadyHeading
     ? 'the reviewed release-candidate status must be GO before publication'
     : 'the release-candidate document must carry an explicit GO or NO-GO status',
 )
@@ -390,16 +391,25 @@ expect(
     !promoteDraftWorkflow.includes('--method POST'),
   'promote-draft.yml must remain a read-only audit with no upload, delete, promotion, or publication path',
 )
+const protectedPublicationJob = publishReleaseWorkflow.slice(publishReleaseWorkflow.indexOf('\n  publish:\n'))
+const publicationReadyCalls = publishReleaseWorkflow.match(/release-contract-check\.mjs --publication-ready/g) ?? []
 expect(
-  publishReleaseWorkflow.includes('environment: release-publication') &&
-    publishReleaseWorkflow.includes('ref: ${{ github.sha }}') &&
-    publishReleaseWorkflow.includes('release-contract-check.mjs --published') &&
+  protectedPublicationJob.includes('environment: release-publication') &&
+    protectedPublicationJob.includes('ref: ${{ github.sha }}') &&
+    protectedPublicationJob.includes('release-contract-check.mjs --publication-ready') &&
+    publicationReadyCalls.length === 1 &&
+    protectedPublicationJob.includes('Verify publication environment protections') &&
+    protectedPublicationJob.includes('.prevent_self_review == true') &&
+    protectedPublicationJob.includes("--header 'X-GitHub-Api-Version: 2026-03-10'") &&
+    protectedPublicationJob.includes('.deployment_branch_policy.custom_branch_policies == true') &&
+    protectedPublicationJob.includes('.total_count == 1') &&
+    protectedPublicationJob.includes('.branch_policies[0].name == "main"') &&
     publishReleaseWorkflow.includes('--phase inspect') &&
-    publishReleaseWorkflow.includes('--phase prepare') &&
-    publishReleaseWorkflow.includes('--phase publish') &&
-    publishReleaseWorkflow.includes('APPROVAL_COMMIT: ${{ github.sha }}') &&
-    publishReleaseWorkflow.includes('PUBLICATION-UPLOAD-PLAN.json') &&
-    publishReleaseWorkflow.includes('scripts/upload-draft-release-assets.mjs') &&
+    protectedPublicationJob.includes('--phase prepare') &&
+    protectedPublicationJob.includes('--phase publish') &&
+    protectedPublicationJob.includes('APPROVAL_COMMIT: ${{ github.sha }}') &&
+    protectedPublicationJob.includes('PUBLICATION-UPLOAD-PLAN.json') &&
+    protectedPublicationJob.includes('scripts/upload-draft-release-assets.mjs') &&
     !publishReleaseWorkflow.includes('gh release upload') &&
     !publishReleaseWorkflow.includes('--method DELETE') &&
     !publishReleaseWorkflow.includes('-X DELETE') &&
@@ -418,19 +428,28 @@ expect(
   'release.yml must bind the draft to the workflow commit',
 )
 expect(
-  releaseWorkflow.includes('Verify release source is main') &&
+  releaseWorkflow.includes('on:\n  workflow_dispatch:') &&
+    !releaseWorkflow.includes('\n  push:') &&
+    !releaseWorkflow.includes('github.ref_name') &&
+    releaseWorkflow.includes('Verify release source is main') &&
     releaseWorkflow.includes('git merge-base --is-ancestor "$GITHUB_SHA" refs/remotes/origin/main'),
-  'release.yml must reject release commits that are not contained in main',
+  'release.yml must be a dispatch-only private-candidate workflow for commits contained in main',
 )
 expect(
   releaseWorkflow.includes('[ "$GITHUB_REF" != "refs/heads/main" ]'),
-  'release.yml must reject workflow_dispatch from a non-main branch',
+  'release.yml must reject a manual release dispatch from a non-main branch',
 )
 expect(
   releaseWorkflow.includes('Reject a stale draft release for this tag') &&
     releaseWorkflow.includes('the release workflow never deletes drafts') &&
     !releaseWorkflow.includes('-X DELETE "repos/$GITHUB_REPOSITORY/releases/$id"'),
   'release.yml must fail closed on a stale same-tag draft without deleting it',
+)
+expect(
+  releaseWorkflow.includes('already exists at $tagged_commit before candidate construction') &&
+    !releaseWorkflow.includes('Existing tag $tag resolves to this run') &&
+    releaseWorkflow.includes('may be bound during protected publication'),
+  'candidate construction must reject every pre-existing release tag so only protected publication can bind it',
 )
 expect(
   releaseWorkflow.includes('Smoke-test packaged app startup (Windows)') &&

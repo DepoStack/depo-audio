@@ -80,6 +80,122 @@ describe('SettingsPanel hardware facts', () => {
     expect(openUrl).toHaveBeenCalledWith(DEPOAUDIO_RELEASES_URL)
   })
 
+  it('surfaces a failed release-evidence opener action', async () => {
+    invoke.mockImplementation(command => {
+      if (command === 'model_catalog_cmd') return Promise.resolve([])
+      if (command === 'system_capabilities_cmd') {
+        return Promise.resolve({ acceleratorDesc: 'CPU', tier: 'low', cpuCores: null, ramMb: null })
+      }
+      return Promise.resolve()
+    })
+    openUrl.mockRejectedValueOnce(new Error('opener denied'))
+
+    renderSettings()
+    fireEvent.click(screen.getByRole('button', { name: 'Updates' }))
+    fireEvent.click(
+      screen.getByRole('button', { name: 'Open DepoAudio releases with FFmpeg source and license evidence' }),
+    )
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      "Couldn't open DepoAudio release evidence: Error: opener denied",
+    )
+  })
+
+  it('shows a model load error and retries instead of presenting a false zero count', async () => {
+    let modelServicesAvailable = false
+    invoke.mockImplementation(command => {
+      if (!modelServicesAvailable) return Promise.reject(new Error('catalog unavailable'))
+      if (command === 'model_catalog_cmd') return Promise.resolve([])
+      if (command === 'system_capabilities_cmd') {
+        return Promise.resolve({ acceleratorDesc: 'CPU', tier: 'low', cpuCores: null, ramMb: null })
+      }
+      return Promise.resolve()
+    })
+
+    renderSettings()
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('catalog unavailable')
+    expect(screen.queryByText(/0\/0 active installed/i)).not.toBeInTheDocument()
+
+    modelServicesAvailable = true
+    fireEvent.click(screen.getByRole('button', { name: /retry/i }))
+    await waitFor(() => expect(screen.getByText('CPU')).toBeVisible())
+  })
+
+  it('fails closed after a post-mutation catalog refresh error', async () => {
+    let deleted = false
+    const removableModel = {
+      filename: 'optional.onnx',
+      displayName: 'Optional model',
+      description: 'Optional processing',
+      sizeMb: 1,
+      feature: 'Optional Processing',
+      required: false,
+      installed: true,
+      removable: true,
+      recommended: false,
+      downloadUrl: '',
+    }
+    invoke.mockImplementation(command => {
+      if (command === 'model_catalog_cmd') {
+        return deleted ? Promise.reject(new Error('refresh unavailable')) : Promise.resolve([removableModel])
+      }
+      if (command === 'system_capabilities_cmd') {
+        return Promise.resolve({ acceleratorDesc: 'CPU', tier: 'low', cpuCores: null, ramMb: null })
+      }
+      if (command === 'delete_model_cmd') {
+        deleted = true
+        return Promise.resolve()
+      }
+      return Promise.resolve()
+    })
+
+    renderSettings()
+    const deleteButton = await screen.findByRole('button', { name: 'Delete Optional model' })
+    fireEvent.click(deleteButton)
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('refresh unavailable')
+    expect(screen.queryByRole('button', { name: 'Delete Optional model' })).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /retry/i })).toBeEnabled()
+  })
+
+  it('associates numeric settings with durable labels and names collapsed navigation buttons', async () => {
+    invoke.mockImplementation(command => {
+      if (command === 'model_catalog_cmd') return Promise.resolve([])
+      if (command === 'system_capabilities_cmd') {
+        return Promise.resolve({ acceleratorDesc: 'CPU', tier: 'low', cpuCores: null, ramMb: null })
+      }
+      return Promise.resolve()
+    })
+    const setValue = vi.fn()
+    render(
+      <SettingsPanel
+        open
+        onOpenChange={vi.fn()}
+        prefs={{
+          ffmpegTimeout: 300,
+          setFfmpegTimeout: setValue,
+          maxScanDepth: 5,
+          setMaxScanDepth: setValue,
+          maxFileSizeGb: 2,
+          setMaxFileSizeGb: setValue,
+          defaultOutputFormat: '',
+          setDefaultOutputFormat: setValue,
+          defaultOutputMode: '',
+          setDefaultOutputMode: setValue,
+        }}
+      />,
+    )
+
+    const appSection = screen.getByRole('button', { name: 'App' })
+    expect(appSection).toHaveAttribute('aria-label', 'App')
+    fireEvent.click(appSection)
+
+    expect(screen.getByRole('spinbutton', { name: 'Processing timeout (seconds)' })).toHaveAttribute('id')
+    expect(screen.getByRole('spinbutton', { name: 'Folder scan depth (levels)' })).toHaveAttribute('id')
+    expect(screen.getByRole('spinbutton', { name: 'Max file size (GB)' })).toHaveAttribute('id')
+  })
+
   it('separates legacy cleanup files from the active model count and removes them', async () => {
     let legacyPresent = true
     const activeModels = [

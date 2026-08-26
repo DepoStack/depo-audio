@@ -15,6 +15,8 @@ import {
   loadStoredSegments,
   readStoredSegments,
   saveStoredSegments,
+  findActiveTranscriptIndex,
+  TRANSCRIPT_SAVE_DEBOUNCE_MS,
 } from '../lib/transcript'
 
 // Characterization tests: these pin the transcript formats the editor reads
@@ -207,5 +209,56 @@ describe('new transcript lines', () => {
   it('preserves a valid playback position at exactly zero', () => {
     expect(createSegmentAtTime(0)).toMatchObject({ start: 0, speaker: '', text: '' })
     expect(createSegmentAtTime(Number.NaN).start).toBeNull()
+  })
+})
+
+describe('active transcript lookup', () => {
+  const segments = [
+    { id: 'late', start: 20 },
+    { id: 'early', start: 2 },
+    { id: 'middle', start: 10 },
+    { id: 'unstamped', start: null },
+  ]
+
+  it('finds the latest timed row without requiring display order to be chronological', () => {
+    expect(findActiveTranscriptIndex(segments, 1)).toBe(-1)
+    expect(findActiveTranscriptIndex(segments, 2)).toBe(1)
+    expect(findActiveTranscriptIndex(segments, 12)).toBe(2)
+    expect(findActiveTranscriptIndex(segments, 25)).toBe(0)
+  })
+
+  it('retains the playback tolerance and rejects invalid playback positions', () => {
+    expect(findActiveTranscriptIndex(segments, 1.96)).toBe(1)
+    expect(findActiveTranscriptIndex(segments, Number.NaN)).toBe(-1)
+  })
+
+  it('resolves duplicate timestamps to the first displayed row', () => {
+    const duplicateTimes = [
+      { id: 'first', start: 5 },
+      { id: 'second', start: 5 },
+    ]
+    expect(findActiveTranscriptIndex(duplicateTimes, 5)).toBe(0)
+  })
+
+  it('reuses the timed index for repeated playback updates', () => {
+    let startReads = 0
+    const indexed = Array.from({ length: 1024 }, (_, index) => ({
+      id: String(index),
+      get start() {
+        startReads += 1
+        return index
+      },
+    }))
+
+    expect(findActiveTranscriptIndex(indexed, 700)).toBe(700)
+    expect(startReads).toBeGreaterThanOrEqual(indexed.length)
+    startReads = 0
+    expect(findActiveTranscriptIndex(indexed, 900)).toBe(900)
+    expect(startReads).toBe(0)
+  })
+
+  it('exports a short, nonzero persistence debounce', () => {
+    expect(TRANSCRIPT_SAVE_DEBOUNCE_MS).toBeGreaterThan(0)
+    expect(TRANSCRIPT_SAVE_DEBOUNCE_MS).toBeLessThanOrEqual(1000)
   })
 })

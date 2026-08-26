@@ -5,6 +5,53 @@
 // these functions define what happens to users' transcript files.
 
 export const uid = () => Math.random().toString(36).slice(2, 10)
+export const TRANSCRIPT_SAVE_DEBOUNCE_MS = 300
+
+// React replaces the segments array for every edit, so an identity-keyed index
+// stays valid for the lifetime of that snapshot. Playback updates can then find
+// the active cue in O(log n) instead of rescanning a long transcript.
+const timedTranscriptIndexCache = new WeakMap()
+
+function timedTranscriptIndex(segments) {
+  if (!Array.isArray(segments)) return []
+  const cached = timedTranscriptIndexCache.get(segments)
+  if (cached) return cached
+
+  const index = []
+  segments.forEach((segment, sourceIndex) => {
+    if (typeof segment?.start === 'number' && Number.isFinite(segment.start) && segment.start >= 0) {
+      index.push({ start: segment.start, sourceIndex })
+    }
+  })
+  // Sort duplicate timestamps with later source rows first so the binary
+  // search resolves ties to the first row, matching the previous scan.
+  index.sort((a, b) => a.start - b.start || b.sourceIndex - a.sourceIndex)
+  timedTranscriptIndexCache.set(segments, index)
+  return index
+}
+
+export function findActiveTranscriptIndex(segments, currentTime, tolerance = 0.05) {
+  if (!Number.isFinite(currentTime)) return -1
+  const index = timedTranscriptIndex(segments)
+  if (index.length === 0) return -1
+
+  const safeTolerance = Number.isFinite(tolerance) ? Math.max(0, tolerance) : 0
+  const cutoff = currentTime + safeTolerance
+  let low = 0
+  let high = index.length - 1
+  let active = -1
+  while (low <= high) {
+    const middle = low + Math.floor((high - low) / 2)
+    if (index[middle].start <= cutoff) {
+      active = middle
+      low = middle + 1
+    } else {
+      high = middle - 1
+    }
+  }
+
+  return active < 0 ? -1 : index[active].sourceIndex
+}
 
 export function createSegmentAtTime(currentTime) {
   return {
