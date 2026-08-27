@@ -4,13 +4,14 @@ import { listen } from '@tauri-apps/api/event'
 import { MODES, FORMATS_OUT, MP3_BITRATES, CH_COLORS } from '../../constants'
 import { PRESETS, resolvePresetSettings } from '../../presets'
 import { usePreferencesContext } from '../../hooks/PreferencesContext'
-import { Loader2 } from 'lucide-react'
+import { Check, Loader2, Play } from 'lucide-react'
 import { Button } from '../ui/button'
 import { Card, CardHeader, CardTitle, CardContent } from '../ui/card'
 import { Badge } from '../ui/badge'
 import { Input } from '../ui/input'
 import { Label } from '../ui/label'
 import { ModeIcon, WaveformIcon } from '../common/Icons'
+import WorkspaceHeader from '../common/WorkspaceHeader'
 import ProcessingToggle from './ProcessingToggle'
 import FormatTable from './FormatTable'
 import FileRow from './FileRow'
@@ -429,11 +430,25 @@ export default function ConvertTab({
           Math.max(0, Math.round(((scanProgress.current + (scanProgress.filePct || 0)) / scanProgress.total) * 100)),
         )
       : 0
+  const convertDisabledReason = queueLocked
+    ? 'Wait for the current conversion to finish.'
+    : files.length === 0
+      ? 'Add at least one recording to continue.'
+      : unsupportedFiles.length > 0
+        ? 'Remove unsupported recordings or export them to WAV first.'
+        : ''
 
   return (
     <>
       <div className="flex-1 overflow-y-auto overflow-x-hidden scrollbar-thin scrollbar-thumb-border scrollbar-track-transparent">
-        <div className="w-full max-w-[1100px] mx-auto px-5 md:px-8 py-5 flex flex-col gap-3.5">
+        <div className="conversion-workspace w-full max-w-[1100px] mx-auto px-4 sm:px-6 lg:px-8 py-5 flex flex-col gap-4">
+          <WorkspaceHeader
+            eyebrow="Court-audio conversion"
+            title="Convert court recordings"
+            description="Open difficult court audio, choose a practical output, and prepare files for review or transcript production."
+            status="Recordings and processing stay on this computer"
+          />
+
           {/* ── STEPPER (state-driven, purely informational) ─────────────── */}
           <ol className="conversion-stepper flex items-center gap-2.5 mb-1" aria-label="Conversion progress">
             {['Add recording', 'Choose settings', 'Convert'].map((label, i) => {
@@ -456,7 +471,7 @@ export default function ConvertTab({
                           : 'bg-card border-border text-[hsl(var(--sub))]'
                     }`}
                   >
-                    {done ? '✓' : n}
+                    {done ? <Check aria-hidden="true" className="h-3.5 w-3.5" strokeWidth={2.2} /> : n}
                   </span>
                   <span
                     className={`text-[12px] ${now ? 'font-semibold text-foreground' : done ? 'text-[hsl(var(--text2))]' : 'text-[hsl(var(--sub))]'}`}
@@ -476,38 +491,44 @@ export default function ConvertTab({
 
           {/* ── FILES (drop zone + queue) — the workflow starts here ─────── */}
           <div
-            role="button"
-            tabIndex={0}
-            aria-disabled={queueLocked}
-            aria-label="Add audio files: drop them here or press Enter to browse"
-            className={`flex flex-col items-center justify-center gap-2 py-8 px-6 border-2 border-dashed rounded-xl transition-colors focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring ${queueLocked ? 'cursor-not-allowed opacity-60 border-border/60' : `cursor-pointer ${dragOver ? 'border-primary bg-[hsl(var(--gold-dim))]' : 'border-border/60 hover:border-border hover:bg-secondary/30'}`}`}
+            aria-busy={queueLocked}
+            className={`recording-intake grid items-center gap-3 rounded-xl border border-dashed px-4 py-4 transition-colors sm:grid-cols-[auto_minmax(0,1fr)_auto] ${
+              queueLocked
+                ? 'border-border/60 bg-[hsl(var(--surface))] opacity-70'
+                : dragOver
+                  ? 'border-primary bg-[hsl(var(--gold-dim))]'
+                  : 'border-border bg-[hsl(var(--surface))] hover:border-[hsl(var(--text2)/0.55)]'
+            }`}
             onDragOver={queueLocked ? undefined : onDragOver}
             onDragLeave={onDragLeave}
-            onDrop={onDrop}
-            onClick={() => {
-              if (!queueLocked) browseFiles()
-            }}
-            onKeyDown={e => {
-              if (!queueLocked && (e.key === 'Enter' || e.key === ' ')) {
-                e.preventDefault()
-                browseFiles()
-              }
-            }}
+            onDrop={queueLocked ? undefined : onDrop}
           >
-            <WaveformIcon />
-            <p className="text-[13px] font-semibold text-foreground">
-              {queueLocked ? 'File queue locked during conversion' : 'Drop audio or video files here'}
-            </p>
-            <p className="text-[11px] text-[hsl(var(--sub))] text-center">
-              {queueLocked ? (
-                'Wait for the current batch to finish before adding or replacing files.'
-              ) : (
-                <>
-                  or <span className="text-foreground cursor-pointer hover:underline">click to browse</span> — MP3 · WAV
-                  · FLAC · M4A · OGG · Opus · WMA · court formats (SGMCA · TRM · BWF) · video (MP4 · MOV · MKV)
-                </>
-              )}
-            </p>
+            <div
+              aria-hidden="true"
+              className="grid h-11 w-11 place-items-center rounded-lg border border-border/70 bg-card text-foreground"
+            >
+              <WaveformIcon />
+            </div>
+            <div className="min-w-0">
+              <p className="text-[13px] font-semibold text-foreground">
+                {queueLocked ? 'File queue locked during conversion' : 'Add the recording you need to open or convert'}
+              </p>
+              <p className="mt-0.5 text-[10.5px] leading-relaxed text-[hsl(var(--sub))]">
+                {queueLocked
+                  ? 'Wait for the current batch to finish before adding or replacing files.'
+                  : 'Drop files here, or browse for WAV, MP3, FLAC, SGMCA, TRM, BWF, and supported video containers.'}
+              </p>
+            </div>
+            <Button
+              type="button"
+              variant="outline"
+              className="w-full sm:w-auto"
+              aria-label="Add audio files: browse for recordings"
+              disabled={queueLocked}
+              onClick={browseFiles}
+            >
+              Browse recordings
+            </Button>
           </div>
 
           {files.length > 0 && (
@@ -573,8 +594,8 @@ export default function ConvertTab({
           {/* ── PRESETS ──────────────────────────────────────────────────── */}
           {/* Highlight the preset the current settings match, so users can
               see which preset is active and when they've diverged from it */}
-          <div className="flex items-center gap-1.5 flex-wrap mb-2">
-            <Label>PRESET</Label>
+          <div className="flex items-center gap-1.5 flex-wrap mb-1">
+            <Label>Quick setup</Label>
             {PRESETS.map(p => {
               const s = resolvePresetSettings(p.settings, capabilities)
               // Opus always converts at 48 kHz, so compare the effective rate
@@ -630,17 +651,17 @@ export default function ConvertTab({
           </div>
 
           {/* ── OUTPUT MODE (segmented) ──────────────────────────────────── */}
-          <Card>
+          <Card className="workflow-section">
             <CardHeader>
               <CardTitle>OUTPUT MODE</CardTitle>
             </CardHeader>
             <CardContent>
-              <div className="grid grid-cols-3 gap-2 p-2 m-2 rounded-lg bg-secondary/60">
+              <div className="output-mode-grid grid grid-cols-1 gap-1.5 bg-secondary/45 p-2 sm:grid-cols-3">
                 {MODES.map(m => (
                   <button
                     key={m.id}
                     aria-pressed={mode === m.id}
-                    className={`flex items-center gap-3 p-2.5 rounded-md transition-all cursor-pointer focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring ${mode === m.id ? 'bg-card shadow-sm ring-1 ring-border' : 'hover:bg-card/50'}`}
+                    className={`flex items-center gap-3 rounded-md border p-2.5 text-left transition-[color,background-color,border-color,transform] duration-150 active:translate-y-px focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring ${mode === m.id ? 'border-primary/40 bg-card' : 'border-transparent hover:border-border hover:bg-card/55'}`}
                     onClick={() => handleModeChange(m.id)}
                   >
                     <ModeIcon id={m.id} active={mode === m.id} />
@@ -655,19 +676,19 @@ export default function ConvertTab({
           </Card>
 
           {/* ── FORMAT (tiles with plain-English trade-offs) ─────────────── */}
-          <Card>
+          <Card className="workflow-section">
             <CardHeader>
               <CardTitle>FORMAT</CardTitle>
             </CardHeader>
             <CardContent>
-              <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-2 p-3">
+              <div className="format-output-grid grid grid-cols-1 gap-2 p-3 min-[420px]:grid-cols-2 sm:grid-cols-3 lg:grid-cols-5">
                 {FORMATS_OUT.map(f => (
                   <button
                     key={f.id}
                     aria-pressed={formatOut === f.id}
                     className={`relative flex flex-col items-start gap-0.5 px-3 py-2.5 rounded-lg border text-left transition-all cursor-pointer focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring ${
                       formatOut === f.id
-                        ? 'border-primary bg-[hsl(var(--gold-dim))] shadow-sm'
+                        ? 'border-primary bg-[hsl(var(--gold-dim))]'
                         : 'border-border bg-card hover:border-[hsl(var(--sub))]'
                     }`}
                     onClick={() => setFormatOut(f.id)}
@@ -676,7 +697,7 @@ export default function ConvertTab({
                     <span className="text-[10px] text-[hsl(var(--text2))] leading-tight">{f.desc}</span>
                     {formatOut === f.id && (
                       <span aria-hidden="true" className="absolute top-1.5 right-2 text-foreground text-[11px]">
-                        ✓
+                        <Check aria-hidden="true" className="h-3.5 w-3.5" strokeWidth={2.2} />
                       </span>
                     )}
                   </button>
@@ -726,7 +747,7 @@ export default function ConvertTab({
           {/* Only meaningful once files are queued, and not in keep mode —
               keep mode preserves channels untouched and ignores labels */}
           {files.length > 0 && mode !== 'keep' && (
-            <Card>
+            <Card className="workflow-section">
               <CardHeader>
                 <CardTitle>CHANNELS</CardTitle>
                 <span className="text-[10px] text-[hsl(var(--sub))]">
@@ -738,7 +759,7 @@ export default function ConvertTab({
               <CardContent>
                 <div className="flex flex-col gap-1 p-3">
                   {labels.map((l, i) => (
-                    <div key={i} className="flex items-center gap-2">
+                    <div key={i} className="channel-row flex items-center gap-2">
                       <span
                         className="w-2 h-2 rounded-full shrink-0"
                         style={{ background: CH_COLORS[i % CH_COLORS.length] }}
@@ -752,7 +773,7 @@ export default function ConvertTab({
                         onChange={e => setLabels(p => p.map((v, j) => (j === i ? e.target.value : v)))}
                       />
                       {mode === 'stereo' && (
-                        <>
+                        <div className="channel-mix flex min-w-0 flex-1 items-center gap-2">
                           <input
                             type="range"
                             min="0"
@@ -771,7 +792,7 @@ export default function ConvertTab({
                           >
                             {autoLevel ? 'auto' : chanVols[i] === 0 ? 'mute' : chanVols[i].toFixed(2)}
                           </span>
-                        </>
+                        </div>
                       )}
                     </div>
                   ))}
@@ -781,7 +802,7 @@ export default function ConvertTab({
           )}
 
           {/* ── AUDIO PROCESSING (unified panel) ─────────────────────────── */}
-          <Card>
+          <Card className="workflow-section">
             <CardHeader>
               <CardTitle>AUDIO PROCESSING</CardTitle>
               <Button variant="scan" size="sm" onClick={handleScan} disabled={!files.length || scanning || converting}>
@@ -1199,7 +1220,7 @@ export default function ConvertTab({
           </Card>
 
           {/* ── DESTINATION ──────────────────────────────────────────────── */}
-          <Card>
+          <Card className="workflow-section">
             <CardHeader>
               <CardTitle>DESTINATION</CardTitle>
             </CardHeader>
@@ -1241,13 +1262,13 @@ export default function ConvertTab({
         </div>
       </div>
 
-      <footer className="flex items-center justify-between gap-4 px-7 py-3 border-t border-border/60 bg-card shrink-0">
+      <footer className="conversion-footer flex shrink-0 items-center justify-between gap-4 border-t border-border/60 bg-card px-4 py-3 sm:px-6 lg:px-7">
         <div
           role="status"
           aria-label="Conversion status"
           aria-live="polite"
           aria-atomic="true"
-          className="flex items-center gap-2 min-w-0"
+          className="conversion-footer-status flex min-w-0 items-center gap-2"
         >
           {converting && (
             <Badge variant="active">
@@ -1259,7 +1280,13 @@ export default function ConvertTab({
             </Badge>
           )}
           {!converting && resultCount > 0 && <Badge variant={resultVariant}>{resultParts.join(', ')}</Badge>}
-          {!converting && resultCount === 0 && files.length > 0 && (
+          {!converting && resultCount === 0 && files.length === 0 && (
+            <p className="text-[11.5px] text-[hsl(var(--sub))]">Add a recording to choose an output and convert.</p>
+          )}
+          {!converting && resultCount === 0 && unsupportedFiles.length > 0 && (
+            <p className="text-[11.5px] text-warning">Export or remove the unsupported recording before converting.</p>
+          )}
+          {!converting && resultCount === 0 && files.length > 0 && unsupportedFiles.length === 0 && (
             <p className="text-[12px] text-[hsl(var(--sub))] truncate">
               Ready:{' '}
               <span className="font-semibold text-foreground">
@@ -1276,7 +1303,13 @@ export default function ConvertTab({
           )}
         </div>
         {converting ? (
-          <Button variant="destructive" size="lg" className="shrink-0" onClick={cancelConversion} disabled={cancelling}>
+          <Button
+            variant="destructive"
+            size="lg"
+            className="conversion-footer-action shrink-0"
+            onClick={cancelConversion}
+            disabled={cancelling}
+          >
             <>
               {cancelling && (
                 <Loader2 aria-hidden="true" className="animate-spin motion-reduce:animate-none h-3.5 w-3.5" />
@@ -1288,11 +1321,13 @@ export default function ConvertTab({
           <Button
             variant="primary"
             size="lg"
-            className="shrink-0"
+            className="conversion-footer-action shrink-0"
             onClick={startConversion}
             disabled={queueLocked || !files.length || unsupportedFiles.length > 0}
+            title={convertDisabledReason || undefined}
           >
-            ▶ Convert{files.length > 1 ? ` ${files.length} Files` : ''}
+            <Play aria-hidden="true" className="h-3.5 w-3.5 fill-current" />
+            Convert{files.length > 1 ? ` ${files.length} Files` : ''}
           </Button>
         )}
       </footer>

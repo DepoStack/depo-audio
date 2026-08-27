@@ -358,6 +358,12 @@
 .animate-spin {
   animation: spin 1s linear infinite;
 }
+
+/* Global diagnostics stay reachable without collapsing the active workspace at
+   the 720×600 native minimum or at 200% zoom. */
+.app-alert-stack {
+  max-height: 45%;
+}
 @keyframes spin {
   from {
     transform: rotate(0deg);
@@ -426,7 +432,7 @@
     padding: 0.375rem;
   }
 
-  .app-main > [role='alert'] {
+  .app-alert-stack > [role='alert'] {
     margin-inline: 0.75rem;
   }
 
@@ -450,6 +456,50 @@
 
   .conversion-step > span:nth-child(2) {
     overflow-wrap: anywhere;
+  }
+
+  .workspace-header {
+    padding-left: 0.75rem;
+  }
+
+  .channel-row {
+    flex-wrap: wrap;
+  }
+
+  .channel-row > input:not([type='range']) {
+    width: auto;
+    min-width: 7rem;
+    flex: 1;
+  }
+
+  .channel-mix {
+    flex-basis: 100%;
+    margin-left: 2.25rem;
+  }
+
+  .conversion-footer {
+    align-items: stretch;
+    flex-wrap: wrap;
+    gap: 0.625rem;
+    padding: 0.75rem;
+  }
+
+  .conversion-footer-status,
+  .conversion-footer-action {
+    width: 100%;
+  }
+
+  .conversion-footer-status {
+    min-height: 1.25rem;
+  }
+
+  .player-transport {
+    flex-wrap: wrap;
+  }
+
+  .player-transport-track {
+    order: 3;
+    flex-basis: 100%;
   }
 
   .library-toolbar {

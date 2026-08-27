@@ -4,17 +4,17 @@ import { cva } from 'class-variance-authority'
 import { cn } from '../../lib/utils'
 
 const buttonVariants = cva(
-  'inline-flex items-center justify-center gap-1.5 whitespace-nowrap rounded-md text-xs font-semibold transition-colors focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 disabled:pointer-events-none disabled:opacity-45',
+  'inline-flex items-center justify-center gap-1.5 whitespace-nowrap rounded-md text-xs font-semibold transition-[color,background-color,border-color,box-shadow,transform] duration-150 ease-out active:translate-y-px focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background disabled:pointer-events-none disabled:translate-y-0 disabled:opacity-45',
   {
     variants: {
       variant: {
         default:
-          'border border-border bg-card text-[hsl(var(--text2))] hover:border-[hsl(var(--text2))] hover:text-foreground',
+          'border border-border bg-[hsl(var(--surface))] text-[hsl(var(--text2))] hover:border-[hsl(var(--text2)/0.7)] hover:bg-secondary/70 hover:text-foreground',
         primary:
-          'bg-primary text-primary-foreground shadow-[0_3px_16px_hsl(var(--gold-glow))] hover:bg-gold-hi hover:shadow-[0_3px_24px_hsl(var(--gold-glow))] hover:-translate-y-px',
+          'border border-primary bg-primary text-primary-foreground shadow-[inset_0_1px_0_hsl(var(--gold-hi)/0.45)] hover:bg-gold-hi',
         destructive: 'bg-destructive text-destructive-foreground hover:bg-destructive/90',
         outline: 'border border-border bg-transparent hover:bg-accent hover:text-accent-foreground',
-        ghost: 'text-[hsl(var(--sub))] hover:text-[hsl(var(--text2))] hover:bg-card',
+        ghost: 'text-[hsl(var(--sub))] hover:text-foreground hover:bg-secondary/70',
         scan: 'font-mono text-[10px] tracking-wider uppercase border border-[hsl(var(--blue))] text-[hsl(var(--blue))] bg-[hsl(var(--blue)/0.08)] hover:bg-[hsl(var(--blue)/0.18)] disabled:opacity-40',
       },
       size: {

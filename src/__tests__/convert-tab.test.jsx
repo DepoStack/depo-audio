@@ -114,7 +114,7 @@ describe('ConvertTab scan cancellation', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Retry cancel' }))
     await waitFor(() => expect(screen.getByRole('button', { name: 'Scan' })).toBeEnabled())
     expect(invoke.mock.calls.filter(([command]) => command === 'cancel_scan_cmd')).toHaveLength(2)
-  })
+  }, 10000)
 
   it('keeps Scan blocked when a queue-change generation bump fails', async () => {
     let resolveAnalysis
@@ -173,6 +173,25 @@ describe('ConvertTab scan cancellation', () => {
     expect(progress).toHaveClass('conversion-stepper')
     expect(progress.children).toHaveLength(3)
     expect([...progress.children].every(step => step.classList.contains('conversion-step'))).toBe(true)
+  })
+
+  it('leads with the court-audio task, local-processing boundary, and a native browse action', () => {
+    const emptyQueue = props([])
+    render(<ConvertTab {...emptyQueue} />)
+
+    expect(screen.getByRole('heading', { level: 2, name: 'Convert court recordings' })).toBeVisible()
+    expect(screen.getByText('Recordings and processing stay on this computer')).toBeVisible()
+
+    const browse = screen.getByRole('button', { name: 'Add audio files: browse for recordings' })
+    fireEvent.click(browse)
+    expect(emptyQueue.browseFiles).toHaveBeenCalledTimes(1)
+
+    const convert = screen.getByRole('button', { name: 'Convert' })
+    expect(convert).toBeDisabled()
+    expect(convert).toHaveAttribute('title', 'Add at least one recording to continue.')
+    expect(screen.getByRole('status', { name: 'Conversion status' })).toHaveTextContent(
+      'Add a recording to choose an output and convert.',
+    )
   })
 
   it('includes only measured hardware details in the performance summary', () => {

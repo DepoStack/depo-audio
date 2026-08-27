@@ -23,6 +23,7 @@ import { Badge } from '../ui/badge'
 import { Card, CardHeader, CardTitle, CardContent } from '../ui/card'
 import { Segmented } from '../ui/segmented'
 import { ConfirmDialog } from '../ui/confirm-dialog'
+import WorkspaceHeader from '../common/WorkspaceHeader'
 import LibraryFile from './LibraryFile'
 import ImportModal from './ImportModal'
 import { catJobPaths } from '../../lib/queue'
@@ -198,6 +199,14 @@ export default function LibraryTab({
 
   return (
     <div className="flex-1 overflow-y-auto overflow-x-hidden">
+      <div className="w-full max-w-[1100px] mx-auto px-4 pt-5 pb-4 sm:px-6 lg:px-8">
+        <WorkspaceHeader
+          eyebrow="Case organization"
+          title="Find case audio"
+          description="Keep converted sessions grouped by case and participant, or locate recordings from installed court software."
+          status="Library records stay on this computer"
+        />
+      </div>
       {/* Sticky toolbar — search stays put while the list scrolls */}
       <div className="library-toolbar sticky top-0 z-10 flex flex-wrap items-center gap-2.5 px-5 md:px-8 py-3 border-b border-border bg-[hsl(var(--surface))]">
         <div className="library-search flex-1 min-w-[220px] max-w-[420px] relative flex items-center">
@@ -280,7 +289,7 @@ export default function LibraryTab({
         </span>
       </div>
 
-      <div className="library-content w-full max-w-[1100px] mx-auto px-5 md:px-8 py-5 flex flex-col gap-3.5">
+      <div className="library-content w-full max-w-[1100px] mx-auto px-4 sm:px-6 lg:px-8 py-5 flex flex-col gap-3.5">
         <span id="library-search-status" role="status" aria-live="polite" aria-atomic="true" className="sr-only">
           {searchStatus}
         </span>
@@ -430,7 +439,7 @@ export default function LibraryTab({
           <div
             id="library-case-list"
             aria-label={`${visibleCaseLabel} Library cases`}
-            className="flex flex-col items-center justify-center gap-2.5 py-20 text-center"
+            className="flex flex-col items-center justify-center gap-2.5 py-14 text-center"
           >
             <Briefcase size={44} aria-hidden="true" className="text-[hsl(var(--sub))] opacity-40" />
             <p className="text-[13px] font-semibold text-foreground">
@@ -451,6 +460,20 @@ export default function LibraryTab({
                   ? 'Try a different search term, or clear the search to see everything.'
                   : 'Convert a recording on the Convert tab, or use Import audio to add existing files — each one is auto-filed here by case and participant.'}
             </p>
+            {readOnly ? (
+              <Button type="button" variant="outline" className="mt-2" onClick={onReload}>
+                Retry Library
+              </Button>
+            ) : (
+              <div className="mt-2 flex flex-wrap items-center justify-center gap-2">
+                <Button type="button" onClick={() => setImportModal(true)}>
+                  <Download size={12} aria-hidden="true" /> Import audio
+                </Button>
+                <Button type="button" variant="ghost" onClick={detectSoftware} disabled={scanningCat}>
+                  <FolderSearch size={13} aria-hidden="true" /> Scan installed court software
+                </Button>
+              </div>
+            )}
           </div>
         ) : (
           <Card id="library-case-list" aria-label={`${visibleCaseLabel} Library cases`}>
@@ -480,9 +503,7 @@ export default function LibraryTab({
                           <ChevronRight size={13} aria-hidden="true" className="text-[hsl(var(--sub))] shrink-0" />
                         )}
                         <div className="flex flex-col flex-1 min-w-0">
-                          <span className="text-[14px] font-semibold text-foreground font-serif truncate">
-                            {c.name}
-                          </span>
+                          <span className="text-[14px] font-semibold text-foreground truncate">{c.name}</span>
                           <span className="text-[11px] text-[hsl(var(--sub))] flex items-center gap-2">
                             {c.sessions.length} session{c.sessions.length !== 1 ? 's' : ''} ·{' '}
                             {new Date(c.createdAt).toLocaleDateString()}
