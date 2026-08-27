@@ -30,7 +30,7 @@ export default class AppErrorBoundary extends Component {
     if (!this.state.failed) return this.props.children
 
     return (
-      <main className="flex min-h-screen items-center justify-center bg-background p-6 text-foreground">
+      <main className="flex min-h-[100dvh] items-center justify-center bg-background p-6 text-foreground">
         <section
           ref={this.fallbackRef}
           role="alert"
@@ -41,7 +41,7 @@ export default class AppErrorBoundary extends Component {
           <p className="mb-2 font-mono text-[10px] font-semibold uppercase tracking-widest text-[hsl(var(--gold))]">
             Interface recovery
           </p>
-          <h1 id="app-error-title" className="font-serif text-2xl font-semibold">
+          <h1 id="app-error-title" className="text-2xl font-semibold tracking-[-0.02em]">
             DepoAudio needs to reload
           </h1>
           <p className="mt-3 text-sm leading-6 text-[hsl(var(--text2))]">

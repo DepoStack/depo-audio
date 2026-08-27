@@ -5,7 +5,7 @@ const Card = React.forwardRef(({ className, ...props }, ref) => (
   <div
     ref={ref}
     className={cn(
-      'rounded-lg border bg-card text-card-foreground overflow-hidden [box-shadow:var(--shadow-card)]',
+      'rounded-xl border border-border/75 bg-card/80 text-card-foreground overflow-hidden shadow-none',
       className,
     )}
     {...props}
@@ -16,16 +16,19 @@ Card.displayName = 'Card'
 const CardHeader = React.forwardRef(({ className, ...props }, ref) => (
   <div
     ref={ref}
-    className={cn('flex items-center justify-between px-4 py-2.5 border-b border-border/60', className)}
+    className={cn('flex items-center justify-between gap-3 px-4 py-3 border-b border-border/60', className)}
     {...props}
   />
 ))
 CardHeader.displayName = 'CardHeader'
 
-const CardTitle = React.forwardRef(({ className, ...props }, ref) => (
-  <span
+const CardTitle = React.forwardRef(({ as: Component = 'h3', className, ...props }, ref) => (
+  <Component
     ref={ref}
-    className={cn('font-mono text-[9.5px] font-medium tracking-[1.2px] uppercase text-[hsl(var(--sub))]', className)}
+    className={cn(
+      'font-mono text-[9.5px] font-semibold tracking-[1.25px] uppercase text-[hsl(var(--text2))]',
+      className,
+    )}
     {...props}
   />
 ))

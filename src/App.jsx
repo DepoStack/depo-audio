@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, useCallback, lazy, Suspense } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import { openUrl } from '@tauri-apps/plugin-opener'
-import { Sun, Moon, Monitor, Settings, AudioLines, Play, FolderOpen } from 'lucide-react'
+import { Sun, Moon, Monitor, Settings, AudioLines, Play, FolderOpen, X } from 'lucide-react'
 import { DEPOSTACK_URL } from './constants'
 import { shouldIgnoreNavigationShortcut } from './lib/utils'
 
@@ -13,7 +13,7 @@ import useUpdater from './hooks/useUpdater'
 import UpdateBanner from './components/UpdateBanner'
 
 import { LogoSvg } from './components/common/Icons'
-import Spinner from './components/common/Spinner'
+import WorkspaceLoading from './components/common/WorkspaceLoading'
 import { Tabs, TabsList, TabsTrigger, TabsContent } from './components/ui/tabs'
 import { Badge } from './components/ui/badge'
 import { Button } from './components/ui/button'
@@ -175,41 +175,46 @@ export default function App() {
       : 'The audio engine check is unavailable. Verify the engine status before starting a conversion.'
 
   return (
-    <Tabs value={tab} onValueChange={setTab} orientation="vertical" className="app-shell flex h-screen overflow-hidden">
+    <Tabs
+      value={tab}
+      onValueChange={setTab}
+      orientation="vertical"
+      className="app-shell flex h-full min-h-0 overflow-hidden"
+    >
       {/* ── Sidebar ── */}
       <aside
-        className="app-sidebar w-16 md:w-56 shrink-0 flex flex-col bg-card border-r border-border select-none"
+        className="app-sidebar w-14 sm:w-48 shrink-0 flex flex-col bg-card border-r border-border select-none"
         data-tauri-drag-region
       >
-        <div className="app-brand flex items-center gap-2.5 px-3 md:px-4 pt-4 pb-5">
+        <div className="app-brand flex items-center gap-2.5 px-3 sm:px-4 pt-4 pb-5">
           <LogoSvg />
-          <div className="hidden md:flex flex-col leading-none">
-            <span className="font-serif text-[16px] font-semibold text-foreground">DepoAudio</span>
-            <span className="text-[9.5px] text-[hsl(var(--sub))] tracking-wider">Audio Converter &amp; Enhancer</span>
+          <div className="hidden sm:flex flex-col leading-none">
+            <span className="text-[16px] font-semibold tracking-[-0.02em] text-foreground">DepoAudio</span>
+            <span className="text-[9.5px] text-[hsl(var(--sub))] tracking-wide">Court-audio workbench</span>
           </div>
         </div>
 
         <TabsList
           aria-label="Main navigation"
-          className="app-navigation flex-col items-stretch gap-1 bg-transparent border-none rounded-none p-0 px-2 md:px-3 h-auto"
+          className="app-navigation flex-col items-stretch gap-1 bg-transparent border-none rounded-none p-0 px-2 sm:px-3 h-auto"
         >
           {NAV.map(({ id, label, Icon }, i) => (
             <TabsTrigger
               key={id}
               value={id}
               aria-label={label}
-              className="w-full justify-start gap-2.5 px-2.5 md:px-3 py-2 rounded-lg"
+              className="w-full justify-start gap-2.5 px-2.5 sm:px-3 py-2 rounded-lg"
             >
               <Icon size={16} aria-hidden="true" className="shrink-0" />
-              <span className="hidden md:inline">{label}</span>
+              <span className="hidden sm:inline">{label}</span>
               {id === 'library' && libCount > 0 && (
-                <Badge variant="gold" className="hidden md:inline-flex">
+                <Badge variant="gold" className="hidden sm:inline-flex">
                   {libCount}
                 </Badge>
               )}
               <kbd
                 aria-hidden="true"
-                className="hidden md:inline ml-auto font-mono text-[9.5px] px-1.5 py-px rounded border border-border/70 bg-secondary/60 text-[hsl(var(--sub))]"
+                className="hidden sm:inline ml-auto font-mono text-[9.5px] px-1.5 py-px rounded border border-border/70 bg-secondary/60 text-[hsl(var(--sub))]"
               >
                 {i + 1}
               </kbd>
@@ -225,7 +230,7 @@ export default function App() {
           aria-live="polite"
           aria-atomic="true"
           aria-label="Audio engine and update status"
-          className="hidden md:block mx-3 mb-2 px-3 py-2.5 rounded-lg border border-border/70 bg-[hsl(var(--surface))]"
+          className="hidden sm:block mx-3 mb-2 border-y border-border/70 py-2.5"
         >
           <div className="flex items-center gap-2 py-0.5 text-[11px] font-medium text-[hsl(var(--text2))]">
             <span
@@ -253,12 +258,12 @@ export default function App() {
             openUrl(DEPOSTACK_URL).catch(error => setSystemError(`Could not open DepoStack: ${String(error)}`))
           }
           title="Part of the DepoStack suite — opens depostack.com"
-          className="hidden md:block mx-3 mb-1.5 px-3 text-left text-[10.5px] text-[hsl(var(--sub))] hover:text-[hsl(var(--gold))] transition-colors"
+          className="hidden sm:block mx-3 mb-1.5 py-1 text-left text-[10.5px] text-[hsl(var(--sub))] hover:text-foreground transition-colors"
         >
           A <span className="font-semibold text-[hsl(var(--text2))]">DepoStack</span> project&nbsp;↗
         </button>
 
-        <div className="app-sidebar-actions flex md:justify-start justify-center items-center gap-1 px-2 md:px-3 pb-3">
+        <div className="app-sidebar-actions flex sm:justify-start justify-center items-center gap-1 px-2 sm:px-3 pb-3">
           <Button
             variant="ghost"
             size="icon"
@@ -294,75 +299,71 @@ export default function App() {
         </h1>
         <UpdateBanner updater={updater} />
 
-        {(prefsError || libraryReadError) && (
-          <div
-            role="alert"
-            className="mx-5 md:mx-8 mt-3 rounded-lg border border-destructive/40 bg-destructive/10 px-3 py-2 text-[11px] text-foreground"
-          >
-            <span className="font-semibold">Storage protection active.</span> {storageSummary || 'Storage'} could not be
-            loaded. Changes that could overwrite existing data are disabled.
-            <details className="mt-1.5">
-              <summary className="w-fit cursor-pointer font-semibold text-[hsl(var(--text2))] focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1">
-                Technical details
-              </summary>
-              <p className="mt-1 whitespace-pre-wrap break-words text-[10px] text-[hsl(var(--sub))]">
-                {[prefsError, libraryReadError].filter(Boolean).join(' ')}
-              </p>
-            </details>
-          </div>
-        )}
-
-        {libraryOperationError && (
-          <div
-            role="alert"
-            className="mx-5 md:mx-8 mt-3 rounded-lg border border-warning/40 bg-warning/10 px-3 py-2 text-[11px] text-foreground"
-          >
-            <span className="font-semibold">Library change not saved.</span> Existing Library data remains unchanged.
-            <details className="mt-1.5">
-              <summary className="w-fit cursor-pointer font-semibold text-[hsl(var(--text2))] focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1">
-                Technical details
-              </summary>
-              <p className="mt-1 whitespace-pre-wrap break-words text-[10px] text-[hsl(var(--sub))]">
-                {libraryOperationError}
-              </p>
-            </details>
-          </div>
-        )}
-
-        {systemError && (
-          <div
-            role="alert"
-            className="mx-5 md:mx-8 mt-3 flex items-start gap-2 rounded-lg border border-warning/40 bg-warning/10 px-3 py-2 text-[11px] text-foreground"
-          >
-            <div className="flex-1">
-              <span>{systemErrorSummary}</span>
+        <div className="app-alert-stack shrink-0 overflow-y-auto">
+          {(prefsError || libraryReadError) && (
+            <div
+              role="alert"
+              className="mx-5 md:mx-8 mt-3 rounded-lg border border-destructive/40 bg-destructive/10 px-3 py-2 text-[11px] text-foreground"
+            >
+              <span className="font-semibold">Storage protection active.</span> {storageSummary || 'Storage'} could not
+              be loaded. Changes that could overwrite existing data are disabled.
               <details className="mt-1.5">
                 <summary className="w-fit cursor-pointer font-semibold text-[hsl(var(--text2))] focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1">
                   Technical details
                 </summary>
-                <p className="mt-1 whitespace-pre-wrap break-words text-[10px] text-[hsl(var(--sub))]">{systemError}</p>
+                <p className="mt-1 whitespace-pre-wrap break-words text-[10px] text-[hsl(var(--sub))]">
+                  {[prefsError, libraryReadError].filter(Boolean).join(' ')}
+                </p>
               </details>
             </div>
-            <button
-              type="button"
-              className="rounded-sm p-1 focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1"
-              aria-label="Dismiss system warning"
-              onClick={() => setSystemError('')}
-            >
-              ×
-            </button>
-          </div>
-        )}
+          )}
 
-        {!prefsReady && (
-          <div
-            role="status"
-            aria-live="polite"
-            className="flex flex-1 items-center justify-center gap-2 text-sm text-[hsl(var(--sub))]"
-          >
-            <Spinner className="h-5 w-5" /> Loading preferences…
-          </div>
-        )}
+          {libraryOperationError && (
+            <div
+              role="alert"
+              className="mx-5 md:mx-8 mt-3 rounded-lg border border-warning/40 bg-warning/10 px-3 py-2 text-[11px] text-foreground"
+            >
+              <span className="font-semibold">Library change not saved.</span> Existing Library data remains unchanged.
+              <details className="mt-1.5">
+                <summary className="w-fit cursor-pointer font-semibold text-[hsl(var(--text2))] focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1">
+                  Technical details
+                </summary>
+                <p className="mt-1 whitespace-pre-wrap break-words text-[10px] text-[hsl(var(--sub))]">
+                  {libraryOperationError}
+                </p>
+              </details>
+            </div>
+          )}
+
+          {systemError && (
+            <div
+              role="alert"
+              className="mx-5 md:mx-8 mt-3 flex items-start gap-2 rounded-lg border border-warning/40 bg-warning/10 px-3 py-2 text-[11px] text-foreground"
+            >
+              <div className="flex-1">
+                <span>{systemErrorSummary}</span>
+                <details className="mt-1.5">
+                  <summary className="w-fit cursor-pointer font-semibold text-[hsl(var(--text2))] focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1">
+                    Technical details
+                  </summary>
+                  <p className="mt-1 whitespace-pre-wrap break-words text-[10px] text-[hsl(var(--sub))]">
+                    {systemError}
+                  </p>
+                </details>
+              </div>
+              <button
+                type="button"
+                className="rounded-sm p-1 focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1"
+                aria-label="Dismiss system warning"
+                onClick={() => setSystemError('')}
+              >
+                <X aria-hidden="true" className="h-3.5 w-3.5" />
+              </button>
+            </div>
+          )}
+        </div>
+
+        {!prefsReady && <WorkspaceLoading label="Loading preferences" />}
 
         {prefsReady && (
           <>
@@ -397,14 +398,7 @@ export default function App() {
             </TabsContent>
 
             <TabsContent value="player">
-              <Suspense
-                fallback={
-                  <div role="status" className="flex items-center justify-center gap-2 py-12">
-                    <Spinner className="h-5 w-5" />
-                    <span className="sr-only">Loading Player workspace</span>
-                  </div>
-                }
-              >
+              <Suspense fallback={<WorkspaceLoading label="Loading Player workspace" />}>
                 <PlayerTab
                   dropHandlerRef={dropOverrideRef}
                   onConvertFiles={async paths => {
@@ -417,14 +411,7 @@ export default function App() {
             </TabsContent>
 
             <TabsContent value="library">
-              <Suspense
-                fallback={
-                  <div role="status" className="flex items-center justify-center gap-2 py-12">
-                    <Spinner className="h-5 w-5" />
-                    <span className="sr-only">Loading Library workspace</span>
-                  </div>
-                }
-              >
+              <Suspense fallback={<WorkspaceLoading label="Loading Library workspace" />}>
                 <LibraryTab
                   cases={cases}
                   setCases={setCases}

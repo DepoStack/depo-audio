@@ -225,6 +225,8 @@ describe('accessible app shell and Library', () => {
     expect(css).toMatch(/animation:\s*none\s*!important/)
     expect(css).toMatch(/@media\s*\(max-width:\s*560px\)/)
     expect(css).toMatch(/\.app-sidebar\s*\{[\s\S]*?width:\s*3rem/)
+    expect(css).toMatch(/\.app-alert-stack\s*\{[\s\S]*?max-height:\s*45%/)
+    expect(css).toMatch(/\.conversion-footer-action\s*\{[\s\S]*?width:\s*100%/)
     expect(css).toMatch(/\.library-file-seek\s*\{[\s\S]*?width:\s*auto\s*!important/)
   })
 })

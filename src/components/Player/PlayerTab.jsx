@@ -19,6 +19,7 @@ import { Card, CardHeader, CardTitle, CardContent } from '../ui/card'
 import { Segmented } from '../ui/segmented'
 import Waveform from '../common/Waveform'
 import { WaveformIcon } from '../common/Icons'
+import WorkspaceHeader from '../common/WorkspaceHeader'
 import Transcript from './Transcript'
 
 // ── Global Audio Player ─────────────────────────────────────────────────────
@@ -387,20 +388,23 @@ export default function PlayerTab({ dropHandlerRef, onConvertFiles }) {
   if (tracks.length === 0) {
     return (
       <div className="flex-1 overflow-y-auto overflow-x-hidden">
-        <div className="w-full max-w-[1100px] mx-auto px-5 md:px-8 py-5">
+        <div className="w-full max-w-[1100px] mx-auto px-4 sm:px-6 lg:px-8 py-5">
           {storageNotice}
           {transcriptStorageNotice}
           {convertFirstNotice}
+          <WorkspaceHeader
+            eyebrow="Local review"
+            title="Review a recording"
+            description="Listen across a multi-file session, mark useful moments, and keep notes beside the audio."
+            status="Playback stays on this computer"
+            className="mb-4"
+          />
           <div
-            role="button"
-            tabIndex={0}
-            aria-label="Add audio files to the playlist: drop them here or press Enter to browse"
             className={cn(
-              'flex flex-col items-center justify-center gap-2 border-2 border-dashed rounded-xl py-16 px-8 text-center cursor-pointer transition-colors',
-              'focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring',
+              'grid items-center gap-3 rounded-xl border border-dashed px-4 py-5 transition-colors sm:grid-cols-[auto_minmax(0,1fr)_auto]',
               dragOver
                 ? 'border-primary bg-[hsl(var(--gold-dim))]'
-                : 'border-border/60 hover:border-border hover:bg-secondary/30',
+                : 'border-border bg-[hsl(var(--surface))] hover:border-[hsl(var(--text2)/0.55)]',
             )}
             onDragOver={e => {
               e.preventDefault()
@@ -408,20 +412,28 @@ export default function PlayerTab({ dropHandlerRef, onConvertFiles }) {
             }}
             onDragLeave={() => setDragOver(false)}
             onDrop={handleDrop}
-            onClick={browseFiles}
-            onKeyDown={e => {
-              if (e.key === 'Enter' || e.key === ' ') {
-                e.preventDefault()
-                browseFiles()
-              }
-            }}
           >
-            <WaveformIcon />
-            <p className="text-[13px] font-semibold text-foreground">Drop audio files here to listen</p>
-            <p className="text-[11px] text-[hsl(var(--sub))]">
-              No conversion needed — WAV · MP3 · FLAC · Opus · M4A · OGG and more. Multi-file sessions play back to
-              back.
-            </p>
+            <div
+              aria-hidden="true"
+              className="grid h-11 w-11 place-items-center rounded-lg border border-border/70 bg-card"
+            >
+              <WaveformIcon />
+            </div>
+            <div className="min-w-0">
+              <p className="text-[13px] font-semibold text-foreground">Add audio to the review playlist</p>
+              <p className="mt-0.5 text-[10.5px] leading-relaxed text-[hsl(var(--sub))]">
+                Drop WAV, MP3, FLAC, Opus, M4A, or OGG files here. Multi-file sessions play back in order.
+              </p>
+            </div>
+            <Button
+              type="button"
+              variant="outline"
+              className="w-full sm:w-auto"
+              aria-label="Add audio files to the playlist: browse for recordings"
+              onClick={browseFiles}
+            >
+              Browse audio
+            </Button>
           </div>
         </div>
       </div>
@@ -432,7 +444,14 @@ export default function PlayerTab({ dropHandlerRef, onConvertFiles }) {
   return (
     <>
       <div className="flex-1 overflow-y-auto overflow-x-hidden">
-        <div className="w-full max-w-[1100px] mx-auto px-5 md:px-8 py-5 grid gap-3.5 md:grid-cols-[minmax(0,1fr)_300px]">
+        <div className="w-full max-w-[1100px] mx-auto px-4 sm:px-6 lg:px-8 py-5 grid gap-4 md:grid-cols-[minmax(0,1fr)_300px]">
+          <WorkspaceHeader
+            eyebrow="Local review"
+            title="Review a recording"
+            description="Use the waveform, playlist, bookmarks, and synced transcript to work through the record."
+            status={`${tracks.length} track${tracks.length === 1 ? '' : 's'} loaded locally`}
+            className="md:col-span-2"
+          />
           {storageNotice && <div className="md:col-span-2">{storageNotice}</div>}
           {transcriptStorageNotice && <div className="md:col-span-2">{transcriptStorageNotice}</div>}
           {convertFirstNotice && <div className="md:col-span-2">{convertFirstNotice}</div>}
@@ -447,9 +466,7 @@ export default function PlayerTab({ dropHandlerRef, onConvertFiles }) {
                 <CardContent className="p-4 flex flex-col gap-3">
                   <div className="flex items-baseline gap-2 min-w-0">
                     <span className="w-2 h-2 rounded-full shrink-0 self-center" style={{ background: activeColor }} />
-                    <span className="text-[15px] font-semibold text-foreground font-serif truncate">
-                      {activeTrack.name}
-                    </span>
+                    <span className="text-[15px] font-semibold text-foreground truncate">{activeTrack.name}</span>
                     <span className="text-[11px] font-mono text-[hsl(var(--sub))] shrink-0">· {activeTrack.label}</span>
                   </div>
                   <Waveform
@@ -676,7 +693,7 @@ export default function PlayerTab({ dropHandlerRef, onConvertFiles }) {
             }}
           />
 
-          <div className="w-full max-w-[1100px] mx-auto flex items-center gap-3 md:gap-4">
+          <div className="player-transport w-full max-w-[1100px] mx-auto flex items-center gap-3 md:gap-4">
             {/* Transport buttons */}
             <div className="flex items-center gap-1.5 shrink-0">
               <button
@@ -710,7 +727,7 @@ export default function PlayerTab({ dropHandlerRef, onConvertFiles }) {
             </div>
 
             {/* Track identity + scrubber (grows) */}
-            <div className="flex-1 min-w-0 flex flex-col gap-1">
+            <div className="player-transport-track flex-1 min-w-0 flex flex-col gap-1">
               <div className="flex items-center gap-2 min-w-0">
                 <span className="w-2 h-2 rounded-full shrink-0" style={{ background: activeColor }} />
                 <span className="text-[12px] font-medium text-foreground truncate">{activeTrack.name}</span>
