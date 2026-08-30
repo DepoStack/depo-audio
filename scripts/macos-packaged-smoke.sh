@@ -3,6 +3,8 @@ set -euo pipefail
 
 : "${RUNNER_TEMP:?RUNNER_TEMP is required}"
 : "${GITHUB_WORKSPACE:?GITHUB_WORKSPACE is required}"
+FTR_FIXTURE_PATH=${FTR_FIXTURE_PATH:-"$RUNNER_TEMP/depoaudio-private-ftr/ftr-smoke.trm"}
+export FTR_FIXTURE_PATH
 
 bundle_root="$GITHUB_WORKSPACE/src-tauri/target/universal-apple-darwin/release/bundle"
 dmg=$(find "$bundle_root" -type f -name '*.dmg' -print -quit)
@@ -82,20 +84,20 @@ smoke_app() {
 
   local probe_json
   probe_json=$("$ffprobe" -v error -c:a ftr -select_streams a:0 \
-    -show_entries stream=codec_type,codec_name,channels -of json ftr-smoke.trm)
+    -show_entries stream=codec_type,codec_name,channels -of json "$FTR_FIXTURE_PATH")
   printf '%s' "$probe_json" | grep -q '"codec_type": "audio"' || {
     echo "ERROR: $label FFprobe did not identify an audio stream"
     exit 1
   }
 
   "$ffmpeg" -hide_banner -v error -c:a ftr -t 5 \
-    -i ftr-smoke.trm -map 0:a:0 -f null -
+    -i "$FTR_FIXTURE_PATH" -map 0:a:0 -f null -
   for spec in wav:pcm_s16le mp3:libmp3lame flac:flac opus:libopus m4a:aac; do
     local extension=${spec%%:*}
     local codec=${spec#*:}
     local output="$RUNNER_TEMP/packaged-macos-$label_key-smoke.$extension"
     "$ffmpeg" -hide_banner -v error -xerror -c:a ftr -t 1 \
-      -i ftr-smoke.trm -map 0:a:0 -ac 1 -c:a "$codec" -y "$output"
+      -i "$FTR_FIXTURE_PATH" -map 0:a:0 -ac 1 -c:a "$codec" -y "$output"
     test -s "$output" || {
       echo "ERROR: $label FFmpeg produced no $extension output"
       exit 1

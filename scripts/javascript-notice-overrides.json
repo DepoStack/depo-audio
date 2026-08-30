@@ -1,9 +1,9 @@
 {
   "schemaVersion": 1,
   "expected": {
-    "javascriptComponents": 58,
+    "javascriptComponents": 57,
     "generatedCssComponents": 2,
-    "totalComponents": 60
+    "totalComponents": 59
   },
   "generatedCss": [
     {
@@ -77,24 +77,5 @@
       ]
     }
   ],
-  "exceptions": [
-    {
-      "name": "react-remove-scroll-bar",
-      "version": "2.3.8",
-      "integrity": "sha512-9r+yi9+mgU33AKcj6IbT9oRCO78WriSj6t/cF8DWBZJ9aOGPOTEDvdUDz1FwKim7QXWwmHqtdHnRJfhAxEG46Q==",
-      "status": "unresolved",
-      "reason": "The locked npm tarball declares MIT and its README says MIT, but it contains no complete legal file. The canonical repository has no v2.3.8 tag, and its current 2025 license does not establish the exact notice applicable to the untagged npm publication.",
-      "requiredResolution": "Obtain upstream confirmation, add an explicitly owner-reviewed notice exception, or remove the package from the emitted Vite graph.",
-      "currentUpstreamEvidence": {
-        "path": "scripts/javascript-license-overrides/react-remove-scroll-bar-2.3.8/CURRENT-UPSTREAM-LICENSE-NOT-APPROVED",
-        "sha256": "a79aae0c0f21990d9d963bb3c5a79cdcea9a46f8523ba55c58d7fe776b6ebc84",
-        "sourceUrl": "https://github.com/theKashey/react-remove-scroll-bar/blob/8ca9ba5ea52de03308fe8ced94f7b159a44d28ff/LICENSE",
-        "sourceRevision": "8ca9ba5ea52de03308fe8ced94f7b159a44d28ff",
-        "upstreamRawSha256": "a79aae0c0f21990d9d963bb3c5a79cdcea9a46f8523ba55c58d7fe776b6ebc84",
-        "applicability": "Provenance only. Not approved as the v2.3.8 redistribution notice."
-      },
-      "approval": null,
-      "noticeFiles": []
-    }
-  ]
+  "exceptions": []
 }

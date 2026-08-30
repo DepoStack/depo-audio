@@ -30,8 +30,8 @@
       "version": "1.0.3",
       "reviewedDate": "2026-08-29",
       "evidenceNeeded": [
-        "Generate, review, bundle, and extract-test a deterministic notice report for the production JavaScript and generated-CSS runtime closure.",
-        "Obtain an exact reviewed notice or explicit exception for react-remove-scroll-bar@2.3.8 and preserve all required Tauri, tslib, Tailwind CSS, and tailwindcss-animate notices."
+        "Verify the final emitted graph maps react-remove-scroll-bar imports to the independently authored DepoAudio compatibility module and distributes no bytes from react-remove-scroll-bar@2.3.8.",
+        "Confirm the deterministic zero-unresolved JavaScript and generated-CSS notice report is bundled byte-for-byte in every extracted installer and preserves all required Tauri, tslib, Tailwind CSS, and tailwindcss-animate notices."
       ]
     },
     {

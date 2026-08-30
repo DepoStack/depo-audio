@@ -1,5 +1,13 @@
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+$fixturePath = if ($env:FTR_FIXTURE_PATH) {
+  $env:FTR_FIXTURE_PATH
+} else {
+  Join-Path $env:RUNNER_TEMP 'depoaudio-private-ftr\ftr-smoke.trm'
+}
+if (-not [IO.Path]::IsPathFullyQualified($fixturePath)) {
+  throw 'The private FTR fixture path must be absolute'
+}
 
 function Invoke-PackagedNativeSmoke {
   param(
@@ -23,7 +31,7 @@ function Invoke-PackagedNativeSmoke {
   $ffmpeg = $ffmpegMatches[0]
   $ffprobe = $ffprobeMatches[0]
   $probeJson = & $ffprobe.FullName -v error -c:a ftr -select_streams a:0 `
-    -show_entries stream=codec_type,codec_name,channels -of json ftr-smoke.trm | Out-String
+    -show_entries stream=codec_type,codec_name,channels -of json $fixturePath | Out-String
   if ($LASTEXITCODE -ne 0) { throw "$Label packaged FFprobe failed native FTR inspection" }
   $probe = $probeJson | ConvertFrom-Json
   if (@($probe.streams).Count -ne 1 -or $probe.streams[0].codec_type -ne 'audio') {
@@ -31,7 +39,7 @@ function Invoke-PackagedNativeSmoke {
   }
 
   & $ffmpeg.FullName -hide_banner -v error -c:a ftr -t 5 `
-    -i ftr-smoke.trm -map 0:a:0 -f null NUL
+    -i $fixturePath -map 0:a:0 -f null NUL
   if ($LASTEXITCODE -ne 0) { throw "$Label packaged FFmpeg failed native FTR decoding" }
 
   $variants = @(
@@ -44,7 +52,7 @@ function Invoke-PackagedNativeSmoke {
   foreach ($variant in $variants) {
     $output = Join-Path $env:RUNNER_TEMP "packaged-$($Label.ToLowerInvariant())-smoke.$($variant.Extension)"
     & $ffmpeg.FullName -hide_banner -v error -xerror -c:a ftr -t 1 `
-      -i ftr-smoke.trm -map 0:a:0 -ac 1 -c:a $variant.Codec -y $output
+      -i $fixturePath -map 0:a:0 -ac 1 -c:a $variant.Codec -y $output
     if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $output) -or (Get-Item $output).Length -eq 0) {
       throw "$Label packaged FFmpeg failed $($variant.Extension) encoding"
     }
