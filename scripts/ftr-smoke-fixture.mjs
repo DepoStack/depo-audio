@@ -29,7 +29,11 @@ const RIFF = Buffer.from('RIFF', 'ascii')
 const AVI = Buffer.from('AVI ', 'ascii')
 const AUDIO_STREAM = Buffer.from('auds', 'ascii')
 const STREAM_FORMAT = Buffer.from('strf', 'ascii')
-const AAC_ADTS_AVI_TAG = 0x1610
+// FFmpeg 7.1.5 recognizes 0x1600 as the RIFF tag for ADTS AAC. Newer
+// snapshots also recognize 0x1610, but the released macOS sidecars are built
+// from 7.1.5, so generate the portable standard container before changing the
+// tag to FTR below.
+const AAC_ADTS_AVI_TAG = 0x1600
 const FTR_AVI_TAG = 0x4180
 
 function requireRunnerTemp() {
@@ -204,7 +208,7 @@ async function generateFixture(ffmpegArgument) {
         '-c:a',
         'copy',
         '-tag:a',
-        '0x1610',
+        `0x${AAC_ADTS_AVI_TAG.toString(16)}`,
         '-f',
         'avi',
         '-y',

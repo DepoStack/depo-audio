@@ -1,4 +1,5 @@
 * text=auto
+.gitattributes text eol=lf
 
 # Source, configuration, and workflow files are consumed on Unix CI runners.
 *.css text eol=lf
@@ -15,6 +16,10 @@
 *.xml text eol=lf
 *.yaml text eol=lf
 *.yml text eol=lf
+
+# Byte-pinned reviewed notices have extensionless filenames. Keep their
+# checked-out bytes identical on Windows and Unix release runners.
+scripts/javascript-license-overrides/** text eol=lf
 
 # Native Windows automation keeps conventional CRLF endings.
 *.bat text eol=crlf
