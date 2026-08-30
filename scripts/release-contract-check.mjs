@@ -398,6 +398,26 @@ expect(
     releaseFinalizeGhCommands.length === 2 &&
     releaseFinalizeJob.includes('release=$(gh api "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID")') &&
     releaseFinalizeJob.includes('if gh api "repos/$GITHUB_REPOSITORY/releases/tags/$TAG" >/dev/null 2>&1; then') &&
+    releaseFinalizeJob.includes('count=$(grep -Ec "$pattern" <<<"$names" || true)') &&
+    releaseFinalizeJob.includes('count=$(grep -Fxc -- "$name" <<<"$names" || true)') &&
+    releaseFinalizeJob.includes('require_exact "$required" "$required"') &&
+    !releaseFinalizeJob.includes('require_one "$required"') &&
+    releaseFinalizeJob.includes(
+      "require_exact 'dependency evidence toolchain record' 'DEPENDENCY-EVIDENCE-TOOLCHAIN.txt'",
+    ) &&
+    releaseFinalizeJob.includes('signature_count=$(grep -Ec \'\\.sig$\' <<<"$names" || true)') &&
+    releaseFinalizeJob.includes('latest_count=$(grep -Fxc -- \'latest.json\' <<<"$names" || true)') &&
+    releaseFinalizeJob.includes(
+      'require_exact \'universal macOS updater signature\' "DepoAudio_${version}_universal.app.tar.gz.sig"',
+    ) &&
+    releaseFinalizeJob.includes(
+      'require_exact \'Windows MSI updater signature\' "DepoAudio_${version}_x64_en-US.msi.sig"',
+    ) &&
+    releaseFinalizeJob.includes(
+      'require_exact \'Windows NSIS updater signature\' "DepoAudio_${version}_x64-setup.exe.sig"',
+    ) &&
+    releaseFinalizeJob.includes('[ "$signature_count" = \'3\' ]') &&
+    releaseFinalizeJob.includes('signed updater candidate contains an unexpected signature asset') &&
     releaseFinalizeJob.includes('.draft == true') &&
     releaseFinalizeJob.includes('a published release appeared before final draft verification') &&
     !releaseFinalizeJob.includes('make_latest'),
