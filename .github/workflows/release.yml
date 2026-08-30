@@ -144,24 +144,7 @@ jobs:
           fi
           echo "Tag $tag does not exist yet and may be bound during protected publication"
 
-      - name: Reject a stale draft release for this tag
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAG: ${{ inputs.tag }}
-        run: |
-          set -euo pipefail
-          tag="$TAG"
-          stale=$(gh api "repos/$GITHUB_REPOSITORY/releases" --paginate --slurp | jq -s --arg tag "$tag" '
-            add | flatten | map(select(.draft == true and .tag_name == $tag))
-          ')
-          if [ "$(jq 'length' <<<"$stale")" != '0' ]; then
-            echo "ERROR: an existing private draft already uses $tag"
-            jq -r '.[] | "  draft \(.id), target \(.target_commitish), assets \(.assets | length)"' <<<"$stale"
-            echo 'Review and reconcile it manually; the release workflow never deletes drafts.'
-            exit 1
-          fi
-
-      - name: Create one commit-bound draft release
+      - name: Create or reuse one empty commit-bound draft release
         id: create-draft
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -170,6 +153,7 @@ jobs:
           set -euo pipefail
           prerelease=false
           if [[ "$TAG" == *-* ]]; then prerelease=true; fi
+          expected_name="DepoAudio $TAG"
           notes=$(node --input-type=module <<'NODE'
           import { readFileSync } from 'node:fs'
 
@@ -184,9 +168,44 @@ jobs:
           process.stdout.write(section)
           NODE
           )
+          drafts=$(gh api "repos/$GITHUB_REPOSITORY/releases" --paginate --slurp | jq -s --arg tag "$TAG" '
+            add | flatten | map(select(.draft == true and .tag_name == $tag))
+          ')
+          draft_count=$(jq 'length' <<<"$drafts")
+          if [ "$draft_count" -gt 1 ]; then
+            echo "ERROR: multiple private drafts already use $TAG"
+            jq -r '.[] | "  draft \(.id), target \(.target_commitish), assets \(.assets | length)"' <<<"$drafts"
+            echo 'Review and reconcile them manually; the release workflow never deletes drafts.'
+            exit 1
+          fi
+          if [ "$draft_count" = '1' ]; then
+            release_id=$(jq -er \
+              --arg commit "$GITHUB_SHA" \
+              --arg name "$expected_name" \
+              --arg body "$notes" \
+              --argjson prerelease "$prerelease" '
+              .[0] | select(
+                .target_commitish == $commit and
+                (.assets | length) == 0 and
+                .name == $name and
+                .body == $body and
+                .prerelease == $prerelease
+              ) | .id
+            ' <<<"$drafts" || true)
+            if [[ ! "$release_id" =~ ^[1-9][0-9]*$ ]]; then
+              echo "ERROR: the existing private draft for $TAG does not match the exact reusable contract"
+              jq -r '.[] | "  draft \(.id), target \(.target_commitish), assets \(.assets | length), prerelease \(.prerelease)"' <<<"$drafts"
+              echo 'Review and reconcile it manually; the release workflow never deletes drafts or replaces assets.'
+              exit 1
+            fi
+            echo "release_id=$release_id" >> "$GITHUB_OUTPUT"
+            echo "Reusing empty private draft release $release_id for $TAG at $GITHUB_SHA"
+            exit 0
+          fi
+
           payload=$(jq -n \
             --arg tag "$TAG" \
-            --arg name "DepoAudio $TAG" \
+            --arg name "$expected_name" \
             --arg commit "$GITHUB_SHA" \
             --arg body "$notes" \
             --argjson prerelease "$prerelease" \

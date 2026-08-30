@@ -33,6 +33,7 @@ const macFfmpegBuild = read('scripts/build-ffmpeg-macos.sh')
 const macPackagedSmoke = read('scripts/macos-packaged-smoke.sh')
 const windowsPackagedSmoke = read('scripts/windows-packaged-smoke.ps1')
 const setupDev = read('scripts/setup-dev.sh')
+const gitAttributes = read('.gitattributes')
 const gitIgnore = read('.gitignore')
 const exportDccrnPresent = existsSync(new URL('../scripts/export_dccrn.py', import.meta.url))
 const draftAssetUpload = read('scripts/upload-draft-release-assets.mjs')
@@ -360,13 +361,18 @@ expect(
 expect(releaseWorkflow.includes('draft: true'), 'release.yml must create a private draft release')
 expect(
   releaseWorkflow.includes('release_id: ${{ steps.create-draft.outputs.release_id }}') &&
-    releaseWorkflow.includes('name: Create one commit-bound draft release') &&
+    releaseWorkflow.includes('name: Create or reuse one empty commit-bound draft release') &&
     releaseWorkflow.includes('target_commitish: $commit') &&
+    releaseWorkflow.includes('.target_commitish == $commit and') &&
+    releaseWorkflow.includes('(.assets | length) == 0 and') &&
+    releaseWorkflow.includes('.name == $name and') &&
+    releaseWorkflow.includes('.body == $body and') &&
+    releaseWorkflow.includes('.prerelease == $prerelease') &&
     releaseWorkflow.includes('echo "release_id=$release_id" >> "$GITHUB_OUTPUT"') &&
     !releaseWorkflow.includes('releaseId:') &&
     !releaseWorkflow.includes('tagName:') &&
     !releaseWorkflow.includes('GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}\n        with:'),
-  'release.yml must create one exact commit-bound draft while keeping tauri-action build-only',
+  'release.yml must create or safely reuse one empty exact commit-bound draft while keeping tauri-action build-only',
 )
 const draftAssetUploadCalls = releaseWorkflow.match(/scripts\/upload-draft-release-assets\.mjs/g) ?? []
 expect(
@@ -449,10 +455,11 @@ expect(
   'release.yml must reject a manual release dispatch from a non-main branch',
 )
 expect(
-  releaseWorkflow.includes('Reject a stale draft release for this tag') &&
-    releaseWorkflow.includes('the release workflow never deletes drafts') &&
+  releaseWorkflow.includes('multiple private drafts already use $TAG') &&
+    releaseWorkflow.includes('does not match the exact reusable contract') &&
+    releaseWorkflow.includes('the release workflow never deletes drafts or replaces assets') &&
     !releaseWorkflow.includes('-X DELETE "repos/$GITHUB_REPOSITORY/releases/$id"'),
-  'release.yml must fail closed on a stale same-tag draft without deleting it',
+  'release.yml must reuse only one exact empty draft and fail closed on stale, populated, or duplicate drafts',
 )
 expect(
   releaseWorkflow.includes('already exists at $tagged_commit before candidate construction') &&
@@ -532,8 +539,9 @@ expect(
 )
 expect(
   ftrSmokeFixture.includes('function buildSyntheticToneWav()') &&
-    ftrSmokeFixture.includes('const AAC_ADTS_AVI_TAG = 0x1610') &&
+    ftrSmokeFixture.includes('const AAC_ADTS_AVI_TAG = 0x1600') &&
     ftrSmokeFixture.includes('const FTR_AVI_TAG = 0x4180') &&
+    ftrSmokeFixture.includes('`0x${AAC_ADTS_AVI_TAG.toString(16)}`') &&
     ftrSmokeFixture.includes("'-c:a',") &&
     ftrSmokeFixture.includes("'aac',") &&
     ftrSmokeFixture.includes("'-f',") &&
@@ -621,6 +629,7 @@ expect(
     javascriptNoticeComponents.generatedCssComponentCount === 2 &&
     javascriptNoticeHtml.includes('DepoAudio JavaScript and generated-CSS third-party notices') &&
     javascriptNoticeGenerator.includes('javascript-notice-overrides.json') &&
+    gitAttributes.includes('scripts/javascript-license-overrides/** text eol=lf') &&
     packageJson.scripts['notices:generate'] === 'node scripts/generate-javascript-notices.mjs' &&
     packageJson.scripts['notices:check'] === 'node scripts/generate-javascript-notices.mjs --check' &&
     packageJson.scripts['notices:self-test'] === 'node scripts/generate-javascript-notices.mjs --self-test' &&
