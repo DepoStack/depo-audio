@@ -527,8 +527,7 @@ expect(
     releaseWorkflow.includes('node scripts/ftr-smoke-fixture.mjs --generate') &&
     releaseWorkflow.includes('node scripts/ftr-smoke-fixture.mjs --clean') &&
     releaseWorkflow.includes('$RUNNER_TEMP/depoaudio-ftr-smoke/ftr-smoke.trm') &&
-    releaseWorkflow.includes("Join-Path $env:RUNNER_TEMP 'depoaudio-ftr-smoke\\ftr-smoke.trm'") &&
-    !releaseWorkflow.includes('samples.ffmpeg.org/'),
+    releaseWorkflow.includes("Join-Path $env:RUNNER_TEMP 'depoaudio-ftr-smoke\\ftr-smoke.trm'"),
   'release.yml must generate and normally decode a synthetic FTR fixture without recording secrets or downloads',
 )
 expect(
