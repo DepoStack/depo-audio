@@ -1,10 +1,14 @@
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
+import { sharedAliases } from './config/vite-aliases.js'
 
 const host = process.env.TAURI_DEV_HOST
 
 export default defineConfig({
   plugins: [react()],
+  resolve: {
+    alias: sharedAliases,
+  },
   clearScreen: false,
   server: {
     port: 5173,

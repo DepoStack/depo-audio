@@ -80,22 +80,24 @@ database on every review because this baseline can change after the date above.
 
 ## JavaScript and generated CSS notice status
 
-The reviewed production closure contains 58 JavaScript packages plus Tailwind
-CSS and tailwindcss-animate (60 components total). A deterministic generator
+The reviewed production closure contains 57 JavaScript packages plus Tailwind
+CSS and tailwindcss-animate (59 components total). A deterministic generator
 commits and bundles byte-stable HTML and JSON notice evidence from the lockfile
 and reviewed overrides. The release workflow also generates a production npm
 CycloneDX inventory, but an SBOM does not replace copyright notices or license
-texts. v1.0.3 remains blocked until the one unresolved exact-package case below
-is approved and the generated report is confirmed in every extracted installer.
+texts.
 
-The exact audit found these unresolved notice cases:
+The exact audit found one published helper whose archive had no complete legal
+file: `react-remove-scroll-bar@2.3.8`. DepoAudio does not infer an exact notice
+from package metadata. Vite instead maps the helper's two emitted import paths
+to a small, independently authored, DepoAudio-owned compatibility module. The
+production graph therefore contains no bytes from that package while retaining
+Radix and `react-remove-scroll` focus, keyboard, inertness, and scroll-isolation
+behavior. Focused tests cover nested locks, fractional scrollbar gaps,
+pre-existing body styles, and React Strict Mode cleanup.
 
-- `react-remove-scroll-bar@2.3.8` is present in the built dialog chunk, but its
-  npm tarball contains no license file. npm records `MIT` and git revision
-  `b3b1287aad81def2e2ae707274b74531b61ddbaf`, but that revision is absent from
-  the canonical repository and there is no `v2.3.8` tag. The repository added
-  an MIT license later. Obtain upstream confirmation or record an explicit,
-  reviewed exception; do not fabricate an exact notice from package metadata.
+The remaining reviewed notice cases are:
+
 - `@tauri-apps/plugin-dialog@2.7.2`, `plugin-fs@2.5.1`,
   `plugin-opener@2.5.4`, `plugin-process@2.3.1`, `plugin-shell@2.3.5`, and
   `plugin-updater@2.10.1` ship SPDX declarations but not the complete MIT and
@@ -109,11 +111,11 @@ The exact audit found these unresolved notice cases:
 `scripts/generate-javascript-notices.mjs` is driven by the lockfile plus a
 reviewed override manifest. It collects applicable `LICENSE*`, `NOTICE*`, and
 `COPYRIGHT*` artifacts, sorts output deterministically, rejects checkout paths
-and timestamps, and supports a strict review gate. Normal generation and
-self-tests are deterministic; strict mode intentionally fails on
-`react-remove-scroll-bar@2.3.8` until upstream confirmation or an explicit
-reviewed exception is recorded. The final artifact gate requires the exact
-generated report in macOS, MSI, and NSIS inventories.
+and timestamps, and supports a strict review gate. Normal generation,
+self-tests, and strict mode now pass with zero unresolved components. The
+release blocker remains open until the exact generated report and component
+registry are verified byte-for-byte in the DMG, app archive, MSI, and NSIS
+inventories.
 
 ## Evidence record required for every distributed item
 

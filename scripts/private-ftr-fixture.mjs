@@ -1,9 +1,33 @@
+import assert from 'node:assert/strict'
+import { spawnSync } from 'node:child_process'
 import { createHash, createHmac } from 'node:crypto'
-import { open, rename, rm, stat } from 'node:fs/promises'
+import { mkdir, mkdtemp, open, readdir, rename, rm, rmdir, stat, writeFile } from 'node:fs/promises'
+import os from 'node:os'
 import path from 'node:path'
+import { fileURLToPath } from 'node:url'
 
-const FIXTURE_PATH = path.resolve('ftr-smoke.trm')
+const configuredFixturePath = process.env.FTR_FIXTURE_PATH?.trim()
+if (configuredFixturePath && !path.isAbsolute(configuredFixturePath)) {
+  throw new Error('FTR_FIXTURE_PATH must be an absolute path when configured')
+}
+const runnerTemp = process.env.RUNNER_TEMP?.trim()
+if (runnerTemp && !path.isAbsolute(runnerTemp)) {
+  throw new Error('RUNNER_TEMP must be an absolute path when configured')
+}
+
+const FIXTURE_PATH = configuredFixturePath
+  ? path.normalize(configuredFixturePath)
+  : runnerTemp
+    ? path.join(runnerTemp, 'depoaudio-private-ftr', 'ftr-smoke.trm')
+    : path.resolve('ftr-smoke.trm')
+const FIXTURE_DIRECTORY = path.dirname(FIXTURE_PATH)
+const FIXTURE_BASENAME = path.basename(FIXTURE_PATH)
 const TEMPORARY_PATH = `${FIXTURE_PATH}.${process.pid}.tmp`
+const TEMPORARY_PATTERN = new RegExp(
+  `^${FIXTURE_BASENAME.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&')}\\.[0-9]+\\.tmp$`,
+  'u',
+)
+const SMOKE_EXTENSIONS = ['wav', 'mp3', 'flac', 'opus', 'm4a']
 
 function requiredSecret(name) {
   const value = process.env[name]?.trim()
@@ -69,13 +93,51 @@ async function fixtureExists() {
   }
 }
 
+async function cleanupTemporaryFiles() {
+  let entries
+  try {
+    entries = await readdir(FIXTURE_DIRECTORY, { withFileTypes: true })
+  } catch (error) {
+    if (error?.code === 'ENOENT') return
+    throw error
+  }
+
+  await Promise.all(
+    entries
+      .filter(entry => entry.isFile() && TEMPORARY_PATTERN.test(entry.name))
+      .map(entry => rm(path.join(FIXTURE_DIRECTORY, entry.name), { force: true })),
+  )
+}
+
+async function cleanupDerivedSmokeOutputs() {
+  if (!runnerTemp) return
+
+  const prefixes = ['ffmpeg-aarch64-apple-darwin-smoke', 'ffmpeg-x86_64-apple-darwin-smoke', 'depoaudio-encoder-smoke']
+  await Promise.all(
+    prefixes.flatMap(prefix =>
+      SMOKE_EXTENSIONS.map(extension => rm(path.join(runnerTemp, `${prefix}.${extension}`), { force: true })),
+    ),
+  )
+}
+
+async function cleanupFixture() {
+  await rm(FIXTURE_PATH, { force: true })
+  await cleanupTemporaryFiles()
+  await cleanupDerivedSmokeOutputs()
+  if (configuredFixturePath || runnerTemp)
+    await rmdir(FIXTURE_DIRECTORY).catch(error => {
+      if (!['ENOENT', 'ENOTEMPTY', 'EEXIST'].includes(error?.code)) throw error
+    })
+}
+
 async function downloadFixture() {
   const contract = readFixtureContract()
   if (await fixtureExists()) {
     throw new Error('Refusing to replace an existing ftr-smoke.trm; run the cleanup gate first')
   }
 
-  await rm(TEMPORARY_PATH, { force: true })
+  await mkdir(FIXTURE_DIRECTORY, { recursive: true, mode: 0o700 })
+  await cleanupTemporaryFiles()
   let handle
   try {
     let response
@@ -110,7 +172,7 @@ async function downloadFixture() {
       }
     }
 
-    handle = await open(TEMPORARY_PATH, 'wx')
+    handle = await open(TEMPORARY_PATH, 'wx', 0o600)
     const digest = createHash('sha256')
     let received = 0
     try {
@@ -145,16 +207,59 @@ async function downloadFixture() {
   }
 }
 
+async function runSelfTest() {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'depoaudio-ftr-fixture-test-'))
+  const privateDirectory = path.join(root, 'depoaudio-private-ftr')
+  const fixture = path.join(privateDirectory, 'ftr-smoke.trm')
+  const orphan = `${fixture}.987654.tmp`
+  const derived = path.join(root, 'depoaudio-encoder-smoke.wav')
+  const unrelated = path.join(root, 'keep.txt')
+
+  try {
+    await mkdir(privateDirectory, { recursive: true })
+    await Promise.all([
+      writeFile(fixture, 'fixture'),
+      writeFile(orphan, 'partial'),
+      writeFile(derived, 'derived'),
+      writeFile(unrelated, 'keep'),
+    ])
+
+    const environment = { ...process.env, RUNNER_TEMP: root }
+    delete environment.FTR_FIXTURE_PATH
+    const cleanup = spawnSync(process.execPath, [fileURLToPath(import.meta.url), '--clean'], {
+      encoding: 'utf8',
+      env: environment,
+    })
+    assert.equal(cleanup.status, 0, cleanup.stderr || 'fixture cleanup child failed')
+
+    for (const removed of [fixture, orphan, derived]) {
+      await assert.rejects(stat(removed), error => error?.code === 'ENOENT')
+    }
+    assert.equal((await stat(unrelated)).isFile(), true)
+
+    const invalidPath = spawnSync(process.execPath, [fileURLToPath(import.meta.url), '--clean'], {
+      encoding: 'utf8',
+      env: { ...environment, RUNNER_TEMP: 'relative-runner-temp' },
+    })
+    assert.notEqual(invalidPath.status, 0, 'relative RUNNER_TEMP unexpectedly passed')
+  } finally {
+    await rm(root, { force: true, recursive: true })
+  }
+
+  console.log('Private FTR fixture self-test passed')
+}
+
 const command = process.argv[2]
-if (command === '--check') {
+if (command === '--self-test') {
+  await runSelfTest()
+} else if (command === '--check') {
   readFixtureContract()
   console.log('Private FTR fixture release-secret contract is configured')
 } else if (command === '--download') {
   await downloadFixture()
 } else if (command === '--clean') {
-  await rm(FIXTURE_PATH, { force: true })
-  await rm(TEMPORARY_PATH, { force: true })
+  await cleanupFixture()
   console.log('Private FTR fixture removed from the release workspace')
 } else {
-  throw new Error('Usage: node scripts/private-ftr-fixture.mjs --check|--download|--clean')
+  throw new Error('Usage: node scripts/private-ftr-fixture.mjs --self-test|--check|--download|--clean')
 }

@@ -526,6 +526,8 @@ expect(
     releaseWorkflow.includes('node scripts/private-ftr-fixture.mjs --check') &&
     releaseWorkflow.includes('node scripts/private-ftr-fixture.mjs --download') &&
     releaseWorkflow.includes('node scripts/private-ftr-fixture.mjs --clean') &&
+    releaseWorkflow.includes('$RUNNER_TEMP/depoaudio-private-ftr/ftr-smoke.trm') &&
+    releaseWorkflow.includes("Join-Path $env:RUNNER_TEMP 'depoaudio-private-ftr\\ftr-smoke.trm'") &&
     !releaseWorkflow.includes('FTR_SMOKE_'),
   'release.yml must fail closed on a permission-cleared private FTR fixture contract without a public recording URL',
 )
@@ -537,6 +539,14 @@ expect(
     privateFtrFixture.includes("createHmac('sha256', evidenceId)") &&
     privateFtrFixture.includes('evidence contract ${contract.evidenceFingerprint}') &&
     privateFtrFixture.includes('request failed before a valid HTTPS response was received') &&
+    privateFtrFixture.includes('mkdir(FIXTURE_DIRECTORY, { recursive: true, mode: 0o700 })') &&
+    privateFtrFixture.includes("open(TEMPORARY_PATH, 'wx', 0o600)") &&
+    privateFtrFixture.includes("path.join(runnerTemp, 'depoaudio-private-ftr', 'ftr-smoke.trm')") &&
+    privateFtrFixture.includes('cleanupTemporaryFiles()') &&
+    packageJson.scripts['ftr:self-test'] === 'node scripts/private-ftr-fixture.mjs --self-test' &&
+    packageJson.scripts['release:check'].includes('npm run ftr:self-test') &&
+    gitIgnore.includes('/ftr-smoke.trm') &&
+    gitIgnore.includes('/ftr-smoke.trm.*.tmp') &&
     artifactInventory.includes("endsWith('.trm')"),
   'private FTR fixture handling must enforce HTTPS, authorization, bounded reads, exact hashing, redacted errors, evidence binding, cleanup, and artifact exclusion',
 )
@@ -588,6 +598,11 @@ expect(
     sbomNormalizer.includes('path+file://') &&
     cargoAboutNormalizer.includes("replaceAll('\\r\\n', '\\n')") &&
     releaseWorkflow.includes('generate-javascript-notices.mjs --strict --check') &&
+    releaseWorkflow.includes("reject_partial 'Updater'") &&
+    releaseWorkflow.includes("reject_partial 'Apple'") &&
+    releaseWorkflow.includes("reject_partial 'Windows'") &&
+    releaseWorkflow.includes('RELEASE-CANDIDATE-POINTER.json') &&
+    releaseWorkflow.includes('release-candidate-pointer-${{ github.sha }}') &&
     releaseWorkflow.includes('DepoAudio_${version}_javascript-third-party-notices.html') &&
     releaseWorkflow.includes('DepoAudio_${version}_javascript-components.json') &&
     publicationHelper.includes('DepoAudio_${version}_javascript-third-party-notices.html') &&
@@ -599,8 +614,8 @@ expect(
 )
 expect(
   javascriptNoticeComponents.schemaVersion === 1 &&
-    javascriptNoticeComponents.componentCount === 60 &&
-    javascriptNoticeComponents.javascriptComponentCount === 58 &&
+    javascriptNoticeComponents.componentCount === 59 &&
+    javascriptNoticeComponents.javascriptComponentCount === 57 &&
     javascriptNoticeComponents.generatedCssComponentCount === 2 &&
     javascriptNoticeHtml.includes('DepoAudio JavaScript and generated-CSS third-party notices') &&
     javascriptNoticeGenerator.includes('javascript-notice-overrides.json') &&
@@ -617,19 +632,16 @@ expect(
       releaseWorkflow.indexOf('Write the pre-package binary and notice contract'),
   'deterministic JavaScript/CSS notices must be bundled, byte-bound, self-tested, and strict-gated before packaging',
 )
-const hasJavaScriptNoticeBlocker =
+const hasJavaScriptNoticeSourceClosure =
   thirdPartyInventory.includes('JavaScript and generated CSS notice status') &&
-  thirdPartyInventory.includes('react-remove-scroll-bar@2.3.8') &&
+  thirdPartyInventory.includes('DepoAudio-owned compatibility module') &&
   thirdPartyInventory.includes('an SBOM does not replace copyright notices or license') &&
-  thirdPartyInventory.includes('v1.0.3 remains blocked') &&
-  javascriptNoticeComponents.unresolvedComponentCount === 1 &&
-  javascriptNoticeComponents.unresolvedComponents?.includes('react-remove-scroll-bar@2.3.8')
-const generatedJavaScriptNoticeIsUnresolved = javascriptNoticeComponents.unresolvedComponentCount > 0
+  thirdPartyInventory.includes('57 JavaScript packages') &&
+  javascriptNoticeComponents.unresolvedComponentCount === 0 &&
+  javascriptNoticeComponents.unresolvedComponents?.length === 0
 expect(
-  generatedJavaScriptNoticeIsUnresolved ? hasJavaScriptNoticeBlocker : !hasJavaScriptNoticeBlocker,
-  generatedJavaScriptNoticeIsUnresolved
-    ? 'the release inventory must preserve every unresolved JavaScript notice gate'
-    : 'resolved JavaScript notice evidence must remove the obsolete blocker copy',
+  hasJavaScriptNoticeSourceClosure,
+  'resolved JavaScript notice evidence must document emitted-byte removal and contain zero unresolved components',
 )
 expect(
   releaseWorkflow.includes("FFMPEG_WIN_ID: '496767001'") &&
@@ -728,8 +740,9 @@ const releaseGateEvidenceBindings = {
     artifactInventory.includes('Forbidden learned-model material') &&
     releaseWorkflow.includes('npm run models:check'),
   'javascript-runtime-notices':
-    thirdPartyInventory.includes('JavaScript and generated CSS notice status') &&
-    thirdPartyInventory.includes('react-remove-scroll-bar@2.3.8'),
+    hasJavaScriptNoticeSourceClosure &&
+    artifactInventory.includes("'javascript-notices-html'") &&
+    artifactInventory.includes("'javascript-notices-components'"),
   'macos-ffmpeg-rc2-evidence':
     releaseCandidate.includes('Build RC2 with the new macOS source-built FFmpeg sidecars') &&
     releaseWorkflow.includes('Smoke-test downloadable macOS containers') &&
@@ -777,8 +790,8 @@ for (const [blockerId, isBoundToEvidence] of Object.entries(releaseGateEvidenceB
 
 const javascriptNoticeGateIsOpen = gateBlockerById.get('javascript-runtime-notices')?.status === 'open'
 expect(
-  javascriptNoticeGateIsOpen === hasJavaScriptNoticeBlocker,
-  'the JavaScript notice blocker status must match the unresolved third-party inventory evidence',
+  javascriptNoticeGateIsOpen,
+  'the JavaScript notice blocker must remain open until byte-exact notice evidence is verified in every final installer',
 )
 const otherOpenGateBlockers = openGateBlockers.filter(blocker => blocker.id !== 'release-changelog-finalization')
 const changelogIsDated = datedReleaseHeading.test(changelog)

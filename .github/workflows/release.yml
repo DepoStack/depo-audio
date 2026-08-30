@@ -92,9 +92,10 @@ jobs:
       - name: Verify deterministic JavaScript notices
         run: npm run notices:self-test && npm run notices:check
 
-      # Fail closed until every production JavaScript/CSS component has exact
-      # approved notice evidence. react-remove-scroll-bar@2.3.8 intentionally
-      # keeps this gate red until the owner records an acceptable resolution.
+      # Fail closed unless every emitted production JavaScript/CSS component
+      # has exact approved notice evidence. The local scroll-lock compatibility
+      # alias deliberately keeps the incomplete third-party helper out of the
+      # shipped graph.
       - name: Enforce strict JavaScript notice approval
         run: node scripts/generate-javascript-notices.mjs --strict --check
 
@@ -370,12 +371,13 @@ jobs:
         if: runner.os == 'macOS'
         run: |
           set -euo pipefail
+          fixture_path="$RUNNER_TEMP/depoaudio-private-ftr/ftr-smoke.trm"
           for ffmpeg in \
             src-tauri/binaries/ffmpeg-aarch64-apple-darwin \
             src-tauri/binaries/ffmpeg-x86_64-apple-darwin
           do
             "$ffmpeg" -hide_banner -v error \
-              -c:a ftr -t 5 -i ftr-smoke.trm -map 0:a:0 -f null -
+              -c:a ftr -t 5 -i "$fixture_path" -map 0:a:0 -f null -
             arch=$(basename "$ffmpeg")
             for spec in \
               'wav:pcm_s16le' \
@@ -388,7 +390,7 @@ jobs:
               codec=${spec#*:}
               output="$RUNNER_TEMP/$arch-smoke.$extension"
               "$ffmpeg" -hide_banner -v error -xerror \
-                -c:a ftr -t 1 -i ftr-smoke.trm -map 0:a:0 -ac 1 \
+                -c:a ftr -t 1 -i "$fixture_path" -map 0:a:0 -ac 1 \
                 -c:a "$codec" -y "$output"
               test -s "$output" || { echo "ERROR: $arch produced no $extension output"; exit 1; }
               rm -f -- "$output"
@@ -399,8 +401,9 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
+          $fixturePath = Join-Path $env:RUNNER_TEMP 'depoaudio-private-ftr\ftr-smoke.trm'
           & src-tauri/binaries/ffmpeg-x86_64-pc-windows-msvc.exe -hide_banner -v error `
-            -c:a ftr -t 5 -i ftr-smoke.trm -map 0:a:0 -f null NUL
+            -c:a ftr -t 5 -i $fixturePath -map 0:a:0 -f null NUL
           if ($LASTEXITCODE -ne 0) { throw "Bundled FFmpeg failed native FTR decode smoke test" }
           $ffmpeg = Resolve-Path 'src-tauri/binaries/ffmpeg-x86_64-pc-windows-msvc.exe'
           $variants = @(
@@ -414,7 +417,7 @@ jobs:
             $output = Join-Path $env:RUNNER_TEMP "depoaudio-encoder-smoke.$($variant.Extension)"
             $arguments = @(
               '-hide_banner', '-v', 'error', '-xerror',
-              '-c:a', 'ftr', '-t', '1', '-i', 'ftr-smoke.trm',
+              '-c:a', 'ftr', '-t', '1', '-i', $fixturePath,
               '-map', '0:a:0', '-ac', '1', '-c:a', $variant.Codec,
               '-y', $output
             )
@@ -459,7 +462,9 @@ jobs:
       # installers, with the in-app updater dormant. Platform warnings may
       # appear, but their exact behavior must be verified for each published
       # asset. Adding the secrets later enables signing/updates with no workflow
-      # change. This detects what's present; it never fails closed.
+      # change. A completely absent capability group is allowed; a partially
+      # configured group fails closed so an intended signed build cannot
+      # silently fall back to unsigned output.
       - name: Detect signing configuration
         id: signing
         shell: bash
@@ -478,6 +483,19 @@ jobs:
         run: |
           set -euo pipefail
           have() { for n in "$@"; do [ -n "${!n:-}" ] || return 1; done; return 0; }
+          reject_partial() {
+            local group="$1"; shift
+            local present=0
+            for n in "$@"; do [ -n "${!n:-}" ] && present=$((present + 1)); done
+            if [ "$present" -ne 0 ] && [ "$present" -ne "$#" ]; then
+              echo "::error::$group signing configuration is partial ($present of $# required values present)."
+              exit 1
+            fi
+          }
+
+          reject_partial 'Updater' TAURI_SIGNING_PRIVATE_KEY TAURI_UPDATER_PUBLIC_KEY
+          reject_partial 'Apple' APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_SIGNING_IDENTITY APPLE_ID APPLE_PASSWORD APPLE_TEAM_ID
+          reject_partial 'Windows' WINDOWS_CERTIFICATE WINDOWS_CERTIFICATE_PASSWORD WINDOWS_CERTIFICATE_THUMBPRINT
 
           updater=false
           if have TAURI_SIGNING_PRIVATE_KEY TAURI_UPDATER_PUBLIC_KEY; then
@@ -1270,4 +1288,26 @@ jobs:
             }
           fi
           printf '%s' "$release" | jq -r '.assets[] | "  \(.name)  (\(.size) bytes)"'
+          pointer="$RUNNER_TEMP/RELEASE-CANDIDATE-POINTER.json"
+          printf '%s' "$release" | jq \
+            --arg sourceCommit "$GITHUB_SHA" \
+            --arg workflowRunUrl "https://github.com/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" \
+            '{
+              schemaVersion: 1,
+              releaseNumericId: .id,
+              tag: .tag_name,
+              sourceCommit: $sourceCommit,
+              draft: .draft,
+              prerelease: .prerelease,
+              workflowRunUrl: $workflowRunUrl,
+              assets: [.assets[] | {name, size}]
+            }' > "$pointer"
           echo "Verified private draft $RELEASE_ID for $TAG at $GITHUB_SHA"
+
+      - name: Preserve sanitized candidate pointer
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-candidate-pointer-${{ github.sha }}
+          path: ${{ runner.temp }}/RELEASE-CANDIDATE-POINTER.json
+          if-no-files-found: error
+          retention-days: 30
