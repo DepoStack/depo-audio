@@ -59,9 +59,20 @@ const isForbiddenModelEntry = entry =>
   (entry.type === 'symlink' && hasForbiddenModelPath(entry.target)) ||
   FORBIDDEN_MODEL_SHA256.has(entry.sha256)
 
+const hasForbiddenFtrSmokePath = value => {
+  const basename = path.posix.basename(portablePath(value).toLowerCase())
+  return (
+    basename.endsWith('.trm') ||
+    /^ftr-smoke(?:\.[0-9]+)?\.(?:wav|aac|avi)$/u.test(basename) ||
+    /^ftr-smoke\.trm\.[0-9]+\.tmp$/u.test(basename) ||
+    /^(?:depoaudio-encoder|ffmpeg-(?:aarch64|x86_64)-apple-darwin|packaged-(?:dmg|archive|msi|nsis))-smoke\.(?:wav|mp3|flac|opus|m4a)$/u.test(
+      basename,
+    )
+  )
+}
+
 const isForbiddenFtrEntry = entry =>
-  entry.path.toLowerCase().endsWith('.trm') ||
-  (entry.type === 'symlink' && entry.target.toLowerCase().endsWith('.trm'))
+  hasForbiddenFtrSmokePath(entry.path) || (entry.type === 'symlink' && hasForbiddenFtrSmokePath(entry.target))
 
 const stagedBinarySpecs = platform => {
   const noticeRoot =
@@ -457,12 +468,19 @@ async function selfTest() {
     )
     await rm(path.join(windows.artifactRoot, 'unknown.onnx'))
 
-    await writeFile(path.join(windows.artifactRoot, 'forbidden.trm'), 'private fixture\n')
+    await writeFile(path.join(windows.artifactRoot, 'forbidden.trm'), 'synthetic fixture\n')
     await expectInventoryRejection(
       { root: windows.artifactRoot, output, platform: 'windows', contract: windows.contractPath },
       'Forbidden FTR fixture material',
     )
     await rm(path.join(windows.artifactRoot, 'forbidden.trm'))
+
+    await writeFile(path.join(windows.artifactRoot, 'packaged-msi-smoke.wav'), 'derived smoke output\n')
+    await expectInventoryRejection(
+      { root: windows.artifactRoot, output, platform: 'windows', contract: windows.contractPath },
+      'Forbidden FTR fixture material',
+    )
+    await rm(path.join(windows.artifactRoot, 'packaged-msi-smoke.wav'))
 
     if (
       !isForbiddenModelEntry({

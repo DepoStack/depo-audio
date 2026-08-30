@@ -122,14 +122,8 @@ jobs:
           print(f"Tag {tag} matches app version {version}")
           PY
 
-      - name: Verify permission-cleared private FTR fixture contract
-        env:
-          FTR_FIXTURE_URL: ${{ secrets.FTR_FIXTURE_URL }}
-          FTR_FIXTURE_AUTHORIZATION: ${{ secrets.FTR_FIXTURE_AUTHORIZATION }}
-          FTR_FIXTURE_SIZE: ${{ secrets.FTR_FIXTURE_SIZE }}
-          FTR_FIXTURE_SHA256: ${{ secrets.FTR_FIXTURE_SHA256 }}
-          FTR_FIXTURE_EVIDENCE_ID: ${{ secrets.FTR_FIXTURE_EVIDENCE_ID }}
-        run: node scripts/private-ftr-fixture.mjs --check
+      - name: Verify synthetic FTR fixture generator
+        run: npm run ftr:self-test
 
       - name: Verify release commit and published-release immutability
         env:
@@ -358,20 +352,24 @@ jobs:
         shell: pwsh
         run: Get-ChildItem src-tauri/binaries/
 
-      - name: Fetch permission-cleared private FTR fixture
-        env:
-          FTR_FIXTURE_URL: ${{ secrets.FTR_FIXTURE_URL }}
-          FTR_FIXTURE_AUTHORIZATION: ${{ secrets.FTR_FIXTURE_AUTHORIZATION }}
-          FTR_FIXTURE_SIZE: ${{ secrets.FTR_FIXTURE_SIZE }}
-          FTR_FIXTURE_SHA256: ${{ secrets.FTR_FIXTURE_SHA256 }}
-          FTR_FIXTURE_EVIDENCE_ID: ${{ secrets.FTR_FIXTURE_EVIDENCE_ID }}
-        run: node scripts/private-ftr-fixture.mjs --download
+      - name: Generate synthetic FTR decode fixture (macOS)
+        if: runner.os == 'macOS'
+        run: >-
+          node scripts/ftr-smoke-fixture.mjs --generate
+          --ffmpeg src-tauri/binaries/ffmpeg-universal-apple-darwin
+
+      - name: Generate synthetic FTR decode fixture (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: >-
+          node scripts/ftr-smoke-fixture.mjs --generate
+          --ffmpeg src-tauri/binaries/ffmpeg-x86_64-pc-windows-msvc.exe
 
       - name: Smoke-test native FTR decoding and released encoders (macOS)
         if: runner.os == 'macOS'
         run: |
           set -euo pipefail
-          fixture_path="$RUNNER_TEMP/depoaudio-private-ftr/ftr-smoke.trm"
+          fixture_path="$RUNNER_TEMP/depoaudio-ftr-smoke/ftr-smoke.trm"
           for ffmpeg in \
             src-tauri/binaries/ffmpeg-aarch64-apple-darwin \
             src-tauri/binaries/ffmpeg-x86_64-apple-darwin
@@ -401,7 +399,7 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          $fixturePath = Join-Path $env:RUNNER_TEMP 'depoaudio-private-ftr\ftr-smoke.trm'
+          $fixturePath = Join-Path $env:RUNNER_TEMP 'depoaudio-ftr-smoke\ftr-smoke.trm'
           & src-tauri/binaries/ffmpeg-x86_64-pc-windows-msvc.exe -hide_banner -v error `
             -c:a ftr -t 5 -i $fixturePath -map 0:a:0 -f null NUL
           if ($LASTEXITCODE -ne 0) { throw "Bundled FFmpeg failed native FTR decode smoke test" }
@@ -428,9 +426,9 @@ jobs:
             Remove-Item -LiteralPath $output -Force
           }
 
-      - name: Remove private FTR fixture from the release workspace
+      - name: Remove synthetic FTR fixture from the release workspace
         if: always()
-        run: node scripts/private-ftr-fixture.mjs --clean
+        run: node scripts/ftr-smoke-fixture.mjs --clean
 
       # Reconfirm source and notice policy after native sidecars are staged.
       - name: Recheck release distribution gates before packaging
@@ -819,22 +817,11 @@ jobs:
         shell: bash
         env:
           EXPECT_PLATFORM_SIGNING: ${{ steps.signing.outputs.platform_signing }}
-          FTR_FIXTURE_URL: ${{ secrets.FTR_FIXTURE_URL }}
-          FTR_FIXTURE_AUTHORIZATION: ${{ secrets.FTR_FIXTURE_AUTHORIZATION }}
-          FTR_FIXTURE_SIZE: ${{ secrets.FTR_FIXTURE_SIZE }}
-          FTR_FIXTURE_SHA256: ${{ secrets.FTR_FIXTURE_SHA256 }}
-          FTR_FIXTURE_EVIDENCE_ID: ${{ secrets.FTR_FIXTURE_EVIDENCE_ID }}
         run: bash scripts/macos-packaged-smoke.sh
 
       - name: Smoke-test packaged native payloads and NSIS startup (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
-        env:
-          FTR_FIXTURE_URL: ${{ secrets.FTR_FIXTURE_URL }}
-          FTR_FIXTURE_AUTHORIZATION: ${{ secrets.FTR_FIXTURE_AUTHORIZATION }}
-          FTR_FIXTURE_SIZE: ${{ secrets.FTR_FIXTURE_SIZE }}
-          FTR_FIXTURE_SHA256: ${{ secrets.FTR_FIXTURE_SHA256 }}
-          FTR_FIXTURE_EVIDENCE_ID: ${{ secrets.FTR_FIXTURE_EVIDENCE_ID }}
         run: ./scripts/windows-packaged-smoke.ps1
 
       - name: Publish macOS inventory and checksum evidence to the draft

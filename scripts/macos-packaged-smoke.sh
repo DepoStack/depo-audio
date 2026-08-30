@@ -3,8 +3,7 @@ set -euo pipefail
 
 : "${RUNNER_TEMP:?RUNNER_TEMP is required}"
 : "${GITHUB_WORKSPACE:?GITHUB_WORKSPACE is required}"
-FTR_FIXTURE_PATH=${FTR_FIXTURE_PATH:-"$RUNNER_TEMP/depoaudio-private-ftr/ftr-smoke.trm"}
-export FTR_FIXTURE_PATH
+FTR_FIXTURE_PATH="$RUNNER_TEMP/depoaudio-ftr-smoke/ftr-smoke.trm"
 
 bundle_root="$GITHUB_WORKSPACE/src-tauri/target/universal-apple-darwin/release/bundle"
 dmg=$(find "$bundle_root" -type f -name '*.dmg' -print -quit)
@@ -19,7 +18,7 @@ archive_root="$RUNNER_TEMP/depoaudio-app-archive-smoke"
 mkdir -p "$mount_point" "$archive_root"
 mounted=false
 cleanup() {
-  node scripts/private-ftr-fixture.mjs --clean >/dev/null 2>&1 || true
+  node scripts/ftr-smoke-fixture.mjs --clean >/dev/null 2>&1 || true
   rm -f -- "$RUNNER_TEMP"/packaged-macos-*-smoke.*
   if [ "$mounted" = 'true' ]; then
     hdiutil detach "$mount_point" -quiet || true
@@ -27,8 +26,8 @@ cleanup() {
 }
 trap cleanup EXIT
 
-node scripts/private-ftr-fixture.mjs --download
-unset FTR_FIXTURE_URL FTR_FIXTURE_AUTHORIZATION FTR_FIXTURE_SIZE FTR_FIXTURE_SHA256 FTR_FIXTURE_EVIDENCE_ID
+node scripts/ftr-smoke-fixture.mjs --generate \
+  --ffmpeg "$GITHUB_WORKSPACE/src-tauri/binaries/ffmpeg-universal-apple-darwin"
 hdiutil attach "$dmg" -readonly -nobrowse -mountpoint "$mount_point" -quiet
 mounted=true
 tar xzf "$app_archive" -C "$archive_root"

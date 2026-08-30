@@ -1,13 +1,6 @@
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
-$fixturePath = if ($env:FTR_FIXTURE_PATH) {
-  $env:FTR_FIXTURE_PATH
-} else {
-  Join-Path $env:RUNNER_TEMP 'depoaudio-private-ftr\ftr-smoke.trm'
-}
-if (-not [IO.Path]::IsPathFullyQualified($fixturePath)) {
-  throw 'The private FTR fixture path must be absolute'
-}
+$fixturePath = Join-Path $env:RUNNER_TEMP 'depoaudio-ftr-smoke\ftr-smoke.trm'
 
 function Invoke-PackagedNativeSmoke {
   param(
@@ -125,22 +118,16 @@ if (-not $nsisApp) {
 }
 if (-not $nsisApp) { throw 'The extracted NSIS payload does not contain depo-audio.exe' }
 
-node scripts/private-ftr-fixture.mjs --download
-if ($LASTEXITCODE -ne 0) { throw 'The private FTR fixture could not be prepared' }
-@(
-  'FTR_FIXTURE_URL'
-  'FTR_FIXTURE_AUTHORIZATION'
-  'FTR_FIXTURE_SIZE'
-  'FTR_FIXTURE_SHA256'
-  'FTR_FIXTURE_EVIDENCE_ID'
-) | ForEach-Object { Remove-Item -LiteralPath "Env:$_" -ErrorAction SilentlyContinue }
+$fixtureFfmpeg = Join-Path $env:GITHUB_WORKSPACE 'src-tauri\binaries\ffmpeg-x86_64-pc-windows-msvc.exe'
+node scripts/ftr-smoke-fixture.mjs --generate --ffmpeg $fixtureFfmpeg
+if ($LASTEXITCODE -ne 0) { throw 'The synthetic FTR fixture could not be prepared' }
 try {
   Invoke-PackagedNativeSmoke -Root $msiRoot -Label 'MSI'
   Invoke-PackagedNativeSmoke -Root $nsisRoot -Label 'NSIS'
   Invoke-PackagedStartup -App $nsisApp -Label 'NSIS'
 }
 finally {
-  node scripts/private-ftr-fixture.mjs --clean
+  node scripts/ftr-smoke-fixture.mjs --clean
   Get-ChildItem -LiteralPath $env:RUNNER_TEMP -Filter 'packaged-*-smoke.*' -File -ErrorAction SilentlyContinue |
     Remove-Item -Force -ErrorAction SilentlyContinue
 }

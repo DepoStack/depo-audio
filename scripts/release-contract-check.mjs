@@ -27,7 +27,7 @@ const modelDistributionVerifier = read('scripts/verify-model-distribution.mjs')
 const javascriptNoticeGenerator = read('scripts/generate-javascript-notices.mjs')
 const javascriptNoticeComponents = parseJson('src-tauri/resources/third-party/javascript/COMPONENTS.json')
 const javascriptNoticeHtml = read('src-tauri/resources/third-party/javascript/THIRD-PARTY-NOTICES.html')
-const privateFtrFixture = read('scripts/private-ftr-fixture.mjs')
+const ftrSmokeFixture = read('scripts/ftr-smoke-fixture.mjs')
 const webviewEvidence = read('scripts/windows-webview2-evidence.ps1')
 const macFfmpegBuild = read('scripts/build-ffmpeg-macos.sh')
 const macPackagedSmoke = read('scripts/macos-packaged-smoke.sh')
@@ -514,7 +514,7 @@ expect(
     releaseWorkflow.includes('RELEASE-INVENTORY-windows-nsis.json'),
   'release.yml must publish extracted inventories and a checksum manifest for Windows installers',
 )
-const privateFtrSecretNames = [
+const obsoletePrivateFtrSecretNames = [
   'FTR_FIXTURE_URL',
   'FTR_FIXTURE_AUTHORIZATION',
   'FTR_FIXTURE_SIZE',
@@ -522,33 +522,36 @@ const privateFtrSecretNames = [
   'FTR_FIXTURE_EVIDENCE_ID',
 ]
 expect(
-  privateFtrSecretNames.every(name => releaseWorkflow.includes(`${name}: ` + '${{ secrets.' + name + ' }}')) &&
-    releaseWorkflow.includes('node scripts/private-ftr-fixture.mjs --check') &&
-    releaseWorkflow.includes('node scripts/private-ftr-fixture.mjs --download') &&
-    releaseWorkflow.includes('node scripts/private-ftr-fixture.mjs --clean') &&
-    releaseWorkflow.includes('$RUNNER_TEMP/depoaudio-private-ftr/ftr-smoke.trm') &&
-    releaseWorkflow.includes("Join-Path $env:RUNNER_TEMP 'depoaudio-private-ftr\\ftr-smoke.trm'") &&
-    !releaseWorkflow.includes('FTR_SMOKE_'),
-  'release.yml must fail closed on a permission-cleared private FTR fixture contract without a public recording URL',
+  obsoletePrivateFtrSecretNames.every(name => !releaseWorkflow.includes(name)) &&
+    releaseWorkflow.includes('Verify synthetic FTR fixture generator') &&
+    releaseWorkflow.includes('node scripts/ftr-smoke-fixture.mjs --generate') &&
+    releaseWorkflow.includes('node scripts/ftr-smoke-fixture.mjs --clean') &&
+    releaseWorkflow.includes('$RUNNER_TEMP/depoaudio-ftr-smoke/ftr-smoke.trm') &&
+    releaseWorkflow.includes("Join-Path $env:RUNNER_TEMP 'depoaudio-ftr-smoke\\ftr-smoke.trm'") &&
+    !releaseWorkflow.includes('samples.ffmpeg.org/'),
+  'release.yml must generate and normally decode a synthetic FTR fixture without recording secrets or downloads',
 )
 expect(
-  privateFtrFixture.includes("sourceUrl.protocol !== 'https:'") &&
-    privateFtrFixture.includes('Authorization: contract.authorization') &&
-    privateFtrFixture.includes('received > contract.expectedSize') &&
-    privateFtrFixture.includes("createHash('sha256')") &&
-    privateFtrFixture.includes("createHmac('sha256', evidenceId)") &&
-    privateFtrFixture.includes('evidence contract ${contract.evidenceFingerprint}') &&
-    privateFtrFixture.includes('request failed before a valid HTTPS response was received') &&
-    privateFtrFixture.includes('mkdir(FIXTURE_DIRECTORY, { recursive: true, mode: 0o700 })') &&
-    privateFtrFixture.includes("open(TEMPORARY_PATH, 'wx', 0o600)") &&
-    privateFtrFixture.includes("path.join(runnerTemp, 'depoaudio-private-ftr', 'ftr-smoke.trm')") &&
-    privateFtrFixture.includes('cleanupTemporaryFiles()') &&
-    packageJson.scripts['ftr:self-test'] === 'node scripts/private-ftr-fixture.mjs --self-test' &&
+  ftrSmokeFixture.includes('function buildSyntheticToneWav()') &&
+    ftrSmokeFixture.includes('const AAC_ADTS_AVI_TAG = 0x1610') &&
+    ftrSmokeFixture.includes('const FTR_AVI_TAG = 0x4180') &&
+    ftrSmokeFixture.includes("'-c:a',") &&
+    ftrSmokeFixture.includes("'aac',") &&
+    ftrSmokeFixture.includes("'-f',") &&
+    ftrSmokeFixture.includes("'avi',") &&
+    ftrSmokeFixture.includes('mkdir(FIXTURE_DIRECTORY, { recursive: true, mode: 0o700 })') &&
+    ftrSmokeFixture.includes("writeFile(TEMPORARY_PATH, ftrBytes, { flag: 'wx', mode: 0o600 })") &&
+    ftrSmokeFixture.includes("path.join(runnerTemp, 'depoaudio-ftr-smoke', 'ftr-smoke.trm')") &&
+    ftrSmokeFixture.includes('cleanupTemporaryFiles()') &&
+    !ftrSmokeFixture.includes('fetch(') &&
+    !ftrSmokeFixture.includes('Authorization') &&
+    packageJson.scripts['ftr:self-test'] === 'node scripts/ftr-smoke-fixture.mjs --self-test' &&
     packageJson.scripts['release:check'].includes('npm run ftr:self-test') &&
     gitIgnore.includes('/ftr-smoke.trm') &&
     gitIgnore.includes('/ftr-smoke.trm.*.tmp') &&
-    artifactInventory.includes("endsWith('.trm')"),
-  'private FTR fixture handling must enforce HTTPS, authorization, bounded reads, exact hashing, redacted errors, evidence binding, cleanup, and artifact exclusion',
+    artifactInventory.includes("endsWith('.trm')") &&
+    artifactInventory.includes('packaged-(?:dmg|archive|msi|nsis)'),
+  'synthetic FTR fixture handling must generate a tone-only FTR-tagged AVI, use restrictive temporary files, clean up, and exclude fixtures from artifacts',
 )
 expect(
   releaseWorkflow.includes('scripts/windows-webview2-evidence.ps1') &&
@@ -756,10 +759,13 @@ const releaseGateEvidenceBindings = {
   'webview2-final-installer-evidence':
     webviewEvidence.includes('finalInstallerEmbeddingVerified = $false') &&
     releaseCandidate.includes('extracting the MSI Binary table and NSIS payload'),
-  'private-ftr-fixture-permission':
-    privateFtrFixture.includes('FTR_FIXTURE_EVIDENCE_ID') &&
-    privateFtrFixture.includes("createHmac('sha256', evidenceId)") &&
-    releaseCandidate.includes('owner-approved provenance and permission record'),
+  'synthetic-ftr-packaged-decode':
+    ftrSmokeFixture.includes('FTR_AVI_TAG = 0x4180') &&
+    releaseCandidate.includes('Generated synthetic FTR decode fixture') &&
+    releaseWorkflow.includes('Smoke-test native FTR decoding and released encoders (macOS)') &&
+    releaseWorkflow.includes('Smoke-test native FTR decoding and released encoders (Windows)') &&
+    artifactInventory.includes("endsWith('.trm')") &&
+    artifactInventory.includes('packaged-(?:dmg|archive|msi|nsis)'),
   'packaged-install-and-upgrade-validation':
     artifactInventory.includes('BINARY-CONTRACT.json') &&
     releaseWorkflow.includes('RELEASE-INVENTORY-macos-dmg.json') &&
