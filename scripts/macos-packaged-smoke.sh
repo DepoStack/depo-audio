@@ -82,10 +82,14 @@ smoke_app() {
   fi
 
   local probe_json
-  probe_json=$("$ffprobe" -v error -c:a ftr -select_streams a:0 \
+  probe_json=$("$ffprobe" -v error -select_streams a:0 \
     -show_entries stream=codec_type,codec_name,channels -of json "$FTR_FIXTURE_PATH")
   printf '%s' "$probe_json" | grep -q '"codec_type": "audio"' || {
     echo "ERROR: $label FFprobe did not identify an audio stream"
+    exit 1
+  }
+  printf '%s' "$probe_json" | grep -q '"codec_name": "ftr"' || {
+    echo "ERROR: $label FFprobe did not identify the native FTR decoder"
     exit 1
   }
 

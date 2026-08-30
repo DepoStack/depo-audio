@@ -23,12 +23,16 @@ function Invoke-PackagedNativeSmoke {
 
   $ffmpeg = $ffmpegMatches[0]
   $ffprobe = $ffprobeMatches[0]
-  $probeJson = & $ffprobe.FullName -v error -c:a ftr -select_streams a:0 `
+  $probeJson = & $ffprobe.FullName -v error -select_streams a:0 `
     -show_entries stream=codec_type,codec_name,channels -of json $fixturePath | Out-String
   if ($LASTEXITCODE -ne 0) { throw "$Label packaged FFprobe failed native FTR inspection" }
   $probe = $probeJson | ConvertFrom-Json
-  if (@($probe.streams).Count -ne 1 -or $probe.streams[0].codec_type -ne 'audio') {
-    throw "$Label packaged FFprobe did not identify exactly one audio stream"
+  if (
+    @($probe.streams).Count -ne 1 -or
+    $probe.streams[0].codec_type -ne 'audio' -or
+    $probe.streams[0].codec_name -ne 'ftr'
+  ) {
+    throw "$Label packaged FFprobe did not identify exactly one native FTR audio stream"
   }
 
   & $ffmpeg.FullName -hide_banner -v error -c:a ftr -t 5 `
