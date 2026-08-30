@@ -172,6 +172,24 @@ describe('conversion cancellation', () => {
     await act(async () => batch)
   })
 
+  it('forces learned-model flags off in the final IPC payload', async () => {
+    const file = { path: 'C:\\case\\source.wav', name: 'source.wav' }
+    const { result } = renderHook(() => useConversion())
+
+    let batch
+    act(() => {
+      batch = result.current.startConversion(
+        conversionOptions([file], { denoise: true, denoiseQuality: 'best', enhance: true, dereverb: true }),
+      )
+    })
+    await waitFor(() => expect(invoke.mock.calls.some(([command]) => command === 'convert')).toBe(true))
+    const activeJob = invoke.mock.calls.find(([command]) => command === 'convert')[1].job
+
+    expect(activeJob).toMatchObject({ denoise: false, denoiseQuality: 'fast', enhance: false, dereverb: false })
+    act(() => emit('convert:done', { id: activeJob.id, files: [] }))
+    await act(async () => batch)
+  })
+
   it('resets completed batch jobs whenever the unlocked file queue changes', async () => {
     const first = 'C:\\case\\first.wav'
     const second = 'C:\\case\\second.wav'
@@ -286,22 +304,18 @@ describe('conversion cancellation', () => {
 })
 
 describe('conversion processing UI contracts', () => {
-  it('excludes unavailable dereverb from the hidden processing option count', () => {
+  it('counts only released non-learned processing options', () => {
     const allHidden = {
       hasAnalysis: true,
       showAllProcessing: false,
-      showDenoise: false,
       showAutoLevel: false,
       showDeclip: false,
-      showEnhance: false,
-      showDereverb: false,
       showHpf: false,
       showNormalize: false,
       showTrim: false,
       showFade: false,
     }
 
-    expect(countHiddenProcessingOptions({ ...allHidden, dereverbAvailable: false })).toBe(8)
-    expect(countHiddenProcessingOptions({ ...allHidden, dereverbAvailable: true })).toBe(9)
+    expect(countHiddenProcessingOptions(allHidden)).toBe(6)
   })
 })

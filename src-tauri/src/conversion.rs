@@ -5,11 +5,6 @@ use std::sync::Arc;
 
 use tauri::{AppHandle, Emitter};
 
-use uuid::Uuid;
-
-use crate::denoise::{decode_to_wav_48k, denoise_buffer};
-use crate::dereverb;
-use crate::enhance::enhance_buffer;
 use crate::ffmpeg::{
     build_proc_filters_with_gain, ensure_ftr_decoder, probe_channels_cancellable, probe_duration_cancellable,
     run_ffmpeg_with_timeout,
@@ -18,20 +13,7 @@ use crate::helpers::{
     basename, detect_format_for_path, input_codec_args, output_args, output_ext, prepare_audio_feed_cancellable,
     reserve_unique_path, safe_ffmpeg_input_prelude, safe_label,
 };
-use crate::types::{AudioBuffer, ConvertJob, OutputFile, ProgressEvent, CONVERSION_CANCELLED_MESSAGE};
-
-/// Temporary safety ceiling for the non-streaming AI pipeline. Processing can
-/// hold the interleaved source, split channels, model output, and reassembled
-/// output concurrently. FlashSR's visible buffers peak above four copies even
-/// before ONNX workspace, so admission budgets five full PCM copies.
-const AI_PCM_MEMORY_LIMIT_BYTES: u64 = 512 * 1024 * 1024;
-const AI_PCM_SAMPLE_RATE: u64 = 48_000;
-const AI_PCM_BYTES_PER_SAMPLE: u64 = 4;
-const AI_PCM_PEAK_COPY_FACTOR: u64 = 5;
-const AI_BASE_PCM_LIMIT_BYTES: u64 = AI_PCM_MEMORY_LIMIT_BYTES / AI_PCM_PEAK_COPY_FACTOR;
-const AI_DECODED_WAV_HEADER_ALLOWANCE_BYTES: u64 = 1024 * 1024;
-const AI_DECODED_WAV_LIMIT_BYTES: u64 = AI_BASE_PCM_LIMIT_BYTES + AI_DECODED_WAV_HEADER_ALLOWANCE_BYTES;
-const AI_DECODED_SAMPLE_VALUE_LIMIT: usize = (AI_BASE_PCM_LIMIT_BYTES / AI_PCM_BYTES_PER_SAMPLE) as usize;
+use crate::types::{ConvertJob, OutputFile, ProgressEvent, CONVERSION_CANCELLED_MESSAGE};
 /// FTR's supported registry and the analysis engine both cap court recordings
 /// at 16 channels. Reject corrupt or unsupported headers before allocating
 /// labels, filters, or output reservations from their channel count.
@@ -179,54 +161,6 @@ fn reserve_output_paths(paths: impl IntoIterator<Item = PathBuf>) -> Result<Vec<
     Ok(reserved)
 }
 
-/// Keep the denoise selector honest until the DeepFilterNet pipeline performs
-/// real inference. A disabled preference may retain any saved quality value;
-/// validation only applies when denoising is actually requested.
-fn validate_denoise_request(enabled: bool, quality: &str) -> Result<(), String> {
-    if !enabled || quality == "fast" {
-        return Ok(());
-    }
-    if quality == "best" {
-        return Err(
-            "Best-quality denoising (DeepFilterNet3) is not implemented yet. Choose Fast (RNNoise) or turn denoising off."
-                .into(),
-        );
-    }
-    Err(format!("Unknown denoising quality: {quality}"))
-}
-
-fn estimated_ai_peak_pcm_bytes(duration_seconds: f64, channels: u32) -> Result<u64, String> {
-    if !duration_seconds.is_finite() || duration_seconds <= 0.0 || channels == 0 {
-        return Err(
-            "Cannot safely estimate AI processing memory for this recording. Convert without AI processing or use shorter chunks."
-                .into(),
-        );
-    }
-
-    let base = duration_seconds * channels as f64 * AI_PCM_SAMPLE_RATE as f64 * AI_PCM_BYTES_PER_SAMPLE as f64;
-    if !base.is_finite() || base > u64::MAX as f64 {
-        return Err(
-            "AI processing memory estimate is too large. Convert without AI processing or use shorter chunks.".into(),
-        );
-    }
-    (base.ceil() as u64)
-        .checked_mul(AI_PCM_PEAK_COPY_FACTOR)
-        .ok_or_else(|| {
-            "AI processing peak-memory estimate overflowed. Convert without AI processing or use shorter chunks.".into()
-        })
-}
-
-fn validate_ai_pcm_memory(duration_seconds: f64, channels: u32) -> Result<(), String> {
-    let estimate = estimated_ai_peak_pcm_bytes(duration_seconds, channels)?;
-    if estimate > AI_PCM_MEMORY_LIMIT_BYTES {
-        let estimate_mib = estimate as f64 / (1024.0 * 1024.0);
-        return Err(format!(
-            "AI processing could require approximately {estimate_mib:.0} MiB at peak (including processing copies), above the 512 MiB safety limit. Convert without AI processing or use shorter chunks."
-        ));
-    }
-    Ok(())
-}
-
 fn validate_conversion_channels(channels: u32) -> Result<u32, String> {
     match channels {
         1..=MAX_CONVERSION_CHANNELS => Ok(channels),
@@ -245,6 +179,12 @@ fn validate_finite_range(label: &str, value: f64, min: f64, max: f64) -> Result<
 }
 
 fn validate_convert_request(job: &ConvertJob) -> Result<(), String> {
+    if job.denoise || job.enhance || job.dereverb {
+        return Err(
+            "Learned-model processing is not included in DepoAudio v1.0.3. Turn off Noise Removal, Enhance Clarity, and Reduce Room Echo."
+                .into(),
+        );
+    }
     if !matches!(job.mode.as_str(), "stereo" | "keep" | "split") {
         return Err(format!("Unsupported conversion mode: {}", job.mode));
     }
@@ -272,13 +212,6 @@ fn validate_convert_request(job: &ConvertJob) -> Result<(), String> {
     Ok(())
 }
 
-fn uses_ai_predecode(job: &ConvertJob) -> bool {
-    // De-clipping is FFmpeg's streaming `adeclip` filter and must not force a
-    // full in-memory PCM decode. Auto-leveling only needs a bounded loudness
-    // sample and likewise remains on the streaming FFmpeg path.
-    job.denoise || job.enhance || job.dereverb
-}
-
 // ── Conversion orchestration ─────────────────────────────────────────────────
 
 pub(crate) async fn do_convert(
@@ -296,7 +229,6 @@ pub(crate) async fn do_convert(
         crate::safety::validate_fade_dur(job.fade_dur)?;
     }
     crate::safety::validate_rate(&job.rate)?;
-    validate_denoise_request(job.denoise, &job.denoise_quality)?;
     cancel.check()?;
 
     let fmt = detect_format_for_path(&job.src_path).ok_or("Unrecognised file format")?;
@@ -345,33 +277,7 @@ async fn do_convert_inner(
     let ext = output_ext(&job.format);
     let out_codec = output_args(&job.format, &job.rate, job.mp3_bitrate);
 
-    // ── AI pre-processing step ──────────────────────────────────────────────
-    // Uses in-memory AudioBuffer pipeline to eliminate intermediate temp WAV files.
-    // Pattern: decode → temp WAV → read to buffer → delete temp → process in memory
-    //        → write single temp WAV → FFmpeg.
-    let mut ai_feed = feed.to_path_buf();
-    let mut ai_temps: Vec<crate::safety::TempFile> = Vec::new();
     let mut channel_gains: Option<Vec<f64>> = None;
-
-    let has_ai = uses_ai_predecode(job);
-
-    if has_ai {
-        let ai_duration = probe_duration_cancellable(app, feed, Some(&is_cancelled)).await;
-        cancel.check()?;
-        let ai_duration = ai_duration.ok_or_else(|| {
-            "Cannot safely determine recording duration for AI processing. Convert without AI processing or use shorter chunks."
-                .to_string()
-        })?;
-        let ai_channels = probe_channels_cancellable(app, feed, Some(&is_cancelled)).await;
-        cancel.check()?;
-        let ai_channels = ai_channels.ok_or_else(|| {
-            "Cannot safely determine the channel count for AI processing. Convert without AI processing or use shorter chunks."
-                .to_string()
-        })?;
-        let ai_channels = validate_conversion_channels(ai_channels)?;
-        validate_ai_pcm_memory(ai_duration, ai_channels)?;
-        cancel.check()?;
-    }
 
     if job.auto_level {
         // Phase: Analyzing
@@ -386,122 +292,22 @@ async fn do_convert_inner(
         );
 
         // Analyze only representative per-channel loudness. Auto-leveling
-        // does not need VAD, Smart Turn, DNSMOS, speaker models, or a full PCM
-        // predecode.
+        // stays on a bounded, non-learned pass and does not predecode the full
+        // recording to PCM.
         let analysis_ctx = crate::analysis::ScanCtx::silent(
             app.clone(),
-            ai_feed.to_string_lossy().to_string(),
+            feed.to_string_lossy().to_string(),
             cancel.epoch.clone(),
             cancel.generation,
         );
-        let gain_result = crate::analysis::analyze_channel_gains(
-            app,
-            &ai_feed.to_string_lossy(),
-            max_input_size,
-            Some(&analysis_ctx),
-        )
-        .await;
+        let gain_result =
+            crate::analysis::analyze_channel_gains(app, &feed.to_string_lossy(), max_input_size, Some(&analysis_ctx))
+                .await;
         cancel.check()?;
         channel_gains = Some(gain_result.map_err(|error| format!("Auto-level analysis failed: {error}"))?);
     }
 
-    if has_ai {
-        // Phase: Cleaning up audio
-        let _ = app.emit(
-            "convert:progress",
-            ProgressEvent {
-                id: job.id.clone(),
-                seconds: 0.0,
-                phase: Some("processing".into()),
-                total: None,
-            },
-        );
-
-        // Guard the decoded WAV before reading it so an AudioBuffer parse error
-        // cannot strand the potentially large temporary file on disk.
-        let decoded_wav =
-            crate::safety::TempFile::new(decode_to_wav_48k(app, &ai_feed, &input_codec, Some(&is_cancelled)).await?);
-        cancel.check()?;
-        let decoded_path = decoded_wav.as_ref().to_path_buf();
-        let mut audio_buf = tauri::async_runtime::spawn_blocking(move || {
-            AudioBuffer::from_wav_bounded(&decoded_path, AI_DECODED_WAV_LIMIT_BYTES, AI_DECODED_SAMPLE_VALUE_LIMIT)
-        })
-        .await
-        .map_err(|error| format!("Decoded WAV read task failed: {error}"))??;
-        drop(decoded_wav);
-        cancel.check()?;
-
-        // Fast denoise is the only implemented denoising pipeline. The
-        // unsupported Best option is rejected before any decode begins.
-        if job.denoise {
-            let stage_cancel = cancel.clone();
-            let (next_buffer, denoise_result) = tauri::async_runtime::spawn_blocking(move || {
-                let is_cancelled = || stage_cancel.cancelled();
-                let result = denoise_buffer(&mut audio_buf, Some(&is_cancelled));
-                (audio_buf, result)
-            })
-            .await
-            .map_err(|error| format!("RNNoise processing task failed: {error}"))?;
-            audio_buf = next_buffer;
-            cancel.check()?;
-            denoise_result.map_err(|error| format!("RNNoise denoising failed: {error}"))?;
-        }
-        cancel.check()?;
-
-        // De-reverberation in-memory (if DCCRN+ model available)
-        if job.dereverb {
-            cancel.check()?;
-            let app_owned = app.clone();
-            let stage_cancel = cancel.clone();
-            let (next_buffer, dereverb_result) = tauri::async_runtime::spawn_blocking(move || {
-                let is_cancelled = || stage_cancel.cancelled();
-                let result = dereverb::dereverb_buffer(&app_owned, &mut audio_buf, Some(&is_cancelled));
-                (audio_buf, result)
-            })
-            .await
-            .map_err(|error| format!("Dereverberation task failed: {error}"))?;
-            audio_buf = next_buffer;
-            cancel.check()?;
-            dereverb_result.map_err(|error| format!("Dereverberation failed: {error}"))?;
-        }
-
-        // Bandwidth extension in-memory (if FlashSR model available)
-        if job.enhance {
-            cancel.check()?;
-            let app_owned = app.clone();
-            let stage_cancel = cancel.clone();
-            let (next_buffer, enhance_result) = tauri::async_runtime::spawn_blocking(move || {
-                // enhance_buffer validates model availability and performs
-                // the complete FlashSR stage on the blocking pool.
-                let is_cancelled = || stage_cancel.cancelled();
-                let result = enhance_buffer(&app_owned, &mut audio_buf, Some(&is_cancelled));
-                (audio_buf, result)
-            })
-            .await
-            .map_err(|error| format!("Audio enhancement task failed: {error}"))?;
-            audio_buf = next_buffer;
-            cancel.check()?;
-            enhance_result.map_err(|error| format!("Audio enhancement failed: {error}"))?;
-        }
-
-        // Write the processed AudioBuffer to a single temp WAV for FFmpeg encoding
-        let tmp_out = std::env::temp_dir().join(format!(
-            "depoaudio_ai_{}.wav",
-            Uuid::new_v4().to_string().replace('-', "")
-        ));
-        let tmp_guard = crate::safety::TempFile::new(tmp_out.clone());
-        cancel.check()?;
-        let write_path = tmp_out.clone();
-        tauri::async_runtime::spawn_blocking(move || audio_buf.to_wav(&write_path))
-            .await
-            .map_err(|error| format!("Processed WAV write task failed: {error}"))??;
-        cancel.check()?;
-        ai_temps.push(tmp_guard);
-        ai_feed = tmp_out;
-    }
-
-    // Build filter chain — use ai_feed (post-AI) as input to FFmpeg
-    let effective_feed = &ai_feed;
+    let effective_feed = feed;
 
     // Source duration for a determinate encode progress bar. The output is
     // roughly the input's length (trim shortens it slightly), so the UI caps
@@ -515,12 +321,8 @@ async fn do_convert_inner(
     let proc = build_proc_filters_with_gain(app, job, effective_feed, None, Some(&is_cancelled)).await;
     cancel.check()?;
 
-    // When AI processing ran, the feed is our own PCM WAV — forcing the
-    // original container's native FTR decoder would be invalid here.
     let mut ffmpeg_args = safe_ffmpeg_input_prelude();
-    if !has_ai {
-        ffmpeg_args.extend(input_codec.clone());
-    }
+    ffmpeg_args.extend(input_codec.clone());
     ffmpeg_args.extend(["-i".into(), effective_feed.to_string_lossy().to_string()]);
 
     let mut output_cleanup = OutputCleanup::default();
@@ -792,40 +594,35 @@ mod tests {
     }
 
     #[test]
-    fn best_denoise_is_rejected_instead_of_silently_falling_back() {
-        let error = validate_denoise_request(true, "best").unwrap_err();
-        assert!(error.contains("not implemented yet"));
-        assert!(error.contains("RNNoise"));
+    fn every_learned_processing_flag_is_rejected_with_the_release_message() {
+        for field in ["denoise", "enhance", "dereverb"] {
+            let mut job = valid_job();
+            match field {
+                "denoise" => job.denoise = true,
+                "enhance" => job.enhance = true,
+                "dereverb" => job.dereverb = true,
+                _ => unreachable!(),
+            }
+
+            let error = validate_convert_request(&job).unwrap_err();
+            assert!(error.contains("DepoAudio v1.0.3"));
+            assert!(error.contains("not included"));
+            assert!(error.contains("Noise Removal"));
+            assert!(error.contains("Enhance Clarity"));
+            assert!(error.contains("Reduce Room Echo"));
+        }
     }
 
     #[test]
-    fn fast_or_disabled_denoise_requests_are_valid() {
-        assert!(validate_denoise_request(true, "fast").is_ok());
-        assert!(validate_denoise_request(false, "best").is_ok());
-        assert!(validate_denoise_request(true, "unexpected").is_err());
-    }
+    fn learned_processing_rejection_precedes_other_request_validation() {
+        let mut job = valid_job();
+        job.denoise = true;
+        job.mode = "unsupported".into();
+        job.src_path = "a path that must never be inspected".into();
 
-    #[test]
-    fn ai_pcm_estimate_budgets_five_processing_copies() {
-        assert_eq!(estimated_ai_peak_pcm_bytes(60.0, 2).unwrap(), 115_200_000);
-    }
-
-    #[test]
-    fn ai_pcm_guard_rejects_large_jobs_but_allows_bounded_chunks() {
-        assert!(validate_ai_pcm_memory(120.0, 4).is_ok());
-
-        let error = validate_ai_pcm_memory(300.0, 4).unwrap_err();
-        assert!(error.contains("512 MiB"));
-        assert!(error.contains("processing copies"));
-        assert!(error.contains("without AI"));
-        assert!(error.contains("shorter chunks"));
-    }
-
-    #[test]
-    fn ai_pcm_guard_fails_closed_when_metadata_is_invalid() {
-        assert!(validate_ai_pcm_memory(0.0, 4).is_err());
-        assert!(validate_ai_pcm_memory(f64::NAN, 4).is_err());
-        assert!(validate_ai_pcm_memory(60.0, 0).is_err());
+        let error = validate_convert_request(&job).unwrap_err();
+        assert!(error.contains("DepoAudio v1.0.3"));
+        assert!(!error.contains("Unsupported conversion mode"));
     }
 
     #[test]
@@ -887,14 +684,11 @@ mod tests {
     }
 
     #[test]
-    fn declip_and_auto_level_stay_on_streaming_ffmpeg_path() {
+    fn non_learned_declip_and_auto_level_remain_valid() {
         let mut job = valid_job();
         job.declip = true;
-        assert!(!uses_ai_predecode(&job));
         job.auto_level = true;
-        assert!(!uses_ai_predecode(&job));
-        job.denoise = true;
-        assert!(uses_ai_predecode(&job));
+        assert!(validate_convert_request(&job).is_ok());
     }
 
     #[test]

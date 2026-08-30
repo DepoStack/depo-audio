@@ -1,10 +1,11 @@
-name: Verify AI models release
+name: Verify historical v1.0.2 model release
 
 # Verifies the published `models-v1` byte contract used by already-published
 # app versions. This workflow is deliberately read-only: a future model set must
 # use a new versioned release tag and catalog URL, never replace published
 # model bytes. The expected assets remain independently provable:
-#   - 4 active bundled models come from resources/models/ in the current tree
+#   - the four models bundled by v1.0.2 are reconstructed from that immutable
+#     release commit, never from the current release tree
 #   - 3 retired DeepFilterNet files are reconstructed from the last published
 #     app commit that bundled them
 #   - speaker_embed.onnx was removed from the tree when it went
@@ -12,16 +13,16 @@ name: Verify AI models release
 #   - dnsmos_sig_bak_ovr.onnx was NEVER validly committed (the historical
 #     file was a saved HTML error page), so it is fetched from Microsoft's
 #     DNS-Challenge repo
-# Every asset is verified against a reviewed SHA-256 value below. The active
-# catalog values are also enforced by models.rs; retired assets are retained
-# only in this verification contract for already-published app versions.
+# Every asset is verified against a reviewed SHA-256 value below. These assets
+# are retained only in this read-only verification contract for already-
+# published app versions; v1.0.3 must not distribute learned-model material.
 on:
   workflow_dispatch:
 
 # The last tree that carried speaker_embed.onnx (v0.7.0). Blob verified:
 # valid ONNX; SHA-256 matches the reviewed legacy value below.
 env:
-  LEGACY_DFN_COMMIT: '6113fac8d8bac8f240dd2b10de6e77cd79cc772c'
+  V102_RELEASE_COMMIT: '6113fac8d8bac8f240dd2b10de6e77cd79cc772c'
   SPEAKER_EMBED_COMMIT: 'b15b28c2d5c5872f073f30370b8facb203949b77'
   # Immutable upstream commit. The downloaded bytes are also checked against
   # the app's reviewed SHA-256 pin below.
@@ -67,10 +68,11 @@ jobs:
           set -euo pipefail
           mkdir -p expected
           for f in silero_vad smart-turn-v3-int8 flashsr speaker_seg_int8; do
-            cp "src-tauri/resources/models/$f.onnx" expected/
+            git cat-file -p "${V102_RELEASE_COMMIT}:src-tauri/resources/models/$f.onnx" \
+              > "expected/$f.onnx"
           done
           for f in dfn3_enc dfn3_erb_dec dfn3_df_dec; do
-            git cat-file -p "${LEGACY_DFN_COMMIT}:src-tauri/resources/models/$f.onnx" \
+            git cat-file -p "${V102_RELEASE_COMMIT}:src-tauri/resources/models/$f.onnx" \
               > "expected/$f.onnx"
           done
           git cat-file -p "${SPEAKER_EMBED_COMMIT}:src-tauri/resources/models/speaker_embed.onnx" \

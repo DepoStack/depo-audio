@@ -1,0 +1,1370 @@
+{
+  "schemaVersion": 1,
+  "generator": "scripts/generate-javascript-notices.mjs",
+  "lockfileSha256": "5bd44c7e4179d18320333beb3bd14f9b12e1cec2c3e09d9f4d476982874efd7d",
+  "componentCount": 60,
+  "javascriptComponentCount": 58,
+  "generatedCssComponentCount": 2,
+  "unresolvedComponentCount": 1,
+  "unresolvedComponents": [
+    "react-remove-scroll-bar@2.3.8"
+  ],
+  "components": [
+    {
+      "name": "@floating-ui/core",
+      "version": "1.8.0",
+      "integrity": "sha512-0CIZ5itps/8x7BG8dEIhs53BvCUH2PCoogtakwRTut+Arm58sJooJ0AuZhLw2HJYIR5cMLNPBSS728sPho2khQ==",
+      "license": "MIT",
+      "provenance": [
+        "javascript"
+      ],
+      "status": "resolved",
+      "legalMaterials": [
+        {
+          "displayName": "LICENSE",
+          "sourceKind": "npm-package",
+          "sourceUrl": null,
+          "sourceRevision": null,
+          "sourceSha256": "0e4c9a9b6c71019cbbea3bdc20b01223110a9035700f9c960c8fcbf78c2325ce",
+          "contentSha256": "0e4c9a9b6c71019cbbea3bdc20b01223110a9035700f9c960c8fcbf78c2325ce"
+        }
+      ],
+      "unresolved": null
+    },
+    {
+      "name": "@floating-ui/dom",
+      "version": "1.8.0",
+      "integrity": "sha512-yXSrzeHZBTZadLOlfyhCkJHNeLJnHRnRInwdZ40L7ZiaAtrBwoYlsDrX3v5zB1Utk7CLfzcOVnVVWoXEky7Ceg==",
+      "license": "MIT",
+      "provenance": [
+        "javascript"
+      ],
+      "status": "resolved",
+      "legalMaterials": [
+        {
+          "displayName": "LICENSE",
+          "sourceKind": "npm-package",
+          "sourceUrl": null,
+          "sourceRevision": null,
+          "sourceSha256": "0e4c9a9b6c71019cbbea3bdc20b01223110a9035700f9c960c8fcbf78c2325ce",
+          "contentSha256": "0e4c9a9b6c71019cbbea3bdc20b01223110a9035700f9c960c8fcbf78c2325ce"
+        }
+      ],
+      "unresolved": null
+    },
+    {
+      "name": "@floating-ui/react-dom",
+      "version": "2.1.9",
+      "integrity": "sha512-JDjEFGCpImxDCA7JJKviA0M9+RtmJdj0m/NVU5IMgBK+AmZouAQQ7/+2GLH0GXXY0YMw9oXPB8hKdbPYg5QLYg==",
+      "license": "MIT",
+      "provenance": [
+        "javascript"
+      ],
+      "status": "resolved",
+      "legalMaterials": [
+        {
+          "displayName": "LICENSE",
+          "sourceKind": "npm-package",
+          "sourceUrl": null,
+          "sourceRevision": null,
+          "sourceSha256": "0e4c9a9b6c71019cbbea3bdc20b01223110a9035700f9c960c8fcbf78c2325ce",
+          "contentSha256": "0e4c9a9b6c71019cbbea3bdc20b01223110a9035700f9c960c8fcbf78c2325ce"
+        }
+      ],
+      "unresolved": null
+    },
+    {
+      "name": "@floating-ui/utils",
+      "version": "0.2.12",
+      "integrity": "sha512-HpCo8tmWzLVad5s2d19EhAz5zqrrQ6s69qd6moPMQvkOuSwDT1YgRfWSVuc4ennqrgv3OHppiOGMQ7oC13yIww==",
+      "license": "MIT",
+      "provenance": [
+        "javascript"
+      ],
+      "status": "resolved",
+      "legalMaterials": [
+        {
+          "displayName": "LICENSE",
+          "sourceKind": "npm-package",
+          "sourceUrl": null,
+          "sourceRevision": null,
+          "sourceSha256": "0e4c9a9b6c71019cbbea3bdc20b01223110a9035700f9c960c8fcbf78c2325ce",
+          "contentSha256": "0e4c9a9b6c71019cbbea3bdc20b01223110a9035700f9c960c8fcbf78c2325ce"
+        }
+      ],
+      "unresolved": null
+    },
+    {
+      "name": "@radix-ui/number",
+      "version": "1.1.3",
+      "integrity": "sha512-Road2bidD0uu/1BGDOWNdPI06g0lIRy6IF9GZcIrDK2KGItfor8IQwQa+yM2ERgHM1MmHxaxpTzk0/Jp42lNfA==",
+      "license": "MIT",
+      "provenance": [
+        "javascript"
+      ],
+      "status": "resolved",
+      "legalMaterials": [
+        {
+          "displayName": "LICENSE",
+          "sourceKind": "npm-package",
+          "sourceUrl": null,
+          "sourceRevision": null,
+          "sourceSha256": "0e80a2d229d2fd4fc7e8636142ec5d0ff0bc031f14c15b682e2ac01dfd5b5138",
+          "contentSha256": "0e80a2d229d2fd4fc7e8636142ec5d0ff0bc031f14c15b682e2ac01dfd5b5138"
+        }
+      ],
+      "unresolved": null
+    },
+    {
+      "name": "@radix-ui/primitive",
+      "version": "1.1.7",
+      "integrity": "sha512-rqWnm76nYT8HoNNqEjpgJ7Pw/DrBj5iBTrmEPo6HTX5+VJyBNOqTdv4g89G63HuR5g0AaENoAcH7Is5fF2kZ8Q==",
+      "license": "MIT",
+      "provenance": [
+        "javascript"
+      ],
+      "status": "resolved",
+      "legalMaterials": [
+        {
+          "displayName": "LICENSE",
+          "sourceKind": "npm-package",
+          "sourceUrl": null,
+          "sourceRevision": null,
+          "sourceSha256": "0e80a2d229d2fd4fc7e8636142ec5d0ff0bc031f14c15b682e2ac01dfd5b5138",
+          "contentSha256": "0e80a2d229d2fd4fc7e8636142ec5d0ff0bc031f14c15b682e2ac01dfd5b5138"
+        }
+      ],
+      "unresolved": null
+    },
+    {
+      "name": "@radix-ui/react-arrow",
+      "version": "1.1.15",
+      "integrity": "sha512-v4zggRcjadnI+ClKDuijlQEW4tw3NoaeHc/PwpKnLoLLKNUG4InLegkstooLcRIUWCs+8L22dGURCVuFfOKfnA==",
+      "license": "MIT",
+      "provenance": [
+        "javascript"
+      ],
+      "status": "resolved",
+      "legalMaterials": [
+        {
+          "displayName": "LICENSE",
+          "sourceKind": "npm-package",
+          "sourceUrl": null,
+          "sourceRevision": null,
+          "sourceSha256": "0e80a2d229d2fd4fc7e8636142ec5d0ff0bc031f14c15b682e2ac01dfd5b5138",
+          "contentSha256": "0e80a2d229d2fd4fc7e8636142ec5d0ff0bc031f14c15b682e2ac01dfd5b5138"
+        }
+      ],
+      "unresolved": null
+    },
+    {
+      "name": "@radix-ui/react-collection",
+      "version": "1.1.15",
+      "integrity": "sha512-9W+B9NPF0NaaPh/1NJd3+KqsnlLqU9H7T2rvww+fp+T/evVXdNAyYcnfRQZFOjkR1ajQp3yORlqnI8soawLvNA==",
+      "license": "MIT",
+      "provenance": [
+        "javascript"
+      ],
+      "status": "resolved",
+      "legalMaterials": [
+        {
+          "displayName": "LICENSE",
+          "sourceKind": "npm-package",
+          "sourceUrl": null,
+          "sourceRevision": null,
+          "sourceSha256": "0e80a2d229d2fd4fc7e8636142ec5d0ff0bc031f14c15b682e2ac01dfd5b5138",
+          "contentSha256": "0e80a2d229d2fd4fc7e8636142ec5d0ff0bc031f14c15b682e2ac01dfd5b5138"
+        }
+      ],
+      "unresolved": null
+    },
+    {
+      "name": "@radix-ui/react-compose-refs",
+      "version": "1.1.5",
+      "integrity": "sha512-+48PbAAbq3didjJxa+OaWY2ZwgAKsNiRGyeHKszblZMQ+kcpd9pAaT11cMkGEie0vsOi3QdeTE6d5Fe3Gn61kA==",
+      "license": "MIT",
+      "provenance": [
+        "javascript"
+      ],
+      "status": "resolved",
+      "legalMaterials": [
+        {
+          "displayName": "LICENSE",
+          "sourceKind": "npm-package",
+          "sourceUrl": null,
+          "sourceRevision": null,
+          "sourceSha256": "0e80a2d229d2fd4fc7e8636142ec5d0ff0bc031f14c15b682e2ac01dfd5b5138",
+          "contentSha256": "0e80a2d229d2fd4fc7e8636142ec5d0ff0bc031f14c15b682e2ac01dfd5b5138"
+        }
+      ],
+      "unresolved": null
+    },
+    {
+      "name": "@radix-ui/react-context",
+      "version": "1.2.2",
+      "integrity": "sha512-RHCUGwKHDr0hDGg4X7ma4JG4/+12qxw8rkh5QKdDldlCvtja6nUx1Ef/8HVrJze81lEsgLQlqjzjGNHantgnQA==",
+      "license": "MIT",
+      "provenance": [
+        "javascript"
+      ],
+      "status": "resolved",
+      "legalMaterials": [
+        {
+          "displayName": "LICENSE",
+          "sourceKind": "npm-package",
+          "sourceUrl": null,
+          "sourceRevision": null,
+          "sourceSha256": "0e80a2d229d2fd4fc7e8636142ec5d0ff0bc031f14c15b682e2ac01dfd5b5138",
+          "contentSha256": "0e80a2d229d2fd4fc7e8636142ec5d0ff0bc031f14c15b682e2ac01dfd5b5138"
+        }
+      ],
+      "unresolved": null
+    },
+    {
+      "name": "@radix-ui/react-dialog",
+      "version": "1.1.23",
+      "integrity": "sha512-Ksw4WeROkO4rC9k/onilX/Ao2Cr1ku1unMNH+XSCcP4jSXYu7HDsg9n4ojMjVb22XpYjAQ9qfrFlVbru1vXDUA==",
+      "license": "MIT",
+      "provenance": [
+        "javascript"
+      ],
+      "status": "resolved",
+      "legalMaterials": [
+        {
+          "displayName": "LICENSE",
+          "sourceKind": "npm-package",
+          "sourceUrl": null,
+          "sourceRevision": null,
+          "sourceSha256": "0e80a2d229d2fd4fc7e8636142ec5d0ff0bc031f14c15b682e2ac01dfd5b5138",
+          "contentSha256": "0e80a2d229d2fd4fc7e8636142ec5d0ff0bc031f14c15b682e2ac01dfd5b5138"
+        }
+      ],
+      "unresolved": null
+    },
+    {
+      "name": "@radix-ui/react-direction",
+      "version": "1.1.4",
+      "integrity": "sha512-5pzg4FGQNpExhnhT2zlrP1wZFaYCd1K0nYWoFAdcYoYK868IEigqMX3B3f8yIoRlAhAeDWciLI6ZdCKHF9P4Vg==",
+      "license": "MIT",
+      "provenance": [
+        "javascript"
+      ],
+      "status": "resolved",
+      "legalMaterials": [
+        {
+          "displayName": "LICENSE",
+          "sourceKind": "npm-package",
+          "sourceUrl": null,
+          "sourceRevision": null,
+          "sourceSha256": "0e80a2d229d2fd4fc7e8636142ec5d0ff0bc031f14c15b682e2ac01dfd5b5138",
+          "contentSha256": "0e80a2d229d2fd4fc7e8636142ec5d0ff0bc031f14c15b682e2ac01dfd5b5138"
+        }
+      ],
+      "unresolved": null
+    },
+    {
+      "name": "@radix-ui/react-dismissable-layer",
+      "version": "1.1.19",
+      "integrity": "sha512-8g4pfOL9HoKKLWGiypT+dphVqjFfmcXO5GBnhsG6zI+lxAx/8feQpr+1LSN8Re3hiZ+XkLNS4O9ztK11/LzQ6w==",
+      "license": "MIT",
+      "provenance": [
+        "javascript"
+      ],
+      "status": "resolved",
+      "legalMaterials": [
+        {
+          "displayName": "LICENSE",
+          "sourceKind": "npm-package",
+          "sourceUrl": null,
+          "sourceRevision": null,
+          "sourceSha256": "0e80a2d229d2fd4fc7e8636142ec5d0ff0bc031f14c15b682e2ac01dfd5b5138",
+          "contentSha256": "0e80a2d229d2fd4fc7e8636142ec5d0ff0bc031f14c15b682e2ac01dfd5b5138"
+        }
+      ],
+      "unresolved": null
+    },
+    {
+      "name": "@radix-ui/react-focus-guards",
+      "version": "1.1.6",
+      "integrity": "sha512-RNOJjfZMTyBM6xYmV3IVGXkPjIhcBAuv48POevAXwrGJhkWZ9p1rFoIS1JFooPuT193AZmRsCPhpoVJxx6OPoQ==",
+      "license": "MIT",
+      "provenance": [
+        "javascript"
+      ],
+      "status": "resolved",
+      "legalMaterials": [
+        {
+          "displayName": "LICENSE",
+          "sourceKind": "npm-package",
+          "sourceUrl": null,
+          "sourceRevision": null,
+          "sourceSha256": "0e80a2d229d2fd4fc7e8636142ec5d0ff0bc031f14c15b682e2ac01dfd5b5138",
+          "contentSha256": "0e80a2d229d2fd4fc7e8636142ec5d0ff0bc031f14c15b682e2ac01dfd5b5138"
+        }
+      ],
+      "unresolved": null
+    },
+    {
+      "name": "@radix-ui/react-focus-scope",
+      "version": "1.1.16",
+      "integrity": "sha512-wmRZ2WWLvmt6KHy2rNPOdPUjwq5xOHY02+m+udwJTn0aNIox/rkskAvJTyTLGhPK6KgrUjlJUJpgmx/+wFiFIQ==",
+      "license": "MIT",
+      "provenance": [
+        "javascript"
+      ],
+      "status": "resolved",
+      "legalMaterials": [
+        {
+          "displayName": "LICENSE",
+          "sourceKind": "npm-package",
+          "sourceUrl": null,
+          "sourceRevision": null,
+          "sourceSha256": "0e80a2d229d2fd4fc7e8636142ec5d0ff0bc031f14c15b682e2ac01dfd5b5138",
+          "contentSha256": "0e80a2d229d2fd4fc7e8636142ec5d0ff0bc031f14c15b682e2ac01dfd5b5138"
+        }
+      ],
+      "unresolved": null
+    },
+    {
+      "name": "@radix-ui/react-id",
+      "version": "1.1.4",
+      "integrity": "sha512-TMQp2llA+RYn7JcjnrMnz7wN4pcVttPZnRZo52PLQsoLVKzNlVwUeHmfePgTgRluXFvlD3GD5g5MOVVTJCO0qA==",
+      "license": "MIT",
+      "provenance": [
+        "javascript"
+      ],
+      "status": "resolved",
+      "legalMaterials": [
+        {
+          "displayName": "LICENSE",
+          "sourceKind": "npm-package",
+          "sourceUrl": null,
+          "sourceRevision": null,
+          "sourceSha256": "0e80a2d229d2fd4fc7e8636142ec5d0ff0bc031f14c15b682e2ac01dfd5b5138",
+          "contentSha256": "0e80a2d229d2fd4fc7e8636142ec5d0ff0bc031f14c15b682e2ac01dfd5b5138"
+        }
+      ],
+      "unresolved": null
+    },
+    {
+      "name": "@radix-ui/react-label",
+      "version": "2.1.15",
+      "integrity": "sha512-o/rdYEwZTTo5tjknnPeyQFU45kUC4i/XyeDPP+HGyi6XqpOP6Zf5Ya5vh/Yfe9Id5JiuWnnAx2XqIeD3UYZt0g==",
+      "license": "MIT",
+      "provenance": [
+        "javascript"
+      ],
+      "status": "resolved",
+      "legalMaterials": [
+        {
+          "displayName": "LICENSE",
+          "sourceKind": "npm-package",
+          "sourceUrl": null,
+          "sourceRevision": null,
+          "sourceSha256": "0e80a2d229d2fd4fc7e8636142ec5d0ff0bc031f14c15b682e2ac01dfd5b5138",
+          "contentSha256": "0e80a2d229d2fd4fc7e8636142ec5d0ff0bc031f14c15b682e2ac01dfd5b5138"
+        }
+      ],
+      "unresolved": null
+    },
+    {
+      "name": "@radix-ui/react-popper",
+      "version": "1.3.7",
+      "integrity": "sha512-UsJrrd7w4wuKKTdvd/DNERVlwSlUcyXzjhyDwBk+3aPOsCjOY6ZSbxuw8E6lZTjjfP8Cpd0J8VVkrYUWyGYXyg==",
+      "license": "MIT",
+      "provenance": [
+        "javascript"
+      ],
+      "status": "resolved",
+      "legalMaterials": [
+        {
+          "displayName": "LICENSE",
+          "sourceKind": "npm-package",
+          "sourceUrl": null,
+          "sourceRevision": null,
+          "sourceSha256": "0e80a2d229d2fd4fc7e8636142ec5d0ff0bc031f14c15b682e2ac01dfd5b5138",
+          "contentSha256": "0e80a2d229d2fd4fc7e8636142ec5d0ff0bc031f14c15b682e2ac01dfd5b5138"
+        }
+      ],
+      "unresolved": null
+    },
+    {
+      "name": "@radix-ui/react-portal",
+      "version": "1.1.17",
+      "integrity": "sha512-vKQLcWypUnwZVvfV7UkGahH2g6ySe8M8R+zYBwPrv5byZ9QAW6cQVvNKo7GgmD+p8aYb6D9JBuvy8/WhOno2wQ==",
+      "license": "MIT",
+      "provenance": [
+        "javascript"
+      ],
+      "status": "resolved",
+      "legalMaterials": [
+        {
+          "displayName": "LICENSE",
+          "sourceKind": "npm-package",
+          "sourceUrl": null,
+          "sourceRevision": null,
+          "sourceSha256": "0e80a2d229d2fd4fc7e8636142ec5d0ff0bc031f14c15b682e2ac01dfd5b5138",
+          "contentSha256": "0e80a2d229d2fd4fc7e8636142ec5d0ff0bc031f14c15b682e2ac01dfd5b5138"
+        }
+      ],
+      "unresolved": null
+    },
+    {
+      "name": "@radix-ui/react-presence",
+      "version": "1.1.10",
+      "integrity": "sha512-3wyzCQ6+ubRA+D4uv9m95JYLXxmOHp05qjrkjeA7uKHHtjpPggQzc6DAb0URl7j67oR0K2foO4ip27TiX037Bw==",
+      "license": "MIT",
+      "provenance": [
+        "javascript"
+      ],
+      "status": "resolved",
+      "legalMaterials": [
+        {
+          "displayName": "LICENSE",
+          "sourceKind": "npm-package",
+          "sourceUrl": null,
+          "sourceRevision": null,
+          "sourceSha256": "0e80a2d229d2fd4fc7e8636142ec5d0ff0bc031f14c15b682e2ac01dfd5b5138",
+          "contentSha256": "0e80a2d229d2fd4fc7e8636142ec5d0ff0bc031f14c15b682e2ac01dfd5b5138"
+        }
+      ],
+      "unresolved": null
+    },
+    {
+      "name": "@radix-ui/react-primitive",
+      "version": "2.1.10",
+      "integrity": "sha512-MucOnzh6hR5mid6VpkbglRAMYMjKLqRnGBbjXkzjK52fuQDd1qbkx78a5P40mkcnVXJdEVxm26E9OPAiUq7nBg==",
+      "license": "MIT",
+      "provenance": [
+        "javascript"
+      ],
+      "status": "resolved",
+      "legalMaterials": [
+        {
+          "displayName": "LICENSE",
+          "sourceKind": "npm-package",
+          "sourceUrl": null,
+          "sourceRevision": null,
+          "sourceSha256": "0e80a2d229d2fd4fc7e8636142ec5d0ff0bc031f14c15b682e2ac01dfd5b5138",
+          "contentSha256": "0e80a2d229d2fd4fc7e8636142ec5d0ff0bc031f14c15b682e2ac01dfd5b5138"
+        }
+      ],
+      "unresolved": null
+    },
+    {
+      "name": "@radix-ui/react-roving-focus",
+      "version": "1.1.19",
+      "integrity": "sha512-V9jI6hDjT7l3jsCQD9bLNvDLM3tH/gdbOTp7Tefp3hbbgCGQoK7tUvrWiRlcoBHIZ809ElXwNQwVo0B98LuTXQ==",
+      "license": "MIT",
+      "provenance": [
+        "javascript"
+      ],
+      "status": "resolved",
+      "legalMaterials": [
+        {
+          "displayName": "LICENSE",
+          "sourceKind": "npm-package",
+          "sourceUrl": null,
+          "sourceRevision": null,
+          "sourceSha256": "0e80a2d229d2fd4fc7e8636142ec5d0ff0bc031f14c15b682e2ac01dfd5b5138",
+          "contentSha256": "0e80a2d229d2fd4fc7e8636142ec5d0ff0bc031f14c15b682e2ac01dfd5b5138"
+        }
+      ],
+      "unresolved": null
+    },
+    {
+      "name": "@radix-ui/react-select",
+      "version": "2.3.7",
+      "integrity": "sha512-WFGImkmbzcfxeIwq/+4HvRN0pizBwbwQUED4I13ezQsDdfl38ZntN6TmR8XaSzPBqoCToe8rF75j6NPNDSzhbg==",
+      "license": "MIT",
+      "provenance": [
+        "javascript"
+      ],
+      "status": "resolved",
+      "legalMaterials": [
+        {
+          "displayName": "LICENSE",
+          "sourceKind": "npm-package",
+          "sourceUrl": null,
+          "sourceRevision": null,
+          "sourceSha256": "0e80a2d229d2fd4fc7e8636142ec5d0ff0bc031f14c15b682e2ac01dfd5b5138",
+          "contentSha256": "0e80a2d229d2fd4fc7e8636142ec5d0ff0bc031f14c15b682e2ac01dfd5b5138"
+        }
+      ],
+      "unresolved": null
+    },
+    {
+      "name": "@radix-ui/react-slot",
+      "version": "1.3.3",
+      "integrity": "sha512-qx7oqnYbxnK9kYI9m317qmFmEgo6ywqWvbTogdj7cL9p3/yx4M48p7Rnw5z3H890cL/ow/EeWJsuTykeZVXP5Q==",
+      "license": "MIT",
+      "provenance": [
+        "javascript"
+      ],
+      "status": "resolved",
+      "legalMaterials": [
+        {
+          "displayName": "LICENSE",
+          "sourceKind": "npm-package",
+          "sourceUrl": null,
+          "sourceRevision": null,
+          "sourceSha256": "0e80a2d229d2fd4fc7e8636142ec5d0ff0bc031f14c15b682e2ac01dfd5b5138",
+          "contentSha256": "0e80a2d229d2fd4fc7e8636142ec5d0ff0bc031f14c15b682e2ac01dfd5b5138"
+        }
+      ],
+      "unresolved": null
+    },
+    {
+      "name": "@radix-ui/react-switch",
+      "version": "1.3.7",
+      "integrity": "sha512-48tB/4dn2UVLBCYhTu9AuR63IHl73l/qLbLgxd86noTUor4/K4LFDAcYjK+isP5313qxaFpjPVogE7+Y0/V3Kw==",
+      "license": "MIT",
+      "provenance": [
+        "javascript"
+      ],
+      "status": "resolved",
+      "legalMaterials": [
+        {
+          "displayName": "LICENSE",
+          "sourceKind": "npm-package",
+          "sourceUrl": null,
+          "sourceRevision": null,
+          "sourceSha256": "0e80a2d229d2fd4fc7e8636142ec5d0ff0bc031f14c15b682e2ac01dfd5b5138",
+          "contentSha256": "0e80a2d229d2fd4fc7e8636142ec5d0ff0bc031f14c15b682e2ac01dfd5b5138"
+        }
+      ],
+      "unresolved": null
+    },
+    {
+      "name": "@radix-ui/react-tabs",
+      "version": "1.1.21",
+      "integrity": "sha512-UKxJlZid7FVtsk/WTxj4i4uSEgj2Au+KBbS7SQyTlzMhhn+86Cz3tISZdTa87bfEfcuvZezf2ZsxD4xuEKtkog==",
+      "license": "MIT",
+      "provenance": [
+        "javascript"
+      ],
+      "status": "resolved",
+      "legalMaterials": [
+        {
+          "displayName": "LICENSE",
+          "sourceKind": "npm-package",
+          "sourceUrl": null,
+          "sourceRevision": null,
+          "sourceSha256": "0e80a2d229d2fd4fc7e8636142ec5d0ff0bc031f14c15b682e2ac01dfd5b5138",
+          "contentSha256": "0e80a2d229d2fd4fc7e8636142ec5d0ff0bc031f14c15b682e2ac01dfd5b5138"
+        }
+      ],
+      "unresolved": null
+    },
+    {
+      "name": "@radix-ui/react-tooltip",
+      "version": "1.2.16",
+      "integrity": "sha512-6EamKFRRnlpdadndbZ6LMwycfwkwPte1B42hs6QA0gYhjaOKqW4PZ4pjaW9UrlDX5eVt/OjncE7BFTPL5nmZhg==",
+      "license": "MIT",
+      "provenance": [
+        "javascript"
+      ],
+      "status": "resolved",
+      "legalMaterials": [
+        {
+          "displayName": "LICENSE",
+          "sourceKind": "npm-package",
+          "sourceUrl": null,
+          "sourceRevision": null,
+          "sourceSha256": "0e80a2d229d2fd4fc7e8636142ec5d0ff0bc031f14c15b682e2ac01dfd5b5138",
+          "contentSha256": "0e80a2d229d2fd4fc7e8636142ec5d0ff0bc031f14c15b682e2ac01dfd5b5138"
+        }
+      ],
+      "unresolved": null
+    },
+    {
+      "name": "@radix-ui/react-use-callback-ref",
+      "version": "1.1.4",
+      "integrity": "sha512-R6OUY2e2fA6Yn6s+VSx5KBV6Nx8LQEhu+cz7LCej18rQ1HLyg9PSC9jP/ZNx0o6FAIK9c0F1kHylzSxKsdlkrQ==",
+      "license": "MIT",
+      "provenance": [
+        "javascript"
+      ],
+      "status": "resolved",
+      "legalMaterials": [
+        {
+          "displayName": "LICENSE",
+          "sourceKind": "npm-package",
+          "sourceUrl": null,
+          "sourceRevision": null,
+          "sourceSha256": "0e80a2d229d2fd4fc7e8636142ec5d0ff0bc031f14c15b682e2ac01dfd5b5138",
+          "contentSha256": "0e80a2d229d2fd4fc7e8636142ec5d0ff0bc031f14c15b682e2ac01dfd5b5138"
+        }
+      ],
+      "unresolved": null
+    },
+    {
+      "name": "@radix-ui/react-use-controllable-state",
+      "version": "1.2.6",
+      "integrity": "sha512-uEQJGT97ZA/TgP/Hydw47lHu+/vQj6z/0jA+WeTbK1o9Rx45GImjpD0tc3W5ad3D6XTSR6e1yEO0FvGq6WQfVQ==",
+      "license": "MIT",
+      "provenance": [
+        "javascript"
+      ],
+      "status": "resolved",
+      "legalMaterials": [
+        {
+          "displayName": "LICENSE",
+          "sourceKind": "npm-package",
+          "sourceUrl": null,
+          "sourceRevision": null,
+          "sourceSha256": "0e80a2d229d2fd4fc7e8636142ec5d0ff0bc031f14c15b682e2ac01dfd5b5138",
+          "contentSha256": "0e80a2d229d2fd4fc7e8636142ec5d0ff0bc031f14c15b682e2ac01dfd5b5138"
+        }
+      ],
+      "unresolved": null
+    },
+    {
+      "name": "@radix-ui/react-use-effect-event",
+      "version": "0.0.5",
+      "integrity": "sha512-7cshFL8HGS/7HEiHH+9kL9HBwp2sa9yX18Knwek6KYWmXwM7pegMgta2AXMQKI+rq3JnfSj9x8wYqFMTdG1Jgg==",
+      "license": "MIT",
+      "provenance": [
+        "javascript"
+      ],
+      "status": "resolved",
+      "legalMaterials": [
+        {
+          "displayName": "LICENSE",
+          "sourceKind": "npm-package",
+          "sourceUrl": null,
+          "sourceRevision": null,
+          "sourceSha256": "0e80a2d229d2fd4fc7e8636142ec5d0ff0bc031f14c15b682e2ac01dfd5b5138",
+          "contentSha256": "0e80a2d229d2fd4fc7e8636142ec5d0ff0bc031f14c15b682e2ac01dfd5b5138"
+        }
+      ],
+      "unresolved": null
+    },
+    {
+      "name": "@radix-ui/react-use-is-hydrated",
+      "version": "0.1.3",
+      "integrity": "sha512-umO/aJ+82CpOnhDZUTbILCQf7kU/g0iv+oGs/Q8jw7IkhWBzaEP4sA268PhFAJTFetbwp3ICc6ktpI4TqtxcIw==",
+      "license": "MIT",
+      "provenance": [
+        "javascript"
+      ],
+      "status": "resolved",
+      "legalMaterials": [
+        {
+          "displayName": "LICENSE",
+          "sourceKind": "npm-package",
+          "sourceUrl": null,
+          "sourceRevision": null,
+          "sourceSha256": "0e80a2d229d2fd4fc7e8636142ec5d0ff0bc031f14c15b682e2ac01dfd5b5138",
+          "contentSha256": "0e80a2d229d2fd4fc7e8636142ec5d0ff0bc031f14c15b682e2ac01dfd5b5138"
+        }
+      ],
+      "unresolved": null
+    },
+    {
+      "name": "@radix-ui/react-use-layout-effect",
+      "version": "1.1.4",
+      "integrity": "sha512-K20DkRkUwDnxEYMBPcg3Y6voLkEy5p5QQmszZgLngKKiC7dzBR/aEuK3w1qlx2JWDUNH6FluahYdgR3BP+QbYw==",
+      "license": "MIT",
+      "provenance": [
+        "javascript"
+      ],
+      "status": "resolved",
+      "legalMaterials": [
+        {
+          "displayName": "LICENSE",
+          "sourceKind": "npm-package",
+          "sourceUrl": null,
+          "sourceRevision": null,
+          "sourceSha256": "0e80a2d229d2fd4fc7e8636142ec5d0ff0bc031f14c15b682e2ac01dfd5b5138",
+          "contentSha256": "0e80a2d229d2fd4fc7e8636142ec5d0ff0bc031f14c15b682e2ac01dfd5b5138"
+        }
+      ],
+      "unresolved": null
+    },
+    {
+      "name": "@radix-ui/react-use-previous",
+      "version": "1.1.4",
+      "integrity": "sha512-XoSLhbRbqxFtgJoi2fNHA3C6pDlY34x508vUpUGoFZfvePfHXHbE1lC4FYFMnJWgiCRroSTw6fOsXQoVS9RwZg==",
+      "license": "MIT",
+      "provenance": [
+        "javascript"
+      ],
+      "status": "resolved",
+      "legalMaterials": [
+        {
+          "displayName": "LICENSE",
+          "sourceKind": "npm-package",
+          "sourceUrl": null,
+          "sourceRevision": null,
+          "sourceSha256": "0e80a2d229d2fd4fc7e8636142ec5d0ff0bc031f14c15b682e2ac01dfd5b5138",
+          "contentSha256": "0e80a2d229d2fd4fc7e8636142ec5d0ff0bc031f14c15b682e2ac01dfd5b5138"
+        }
+      ],
+      "unresolved": null
+    },
+    {
+      "name": "@radix-ui/react-use-size",
+      "version": "1.1.4",
+      "integrity": "sha512-D3anSY15EJoxrihpsXI6SMrmmonnQtR2ni7arO+Lfdg3O95b9hNXxONk8jA5C8ANdF/h5HMAxejgs8PWJ6rlhw==",
+      "license": "MIT",
+      "provenance": [
+        "javascript"
+      ],
+      "status": "resolved",
+      "legalMaterials": [
+        {
+          "displayName": "LICENSE",
+          "sourceKind": "npm-package",
+          "sourceUrl": null,
+          "sourceRevision": null,
+          "sourceSha256": "0e80a2d229d2fd4fc7e8636142ec5d0ff0bc031f14c15b682e2ac01dfd5b5138",
+          "contentSha256": "0e80a2d229d2fd4fc7e8636142ec5d0ff0bc031f14c15b682e2ac01dfd5b5138"
+        }
+      ],
+      "unresolved": null
+    },
+    {
+      "name": "@radix-ui/react-visually-hidden",
+      "version": "1.2.11",
+      "integrity": "sha512-NFS86RYYZb4/exihaESBGOpMJFz8MGLAfu3mOBSGByVnVPC9JPASfYubxd/8KbkQK0sYAv8lVQDEQukDX/qXvQ==",
+      "license": "MIT",
+      "provenance": [
+        "javascript"
+      ],
+      "status": "resolved",
+      "legalMaterials": [
+        {
+          "displayName": "LICENSE",
+          "sourceKind": "npm-package",
+          "sourceUrl": null,
+          "sourceRevision": null,
+          "sourceSha256": "0e80a2d229d2fd4fc7e8636142ec5d0ff0bc031f14c15b682e2ac01dfd5b5138",
+          "contentSha256": "0e80a2d229d2fd4fc7e8636142ec5d0ff0bc031f14c15b682e2ac01dfd5b5138"
+        }
+      ],
+      "unresolved": null
+    },
+    {
+      "name": "@tauri-apps/api",
+      "version": "2.11.1",
+      "integrity": "sha512-M2FPuYND2m+wh5hfW9ZpSdxMPdEJovPBWwoHJmwUpysTYNHaOkVFN419m/K0LIgjb/7KU2vBgsUepJWugQCvAA==",
+      "license": "Apache-2.0 OR MIT",
+      "provenance": [
+        "javascript"
+      ],
+      "status": "resolved",
+      "legalMaterials": [
+        {
+          "displayName": "LICENSE_APACHE-2.0",
+          "sourceKind": "npm-package",
+          "sourceUrl": null,
+          "sourceRevision": null,
+          "sourceSha256": "0d542e0c8804e39aa7f37eb00da5a762149dc682d7829451287e11b938e94594",
+          "contentSha256": "0d542e0c8804e39aa7f37eb00da5a762149dc682d7829451287e11b938e94594"
+        },
+        {
+          "displayName": "LICENSE_MIT",
+          "sourceKind": "npm-package",
+          "sourceUrl": null,
+          "sourceRevision": null,
+          "sourceSha256": "9dd42ea92cff2ede5cd477cbfcce051b2d0115c0ac7f368ee88cb545055dff1d",
+          "contentSha256": "9dd42ea92cff2ede5cd477cbfcce051b2d0115c0ac7f368ee88cb545055dff1d"
+        }
+      ],
+      "unresolved": null
+    },
+    {
+      "name": "@tauri-apps/plugin-dialog",
+      "version": "2.7.2",
+      "integrity": "sha512-pX0IGm1I3I6wc+zeKYcq1GSqogK6okCNX5fOdaNU5ab1AjGS6l1E5wFNjEb7meg7ZFSp0JUs+0jQGQNyOvLrsg==",
+      "license": "MIT OR Apache-2.0",
+      "provenance": [
+        "javascript"
+      ],
+      "status": "resolved",
+      "legalMaterials": [
+        {
+          "displayName": "LICENSE.spdx",
+          "sourceKind": "npm-package",
+          "sourceUrl": null,
+          "sourceRevision": null,
+          "sourceSha256": "eb8a6c84630461b352badcab1dbe5d0168c56d377358b2b8c86b51003272d5ef",
+          "contentSha256": "eb8a6c84630461b352badcab1dbe5d0168c56d377358b2b8c86b51003272d5ef"
+        },
+        {
+          "displayName": "LICENSE_APACHE-2.0 (canonical Tauri v2 supplement)",
+          "sourceKind": "reviewed-override",
+          "sourceUrl": "https://github.com/tauri-apps/plugins-workspace/blob/9d6d03269a3dea3e9dbf4635fe0fd68f23f750fa/LICENSE_APACHE-2.0",
+          "sourceRevision": "9d6d03269a3dea3e9dbf4635fe0fd68f23f750fa",
+          "sourceSha256": "0d542e0c8804e39aa7f37eb00da5a762149dc682d7829451287e11b938e94594",
+          "contentSha256": "0d542e0c8804e39aa7f37eb00da5a762149dc682d7829451287e11b938e94594"
+        },
+        {
+          "displayName": "LICENSE_MIT (canonical Tauri v2 supplement)",
+          "sourceKind": "reviewed-override",
+          "sourceUrl": "https://github.com/tauri-apps/plugins-workspace/blob/9d6d03269a3dea3e9dbf4635fe0fd68f23f750fa/LICENSE_MIT",
+          "sourceRevision": "9d6d03269a3dea3e9dbf4635fe0fd68f23f750fa",
+          "sourceSha256": "9dd42ea92cff2ede5cd477cbfcce051b2d0115c0ac7f368ee88cb545055dff1d",
+          "contentSha256": "9dd42ea92cff2ede5cd477cbfcce051b2d0115c0ac7f368ee88cb545055dff1d"
+        }
+      ],
+      "unresolved": null
+    },
+    {
+      "name": "@tauri-apps/plugin-fs",
+      "version": "2.5.1",
+      "integrity": "sha512-9Lz+Jopp6QyeEWhlpkMx4R/+P9HgR+AVAI4vOZhlT8Xaymtz8iVI/Ov984/XTqgJz/5gz5NretqPB/XEMS3NhQ==",
+      "license": "MIT OR Apache-2.0",
+      "provenance": [
+        "javascript"
+      ],
+      "status": "resolved",
+      "legalMaterials": [
+        {
+          "displayName": "LICENSE.spdx",
+          "sourceKind": "npm-package",
+          "sourceUrl": null,
+          "sourceRevision": null,
+          "sourceSha256": "eb8a6c84630461b352badcab1dbe5d0168c56d377358b2b8c86b51003272d5ef",
+          "contentSha256": "eb8a6c84630461b352badcab1dbe5d0168c56d377358b2b8c86b51003272d5ef"
+        },
+        {
+          "displayName": "LICENSE_APACHE-2.0 (canonical Tauri v2 supplement)",
+          "sourceKind": "reviewed-override",
+          "sourceUrl": "https://github.com/tauri-apps/plugins-workspace/blob/9d6d03269a3dea3e9dbf4635fe0fd68f23f750fa/LICENSE_APACHE-2.0",
+          "sourceRevision": "9d6d03269a3dea3e9dbf4635fe0fd68f23f750fa",
+          "sourceSha256": "0d542e0c8804e39aa7f37eb00da5a762149dc682d7829451287e11b938e94594",
+          "contentSha256": "0d542e0c8804e39aa7f37eb00da5a762149dc682d7829451287e11b938e94594"
+        },
+        {
+          "displayName": "LICENSE_MIT (canonical Tauri v2 supplement)",
+          "sourceKind": "reviewed-override",
+          "sourceUrl": "https://github.com/tauri-apps/plugins-workspace/blob/9d6d03269a3dea3e9dbf4635fe0fd68f23f750fa/LICENSE_MIT",
+          "sourceRevision": "9d6d03269a3dea3e9dbf4635fe0fd68f23f750fa",
+          "sourceSha256": "9dd42ea92cff2ede5cd477cbfcce051b2d0115c0ac7f368ee88cb545055dff1d",
+          "contentSha256": "9dd42ea92cff2ede5cd477cbfcce051b2d0115c0ac7f368ee88cb545055dff1d"
+        }
+      ],
+      "unresolved": null
+    },
+    {
+      "name": "@tauri-apps/plugin-opener",
+      "version": "2.5.4",
+      "integrity": "sha512-1HnPkb+AmgO29HBazm4uPLKB+r7zzcTBW1d0fyYp1uP+jwtpoiNDGKMMzz58SFp49nOIrxdE3aUJtT57lfO9CQ==",
+      "license": "MIT OR Apache-2.0",
+      "provenance": [
+        "javascript"
+      ],
+      "status": "resolved",
+      "legalMaterials": [
+        {
+          "displayName": "LICENSE.spdx",
+          "sourceKind": "npm-package",
+          "sourceUrl": null,
+          "sourceRevision": null,
+          "sourceSha256": "eb8a6c84630461b352badcab1dbe5d0168c56d377358b2b8c86b51003272d5ef",
+          "contentSha256": "eb8a6c84630461b352badcab1dbe5d0168c56d377358b2b8c86b51003272d5ef"
+        },
+        {
+          "displayName": "LICENSE_APACHE-2.0 (canonical Tauri v2 supplement)",
+          "sourceKind": "reviewed-override",
+          "sourceUrl": "https://github.com/tauri-apps/plugins-workspace/blob/9d6d03269a3dea3e9dbf4635fe0fd68f23f750fa/LICENSE_APACHE-2.0",
+          "sourceRevision": "9d6d03269a3dea3e9dbf4635fe0fd68f23f750fa",
+          "sourceSha256": "0d542e0c8804e39aa7f37eb00da5a762149dc682d7829451287e11b938e94594",
+          "contentSha256": "0d542e0c8804e39aa7f37eb00da5a762149dc682d7829451287e11b938e94594"
+        },
+        {
+          "displayName": "LICENSE_MIT (canonical Tauri v2 supplement)",
+          "sourceKind": "reviewed-override",
+          "sourceUrl": "https://github.com/tauri-apps/plugins-workspace/blob/9d6d03269a3dea3e9dbf4635fe0fd68f23f750fa/LICENSE_MIT",
+          "sourceRevision": "9d6d03269a3dea3e9dbf4635fe0fd68f23f750fa",
+          "sourceSha256": "9dd42ea92cff2ede5cd477cbfcce051b2d0115c0ac7f368ee88cb545055dff1d",
+          "contentSha256": "9dd42ea92cff2ede5cd477cbfcce051b2d0115c0ac7f368ee88cb545055dff1d"
+        }
+      ],
+      "unresolved": null
+    },
+    {
+      "name": "@tauri-apps/plugin-process",
+      "version": "2.3.1",
+      "integrity": "sha512-nCa4fGVaDL/B9ai03VyPOjfAHRHSBz5v6F/ObsB73r/dA3MHHhZtldaDMIc0V/pnUw9ehzr2iEG+XkSEyC0JJA==",
+      "license": "MIT OR Apache-2.0",
+      "provenance": [
+        "javascript"
+      ],
+      "status": "resolved",
+      "legalMaterials": [
+        {
+          "displayName": "LICENSE.spdx",
+          "sourceKind": "npm-package",
+          "sourceUrl": null,
+          "sourceRevision": null,
+          "sourceSha256": "eb8a6c84630461b352badcab1dbe5d0168c56d377358b2b8c86b51003272d5ef",
+          "contentSha256": "eb8a6c84630461b352badcab1dbe5d0168c56d377358b2b8c86b51003272d5ef"
+        },
+        {
+          "displayName": "LICENSE_APACHE-2.0 (canonical Tauri v2 supplement)",
+          "sourceKind": "reviewed-override",
+          "sourceUrl": "https://github.com/tauri-apps/plugins-workspace/blob/9d6d03269a3dea3e9dbf4635fe0fd68f23f750fa/LICENSE_APACHE-2.0",
+          "sourceRevision": "9d6d03269a3dea3e9dbf4635fe0fd68f23f750fa",
+          "sourceSha256": "0d542e0c8804e39aa7f37eb00da5a762149dc682d7829451287e11b938e94594",
+          "contentSha256": "0d542e0c8804e39aa7f37eb00da5a762149dc682d7829451287e11b938e94594"
+        },
+        {
+          "displayName": "LICENSE_MIT (canonical Tauri v2 supplement)",
+          "sourceKind": "reviewed-override",
+          "sourceUrl": "https://github.com/tauri-apps/plugins-workspace/blob/9d6d03269a3dea3e9dbf4635fe0fd68f23f750fa/LICENSE_MIT",
+          "sourceRevision": "9d6d03269a3dea3e9dbf4635fe0fd68f23f750fa",
+          "sourceSha256": "9dd42ea92cff2ede5cd477cbfcce051b2d0115c0ac7f368ee88cb545055dff1d",
+          "contentSha256": "9dd42ea92cff2ede5cd477cbfcce051b2d0115c0ac7f368ee88cb545055dff1d"
+        }
+      ],
+      "unresolved": null
+    },
+    {
+      "name": "@tauri-apps/plugin-updater",
+      "version": "2.10.1",
+      "integrity": "sha512-NFYMg+tWOZPJdzE/PpFj2qfqwAWwNS3kXrb1tm1gnBJ9mYzZ4WDRrwy8udzWoAnfGCHLuePNLY1WVCNHnh3eRA==",
+      "license": "MIT OR Apache-2.0",
+      "provenance": [
+        "javascript"
+      ],
+      "status": "resolved",
+      "legalMaterials": [
+        {
+          "displayName": "LICENSE.spdx",
+          "sourceKind": "npm-package",
+          "sourceUrl": null,
+          "sourceRevision": null,
+          "sourceSha256": "eb8a6c84630461b352badcab1dbe5d0168c56d377358b2b8c86b51003272d5ef",
+          "contentSha256": "eb8a6c84630461b352badcab1dbe5d0168c56d377358b2b8c86b51003272d5ef"
+        },
+        {
+          "displayName": "LICENSE_APACHE-2.0 (canonical Tauri v2 supplement)",
+          "sourceKind": "reviewed-override",
+          "sourceUrl": "https://github.com/tauri-apps/plugins-workspace/blob/9d6d03269a3dea3e9dbf4635fe0fd68f23f750fa/LICENSE_APACHE-2.0",
+          "sourceRevision": "9d6d03269a3dea3e9dbf4635fe0fd68f23f750fa",
+          "sourceSha256": "0d542e0c8804e39aa7f37eb00da5a762149dc682d7829451287e11b938e94594",
+          "contentSha256": "0d542e0c8804e39aa7f37eb00da5a762149dc682d7829451287e11b938e94594"
+        },
+        {
+          "displayName": "LICENSE_MIT (canonical Tauri v2 supplement)",
+          "sourceKind": "reviewed-override",
+          "sourceUrl": "https://github.com/tauri-apps/plugins-workspace/blob/9d6d03269a3dea3e9dbf4635fe0fd68f23f750fa/LICENSE_MIT",
+          "sourceRevision": "9d6d03269a3dea3e9dbf4635fe0fd68f23f750fa",
+          "sourceSha256": "9dd42ea92cff2ede5cd477cbfcce051b2d0115c0ac7f368ee88cb545055dff1d",
+          "contentSha256": "9dd42ea92cff2ede5cd477cbfcce051b2d0115c0ac7f368ee88cb545055dff1d"
+        }
+      ],
+      "unresolved": null
+    },
+    {
+      "name": "aria-hidden",
+      "version": "1.2.6",
+      "integrity": "sha512-ik3ZgC9dY/lYVVM++OISsaYDeg1tb0VtP5uL3ouh1koGOaUMDPpbFIei4JkFimWUFPn90sbMNMXQAIVOlnYKJA==",
+      "license": "MIT",
+      "provenance": [
+        "javascript"
+      ],
+      "status": "resolved",
+      "legalMaterials": [
+        {
+          "displayName": "LICENSE",
+          "sourceKind": "npm-package",
+          "sourceUrl": null,
+          "sourceRevision": null,
+          "sourceSha256": "30f0cfddf483d1128e3610205020f2041a6c5e837aa999e0aa82e5576187d4a9",
+          "contentSha256": "30f0cfddf483d1128e3610205020f2041a6c5e837aa999e0aa82e5576187d4a9"
+        }
+      ],
+      "unresolved": null
+    },
+    {
+      "name": "class-variance-authority",
+      "version": "0.7.1",
+      "integrity": "sha512-Ka+9Trutv7G8M6WT6SeiRWz792K5qEqIGEGzXKhAE6xOWAY6pPH8U+9IY3oCMv6kqTmLsv7Xh/2w2RigkePMsg==",
+      "license": "Apache-2.0",
+      "provenance": [
+        "javascript"
+      ],
+      "status": "resolved",
+      "legalMaterials": [
+        {
+          "displayName": "LICENSE",
+          "sourceKind": "npm-package",
+          "sourceUrl": null,
+          "sourceRevision": null,
+          "sourceSha256": "0ccbf956cffc8dcf515809433cb5242ee67c94513d46e48c261d68d0880de406",
+          "contentSha256": "0ccbf956cffc8dcf515809433cb5242ee67c94513d46e48c261d68d0880de406"
+        }
+      ],
+      "unresolved": null
+    },
+    {
+      "name": "clsx",
+      "version": "2.1.1",
+      "integrity": "sha512-eYm0QWBtUrBWZWG0d386OGAw16Z995PiOVo2B7bjWSbHedGl5e0ZWaq65kOGgUSNesEIDkB9ISbTg/JK9dhCZA==",
+      "license": "MIT",
+      "provenance": [
+        "javascript"
+      ],
+      "status": "resolved",
+      "legalMaterials": [
+        {
+          "displayName": "license",
+          "sourceKind": "npm-package",
+          "sourceUrl": null,
+          "sourceRevision": null,
+          "sourceSha256": "9a9edad7baae52622bddf3c15b2ef8a33d2c89f2d25408ad13e8a7481c6b0c97",
+          "contentSha256": "9a9edad7baae52622bddf3c15b2ef8a33d2c89f2d25408ad13e8a7481c6b0c97"
+        }
+      ],
+      "unresolved": null
+    },
+    {
+      "name": "detect-node-es",
+      "version": "1.1.0",
+      "integrity": "sha512-ypdmJU/TbBby2Dxibuv7ZLW3Bs1QEmM7nHjEANfohJLvE0XVujisn1qPJcZxg+qDucsr+bP6fLD1rPS3AhJ7EQ==",
+      "license": "MIT",
+      "provenance": [
+        "javascript"
+      ],
+      "status": "resolved",
+      "legalMaterials": [
+        {
+          "displayName": "LICENSE",
+          "sourceKind": "npm-package",
+          "sourceUrl": null,
+          "sourceRevision": null,
+          "sourceSha256": "54b32293ea560d22cd9b62af9b2cda1a030d910a48c6601d227c5ff2338d95f8",
+          "contentSha256": "54b32293ea560d22cd9b62af9b2cda1a030d910a48c6601d227c5ff2338d95f8"
+        }
+      ],
+      "unresolved": null
+    },
+    {
+      "name": "get-nonce",
+      "version": "1.0.1",
+      "integrity": "sha512-FJhYRoDaiatfEkUK8HKlicmu/3SGFD51q3itKDGoSTysQJBnfOcxU5GxnhE1E6soB76MbT0MBtnKJuXyAx+96Q==",
+      "license": "MIT",
+      "provenance": [
+        "javascript"
+      ],
+      "status": "resolved",
+      "legalMaterials": [
+        {
+          "displayName": "LICENSE",
+          "sourceKind": "npm-package",
+          "sourceUrl": null,
+          "sourceRevision": null,
+          "sourceSha256": "acf3b087b348d2f2e731b9d4131af185aad694c1204ce14a46909483fd42da05",
+          "contentSha256": "acf3b087b348d2f2e731b9d4131af185aad694c1204ce14a46909483fd42da05"
+        }
+      ],
+      "unresolved": null
+    },
+    {
+      "name": "lucide-react",
+      "version": "1.31.0",
+      "integrity": "sha512-G8u2eEtoHUnUa9f8lbvqDhCiORMnYLdUEo06EEG9MQvHQrInKcX3Pa2TH39MM5qyzRcWETxB0+aOwAPI1g1kEg==",
+      "license": "ISC",
+      "provenance": [
+        "javascript"
+      ],
+      "status": "resolved",
+      "legalMaterials": [
+        {
+          "displayName": "LICENSE",
+          "sourceKind": "npm-package",
+          "sourceUrl": null,
+          "sourceRevision": null,
+          "sourceSha256": "b495047bd93a9b06913511076f504daba17d5bbeb3e0650f3bb53a4220329c57",
+          "contentSha256": "b495047bd93a9b06913511076f504daba17d5bbeb3e0650f3bb53a4220329c57"
+        }
+      ],
+      "unresolved": null
+    },
+    {
+      "name": "next-themes",
+      "version": "0.4.6",
+      "integrity": "sha512-pZvgD5L0IEvX5/9GWyHMf3m8BKiVQwsCMHfoFosXtXBMnaS0ZnIJ9ST4b4NqLVKDEm8QBxoNNGNaBv2JNF6XNA==",
+      "license": "MIT",
+      "provenance": [
+        "javascript"
+      ],
+      "status": "resolved",
+      "legalMaterials": [
+        {
+          "displayName": "license.md",
+          "sourceKind": "npm-package",
+          "sourceUrl": null,
+          "sourceRevision": null,
+          "sourceSha256": "b5acfd21b3b61508365224c40ec1b03ec71091248baaf989d4be916551e7d532",
+          "contentSha256": "b5acfd21b3b61508365224c40ec1b03ec71091248baaf989d4be916551e7d532"
+        }
+      ],
+      "unresolved": null
+    },
+    {
+      "name": "react-dom",
+      "version": "19.2.8",
+      "integrity": "sha512-rVprimfGBG3DR+Tq0IQG2DT5PxKth1WIGDmj5yPmlzr4YBe7uyE+Du4oVqTDXZSHGGGXRtTJEGSSePyQCMBglQ==",
+      "license": "MIT",
+      "provenance": [
+        "javascript"
+      ],
+      "status": "resolved",
+      "legalMaterials": [
+        {
+          "displayName": "LICENSE",
+          "sourceKind": "npm-package",
+          "sourceUrl": null,
+          "sourceRevision": null,
+          "sourceSha256": "da6d3703ed11cbe42bd212c725957c98da23cbff1998c05fa4b3d976d1a58e93",
+          "contentSha256": "da6d3703ed11cbe42bd212c725957c98da23cbff1998c05fa4b3d976d1a58e93"
+        }
+      ],
+      "unresolved": null
+    },
+    {
+      "name": "react-remove-scroll-bar",
+      "version": "2.3.8",
+      "integrity": "sha512-9r+yi9+mgU33AKcj6IbT9oRCO78WriSj6t/cF8DWBZJ9aOGPOTEDvdUDz1FwKim7QXWwmHqtdHnRJfhAxEG46Q==",
+      "license": "MIT",
+      "provenance": [
+        "javascript"
+      ],
+      "status": "unresolved",
+      "legalMaterials": [],
+      "unresolved": {
+        "reason": "The locked npm tarball declares MIT and its README says MIT, but it contains no complete legal file. The canonical repository has no v2.3.8 tag, and its current 2025 license does not establish the exact notice applicable to the untagged npm publication.",
+        "requiredResolution": "Obtain upstream confirmation, add an explicitly owner-reviewed notice exception, or remove the package from the emitted Vite graph.",
+        "evidence": {
+          "sourceUrl": "https://github.com/theKashey/react-remove-scroll-bar/blob/8ca9ba5ea52de03308fe8ced94f7b159a44d28ff/LICENSE",
+          "sourceRevision": "8ca9ba5ea52de03308fe8ced94f7b159a44d28ff",
+          "sha256": "a79aae0c0f21990d9d963bb3c5a79cdcea9a46f8523ba55c58d7fe776b6ebc84",
+          "applicability": "Provenance only. Not approved as the v2.3.8 redistribution notice."
+        }
+      }
+    },
+    {
+      "name": "react-remove-scroll",
+      "version": "2.7.2",
+      "integrity": "sha512-Iqb9NjCCTt6Hf+vOdNIZGdTiH1QSqr27H/Ek9sv/a97gfueI/5h1s3yRi1nngzMUaOOToin5dI1dXKdXiF+u0Q==",
+      "license": "MIT",
+      "provenance": [
+        "javascript"
+      ],
+      "status": "resolved",
+      "legalMaterials": [
+        {
+          "displayName": "LICENSE",
+          "sourceKind": "npm-package",
+          "sourceUrl": null,
+          "sourceRevision": null,
+          "sourceSha256": "30f0cfddf483d1128e3610205020f2041a6c5e837aa999e0aa82e5576187d4a9",
+          "contentSha256": "30f0cfddf483d1128e3610205020f2041a6c5e837aa999e0aa82e5576187d4a9"
+        }
+      ],
+      "unresolved": null
+    },
+    {
+      "name": "react-style-singleton",
+      "version": "2.2.3",
+      "integrity": "sha512-b6jSvxvVnyptAiLjbkWLE/lOnR4lfTtDAl+eUC7RZy+QQWc6wRzIV2CE6xBuMmDxc2qIihtDCZD5NPOFl7fRBQ==",
+      "license": "MIT",
+      "provenance": [
+        "javascript"
+      ],
+      "status": "resolved",
+      "legalMaterials": [
+        {
+          "displayName": "LICENSE",
+          "sourceKind": "npm-package",
+          "sourceUrl": null,
+          "sourceRevision": null,
+          "sourceSha256": "30f0cfddf483d1128e3610205020f2041a6c5e837aa999e0aa82e5576187d4a9",
+          "contentSha256": "30f0cfddf483d1128e3610205020f2041a6c5e837aa999e0aa82e5576187d4a9"
+        }
+      ],
+      "unresolved": null
+    },
+    {
+      "name": "react",
+      "version": "19.2.8",
+      "integrity": "sha512-PWaYA1L/q9u2u7xYQi+Y3L3Yfnie7XyLeaJICV1MGD6LprsBxcAqGjYyr0eY3p+QdsA+x/Irkt4Qif8D63+Sbw==",
+      "license": "MIT",
+      "provenance": [
+        "javascript"
+      ],
+      "status": "resolved",
+      "legalMaterials": [
+        {
+          "displayName": "LICENSE",
+          "sourceKind": "npm-package",
+          "sourceUrl": null,
+          "sourceRevision": null,
+          "sourceSha256": "da6d3703ed11cbe42bd212c725957c98da23cbff1998c05fa4b3d976d1a58e93",
+          "contentSha256": "da6d3703ed11cbe42bd212c725957c98da23cbff1998c05fa4b3d976d1a58e93"
+        }
+      ],
+      "unresolved": null
+    },
+    {
+      "name": "scheduler",
+      "version": "0.27.0",
+      "integrity": "sha512-eNv+WrVbKu1f3vbYJT/xtiF5syA5HPIMtf9IgY/nKg0sWqzAUEvqY/xm7OcZc/qafLx/iO9FgOmeSAp4v5ti/Q==",
+      "license": "MIT",
+      "provenance": [
+        "javascript"
+      ],
+      "status": "resolved",
+      "legalMaterials": [
+        {
+          "displayName": "LICENSE",
+          "sourceKind": "npm-package",
+          "sourceUrl": null,
+          "sourceRevision": null,
+          "sourceSha256": "da6d3703ed11cbe42bd212c725957c98da23cbff1998c05fa4b3d976d1a58e93",
+          "contentSha256": "da6d3703ed11cbe42bd212c725957c98da23cbff1998c05fa4b3d976d1a58e93"
+        }
+      ],
+      "unresolved": null
+    },
+    {
+      "name": "tailwind-merge",
+      "version": "3.6.0",
+      "integrity": "sha512-uxL7qAVQriqRQPAyK3pj66VqskWqoZ37PW94jwOTwNfq/z9oyu1V+eqrZqtR2+fCiXdYOZe/Modt8GtvqNzu+w==",
+      "license": "MIT",
+      "provenance": [
+        "javascript"
+      ],
+      "status": "resolved",
+      "legalMaterials": [
+        {
+          "displayName": "LICENSE.md",
+          "sourceKind": "npm-package",
+          "sourceUrl": null,
+          "sourceRevision": null,
+          "sourceSha256": "d4c70c7ce38cea8778f0aed3fc0bef0a9dbd27f13bd8b6773cbd6d37941971e5",
+          "contentSha256": "d4c70c7ce38cea8778f0aed3fc0bef0a9dbd27f13bd8b6773cbd6d37941971e5"
+        }
+      ],
+      "unresolved": null
+    },
+    {
+      "name": "tailwindcss-animate",
+      "version": "1.0.7",
+      "integrity": "sha512-bl6mpH3T7I3UFxuvDEXLxy/VuFxBk5bbzplh7tXI68mwMokNYd1t9qPBHlnyTwfa4JGC4zP516I1hYYtQ/vspA==",
+      "license": "MIT",
+      "provenance": [
+        "generated-css"
+      ],
+      "status": "resolved",
+      "legalMaterials": [
+        {
+          "displayName": "LICENSE",
+          "sourceKind": "npm-package",
+          "sourceUrl": null,
+          "sourceRevision": null,
+          "sourceSha256": "d06945a5d85f4f6062393af30ad07d8afd1efa190c46cea6819b85c11764c7cd",
+          "contentSha256": "d06945a5d85f4f6062393af30ad07d8afd1efa190c46cea6819b85c11764c7cd"
+        }
+      ],
+      "unresolved": null
+    },
+    {
+      "name": "tailwindcss",
+      "version": "4.3.3",
+      "integrity": "sha512-gOhV3P7ufE62QDGg1zVaTgCR+EtPv92k2nIhVcVKcLmxT1sUBsQGhnZj175j+MqRt4zLF7ic+sCYjfhxMxj7YQ==",
+      "license": "MIT",
+      "provenance": [
+        "generated-css"
+      ],
+      "status": "resolved",
+      "legalMaterials": [
+        {
+          "displayName": "LICENSE",
+          "sourceKind": "npm-package",
+          "sourceUrl": null,
+          "sourceRevision": null,
+          "sourceSha256": "60e0b68c0f35c078eef3a5d29419d0b03ff84ec1df9c3f9d6e39a519a5ae7985",
+          "contentSha256": "60e0b68c0f35c078eef3a5d29419d0b03ff84ec1df9c3f9d6e39a519a5ae7985"
+        }
+      ],
+      "unresolved": null
+    },
+    {
+      "name": "tslib",
+      "version": "2.8.1",
+      "integrity": "sha512-oJFu94HQb+KVduSUQL7wnpmqnfmLsOA/nAh6b6EH0wCEoK0/mPeXU6c3wKDV83MkOuHPRHtSXKKU99IBazS/2w==",
+      "license": "0BSD",
+      "provenance": [
+        "javascript"
+      ],
+      "status": "resolved",
+      "legalMaterials": [
+        {
+          "displayName": "CopyrightNotice.txt",
+          "sourceKind": "npm-package",
+          "sourceUrl": null,
+          "sourceRevision": null,
+          "sourceSha256": "da16ddb65f8ca390998fb99223d0112498b56b45784d00afd77ff8ce1ac4de8b",
+          "contentSha256": "72ba857a2d06a6d440c28e690835119f6d70fe16f58b7538e3e3c1c133d944d7"
+        },
+        {
+          "displayName": "LICENSE.txt",
+          "sourceKind": "npm-package",
+          "sourceUrl": null,
+          "sourceRevision": null,
+          "sourceSha256": "210b19e543130388c68654b7497e967119ce17145f66ab7d85688fbd70f08751",
+          "contentSha256": "0e8d2550baea17eb3072c4f919b36fbf9852bb49dba948549872e713863c0834"
+        }
+      ],
+      "unresolved": null
+    },
+    {
+      "name": "use-callback-ref",
+      "version": "1.3.3",
+      "integrity": "sha512-jQL3lRnocaFtu3V00JToYz/4QkNWswxijDaCVNZRiRTO3HQDLsdu1ZtmIUvV4yPp+rvWm5j0y0TG/S61cuijTg==",
+      "license": "MIT",
+      "provenance": [
+        "javascript"
+      ],
+      "status": "resolved",
+      "legalMaterials": [
+        {
+          "displayName": "LICENSE",
+          "sourceKind": "npm-package",
+          "sourceUrl": null,
+          "sourceRevision": null,
+          "sourceSha256": "30f0cfddf483d1128e3610205020f2041a6c5e837aa999e0aa82e5576187d4a9",
+          "contentSha256": "30f0cfddf483d1128e3610205020f2041a6c5e837aa999e0aa82e5576187d4a9"
+        }
+      ],
+      "unresolved": null
+    },
+    {
+      "name": "use-sidecar",
+      "version": "1.1.3",
+      "integrity": "sha512-Fedw0aZvkhynoPYlA5WXrMCAMm+nSWdZt6lzJQ7Ok8S6Q+VsHmHpRWndVRJ8Be0ZbkfPc5LRYH+5XrzXcEeLRQ==",
+      "license": "MIT",
+      "provenance": [
+        "javascript"
+      ],
+      "status": "resolved",
+      "legalMaterials": [
+        {
+          "displayName": "LICENSE",
+          "sourceKind": "npm-package",
+          "sourceUrl": null,
+          "sourceRevision": null,
+          "sourceSha256": "30f0cfddf483d1128e3610205020f2041a6c5e837aa999e0aa82e5576187d4a9",
+          "contentSha256": "30f0cfddf483d1128e3610205020f2041a6c5e837aa999e0aa82e5576187d4a9"
+        }
+      ],
+      "unresolved": null
+    }
+  ]
+}

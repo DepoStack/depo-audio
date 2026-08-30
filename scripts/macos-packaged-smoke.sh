@@ -60,16 +60,18 @@ smoke_app() {
   local executable="$app/Contents/MacOS/depo-audio"
   local ffmpeg="$app/Contents/MacOS/ffmpeg"
   local ffprobe="$app/Contents/MacOS/ffprobe"
-  local ort="$app/Contents/Frameworks/libonnxruntime.dylib"
 
-  test -x "$executable" && test -x "$ffmpeg" && test -x "$ffprobe" && test -f "$ort" || {
+  test -x "$executable" && test -x "$ffmpeg" && test -x "$ffprobe" || {
     echo "ERROR: $label app has missing or non-executable packaged native payloads"
     exit 1
   }
+  if find "$app" -type f \( -iname '*.onnx' -o -iname 'libonnxruntime*.dylib' \) -print -quit | grep -q .; then
+    echo "ERROR: $label app contains forbidden learned-model material"
+    exit 1
+  fi
   verify_universal "$executable" "$label app executable"
   verify_universal "$ffmpeg" "$label FFmpeg"
   verify_universal "$ffprobe" "$label FFprobe"
-  verify_universal "$ort" "$label ONNX Runtime"
 
   codesign --verify --deep --strict --verbose=2 "$app"
   if [ "${EXPECT_PLATFORM_SIGNING:-false}" = 'true' ]; then
@@ -100,9 +102,6 @@ smoke_app() {
     }
     rm -f -- "$output"
   done
-
-  ORT_DYLIB_PATH="$ort" cargo test --locked --manifest-path src-tauri/Cargo.toml \
-    ort_loads_and_runs_silero_vad -- --ignored --nocapture
 
   local stdout="$RUNNER_TEMP/depoaudio-$label_key-startup-stdout.txt"
   local stderr="$RUNNER_TEMP/depoaudio-$label_key-startup-stderr.txt"

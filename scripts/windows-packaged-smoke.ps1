@@ -9,9 +9,15 @@ function Invoke-PackagedNativeSmoke {
 
   $ffmpegMatches = @(Get-ChildItem -LiteralPath $Root -Recurse -Filter 'ffmpeg.exe' -File)
   $ffprobeMatches = @(Get-ChildItem -LiteralPath $Root -Recurse -Filter 'ffprobe.exe' -File)
-  $ortMatches = @(Get-ChildItem -LiteralPath $Root -Recurse -Filter 'onnxruntime.dll' -File)
-  if ($ffmpegMatches.Count -ne 1 -or $ffprobeMatches.Count -ne 1 -or $ortMatches.Count -ne 1) {
+  $forbiddenModelPayloads = @(
+    Get-ChildItem -LiteralPath $Root -Recurse -File |
+      Where-Object { $_.Name -like '*.onnx' -or $_.Name -ieq 'onnxruntime.dll' }
+  )
+  if ($ffmpegMatches.Count -ne 1 -or $ffprobeMatches.Count -ne 1) {
     throw "$Label packaged native payload is missing or duplicated"
+  }
+  if ($forbiddenModelPayloads.Count -ne 0) {
+    throw "$Label package contains forbidden learned-model material"
   }
 
   $ffmpeg = $ffmpegMatches[0]
@@ -45,16 +51,6 @@ function Invoke-PackagedNativeSmoke {
     Remove-Item -LiteralPath $output -Force
   }
 
-  $priorOrtPath = $env:ORT_DYLIB_PATH
-  try {
-    $env:ORT_DYLIB_PATH = $ortMatches[0].FullName
-    cargo test --locked --manifest-path src-tauri/Cargo.toml `
-      ort_loads_and_runs_silero_vad -- --ignored --nocapture
-    if ($LASTEXITCODE -ne 0) { throw "$Label packaged ONNX Runtime smoke test failed" }
-  }
-  finally {
-    $env:ORT_DYLIB_PATH = $priorOrtPath
-  }
 }
 
 function Invoke-PackagedStartup {

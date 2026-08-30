@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 
 const read = path => readFileSync(new URL(`../${path}`, import.meta.url), 'utf8')
 const parseJson = path => JSON.parse(read(path))
@@ -23,11 +23,18 @@ const promoteDraftWorkflow = read('.github/workflows/promote-draft.yml')
 const publishReleaseWorkflow = read('.github/workflows/publish-release.yml')
 const restoreModelsWorkflow = read('.github/workflows/restore-models.yml')
 const artifactInventory = read('scripts/release-artifact-inventory.mjs')
+const modelDistributionVerifier = read('scripts/verify-model-distribution.mjs')
+const javascriptNoticeGenerator = read('scripts/generate-javascript-notices.mjs')
+const javascriptNoticeComponents = parseJson('src-tauri/resources/third-party/javascript/COMPONENTS.json')
+const javascriptNoticeHtml = read('src-tauri/resources/third-party/javascript/THIRD-PARTY-NOTICES.html')
 const privateFtrFixture = read('scripts/private-ftr-fixture.mjs')
 const webviewEvidence = read('scripts/windows-webview2-evidence.ps1')
 const macFfmpegBuild = read('scripts/build-ffmpeg-macos.sh')
 const macPackagedSmoke = read('scripts/macos-packaged-smoke.sh')
 const windowsPackagedSmoke = read('scripts/windows-packaged-smoke.ps1')
+const setupDev = read('scripts/setup-dev.sh')
+const gitIgnore = read('.gitignore')
+const exportDccrnPresent = existsSync(new URL('../scripts/export_dccrn.py', import.meta.url))
 const draftAssetUpload = read('scripts/upload-draft-release-assets.mjs')
 const publicationHelper = read('scripts/prepare-release-publication.mjs')
 const aboutPolicy = read('about.toml')
@@ -224,85 +231,87 @@ expect(tauriConfig.version === version, 'tauri.conf.json version must match pack
 expect(cargoPackageVersion === version, 'Cargo.toml package version must match package.json')
 expect(cargoLockVersion === version, 'Cargo.lock depo-audio version must match package.json')
 
-const retiredModels = [
+const forbiddenModels = [
+  'dccrn_plus.onnx',
   'dfn3_config.ini',
+  'dfn3_df_dec.onnx',
   'dfn3_enc.onnx',
   'dfn3_erb_dec.onnx',
-  'dfn3_df_dec.onnx',
-  'speaker_embed.onnx',
-]
-const releasedModels = [
+  'dnsmos_sig_bak_ovr.onnx',
+  'flashsr.onnx',
   'silero_vad.onnx',
   'smart-turn-v3-int8.onnx',
-  'flashsr.onnx',
-  'dnsmos_sig_bak_ovr.onnx',
+  'speaker_embed.onnx',
   'speaker_seg_int8.onnx',
+  'weights.rnn',
 ]
-const bundledModels = releasedModels.filter(filename => filename !== 'dnsmos_sig_bak_ovr.onnx')
-const releasedModelHashes = {
-  'silero_vad.onnx': 'a4a068cd6cf1ea8355b84327595838ca748ec29a25bc91fc82e6c299ccdc5808',
-  'smart-turn-v3-int8.onnx': '3d072c8fb04446955a365b533686e7e06015ad09929bb824b910c72ff89f5be1',
-  'flashsr.onnx': 'e255c76b227f16f7f392cc43677c38bd2c5aa129f042a2ba3eb03fb29e470c7a',
-  'dnsmos_sig_bak_ovr.onnx': '269fbebdb513aa23cddfbb593542ecc540284a91849ac50516870e1ac78f6edd',
-  'speaker_seg_int8.onnx': 'd582f4b4c6b48205de7e0643c57df0df5615a3c176189be3fc461e9d18827b5d',
-}
-const bundleResources = tauriConfig.bundle?.resources ?? []
-for (const filename of retiredModels) {
-  expect(
-    !bundleResources.some(resource => resource.endsWith(filename)),
-    `tauri.conf.json must not bundle retired model ${filename}`,
-  )
-}
-const releasedModelSpecs = modelsSource.match(/const RELEASED_MODEL_SPECS: &\[ModelSpec\] = &\[([\s\S]*?)\n\];/)?.[1]
-expect(releasedModelSpecs, 'models.rs must define one released model registry')
-if (releasedModelSpecs) {
-  const registryFilenames = [...releasedModelSpecs.matchAll(/filename:\s*"([^"]+)"/g)].map(match => match[1])
-  expect(
-    JSON.stringify([...registryFilenames].sort()) === JSON.stringify([...releasedModels].sort()),
-    'released model registry must contain exactly the five reviewed active models',
-  )
-  expect(
-    new Set(registryFilenames).size === registryFilenames.length,
-    'released model registry must not contain duplicates',
-  )
-  for (const filename of retiredModels.filter(item => item.endsWith('.onnx'))) {
-    expect(!releasedModelSpecs.includes(filename), `released model registry must not expose retired model ${filename}`)
-  }
-}
-const configuredModelResources = bundleResources
-  .filter(resource => resource.startsWith('resources/models/'))
-  .map(resource => resource.slice('resources/models/'.length))
-  .sort()
-expect(
-  JSON.stringify(configuredModelResources) === JSON.stringify([...bundledModels].sort()),
-  'tauri.conf.json must bundle exactly the four reviewed bundled models; DNSMOS remains download-only',
-)
-for (const [filename, hash] of Object.entries(releasedModelHashes)) {
-  expect(
-    modelsSource.includes(`"${filename}" => Some("${hash}")`),
-    `models.rs must hash-pin released model ${filename}`,
-  )
-}
-expect(
-  modelsSource.includes('Legacy unused models cannot be downloaded'),
-  'obsolete app-data model cleanup must not restore an installation path',
-)
-expect(
-  modelsSource.indexOf('if obsolete_model_download(filename).is_some()') <
-    modelsSource.indexOf('let catalog = model_catalog(app)'),
-  'obsolete model downloads must be rejected before catalog lookup',
-)
-for (const filename of retiredModels) {
-  expect(artifactInventory.includes(`'${filename}'`), `artifact inventory must reject retired model ${filename}`)
-}
-for (const hash of [
-  '7c5399d3da8a50ebef1c1a0ae421b33376aa5e45d0e92df16da7e83c9c131916',
-  'ab669a1d10afe20911728b33053a452071042317a90581092b325da7b2f9d895',
-  '23114ce3b0f6464b763ee62f7bb8aab6b2a129a21eabd5bcfe59413db05f278a',
+const forbiddenModelHashes = [
   '1a331345f04805badbb495c775a6ddffcdd1a732567d5ec8b3d5749e3c7a5e4b',
-]) {
-  expect(artifactInventory.includes(`'${hash}'`), `artifact inventory must reject retired model bytes ${hash}`)
+  '23114ce3b0f6464b763ee62f7bb8aab6b2a129a21eabd5bcfe59413db05f278a',
+  '269fbebdb513aa23cddfbb593542ecc540284a91849ac50516870e1ac78f6edd',
+  '3d072c8fb04446955a365b533686e7e06015ad09929bb824b910c72ff89f5be1',
+  '7c5399d3da8a50ebef1c1a0ae421b33376aa5e45d0e92df16da7e83c9c131916',
+  'a4a068cd6cf1ea8355b84327595838ca748ec29a25bc91fc82e6c299ccdc5808',
+  'ab669a1d10afe20911728b33053a452071042317a90581092b325da7b2f9d895',
+  'd582f4b4c6b48205de7e0643c57df0df5615a3c176189be3fc461e9d18827b5d',
+  'e255c76b227f16f7f392cc43677c38bd2c5aa129f042a2ba3eb03fb29e470c7a',
+  'e6de5fbfadf7ec91d1b24d6a6ccfd0290cb4d8bf555c5eab3ce41506f67a58b1',
+]
+const bundleResources = tauriConfig.bundle?.resources ?? []
+expect(
+  !bundleResources.some(resource => /(?:^|\/)(?:model|models|onnxruntime)(?:\/|$)|\.onnx$/i.test(resource)),
+  'tauri.conf.json must not bundle learned-model material or ONNX Runtime',
+)
+expect(
+  modelsSource.includes('legacy_model_cleanup_catalog') &&
+    modelsSource.includes('delete_legacy_model') &&
+    !modelsSource.includes('download_model') &&
+    !modelsSource.includes('reqwest::') &&
+    !modelsSource.includes('http://') &&
+    !modelsSource.includes('https://'),
+  'models.rs must expose only deletion-only legacy cleanup without a network installation path',
+)
+expect(
+  modelsSource.includes('recommended_denoise: "unavailable".into()') &&
+    modelsSource.includes('recommend_speaker_detection: false') &&
+    modelsSource.includes('recommend_enhance: false') &&
+    modelsSource.includes('dereverb_available: false'),
+  'v1.0.3 system capabilities must fail closed for every learned-model feature',
+)
+for (const filename of forbiddenModels) {
+  expect(artifactInventory.includes(`'${filename}'`), `artifact inventory must reject model material ${filename}`)
+  expect(
+    modelDistributionVerifier.includes(`'${filename}'`),
+    `source distribution verifier must reject model material ${filename}`,
+  )
 }
+for (const hash of forbiddenModelHashes) {
+  expect(artifactInventory.includes(`'${hash}'`), `artifact inventory must reject known model bytes ${hash}`)
+  expect(modelDistributionVerifier.includes(`'${hash}'`), `source verifier must reject known model bytes ${hash}`)
+}
+expect(
+  packageJson.scripts['models:check'] === 'node scripts/verify-model-distribution.mjs' &&
+    packageJson.scripts['models:self-test'] === 'node scripts/verify-model-distribution.mjs --self-test' &&
+    packageJson.scripts['release:check'].includes('npm run models:check') &&
+    packageJson.scripts['release:check'].includes('npm run models:self-test') &&
+    modelDistributionVerifier.includes('Model distribution contract verified') &&
+    modelDistributionVerifier.includes('Model distribution contract self-test OK') &&
+    ciWorkflow.includes('npm run models:check') &&
+    releaseWorkflow.includes('npm run models:check') &&
+    !releaseWorkflow.toLowerCase().includes('onnxruntime'),
+  'source, CI, release, and negative-test contracts must enforce the zero learned-model boundary',
+)
+expect(
+  !setupDev.toLowerCase().includes('onnxruntime') &&
+    !setupDev.includes('ORT_DYLIB_PATH') &&
+    !macPackagedSmoke.includes('ORT_DYLIB_PATH') &&
+    !windowsPackagedSmoke.includes('ORT_DYLIB_PATH') &&
+    !macPackagedSmoke.includes('ort_loads_and_runs_silero_vad') &&
+    !windowsPackagedSmoke.includes('ort_loads_and_runs_silero_vad') &&
+    !exportDccrnPresent &&
+    !gitIgnore.includes('resources/onnxruntime'),
+  'active setup, packaged smoke, export, and ignore paths must not restore learned-model runtime material',
+)
 
 const unreleasedPosition = changelog.indexOf('## [Unreleased]')
 const datedReleaseHeading = new RegExp(`^## \\[${escapedVersion}\\] - \\d{4}-\\d{2}-\\d{2}$`, 'm')
@@ -456,6 +465,8 @@ expect(
     releaseWorkflow.includes('Smoke-test packaged native payloads and NSIS startup (Windows)') &&
     releaseWorkflow.includes('run: ./scripts/windows-packaged-smoke.ps1') &&
     windowsPackagedSmoke.includes("-Filter 'ffprobe.exe'") &&
+    windowsPackagedSmoke.includes("$_.Name -like '*.onnx'") &&
+    windowsPackagedSmoke.includes("$_.Name -ieq 'onnxruntime.dll'") &&
     windowsPackagedSmoke.includes('-c:a ftr') &&
     windowsPackagedSmoke.includes("Invoke-PackagedNativeSmoke -Root $msiRoot -Label 'MSI'") &&
     windowsPackagedSmoke.includes("Invoke-PackagedNativeSmoke -Root $nsisRoot -Label 'NSIS'") &&
@@ -472,6 +483,8 @@ expect(
     macPackagedSmoke.includes('hdiutil attach "$dmg"') &&
     macPackagedSmoke.includes('tar xzf "$app_archive"') &&
     macPackagedSmoke.includes('local ffprobe="$app/Contents/MacOS/ffprobe"') &&
+    macPackagedSmoke.includes("-iname '*.onnx'") &&
+    macPackagedSmoke.includes("-iname 'libonnxruntime*.dylib'") &&
     macPackagedSmoke.includes('-c:a ftr') &&
     macPackagedSmoke.includes('codesign --verify --deep --strict') &&
     macPackagedSmoke.includes('if [ "${EXPECT_PLATFORM_SIGNING:-false}" = \'true\' ]') &&
@@ -538,12 +551,6 @@ expect(
   'Windows releases must verify and retain exact Microsoft-signed, byte-identical WebView2 build-input evidence without overstating final extraction',
 )
 expect(
-  releaseWorkflow.includes('resources/third-party/onnxruntime/ThirdPartyNotices.txt') &&
-    releaseWorkflow.includes('resources/third-party/onnxruntime/LICENSE') &&
-    releaseWorkflow.includes('"resources/third-party/onnxruntime"'),
-  'release.yml must preserve and bundle the exact ONNX Runtime license and notices',
-)
-expect(
   bundleResources.includes('resources/third-party/rust') &&
     cargoToml.includes('publish = false') &&
     aboutPolicy.includes('ignore-dev-dependencies = true') &&
@@ -580,20 +587,49 @@ expect(
     sbomNormalizer.includes('depoaudio:source-commit') &&
     sbomNormalizer.includes('path+file://') &&
     cargoAboutNormalizer.includes("replaceAll('\\r\\n', '\\n')") &&
+    releaseWorkflow.includes('generate-javascript-notices.mjs --strict --check') &&
+    releaseWorkflow.includes('DepoAudio_${version}_javascript-third-party-notices.html') &&
+    releaseWorkflow.includes('DepoAudio_${version}_javascript-components.json') &&
+    publicationHelper.includes('DepoAudio_${version}_javascript-third-party-notices.html') &&
+    publicationHelper.includes('DepoAudio_${version}_javascript-components.json') &&
+    publicationHelper.includes('missing JavaScript notice evidence') &&
     packageJson.scripts['release:check'].includes('normalize-release-sbom.mjs --self-test') &&
     packageJson.scripts['release:check'].includes('normalize-cargo-about-report.mjs --self-test'),
   'release.yml must generate reproducible commit-bound Rust/npm evidence before packaging and publish it before finalization',
 )
+expect(
+  javascriptNoticeComponents.schemaVersion === 1 &&
+    javascriptNoticeComponents.componentCount === 60 &&
+    javascriptNoticeComponents.javascriptComponentCount === 58 &&
+    javascriptNoticeComponents.generatedCssComponentCount === 2 &&
+    javascriptNoticeHtml.includes('DepoAudio JavaScript and generated-CSS third-party notices') &&
+    javascriptNoticeGenerator.includes('javascript-notice-overrides.json') &&
+    packageJson.scripts['notices:generate'] === 'node scripts/generate-javascript-notices.mjs' &&
+    packageJson.scripts['notices:check'] === 'node scripts/generate-javascript-notices.mjs --check' &&
+    packageJson.scripts['notices:self-test'] === 'node scripts/generate-javascript-notices.mjs --self-test' &&
+    packageJson.scripts['release:check'].includes('npm run notices:self-test') &&
+    packageJson.scripts['release:check'].includes('npm run notices:check') &&
+    bundleResources.includes('resources/third-party/javascript') &&
+    artifactInventory.includes("'javascript-notices-html'") &&
+    artifactInventory.includes("'javascript-notices-components'") &&
+    artifactInventory.includes("'byte-exact'") &&
+    releaseWorkflow.indexOf('generate-javascript-notices.mjs --strict --check') <
+      releaseWorkflow.indexOf('Write the pre-package binary and notice contract'),
+  'deterministic JavaScript/CSS notices must be bundled, byte-bound, self-tested, and strict-gated before packaging',
+)
 const hasJavaScriptNoticeBlocker =
   thirdPartyInventory.includes('JavaScript and generated CSS notice status') &&
   thirdPartyInventory.includes('react-remove-scroll-bar@2.3.8') &&
-  thirdPartyInventory.includes('SBOM does not contain all copyright notices and license texts') &&
-  thirdPartyInventory.includes('v1.0.3 is blocked')
+  thirdPartyInventory.includes('an SBOM does not replace copyright notices or license') &&
+  thirdPartyInventory.includes('v1.0.3 remains blocked') &&
+  javascriptNoticeComponents.unresolvedComponentCount === 1 &&
+  javascriptNoticeComponents.unresolvedComponents?.includes('react-remove-scroll-bar@2.3.8')
+const generatedJavaScriptNoticeIsUnresolved = javascriptNoticeComponents.unresolvedComponentCount > 0
 expect(
-  candidateIsGo ? !hasJavaScriptNoticeBlocker : hasJavaScriptNoticeBlocker,
-  candidateIsGo
-    ? 'the unresolved JavaScript notice blocker must be replaced by bundled, extracted-artifact evidence before a final build'
-    : 'the release inventory must preserve the unresolved JavaScript notice gate while the candidate is NO-GO',
+  generatedJavaScriptNoticeIsUnresolved ? hasJavaScriptNoticeBlocker : !hasJavaScriptNoticeBlocker,
+  generatedJavaScriptNoticeIsUnresolved
+    ? 'the release inventory must preserve every unresolved JavaScript notice gate'
+    : 'resolved JavaScript notice evidence must remove the obsolete blocker copy',
 )
 expect(
   releaseWorkflow.includes("FFMPEG_WIN_ID: '496767001'") &&
@@ -679,11 +715,18 @@ expect(
     !restoreModelsWorkflow.includes('gh release create'),
   'restore-models.yml must verify the published models-v1 contract without replacing it',
 )
+expect(
+  restoreModelsWorkflow.includes("V102_RELEASE_COMMIT: '6113fac8d8bac8f240dd2b10de6e77cd79cc772c'") &&
+    restoreModelsWorkflow.includes('${V102_RELEASE_COMMIT}:src-tauri/resources/models/$f.onnx') &&
+    !restoreModelsWorkflow.includes('cp "src-tauri/resources/models/$f.onnx" expected/'),
+  'historical models-v1 verification must reconstruct v1.0.2 bytes from its pinned commit, not the current tree',
+)
 
 const releaseGateEvidenceBindings = {
   'shipped-model-commercial-rights':
-    releasedModels.every(filename => thirdPartyInventory.includes(`\`${filename}\``)) &&
-    thirdPartyInventory.includes('commercial redistribution permission'),
+    packageJson.scripts['models:check'] === 'node scripts/verify-model-distribution.mjs' &&
+    artifactInventory.includes('Forbidden learned-model material') &&
+    releaseWorkflow.includes('npm run models:check'),
   'javascript-runtime-notices':
     thirdPartyInventory.includes('JavaScript and generated CSS notice status') &&
     thirdPartyInventory.includes('react-remove-scroll-bar@2.3.8'),

@@ -15,10 +15,7 @@ use crate::helpers::{detect_format_for_path, get_formats, infer_case_name};
 use crate::merge;
 use crate::models;
 use crate::persistence::{library_ready, mutate_library, prefs_path, prefs_ready, save_to_library};
-use crate::scoring;
-use crate::speakers;
 use crate::types::*;
-use crate::vad;
 
 // ── Health check ─────────────────────────────────────────────────────────────
 
@@ -41,16 +38,10 @@ pub async fn health_check(app: AppHandle) -> Result<serde_json::Value, String> {
         false
     };
 
-    let models = models::available_models(&app);
-    let caps = models::detect_capabilities(&app);
-
     Ok(serde_json::json!({
         "ffmpeg": ffmpeg_ok,
         "ffprobe": ffprobe_ok,
         "ftrDecoder": ftr_decoder,
-        "models": models,
-        "accelerator": caps.accelerator,
-        "tier": caps.tier,
     }))
 }
 
@@ -92,52 +83,26 @@ pub fn cancel_scan_cmd(state: State<'_, AppState>) {
     state.scan_epoch.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
 }
 
-// ── Quality scoring command ──────────────────────────────────────────────────
-
-#[tauri::command]
-pub async fn score_quality_cmd(app: AppHandle, path: String) -> Result<scoring::QualityScore, String> {
-    scoring::score_quality(&app, std::path::Path::new(&path), None).await
-}
-
-// ── Speaker detection command ───────────────────────────────────────────────
-
-#[tauri::command]
-pub async fn detect_speakers_cmd(app: AppHandle, path: String) -> Result<speakers::SpeakerInfo, String> {
-    speakers::detect_speakers(&app, std::path::Path::new(&path), None).await
-}
-
 // ── System capabilities command ──────────────────────────────────────────────
 
 #[tauri::command]
-pub fn system_capabilities_cmd(app: AppHandle) -> models::SystemCapabilities {
-    models::detect_capabilities(&app)
+pub fn system_capabilities_cmd() -> models::SystemCapabilities {
+    models::detect_capabilities()
 }
 
 // ── Model management commands ──────────────────────────────────────────────
 
 #[tauri::command]
-pub fn model_catalog_cmd(app: AppHandle) -> Vec<models::ModelInfo> {
-    models::model_catalog(&app)
+pub fn legacy_model_cleanup_catalog_cmd(app: AppHandle) -> Vec<models::LegacyModelInfo> {
+    models::legacy_model_cleanup_catalog(&app)
 }
 
 #[tauri::command]
-pub async fn download_model_cmd(app: AppHandle, filename: String) -> Result<String, String> {
-    models::download_model(&app, &filename).await
-}
-
-#[tauri::command]
-pub fn delete_model_cmd(app: AppHandle, filename: String) -> Result<(), String> {
-    models::delete_model(&app, &filename)
+pub fn delete_legacy_model_cmd(app: AppHandle, filename: String) -> Result<(), String> {
+    models::delete_legacy_model(&app, &filename)
 }
 
 // ── VAD command ─────────────────────────────────────────────────────────────
-
-#[tauri::command]
-pub async fn detect_speech_cmd(app: AppHandle, path: String) -> Result<vad::VadResult, String> {
-    vad::detect_speech(&app, std::path::Path::new(&path), None)
-        .await
-        .map_err(|e| e.to_string())
-}
 
 #[tauri::command]
 pub async fn waveform_peaks_cmd(

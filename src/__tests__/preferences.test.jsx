@@ -91,25 +91,56 @@ describe('usePreferences hydration', () => {
     )
     unmount()
   })
+
+  it('clears stale learned-model preferences instead of hydrating them', async () => {
+    invoke.mockImplementation(command =>
+      command === 'prefs_get'
+        ? Promise.resolve({
+            mode: 'stereo',
+            format: 'wav',
+            denoise: true,
+            denoiseQuality: 'best',
+            enhance: true,
+            dereverb: true,
+          })
+        : Promise.resolve(true),
+    )
+
+    const { result, unmount } = renderHook(() => usePreferences())
+    await waitFor(() => expect(result.current.prefsReady).toBe(true))
+    await waitFor(() => expect(invoke.mock.calls.some(([command]) => command === 'prefs_set')).toBe(true), {
+      timeout: 2000,
+    })
+
+    const savedPatch = invoke.mock.calls.find(([command]) => command === 'prefs_set')[1].patch
+    expect(savedPatch).toMatchObject({ denoise: false, denoiseQuality: 'fast', enhance: false, dereverb: false })
+    expect(result.current).not.toHaveProperty('setDenoise')
+    expect(result.current).not.toHaveProperty('setEnhance')
+    expect(result.current).not.toHaveProperty('setDereverb')
+    unmount()
+  })
 })
 
 describe('processing defaults', () => {
-  it('only offers the production-ready fast denoise path in presets', () => {
-    expect(PRESETS.every(preset => preset.settings.denoiseQuality === 'fast')).toBe(true)
+  it('never enables learned-model processing in presets', () => {
+    for (const preset of PRESETS) {
+      expect(preset.settings).toMatchObject({ denoise: false, enhance: false, dereverb: false })
+    }
   })
 
-  it('fails closed for unavailable preset processing', () => {
+  it('fails closed even when stale preset data requests learned processing', () => {
     const courtroom = PRESETS.find(preset => preset.id === 'courtroom')
-    expect(resolvePresetSettings(courtroom.settings, { dereverbAvailable: false }).dereverb).toBe(false)
-    expect(resolvePresetSettings(courtroom.settings, { dereverbAvailable: true }).dereverb).toBe(true)
-    expect(resolvePresetSettings({ ...courtroom.settings, mode: 'keep' }, { dereverbAvailable: true }).autoLevel).toBe(
-      false,
+    expect(
+      resolvePresetSettings({ ...courtroom.settings, denoise: true, enhance: true, dereverb: true }),
+    ).toMatchObject({ denoise: false, enhance: false, dereverb: false })
+    expect(resolvePresetSettings({ ...courtroom.settings, mode: 'keep' }).autoLevel).toBe(false)
+  })
+
+  it('keeps preset descriptions within released non-learned processing', () => {
+    const courtroom = PRESETS.find(preset => preset.id === 'courtroom')
+    expect(PRESETS.map(preset => preset.desc).join(' ')).not.toMatch(
+      /denoise|noise removal|enhance clarity|echo|reverb/i,
     )
-  })
-
-  it('keeps the Courtroom description truthful when dereverb is unavailable', () => {
-    const courtroom = PRESETS.find(preset => preset.id === 'courtroom')
-    expect(courtroom.desc).not.toMatch(/echo|reverb/i)
-    expect(courtroom.desc).toMatch(/background noise/i)
+    expect(courtroom.desc).toMatch(/microphone channels/i)
   })
 })

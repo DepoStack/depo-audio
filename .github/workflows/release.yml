@@ -46,12 +46,6 @@ env:
   FFMPEG_WIN_ID: '496767001'
   FFMPEG_WIN_SIZE: '147672337'
   FFMPEG_WIN_SHA256: '5d65df0c0ca5346d82df8ade9c2e12db45d1f978f18ff908b42f03f5223dfc90'
-  ORT_MAC_ID: '253300416'
-  ORT_MAC_SIZE: '54820264'
-  ORT_MAC_SHA256: 'cfa6f6584d87555ed9f6e7e8a000d3947554d589efe3723b8bfa358cd263d03c'
-  ORT_WIN_ID: '253300435'
-  ORT_WIN_SIZE: '72368545'
-  ORT_WIN_SHA256: '174c616efc0271194488642a72f1a514e01487da4dfe84c49296d66e40ebe0da'
 
 jobs:
   # Guard the release before any build starts:
@@ -88,6 +82,21 @@ jobs:
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: ${{ env.NODE_VERSION }}
+
+      - name: Install locked frontend dependencies
+        run: npm ci
+
+      - name: Enforce zero learned-model distribution
+        run: npm run models:self-test && npm run models:check
+
+      - name: Verify deterministic JavaScript notices
+        run: npm run notices:self-test && npm run notices:check
+
+      # Fail closed until every production JavaScript/CSS component has exact
+      # approved notice evidence. react-remove-scroll-bar@2.3.8 intentionally
+      # keeps this gate red until the owner records an acceptable resolution.
+      - name: Enforce strict JavaScript notice approval
+        run: node scripts/generate-javascript-notices.mjs --strict --check
 
       - name: Verify private-draft build contract
         run: node scripts/release-contract-check.mjs
@@ -420,86 +429,13 @@ jobs:
         if: always()
         run: node scripts/private-ftr-fixture.mjs --clean
 
-      # ── ONNX Runtime ────────────────────────────────────────────────────
-      # macOS: Microsoft ships a ready-made universal2 (fat) dylib — no lipo
-      # needed. The bundled .dylib is a symlink to the versioned real file, so
-      # copy with -L to stage the actual Mach-O, not a dangling link. The
-      # release-only config below adds this path as a macOS framework so Tauri
-      # signs it inside-out before signing the app bundle.
-      - name: Download universal ONNX Runtime (macOS)
-        if: runner.os == 'macOS'
-        env:
-          GH_DOWNLOAD_TOKEN: ${{ github.token }}
+      # Reconfirm source and notice policy after native sidecars are staged.
+      - name: Recheck release distribution gates before packaging
         run: |
-          set -euo pipefail
-          mkdir -p src-tauri/resources/onnxruntime
-          curl -fL --retry 5 --retry-all-errors --retry-delay 2 \
-            -H "Accept: application/octet-stream" \
-            -H "Authorization: Bearer ${GH_DOWNLOAD_TOKEN}" \
-            -H "X-GitHub-Api-Version: 2022-11-28" \
-            "https://api.github.com/repos/microsoft/onnxruntime/releases/assets/${ORT_MAC_ID}" \
-            -o ort.tgz
-          actual_size=$(stat -f%z ort.tgz)
-          test "$actual_size" = "$ORT_MAC_SIZE" || { echo "ERROR: pinned ONNX Runtime archive size mismatch"; exit 1; }
-          echo "$ORT_MAC_SHA256  ort.tgz" | shasum -a 256 -c -
-          tar xzf ort.tgz
-          ort_dir=$(ls -d onnxruntime-osx-universal2-*)
-          cp -L "$ort_dir/lib/libonnxruntime.dylib" src-tauri/resources/onnxruntime/libonnxruntime.dylib
-          mkdir -p src-tauri/resources/third-party/onnxruntime
-          cp "$ort_dir/LICENSE" src-tauri/resources/third-party/onnxruntime/LICENSE
-          cp "$ort_dir/ThirdPartyNotices.txt" \
-            src-tauri/resources/third-party/onnxruntime/ThirdPartyNotices.txt
-          file src-tauri/resources/onnxruntime/libonnxruntime.dylib
-          archs=$(lipo -archs src-tauri/resources/onnxruntime/libonnxruntime.dylib)
-          echo "ORT dylib archs: $archs"
-          case "$archs" in
-            *x86_64*arm64*|*arm64*x86_64*) : ;;
-            *) echo "ERROR: ORT dylib is not universal (got: $archs)"; exit 1 ;;
-          esac
+          npm run models:check
+          node scripts/generate-javascript-notices.mjs --strict --check
 
-      - name: Download ONNX Runtime CPU package (Windows)
-        if: runner.os == 'Windows'
-        shell: pwsh
-        env:
-          GH_DOWNLOAD_TOKEN: ${{ github.token }}
-        run: |
-          New-Item -ItemType Directory -Force -Path src-tauri/resources/onnxruntime | Out-Null
-          $headers = @{
-            Accept = "application/octet-stream"
-            Authorization = "Bearer $env:GH_DOWNLOAD_TOKEN"
-            "X-GitHub-Api-Version" = "2022-11-28"
-          }
-          Invoke-WebRequest "https://api.github.com/repos/microsoft/onnxruntime/releases/assets/$env:ORT_WIN_ID" -Headers $headers -OutFile ort.zip
-          if ((Get-Item ort.zip).Length -ne [int64]$env:ORT_WIN_SIZE) {
-            throw "Pinned ONNX Runtime archive size mismatch"
-          }
-          if ((Get-FileHash ort.zip -Algorithm SHA256).Hash.ToLowerInvariant() -ne $env:ORT_WIN_SHA256) {
-            throw "Pinned ONNX Runtime archive SHA-256 mismatch"
-          }
-          Expand-Archive ort.zip -DestinationPath ort_tmp -Force
-          $dll = Get-ChildItem ort_tmp -Recurse -Filter "onnxruntime.dll" | Select-Object -First 1
-          Copy-Item $dll.FullName "src-tauri/resources/onnxruntime/onnxruntime.dll"
-          $ortRoot = $dll.Directory.Parent.FullName
-          $noticeDir = "src-tauri/resources/third-party/onnxruntime"
-          New-Item -ItemType Directory -Force -Path $noticeDir | Out-Null
-          Copy-Item (Join-Path $ortRoot 'LICENSE') (Join-Path $noticeDir 'LICENSE')
-          Copy-Item (Join-Path $ortRoot 'ThirdPartyNotices.txt') (Join-Path $noticeDir 'ThirdPartyNotices.txt')
-          Get-ChildItem src-tauri/resources/onnxruntime/
-
-      - name: Smoke-test bundled ONNX Runtime (macOS)
-        if: runner.os == 'macOS'
-        env:
-          ORT_DYLIB_PATH: ${{ github.workspace }}/src-tauri/resources/onnxruntime/libonnxruntime.dylib
-        run: cargo test --locked --manifest-path src-tauri/Cargo.toml ort_loads_and_runs_silero_vad -- --ignored --nocapture
-
-      - name: Smoke-test bundled ONNX Runtime (Windows)
-        if: runner.os == 'Windows'
-        shell: pwsh
-        env:
-          ORT_DYLIB_PATH: ${{ github.workspace }}\src-tauri\resources\onnxruntime\onnxruntime.dll
-        run: cargo test --locked --manifest-path src-tauri/Cargo.toml ort_loads_and_runs_silero_vad -- --ignored --nocapture
-
-      - name: Write the pre-package binary and model contract
+      - name: Write the pre-package binary and notice contract
         shell: bash
         env:
           RELEASE_TAG: ${{ inputs.tag }}
@@ -677,13 +613,10 @@ jobs:
           cargo run --locked --quiet --manifest-path "$verify_dir/Cargo.toml" -- \
             "$payload" "$payload.sig"
 
-      # Release Tauri config overlay, always generated. It stages the ONNX
-      # Runtime library where the runtime loader (src-tauri/src/lib.rs) resolves
-      # it — a macOS framework (Contents/Frameworks/libonnxruntime.dylib) so it
-      # is signed inside-out and survives notarization, and a Windows resource
-      # (resources/onnxruntime/onnxruntime.dll). Signed updater artifacts and
-      # Windows Authenticode signing are layered on ONLY when their secrets are
-      # present. Tauri deep-merges this overlay onto tauri.conf.json.
+      # Release Tauri config overlay, always generated. It carries the exact
+      # native and notice evidence into both installers. Signed updater
+      # artifacts and Windows Authenticode signing are layered on only when
+      # their secrets are present. Tauri deep-merges this overlay.
       - name: Generate release configuration
         shell: bash
         env:
@@ -699,22 +632,13 @@ jobs:
             --arg thumbprint "$WINDOWS_CERTIFICATE_THUMBPRINT" \
             --argjson updater "$UPDATER_ENABLED" \
             --argjson platformSigning "$PLATFORM_SIGNING" '
-            # ONNX Runtime placement — always, matched to the lib.rs loader.
-            (if $runner == "Windows" then {
-                resources: (.bundle.resources + [
-                  "resources/onnxruntime/onnxruntime.dll",
-                  "resources/third-party/onnxruntime",
+            (if ($runner == "Windows" or $runner == "macOS") then {
+                resources: ((.bundle.resources + [
                   "resources/third-party/ffmpeg",
+                  "resources/third-party/javascript",
                   "resources/third-party/release"
-                ])
-              } elif $runner == "macOS" then {
-                resources: (.bundle.resources + [
-                  "resources/third-party/onnxruntime",
-                  "resources/third-party/ffmpeg",
-                  "resources/third-party/release"
-                ]),
-                macOS: { frameworks: ["resources/onnxruntime/libonnxruntime.dylib"] }
-              } else error("unsupported release runner: " + $runner) end) as $ort
+                ]) | unique)
+              } else error("unsupported release runner: " + $runner) end) as $base
             # Signed auto-update artifacts — only with updater secrets.
             | (if $updater then { createUpdaterArtifacts: true } else {} end) as $upd
             # Windows Authenticode signing — only with the Windows cert.
@@ -726,7 +650,7 @@ jobs:
                 }
               } else {} end) as $win
             | {
-                bundle: ($ort + $upd + $win)
+                bundle: ($base + $upd + $win)
               }
               + (if $updater then {
                   plugins: { updater: {
@@ -1121,6 +1045,7 @@ jobs:
           mkdir -p "$evidence_dir"
 
           npm ci
+          node scripts/generate-javascript-notices.mjs --strict --check
           node scripts/normalize-release-sbom.mjs --self-test
           CARGO_NET_OFFLINE=true cargo about generate \
             --config about.toml \
@@ -1137,6 +1062,10 @@ jobs:
           }
           cp src-tauri/resources/third-party/rust/THIRD-PARTY-LICENSES.html \
             "$evidence_dir/DepoAudio_${version}_rust-third-party-licenses.html"
+          cp src-tauri/resources/third-party/javascript/THIRD-PARTY-NOTICES.html \
+            "$evidence_dir/DepoAudio_${version}_javascript-third-party-notices.html"
+          cp src-tauri/resources/third-party/javascript/COMPONENTS.json \
+            "$evidence_dir/DepoAudio_${version}_javascript-components.json"
           cp THIRD_PARTY_LICENSES.md \
             "$evidence_dir/DepoAudio_${version}_third-party-review.md"
 
@@ -1319,6 +1248,8 @@ jobs:
           done
           require_one 'macOS third-party source archive' "^DepoAudio_${escaped_version}_third-party-source\\.tar\\.gz$"
           require_one 'Rust third-party license report' "^DepoAudio_${escaped_version}_rust-third-party-licenses\\.html$"
+          require_one 'JavaScript third-party notice report' "^DepoAudio_${escaped_version}_javascript-third-party-notices\\.html$"
+          require_one 'JavaScript notice component manifest' "^DepoAudio_${escaped_version}_javascript-components\\.json$"
           require_one 'reviewed third-party ledger' "^DepoAudio_${escaped_version}_third-party-review\\.md$"
           require_one 'dependency evidence toolchain record' '^DEPENDENCY-EVIDENCE-TOOLCHAIN\\.txt$'
           require_one 'production npm SBOM' "^DepoAudio_${escaped_version}_npm\\.cdx\\.json$"

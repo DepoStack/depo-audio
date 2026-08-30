@@ -16,7 +16,12 @@
     "format": "prettier --write \"src/**/*.{js,jsx,css}\" \"!src/styles/tokens.css\"",
     "format:check": "prettier --check \"src/**/*.{js,jsx,css}\" \"!src/styles/tokens.css\"",
     "tokens": "node scripts/build-tokens.mjs",
-    "release:check": "node scripts/release-contract-check.mjs && node scripts/release-artifact-inventory.mjs --self-test && node scripts/normalize-release-sbom.mjs --self-test && node scripts/normalize-cargo-about-report.mjs --self-test && node scripts/upload-draft-release-assets.mjs --self-test && node scripts/prepare-release-publication.mjs --self-test",
+    "notices:generate": "node scripts/generate-javascript-notices.mjs",
+    "notices:check": "node scripts/generate-javascript-notices.mjs --check",
+    "notices:self-test": "node scripts/generate-javascript-notices.mjs --self-test",
+    "models:check": "node scripts/verify-model-distribution.mjs",
+    "models:self-test": "node scripts/verify-model-distribution.mjs --self-test",
+    "release:check": "node scripts/release-contract-check.mjs && npm run models:self-test && npm run models:check && npm run notices:self-test && npm run notices:check && node scripts/release-artifact-inventory.mjs --self-test && node scripts/normalize-release-sbom.mjs --self-test && node scripts/normalize-cargo-about-report.mjs --self-test && node scripts/upload-draft-release-assets.mjs --self-test && node scripts/prepare-release-publication.mjs --self-test",
     "size:check": "node scripts/check-client-size.mjs",
     "test": "vitest run",
     "test:watch": "vitest"

@@ -270,6 +270,8 @@ function requiredReleaseEvidence(version) {
     'WEBVIEW2-SIGNATURE-windows.txt',
     `DepoAudio_${version}_third-party-source.tar.gz`,
     `DepoAudio_${version}_rust-third-party-licenses.html`,
+    `DepoAudio_${version}_javascript-third-party-notices.html`,
+    `DepoAudio_${version}_javascript-components.json`,
     `DepoAudio_${version}_third-party-review.md`,
     'DEPENDENCY-EVIDENCE-TOOLCHAIN.txt',
     `DepoAudio_${version}_npm.cdx.json`,
@@ -979,6 +981,15 @@ async function selfTest() {
     [
       'missing signed updater signature',
       () => validateCandidateAssetSet(signedAssets.slice(0, -1), gate.version, 'signed'),
+    ],
+    [
+      'missing JavaScript notice evidence',
+      () =>
+        validateCandidateAssetSet(
+          signedAssets.filter(entry => !entry.name.endsWith('_javascript-third-party-notices.html')),
+          gate.version,
+          'signed',
+        ),
     ],
     ['signature with unavailable updater', () => validateCandidateAssetSet(signedAssets, gate.version, 'unavailable')],
   ]) {
