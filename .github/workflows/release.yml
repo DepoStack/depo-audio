@@ -1274,6 +1274,13 @@ jobs:
               echo "ERROR: expected exactly one $description asset (found $count)"; exit 1;
             }
           }
+          require_exact() {
+            local description="$1" name="$2" count
+            count=$(grep -Fxc -- "$name" <<<"$names" || true)
+            [ "$count" = '1' ] || {
+              echo "ERROR: expected exactly one $description asset (found $count)"; exit 1;
+            }
+          }
           version=${TAG#v}
           version=${version%%-*}
           escaped_version=${version//./\\.}
@@ -1293,29 +1300,30 @@ jobs:
             WEBVIEW2-EVIDENCE-windows.json \
             WEBVIEW2-SIGNATURE-windows.txt
           do
-            require_one "$required" "^${required//./\\.}$"
+            require_exact "$required" "$required"
           done
           require_one 'macOS third-party source archive' "^DepoAudio_${escaped_version}_third-party-source\\.tar\\.gz$"
           require_one 'Rust third-party license report' "^DepoAudio_${escaped_version}_rust-third-party-licenses\\.html$"
           require_one 'JavaScript third-party notice report' "^DepoAudio_${escaped_version}_javascript-third-party-notices\\.html$"
           require_one 'JavaScript notice component manifest' "^DepoAudio_${escaped_version}_javascript-components\\.json$"
           require_one 'reviewed third-party ledger' "^DepoAudio_${escaped_version}_third-party-review\\.md$"
-          require_one 'dependency evidence toolchain record' '^DEPENDENCY-EVIDENCE-TOOLCHAIN\\.txt$'
+          require_exact 'dependency evidence toolchain record' 'DEPENDENCY-EVIDENCE-TOOLCHAIN.txt'
           require_one 'production npm SBOM' "^DepoAudio_${escaped_version}_npm\\.cdx\\.json$"
           for target in aarch64-apple-darwin x86_64-apple-darwin x86_64-pc-windows-msvc; do
             require_one "Rust $target SBOM" "^DepoAudio_${escaped_version}_rust_${target}\\.cdx\\.json$"
           done
 
-          signature_count=$(grep -Ec '\\.sig$' <<<"$names" || true)
-          latest_count=$(grep -Ec '^latest\\.json$' <<<"$names" || true)
+          signature_count=$(grep -Ec '\.sig$' <<<"$names" || true)
+          latest_count=$(grep -Fxc -- 'latest.json' <<<"$names" || true)
           [ "$latest_count" = '0' ] || {
             echo 'ERROR: latest.json must be generated only by the separate publication approval step'; exit 1;
           }
           if [ "$signature_count" != '0' ]; then
-            require_one 'universal macOS updater signature' '\\.app\\.tar\\.gz\\.sig$'
-            windows_signatures=$(grep -Ec '\\.(msi|exe)\\.sig$' <<<"$names" || true)
-            [ "$windows_signatures" -ge 1 ] || {
-              echo 'ERROR: updater signing is incomplete across platforms'; exit 1;
+            require_exact 'universal macOS updater signature' "DepoAudio_${version}_universal.app.tar.gz.sig"
+            require_exact 'Windows MSI updater signature' "DepoAudio_${version}_x64_en-US.msi.sig"
+            require_exact 'Windows NSIS updater signature' "DepoAudio_${version}_x64-setup.exe.sig"
+            [ "$signature_count" = '3' ] || {
+              echo 'ERROR: signed updater candidate contains an unexpected signature asset'; exit 1;
             }
           fi
           printf '%s' "$release" | jq -r '.assets[] | "  \(.name)  (\(.size) bytes)"'
