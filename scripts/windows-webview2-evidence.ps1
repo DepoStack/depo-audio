@@ -115,12 +115,20 @@ $signToolPath = if ($signTool -is [System.Management.Automation.ApplicationInfo]
 } else {
   $signTool.FullName
 }
-$signatureReport = @(& $signToolPath verify /pa /all /v $wixInput.FullName 2>&1)
-if ($LASTEXITCODE -ne 0) {
-  throw 'signtool verification failed for the WebView2 offline installer'
-}
+# Current Microsoft WebView2 offline installers carry a publicly trusted
+# Microsoft primary signature and an additional internal EdgeBuild signature.
+# `/all` fails on that internal self-signed chain even when the primary
+# Authenticode signature is valid. Verify the primary signature under the
+# Windows Authenticode policy; Get-VerifiedMicrosoftSignature above separately
+# requires a valid Microsoft signer and records its certificate identity.
+$signatureReport = @(& $signToolPath verify /pa /v $wixInput.FullName 2>&1)
+$signToolExitCode = $LASTEXITCODE
 $sanitizedSignatureReport = $signatureReport | ForEach-Object {
   $_.ToString().Replace($wixInput.FullName, '<WEBVIEW2_OFFLINE_INSTALLER>')
+}
+if ($signToolExitCode -ne 0) {
+  $sanitizedSignatureReport | ForEach-Object { Write-Host $_ }
+  throw 'signtool primary-signature verification failed for the WebView2 offline installer'
 }
 $signatureReportParent = Split-Path -Parent $SignatureReportPath
 if ($signatureReportParent) { New-Item -ItemType Directory -Force -Path $signatureReportParent | Out-Null }

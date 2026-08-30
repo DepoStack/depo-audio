@@ -475,6 +475,8 @@ expect(
     windowsPackagedSmoke.includes("$_.Name -like '*.onnx'") &&
     windowsPackagedSmoke.includes("$_.Name -ieq 'onnxruntime.dll'") &&
     windowsPackagedSmoke.includes('-c:a ftr') &&
+    windowsPackagedSmoke.includes("$probe.streams[0].codec_name -ne 'ftr'") &&
+    !windowsPackagedSmoke.includes('$ffprobe.FullName -v error -c:a ftr') &&
     windowsPackagedSmoke.includes("Invoke-PackagedNativeSmoke -Root $msiRoot -Label 'MSI'") &&
     windowsPackagedSmoke.includes("Invoke-PackagedNativeSmoke -Root $nsisRoot -Label 'NSIS'") &&
     windowsPackagedSmoke.includes('Invoke-PackagedStartup -App $nsisApp'),
@@ -493,6 +495,8 @@ expect(
     macPackagedSmoke.includes("-iname '*.onnx'") &&
     macPackagedSmoke.includes("-iname 'libonnxruntime*.dylib'") &&
     macPackagedSmoke.includes('-c:a ftr') &&
+    macPackagedSmoke.includes('grep -q \'"codec_name": "ftr"\'') &&
+    !macPackagedSmoke.includes('"$ffprobe" -v error -c:a ftr') &&
     macPackagedSmoke.includes('codesign --verify --deep --strict') &&
     macPackagedSmoke.includes('if [ "${EXPECT_PLATFORM_SIGNING:-false}" = \'true\' ]') &&
     macPackagedSmoke.includes('xcrun stapler validate "$app"') &&
@@ -567,6 +571,9 @@ expect(
     webviewEvidence.includes("$tauriCliVersion -ne '2.11.4'") &&
     webviewEvidence.includes('Get-AuthenticodeSignature') &&
     webviewEvidence.includes('$wixHash -ne $nsisHash') &&
+    webviewEvidence.includes('& $signToolPath verify /pa /v') &&
+    !webviewEvidence.includes('& $signToolPath verify /pa /all /v') &&
+    webviewEvidence.includes('primary-signature verification failed') &&
     webviewEvidence.includes('finalInstallerEmbeddingVerified = $false'),
   'Windows releases must verify and retain exact Microsoft-signed, byte-identical WebView2 build-input evidence without overstating final extraction',
 )
