@@ -854,11 +854,29 @@ for (const [blockerId, isBoundToEvidence] of Object.entries(releaseGateEvidenceB
   expect(isBoundToEvidence, `release blocker ${blockerId} is no longer tied to its repository evidence gate`)
 }
 
-const javascriptNoticeGateIsOpen = gateBlockerById.get('javascript-runtime-notices')?.status === 'open'
+const reviewedCandidateReceiptIsBound =
+  gateCandidate.releaseId === 379418038 &&
+  gateCandidate.sourceCommit === '2a9053117fc90e5b208b8e29c92646715285f8dc' &&
+  gateCandidate.assetManifestSha256 === '0db9eaa86b8203abeee8d120281bf8696bfb36183b803f9d34b0650fe5198860' &&
+  releaseCandidate.includes('33338834735') &&
+  releaseCandidate.includes('33340819049') &&
+  releaseCandidate.includes('0db9eaa86b8203abeee8d120281bf8696bfb36183b803f9d34b0650fe5198860')
 expect(
-  javascriptNoticeGateIsOpen,
-  'the JavaScript notice blocker must remain open until byte-exact notice evidence is verified in every final installer',
+  reviewedCandidateReceiptIsBound,
+  'the reviewed private candidate must remain bound to its exact release, source, inspection manifest, and workflow receipts',
 )
+const candidateBuildRunUrl = 'https://github.com/DepoStack/depo-audio/actions/runs/33338834735'
+const candidateInspectionRunUrl = 'https://github.com/DepoStack/depo-audio/actions/runs/33340819049'
+for (const blockerId of ['javascript-runtime-notices', 'macos-ffmpeg-rc2-evidence', 'synthetic-ftr-packaged-decode']) {
+  const blocker = gateBlockerById.get(blockerId)
+  const evidenceRefs = Array.isArray(blocker?.evidenceRefs) ? new Set(blocker.evidenceRefs) : null
+  expect(
+    blocker?.status === 'open' &&
+      evidenceRefs?.has(candidateBuildRunUrl) &&
+      evidenceRefs.has(candidateInspectionRunUrl),
+    `technical blocker ${blockerId} must retain exact candidate evidence and remain open until a named reviewer closes it`,
+  )
+}
 const otherOpenGateBlockers = openGateBlockers.filter(blocker => blocker.id !== 'release-changelog-finalization')
 const changelogIsDated = datedReleaseHeading.test(changelog)
 const changelogGateIsOpen = gateBlockerById.get('release-changelog-finalization')?.status === 'open'
