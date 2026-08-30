@@ -28,21 +28,9 @@ uuid = { version = "1", features = ["v4"] }
 
 # System
 dirs-next = "2.0"
-sha2 = "0.11"
 
-# HTTP client for model downloads
-reqwest = { version = "0.12", features = ["rustls-tls"], default-features = false }
-
-# AI audio processing
-nnnoiseless = { version = "0.5", default-features = false, features = ["dasp"] }
-# Release bundles carry ONNX Runtime 1.22. Keep the Rust binding on its stable
-# API 21 path and load only that staged runtime; the crate's defaults target API
-# 24 and also enable its independent binary downloader.
-ort = { version = "=2.0.0-rc.12", default-features = false, features = ["std", "ndarray", "tracing", "load-dynamic", "api-21"] }
+# Audio containers and non-learned signal processing
 hound = "3.5"
-ndarray = "0.17"
-rustfft = "6"
-libloading = "0.9"
 
 # Auto-update via GitHub Releases — desktop only (these plugins don't build for mobile)
 [target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]

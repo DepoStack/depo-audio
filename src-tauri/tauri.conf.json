@@ -49,10 +49,7 @@
     "copyright": "2025 Andrew Mayes",
     "licenseFile": "installer/license.rtf",
     "resources": [
-      "resources/models/flashsr.onnx",
-      "resources/models/silero_vad.onnx",
-      "resources/models/smart-turn-v3-int8.onnx",
-      "resources/models/speaker_seg_int8.onnx",
+      "resources/third-party/javascript",
       "resources/third-party/rust"
     ],
     "externalBin": ["binaries/ffmpeg", "binaries/ffprobe"],

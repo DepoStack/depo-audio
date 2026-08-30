@@ -2,8 +2,8 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-    <!-- Keep the hardened runtime intact. Bundled sidecars and ONNX Runtime
-         must be signed with the application rather than bypassing library
-         validation or enabling executable-memory/JIT exceptions. -->
+    <!-- Keep the hardened runtime intact. Bundled sidecars must be signed with
+         the application rather than bypassing library validation or enabling
+         executable-memory/JIT exceptions. -->
 </dict>
 </plist>

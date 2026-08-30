@@ -4,14 +4,15 @@
 // options to sensible defaults. Users can apply a preset and then override
 // individual settings.
 
-// Resolve capability- and mode-dependent settings before a preset is compared
-// or applied. Unknown capabilities fail closed so a preset can never silently
-// enable a processing path that the current installation cannot run.
-export function resolvePresetSettings(settings, capabilities) {
+// Resolve release- and mode-dependent settings before a preset is compared or
+// applied. Retired learned-model flags always fail closed.
+export function resolvePresetSettings(settings) {
   return {
     ...settings,
     autoLevel: settings.mode === 'keep' ? false : Boolean(settings.autoLevel),
-    dereverb: Boolean(settings.dereverb && capabilities?.dereverbAvailable === true),
+    denoise: false,
+    enhance: false,
+    dereverb: false,
   }
 }
 
@@ -19,7 +20,7 @@ export const PRESETS = [
   {
     id: 'deposition',
     name: 'Deposition',
-    desc: 'Court deposition — clean speech, balanced speakers',
+    desc: 'Court deposition — balanced channels and consistent output level',
     settings: {
       mode: 'stereo',
       format: 'mp3',
@@ -29,7 +30,7 @@ export const PRESETS = [
       fade: true,
       fadeDur: 0.3,
       hpf: true,
-      denoise: true,
+      denoise: false,
       denoiseQuality: 'fast',
       autoLevel: true,
       declip: false,
@@ -40,7 +41,7 @@ export const PRESETS = [
   {
     id: 'phone',
     name: 'Phone Recording',
-    desc: 'Phone call or dial-in — enhance clarity and remove noise',
+    desc: 'Phone call or dial-in — focused speech-band filtering and consistent output',
     settings: {
       mode: 'stereo',
       format: 'mp3',
@@ -50,18 +51,18 @@ export const PRESETS = [
       fade: false,
       fadeDur: 0.5,
       hpf: true,
-      denoise: true,
+      denoise: false,
       denoiseQuality: 'fast',
       autoLevel: false,
       declip: false,
-      enhance: true,
+      enhance: false,
       dereverb: false,
     },
   },
   {
     id: 'courtroom',
     name: 'Courtroom',
-    desc: 'Large room recording — reduce background noise and balance speakers',
+    desc: 'Large room recording — separate and balance microphone channels',
     settings: {
       mode: 'split',
       format: 'wav',
@@ -71,12 +72,12 @@ export const PRESETS = [
       fade: false,
       fadeDur: 0.5,
       hpf: true,
-      denoise: true,
+      denoise: false,
       denoiseQuality: 'fast',
       autoLevel: true,
       declip: false,
       enhance: false,
-      dereverb: true,
+      dereverb: false,
     },
   },
   {
@@ -103,7 +104,7 @@ export const PRESETS = [
   {
     id: 'quick',
     name: 'Quick Share',
-    desc: 'Small file for email — voice-optimized Opus, fast denoise',
+    desc: 'Small file for email — voice-optimized Opus with level normalization',
     settings: {
       mode: 'stereo',
       format: 'opus',
@@ -113,7 +114,7 @@ export const PRESETS = [
       fade: true,
       fadeDur: 0.3,
       hpf: true,
-      denoise: true,
+      denoise: false,
       denoiseQuality: 'fast',
       autoLevel: false,
       declip: false,

@@ -149,7 +149,7 @@ describe('ConvertTab scan cancellation', () => {
     await waitFor(() => expect(screen.getByRole('button', { name: 'Scan' })).toBeEnabled())
   })
 
-  it('omits unavailable hardware measurements from the performance summary', () => {
+  it('does not advertise learned-model hardware tiers or acceleration', () => {
     render(
       <ConvertTab
         {...props()}
@@ -163,7 +163,7 @@ describe('ConvertTab scan cancellation', () => {
       />,
     )
 
-    expect(screen.getByText(/Lightweight mode/)).not.toHaveAttribute('title')
+    expect(screen.queryByText(/Lightweight mode|High performance|Apple Silicon|GB RAM|cores/)).not.toBeInTheDocument()
   })
 
   it('marks the guided workflow for compact three-column reflow', () => {
@@ -192,22 +192,5 @@ describe('ConvertTab scan cancellation', () => {
     expect(screen.getByRole('status', { name: 'Conversion status' })).toHaveTextContent(
       'Add a recording to choose an output and convert.',
     )
-  })
-
-  it('includes only measured hardware details in the performance summary', () => {
-    render(
-      <ConvertTab
-        {...props()}
-        capabilities={{
-          dereverbAvailable: false,
-          tier: 'high',
-          cpuCores: 12,
-          ramMb: 32768,
-          appleSilicon: true,
-        }}
-      />,
-    )
-
-    expect(screen.getByText(/High performance/)).toHaveAttribute('title', '12 cores · 32 GB RAM · Apple Silicon')
   })
 })

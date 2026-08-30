@@ -7,13 +7,12 @@ use tauri::{AppHandle, Emitter};
 
 use crate::ffmpeg::{ensure_ftr_decoder, probe_channels_cancellable, probe_duration_cancellable};
 use crate::helpers::ffprobe_bin_name;
-use crate::types::{AnalysisResult, TurnSegment};
+use crate::types::AnalysisResult;
 
 // ── Audio analysis engine ────────────────────────────────────────────────────
 //
-// Pre-scans audio to detect issues and recommend AI processing.
-// Uses FFmpeg/ffprobe for loudness + peak analysis and the Pipecat Smart Turn
-// ONNX model for speaker turn detection.
+// Pre-scans audio with FFmpeg/ffprobe to report objective signal and container
+// observations available in the v1.0.3 release.
 
 /// Target loudness for auto-leveling (LUFS).
 const TARGET_LUFS: f64 = -16.0;
@@ -23,15 +22,11 @@ const SILENCE_THRESHOLD: f64 = -60.0;
 const LEVELING_THRESHOLD: f64 = 3.0;
 /// Peak dBFS threshold above which clipping is detected.
 const CLIPPING_THRESHOLD: f64 = -0.5;
-/// Noise floor above which denoising is recommended (dBFS).
-const NOISE_THRESHOLD: f64 = -45.0;
-/// Sample rate at or below which bandwidth extension is recommended.
+/// Sample rate at or below which the source is reported as narrow-band.
 const NARROWBAND_RATE: u32 = 16000;
 /// Court recorders top out at 16 channels; anything larger is a corrupt
 /// header and must not become a loop bound.
 const MAX_SCAN_CHANNELS: u32 = 16;
-/// Wall-clock budget for the Smart Turn inference pass (all channels).
-const TURNS_BUDGET_SECS: u64 = 150;
 
 /// Context for a user-visible Scan: progress events + cancellation.
 /// Conversion-time analysis (auto-level) passes None and runs silently.
@@ -57,7 +52,7 @@ impl ScanCtx {
     }
 
     /// Reuse the analysis engine for conversion-time auto-leveling while
-    /// binding its sidecars and inference checkpoints to the conversion batch
+    /// binding its sidecars and cancellation checkpoints to the conversion batch
     /// cancellation token. Conversion analysis must not leak scan-progress
     /// events into the Scan UI.
     pub fn silent(app: AppHandle, path: String, epoch: Arc<AtomicU64>, my_gen: u64) -> Self {
@@ -261,151 +256,20 @@ pub(crate) async fn analyze_audio(
         false
     };
 
-    // Estimate noise floor from quietest channel RMS
-    // A rough proxy: if the quietest channel LUFS is above the noise threshold
-    // and there's significant content, denoising may help.
-    emit(ctx, "noise", 0.28);
-    let needs_denoise = estimate_noise_floor(app, feed, &input_codec, ctx).await > NOISE_THRESHOLD;
-    check(ctx)?;
-
-    // Narrowband detection
+    // v1.0.3 intentionally performs no learned-model inference. Retain the
+    // wire fields for compatibility, but report no neural analysis result.
+    let needs_denoise = false;
     let is_narrowband = sample_rate <= NARROWBAND_RATE;
-
-    // Compute auto-level gains
     let channel_gains = channel_gains_from_lufs(&per_channel_lufs);
-
-    // Voice activity detection (run early so we can skip expensive steps on silence)
-    emit(ctx, "speech", 0.32);
-    let (vad_result, file_undecodable, vad_unavailable) = match crate::vad::detect_speech(app, feed, ctx).await {
-        Ok(v) => (Some(v), false, false),
-        // The FILE failed to decode: every other pass would burn its own
-        // decode timeout on the same bytes, so skip them. (The old
-        // behavior defaulted speech_ratio to 1.0, force-running every
-        // pass on exactly the files that couldn't be analyzed at all.)
-        Err(crate::vad::VadError::Undecodable(_)) => (None, true, false),
-        // VAD itself is unavailable (model missing/corrupt, ORT failure):
-        // says nothing about the file — run the other passes, their own
-        // models may be fine.
-        Err(crate::vad::VadError::Unavailable(_)) => (None, false, true),
-    };
-    check(ctx)?;
-
-    // Gate the expensive passes on measured speech; with no measurement the
-    // gate is open unless the file itself proved undecodable.
-    let speech_gate = |threshold: f64| match &vad_result {
-        Some(v) => v.speech_ratio > threshold,
-        None => !file_undecodable,
-    };
-
-    // Smart Turn detection — skip if very little speech detected
-    let turns = if speech_gate(0.1) {
-        emit(ctx, "turns", 0.45);
-        detect_turns(app, feed, channels, &input_codec, ctx).await
-    } else {
-        Vec::new()
-    };
-    check(ctx)?;
-
-    // Build recommendations
-    let mut recommendations = Vec::new();
-    if needs_denoise {
-        recommendations.push("Background noise detected — AI denoising recommended".into());
-    }
-    if needs_leveling {
-        let spread = active_lufs.iter().cloned().fold(f64::NEG_INFINITY, f64::max)
-            - active_lufs.iter().cloned().fold(f64::INFINITY, f64::min);
-        recommendations.push(format!(
-            "{:.1} dB spread across speakers — auto-leveling recommended",
-            spread
-        ));
-    }
-    if has_clipping {
-        let clipped: Vec<usize> = per_channel_peak
-            .iter()
-            .enumerate()
-            .filter(|(_, &p)| p >= CLIPPING_THRESHOLD)
-            .map(|(i, _)| i + 1)
-            .collect();
-        recommendations.push(format!(
-            "Clipping detected on channel{} {} — de-clipping recommended",
-            if clipped.len() > 1 { "s" } else { "" },
-            clipped.iter().map(|c| c.to_string()).collect::<Vec<_>>().join(", ")
-        ));
-    }
-    if is_narrowband {
-        recommendations.push(format!(
-            "Narrow-band audio detected ({} Hz) — bandwidth extension recommended",
-            sample_rate
-        ));
-    }
-
-    // VAD was already run above; add recommendation if mostly silence
-    if let Some(ref vad) = vad_result {
-        if vad.speech_ratio < 0.3 && duration > 10.0 {
-            recommendations.push(format!(
-                "Only {:.0}% of this recording contains speech — consider trimming silence",
-                vad.speech_ratio * 100.0
-            ));
-        }
-    }
-
-    // Quality scoring — skip if no speech detected
-    let quality_attempted = speech_gate(0.05);
-    let quality_score = if quality_attempted {
-        emit(ctx, "quality", 0.88);
-        crate::scoring::score_quality(app, feed, ctx)
-            .await
-            .map(|qs| crate::types::QualityScoreResult {
-                sig: qs.sig,
-                bak: qs.bak,
-                ovr: qs.ovr,
-            })
-            .ok()
-    } else {
-        None
-    };
-    check(ctx)?;
-
-    // Speaker-slot activity estimation — skip if no speech detected
-    let speaker_attempted = speech_gate(0.1);
-    let speaker_count = if speaker_attempted {
-        emit(ctx, "speakers", 0.94);
-        crate::speakers::detect_speakers(app, feed, ctx)
-            .await
-            .map(|info| info.count)
-            .ok()
-    } else {
-        None
-    };
-    check(ctx)?;
-
-    // Be honest when the file itself defeated part of the analysis. Total
-    // loudness failure already returned Err above, so any failure count here
-    // means SOME channels silently read as silence.
-    if file_undecodable || loudness_failures > 0 {
-        recommendations.push(
-            "This file could not be fully decoded for analysis — convert it first, then scan the converted output"
-                .into(),
-        );
-    }
-
-    // Note when AI models are missing so the user knows results may be incomplete
-    let mut missing_models = Vec::new();
-    if vad_unavailable {
-        missing_models.push("VAD");
-    }
-    if quality_attempted && quality_score.is_none() {
-        missing_models.push("quality scoring");
-    }
-    if speaker_attempted && speaker_count.is_none() {
-        missing_models.push("speaker detection");
-    }
-    if !missing_models.is_empty() {
-        recommendations.push(format!(
-            "Some AI models not available ({}) — results may be incomplete",
-            missing_models.join(", ")
-        ));
-    }
+    let recommendations = build_recommendations(
+        needs_leveling,
+        &active_lufs,
+        has_clipping,
+        &per_channel_peak,
+        is_narrowband,
+        sample_rate,
+        loudness_failures,
+    );
 
     emit(ctx, "done", 1.0);
 
@@ -419,13 +283,62 @@ pub(crate) async fn analyze_audio(
         needs_leveling,
         needs_denoise,
         is_narrowband,
-        turns,
+        turns: Vec::new(),
         channel_gains,
         recommendations,
-        quality_score,
-        speaker_count,
-        speech_ratio: vad_result.map(|v| v.speech_ratio),
+        quality_score: None,
+        speaker_count: None,
+        speech_ratio: None,
     })
+}
+
+fn build_recommendations(
+    needs_leveling: bool,
+    active_lufs: &[f64],
+    has_clipping: bool,
+    per_channel_peak: &[f64],
+    is_narrowband: bool,
+    sample_rate: u32,
+    loudness_failures: u32,
+) -> Vec<String> {
+    let mut recommendations = Vec::new();
+
+    if needs_leveling && active_lufs.len() > 1 {
+        let spread = active_lufs.iter().copied().fold(f64::NEG_INFINITY, f64::max)
+            - active_lufs.iter().copied().fold(f64::INFINITY, f64::min);
+        recommendations.push(format!(
+            "{spread:.1} dB spread across channels — auto-leveling recommended"
+        ));
+    }
+
+    if has_clipping {
+        let clipped: Vec<usize> = per_channel_peak
+            .iter()
+            .enumerate()
+            .filter(|(_, peak)| **peak >= CLIPPING_THRESHOLD)
+            .map(|(index, _)| index + 1)
+            .collect();
+        recommendations.push(format!(
+            "Clipping detected on channel{} {} — de-clipping recommended",
+            if clipped.len() > 1 { "s" } else { "" },
+            clipped.iter().map(usize::to_string).collect::<Vec<_>>().join(", ")
+        ));
+    }
+
+    if is_narrowband {
+        recommendations.push(format!(
+            "Narrow-band source detected ({sample_rate} Hz) — high-frequency detail may be absent from the recording"
+        ));
+    }
+
+    if loudness_failures > 0 {
+        recommendations.push(
+            "Some channels could not be decoded for analysis — convert the file first, then scan the converted output"
+                .into(),
+        );
+    }
+
+    recommendations
 }
 
 // ── Loudness & peak analysis via FFmpeg ──────────────────────────────────────
@@ -562,43 +475,6 @@ async fn analyze_single_channel(
     Ok((lufs.unwrap_or(-70.0), peak.unwrap_or(-70.0)))
 }
 
-// ── Noise floor estimation ──────────────────────────────────────────────────
-
-async fn estimate_noise_floor(app: &AppHandle, feed: &Path, input_codec: &[String], ctx: Option<&ScanCtx>) -> f64 {
-    // Use astats' measured noise floor. The overall RMS level would include
-    // speech and sits far above any sensible noise threshold, which made
-    // denoising look "recommended" for virtually every normal recording.
-    let mut args = crate::helpers::safe_ffmpeg_input_prelude();
-    args.extend(input_codec.iter().cloned());
-    args.extend([
-        "-t".into(),
-        crate::ffmpeg::ANALYSIS_SAMPLE_SECS.to_string(),
-        "-i".into(),
-        feed.to_string_lossy().to_string(),
-        "-af".into(),
-        "astats=metadata=1".into(),
-        "-f".into(),
-        "null".into(),
-        "-".into(),
-    ]);
-
-    if let Some(out) =
-        sidecar_with_heartbeat(app, crate::helpers::ffmpeg_bin_name(), args, 120, ctx, "noise", 0.29).await
-    {
-        let stderr = String::from_utf8_lossy(&out.stderr);
-        let noise_re = Regex::new(r"Noise floor dB:\s+(-?\d+\.?\d*)").unwrap();
-        // Use the last match: astats prints per-channel sections first,
-        // then the Overall section.
-        if let Some(cap) = noise_re.captures_iter(&stderr).last() {
-            if let Ok(floor) = cap[1].parse::<f64>() {
-                return floor;
-            }
-        }
-    }
-
-    -60.0 // Assume quiet if analysis fails (or floor is -inf, i.e. silence)
-}
-
 // ── Sample rate probing ─────────────────────────────────────────────────────
 
 async fn probe_sample_rate(app: &AppHandle, feed: &Path, ctx: Option<&ScanCtx>) -> Option<u32> {
@@ -622,225 +498,9 @@ async fn probe_sample_rate(app: &AppHandle, feed: &Path, ctx: Option<&ScanCtx>) 
     v["streams"][0]["sample_rate"].as_str()?.parse::<u32>().ok()
 }
 
-// ── Smart Turn detection ────────────────────────────────────────────────────
-//
-// Uses the Pipecat Smart Turn v3 ONNX model to detect speaker turn boundaries.
-// Each 8-second window is converted to Whisper-style log-mel features
-// (see mel.rs); the model's logit becomes a turn-completion probability.
-
-fn smart_turn_window_bounds(position_samples: usize, sample_rate: usize, window_samples: usize) -> (f64, f64) {
-    let start = position_samples as f64 / sample_rate as f64;
-    let end = position_samples.saturating_add(window_samples) as f64 / sample_rate as f64;
-    (start, end)
-}
-
-async fn detect_turns(
-    app: &AppHandle,
-    feed: &Path,
-    channels: u32,
-    input_codec: &[String],
-    ctx: Option<&ScanCtx>,
-) -> Vec<TurnSegment> {
-    // Try loading the Smart Turn model — if not available, return empty
-    let model_path = match crate::models::model_path(app, "smart-turn-v3-int8.onnx") {
-        Ok(p) => p,
-        Err(_) => return Vec::new(),
-    };
-
-    // Phase 1 (async): decode each channel to a 16kHz mono temp WAV. TempFile
-    // drop guards own cleanup on EVERY path — early returns, cancel/budget
-    // breaks, and panics in the inference task below (an unwinding panic
-    // would skip any explicit cleanup loop and leak up to 16 × ~6MB).
-    let mut decoded: Vec<(u32, crate::safety::TempFile)> = Vec::new();
-    for ch in 0..channels {
-        if ctx.map(|c| c.cancelled()).unwrap_or(false) {
-            break;
-        }
-        let pct = 0.45 + 0.10 * (ch as f64 / channels as f64);
-        emit(ctx, "turns", pct);
-
-        let tmp = crate::safety::TempFile::new(std::env::temp_dir().join(format!(
-            "depoaudio_turn_ch{}_{}.wav",
-            ch,
-            uuid::Uuid::new_v4()
-        )));
-        let pan_filter = if channels > 1 {
-            format!("pan=mono|c0=c{},aresample=16000", ch)
-        } else {
-            "aresample=16000".into()
-        };
-
-        let mut args = crate::helpers::safe_ffmpeg_input_prelude();
-        args.extend(input_codec.iter().cloned());
-        args.extend([
-            "-t".into(),
-            crate::ffmpeg::ANALYSIS_SAMPLE_SECS.to_string(),
-            "-i".into(),
-            feed.to_string_lossy().to_string(),
-            "-af".into(),
-            pan_filter,
-            // -ac 1 matters on the channels==1 fallback path (probe failed):
-            // without it a multichannel file would feed interleaved samples
-            // to the model as if they were mono
-            "-ac".into(),
-            "1".into(),
-            "-acodec".into(),
-            "pcm_s16le".into(),
-            "-y".into(),
-            tmp.to_string_lossy().to_string(),
-        ]);
-
-        let ok = sidecar_with_heartbeat(app, crate::helpers::ffmpeg_bin_name(), args, 120, ctx, "turns", pct)
-            .await
-            .map(|o| o.success)
-            .unwrap_or(false);
-
-        if ok && tmp.exists() {
-            decoded.push((ch, tmp));
-        }
-        // else: tmp drops here and removes any partial decode
-    }
-
-    if decoded.is_empty() {
-        return Vec::new();
-    }
-
-    // Phase 2 (blocking pool): mel features + ONNX inference. This is minutes
-    // of CPU-bound work in the worst case; on the async runtime it pinned
-    // worker threads until tokio timers across the whole app stopped firing.
-    // Inside the loop: cancellation check + wall-clock budget, and progress
-    // events so the scan is never silent for minutes.
-    let ctx_owned = ctx.cloned();
-    let result = tauri::async_runtime::spawn_blocking(move || {
-        let mut all_turns: Vec<TurnSegment> = Vec::new();
-        // On any early return, break, or panic below, the TempFile guards in
-        // `decoded` (moved into this closure) delete the WAVs as they drop.
-        let session = match crate::models::cached_session(&model_path) {
-            Ok(s) => s,
-            Err(_) => return all_turns,
-        };
-        let mut session = match session.lock() {
-            Ok(guard) => guard,
-            Err(_) => return all_turns, // poisoned by a prior panic
-        };
-
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(TURNS_BUDGET_SECS);
-        let total_channels = decoded.len().max(1) as f64;
-
-        'channels: for (idx, (ch, tmp)) in decoded.into_iter().enumerate() {
-            let samples = match crate::types::read_pcm16_mono_wav_bounded(
-                &tmp,
-                16_000 * crate::ffmpeg::ANALYSIS_SAMPLE_SECS as usize,
-            ) {
-                Ok(samples) => samples,
-                Err(_) => continue,
-            };
-
-            let sample_rate = 16000usize;
-            let window_size = sample_rate * 8; // 8 seconds
-            let stride = sample_rate; // 1 second stride
-            let total_windows = (samples.len().saturating_sub(window_size) / stride + 1).max(1);
-            let mut window_idx = 0usize;
-            let mut pos = 0usize;
-
-            while pos + window_size <= samples.len() {
-                // Budget + cancellation: bounded slowness must stay bounded,
-                // and a cancelled scan must actually stop computing.
-                if std::time::Instant::now() > deadline {
-                    break 'channels;
-                }
-                if let Some(c) = &ctx_owned {
-                    if c.cancelled() {
-                        break 'channels;
-                    }
-                    if window_idx.is_multiple_of(16) {
-                        let ch_frac = (idx as f64 + window_idx as f64 / total_windows as f64) / total_channels;
-                        c.emit("turns", 0.55 + 0.30 * ch_frac);
-                    }
-                }
-
-                let window = &samples[pos..pos + window_size];
-
-                // Smart Turn v3 takes Whisper-style log-mel features
-                // [1, 80, 800] under "input_features" and emits a raw logit
-                // under "logits" (sigmoid -> turn-completion probability)
-                let feats = crate::mel::log_mel_8s(window);
-                let input = ndarray::Array3::from_shape_vec((1, crate::mel::N_MELS, crate::mel::N_FRAMES), feats).ok();
-
-                let prob = if let Some(input_arr) = input {
-                    match ort::value::Tensor::from_array(input_arr) {
-                        Ok(tensor) => match session.run(ort::inputs!["input_features" => tensor]) {
-                            Ok(outputs) => outputs
-                                .get("logits")
-                                .and_then(|v| v.try_extract_tensor::<f32>().ok())
-                                .and_then(|t| t.1.first().copied())
-                                .map(|logit| 1.0 / (1.0 + (-logit).exp()))
-                                .unwrap_or(0.0),
-                            Err(_) => 0.0,
-                        },
-                        Err(_) => 0.0,
-                    }
-                } else {
-                    0.0
-                };
-
-                // `pos` is the START of the 8-second model window. Preserve
-                // that explicit timeline: the corresponding end is pos + 8s,
-                // not pos + 4s as if pos represented the window midpoint.
-                let (window_start, window_end) = smart_turn_window_bounds(pos, sample_rate, window_size);
-
-                // Turn-end detected (probability > 0.5)
-                if prob > 0.5 {
-                    all_turns.push(TurnSegment {
-                        start: window_start,
-                        end: window_end,
-                        channel: ch,
-                        confidence: prob as f64,
-                    });
-                }
-
-                pos += stride;
-                window_idx += 1;
-            }
-            // tmp (TempFile) drops here — WAV deleted; a budget/cancel break
-            // or panic drops the remaining iterator, deleting the rest
-        }
-
-        all_turns
-    })
-    .await;
-
-    let mut all_turns = result.unwrap_or_default();
-
-    // Merge adjacent turns on same channel within 1 second
-    all_turns.sort_by(|a, b| a.start.partial_cmp(&b.start).unwrap_or(std::cmp::Ordering::Equal));
-    let mut merged = Vec::new();
-    for turn in all_turns {
-        if let Some(last) = merged.last_mut() {
-            let last_turn: &mut TurnSegment = last;
-            if last_turn.channel == turn.channel && turn.start <= last_turn.end + 1.0 {
-                last_turn.end = last_turn.end.max(turn.end);
-                last_turn.confidence = last_turn.confidence.max(turn.confidence);
-                continue;
-            }
-        }
-        merged.push(turn);
-    }
-
-    merged
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{channel_gains_from_lufs, smart_turn_window_bounds};
-
-    #[test]
-    fn smart_turn_window_uses_start_plus_full_eight_seconds() {
-        let (start, end) = smart_turn_window_bounds(16_000, 16_000, 8 * 16_000);
-        assert_eq!(start, 1.0);
-        assert_eq!(end, 9.0);
-        assert_eq!(end - start, 8.0);
-    }
+    use super::{build_recommendations, channel_gains_from_lufs};
 
     #[test]
     fn channel_gain_analysis_leaves_silence_and_bounds_active_gain() {
@@ -849,5 +509,21 @@ mod tests {
         assert!((gains[1] - 1.0).abs() < 0.0001);
         assert_eq!(gains[2], 10.0);
         assert_eq!(gains[3], 0.1);
+    }
+
+    #[test]
+    fn released_recommendations_never_offer_learned_cleanup() {
+        let recommendations = build_recommendations(true, &[-24.0, -14.0], true, &[-0.2, -8.0], true, 16_000, 1);
+        let visible = recommendations.join(" ").to_ascii_lowercase();
+
+        assert!(visible.contains("auto-leveling"));
+        assert!(visible.contains("de-clipping"));
+        assert!(visible.contains("narrow-band"));
+        for unavailable in ["denois", "enhance", "speaker", "vad", "dnsmos", "smart turn"] {
+            assert!(
+                !visible.contains(unavailable),
+                "released analysis recommended unavailable capability: {unavailable}"
+            );
+        }
     }
 }

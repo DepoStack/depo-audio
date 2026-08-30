@@ -1,0 +1,100 @@
+{
+  "schemaVersion": 1,
+  "expected": {
+    "javascriptComponents": 58,
+    "generatedCssComponents": 2,
+    "totalComponents": 60
+  },
+  "generatedCss": [
+    {
+      "name": "tailwindcss",
+      "version": "4.3.3",
+      "integrity": "sha512-gOhV3P7ufE62QDGg1zVaTgCR+EtPv92k2nIhVcVKcLmxT1sUBsQGhnZj175j+MqRt4zLF7ic+sCYjfhxMxj7YQ==",
+      "inputFile": "src/globals.css",
+      "inputContains": ["@import 'tailwindcss'"],
+      "outputContains": ["/*! tailwindcss v4.3.3 | MIT License | https://tailwindcss.com */"]
+    },
+    {
+      "name": "tailwindcss-animate",
+      "version": "1.0.7",
+      "integrity": "sha512-bl6mpH3T7I3UFxuvDEXLxy/VuFxBk5bbzplh7tXI68mwMokNYd1t9qPBHlnyTwfa4JGC4zP516I1hYYtQ/vspA==",
+      "inputFile": "src/globals.css",
+      "inputContains": ["@plugin 'tailwindcss-animate'"],
+      "outputContains": ["@keyframes enter", "@keyframes exit", "--tw-enter-opacity", "--tw-exit-opacity"]
+    }
+  ],
+  "supplements": [
+    {
+      "reason": "The shipped Tauri plugin tarballs contain LICENSE.spdx declarations but omit the complete dual-license texts. These normalized files are pinned to the canonical plugins-workspace v2 revision.",
+      "packages": [
+        {
+          "name": "@tauri-apps/plugin-dialog",
+          "version": "2.7.2",
+          "integrity": "sha512-pX0IGm1I3I6wc+zeKYcq1GSqogK6okCNX5fOdaNU5ab1AjGS6l1E5wFNjEb7meg7ZFSp0JUs+0jQGQNyOvLrsg=="
+        },
+        {
+          "name": "@tauri-apps/plugin-fs",
+          "version": "2.5.1",
+          "integrity": "sha512-9Lz+Jopp6QyeEWhlpkMx4R/+P9HgR+AVAI4vOZhlT8Xaymtz8iVI/Ov984/XTqgJz/5gz5NretqPB/XEMS3NhQ=="
+        },
+        {
+          "name": "@tauri-apps/plugin-opener",
+          "version": "2.5.4",
+          "integrity": "sha512-1HnPkb+AmgO29HBazm4uPLKB+r7zzcTBW1d0fyYp1uP+jwtpoiNDGKMMzz58SFp49nOIrxdE3aUJtT57lfO9CQ=="
+        },
+        {
+          "name": "@tauri-apps/plugin-process",
+          "version": "2.3.1",
+          "integrity": "sha512-nCa4fGVaDL/B9ai03VyPOjfAHRHSBz5v6F/ObsB73r/dA3MHHhZtldaDMIc0V/pnUw9ehzr2iEG+XkSEyC0JJA=="
+        },
+        {
+          "name": "@tauri-apps/plugin-updater",
+          "version": "2.10.1",
+          "integrity": "sha512-NFYMg+tWOZPJdzE/PpFj2qfqwAWwNS3kXrb1tm1gnBJ9mYzZ4WDRrwy8udzWoAnfGCHLuePNLY1WVCNHnh3eRA=="
+        }
+      ],
+      "files": [
+        {
+          "displayName": "LICENSE_MIT (canonical Tauri v2 supplement)",
+          "licenseId": "MIT",
+          "path": "scripts/javascript-license-overrides/tauri-v2/LICENSE_MIT",
+          "sha256": "9dd42ea92cff2ede5cd477cbfcce051b2d0115c0ac7f368ee88cb545055dff1d",
+          "sourceUrl": "https://github.com/tauri-apps/plugins-workspace/blob/9d6d03269a3dea3e9dbf4635fe0fd68f23f750fa/LICENSE_MIT",
+          "sourceRevision": "9d6d03269a3dea3e9dbf4635fe0fd68f23f750fa",
+          "upstreamRawSha256": "89ff9689dcf9dd53968785d05a26f7898bb169dbfcada8d032b3e68cf0d55607",
+          "normalization": "UTF-8, LF, one terminal newline"
+        },
+        {
+          "displayName": "LICENSE_APACHE-2.0 (canonical Tauri v2 supplement)",
+          "licenseId": "Apache-2.0",
+          "path": "scripts/javascript-license-overrides/tauri-v2/LICENSE_APACHE-2.0",
+          "sha256": "0d542e0c8804e39aa7f37eb00da5a762149dc682d7829451287e11b938e94594",
+          "sourceUrl": "https://github.com/tauri-apps/plugins-workspace/blob/9d6d03269a3dea3e9dbf4635fe0fd68f23f750fa/LICENSE_APACHE-2.0",
+          "sourceRevision": "9d6d03269a3dea3e9dbf4635fe0fd68f23f750fa",
+          "upstreamRawSha256": "0cec06e0e55fbc3dc5cee4fca9b607f66cb8f4e4dbcf3b3c013594dd156732e9",
+          "normalization": "UTF-8, LF, one terminal newline"
+        }
+      ]
+    }
+  ],
+  "exceptions": [
+    {
+      "name": "react-remove-scroll-bar",
+      "version": "2.3.8",
+      "integrity": "sha512-9r+yi9+mgU33AKcj6IbT9oRCO78WriSj6t/cF8DWBZJ9aOGPOTEDvdUDz1FwKim7QXWwmHqtdHnRJfhAxEG46Q==",
+      "status": "unresolved",
+      "reason": "The locked npm tarball declares MIT and its README says MIT, but it contains no complete legal file. The canonical repository has no v2.3.8 tag, and its current 2025 license does not establish the exact notice applicable to the untagged npm publication.",
+      "requiredResolution": "Obtain upstream confirmation, add an explicitly owner-reviewed notice exception, or remove the package from the emitted Vite graph.",
+      "currentUpstreamEvidence": {
+        "path": "scripts/javascript-license-overrides/react-remove-scroll-bar-2.3.8/CURRENT-UPSTREAM-LICENSE-NOT-APPROVED",
+        "sha256": "a79aae0c0f21990d9d963bb3c5a79cdcea9a46f8523ba55c58d7fe776b6ebc84",
+        "sourceUrl": "https://github.com/theKashey/react-remove-scroll-bar/blob/8ca9ba5ea52de03308fe8ced94f7b159a44d28ff/LICENSE",
+        "sourceRevision": "8ca9ba5ea52de03308fe8ced94f7b159a44d28ff",
+        "upstreamRawSha256": "a79aae0c0f21990d9d963bb3c5a79cdcea9a46f8523ba55c58d7fe776b6ebc84",
+        "applicability": "Provenance only. Not approved as the v2.3.8 redistribution notice."
+      },
+      "approval": null,
+      "noticeFiles": []
+    }
+  ]
+}

@@ -4,7 +4,7 @@ import { invoke } from '@tauri-apps/api/core'
 export default function usePreferences() {
   const [mode, setModeState] = useState('stereo')
   const [formatOut, setFormatOut] = useState('wav')
-  const [labels, setLabels] = useState(['Speaker 1', 'Speaker 2', 'Speaker 3', 'Speaker 4'])
+  const [labels, setLabels] = useState(['Microphone 1', 'Microphone 2', 'Microphone 3', 'Microphone 4'])
   const [chanVols, setChanVols] = useState([1, 1, 1, 1])
   const [outDir, setOutDir] = useState('')
   const [rate, setRate] = useState('48000')
@@ -14,12 +14,8 @@ export default function usePreferences() {
   const [fade, setFade] = useState(false)
   const [fadeDur, setFadeDur] = useState(0.5)
   const [hpf, setHpf] = useState(false)
-  const [denoise, setDenoise] = useState(false)
-  const [denoiseQuality, setDenoiseQuality] = useState('fast')
   const [autoLevel, setAutoLevelState] = useState(false)
   const [declip, setDeclip] = useState(false)
-  const [enhance, setEnhance] = useState(false)
-  const [dereverb, setDereverb] = useState(false)
   // Advanced settings
   const [hpfCutoff, setHpfCutoff] = useState(80)
   const [normalizeLufs, setNormalizeLufs] = useState(-16)
@@ -78,12 +74,8 @@ export default function usePreferences() {
         setFade(!!p.fade)
         setFadeDur(p.fadeDur ?? 0.5)
         setHpf(!!p.hpf)
-        setDenoise(!!p.denoise)
-        setDenoiseQuality(p.denoiseQuality || 'fast')
         setAutoLevelState(startMode !== 'keep' && !!p.autoLevel)
         setDeclip(!!p.declip)
-        setEnhance(!!p.enhance)
-        setDereverb(!!p.dereverb)
         // Advanced settings
         if (p.hpfCutoff != null) setHpfCutoff(p.hpfCutoff)
         if (p.normalizeLufs != null) setNormalizeLufs(p.normalizeLufs)
@@ -123,12 +115,14 @@ export default function usePreferences() {
           fade,
           fadeDur,
           hpf,
-          denoise,
-          denoiseQuality,
+          // v1.0.3 does not distribute learned models. Persist false so stale
+          // preferences from earlier builds cannot re-enable hidden paths.
+          denoise: false,
+          denoiseQuality: 'fast',
           autoLevel: mode !== 'keep' && autoLevel,
           declip,
-          enhance,
-          dereverb,
+          enhance: false,
+          dereverb: false,
           hpfCutoff,
           normalizeLufs,
           normalizeTp,
@@ -161,12 +155,8 @@ export default function usePreferences() {
     fade,
     fadeDur,
     hpf,
-    denoise,
-    denoiseQuality,
     autoLevel,
     declip,
-    enhance,
-    dereverb,
     hpfCutoff,
     normalizeLufs,
     normalizeTp,
@@ -207,18 +197,10 @@ export default function usePreferences() {
     setFadeDur,
     hpf,
     setHpf,
-    denoise,
-    setDenoise,
-    denoiseQuality,
-    setDenoiseQuality,
     autoLevel,
     setAutoLevel,
     declip,
     setDeclip,
-    enhance,
-    setEnhance,
-    dereverb,
-    setDereverb,
     hpfCutoff,
     setHpfCutoff,
     normalizeLufs,

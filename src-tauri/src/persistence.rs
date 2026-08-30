@@ -64,7 +64,14 @@ pub(crate) fn load_library(app: &AppHandle) -> Result<Library, String> {
 }
 
 pub(crate) fn load_prefs(app: &AppHandle) -> Result<Prefs, String> {
-    read_json_or_default(&prefs_path(app)?, "Preferences", MAX_PREFS_BYTES)
+    read_json_or_default(&prefs_path(app)?, "Preferences", MAX_PREFS_BYTES).map(disable_unreleased_model_preferences)
+}
+
+fn disable_unreleased_model_preferences(mut prefs: Prefs) -> Prefs {
+    prefs.denoise = false;
+    prefs.enhance = false;
+    prefs.dereverb = false;
+    prefs
 }
 
 /// Write bytes without ever truncating the live file. The uniquely named temp
@@ -257,7 +264,9 @@ pub(crate) fn merge_prefs(current: &Prefs, patch: serde_json::Value) -> Result<P
         current_map.insert(key.clone(), value.clone());
     }
 
-    serde_json::from_value(current_value).map_err(|error| format!("Invalid preference update: {error}"))
+    serde_json::from_value(current_value)
+        .map(disable_unreleased_model_preferences)
+        .map_err(|error| format!("Invalid preference update: {error}"))
 }
 
 pub(crate) fn save_to_library(

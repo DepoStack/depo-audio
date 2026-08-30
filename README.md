@@ -2,9 +2,9 @@
 
 # DepoAudio
 
-**Desktop audio converter & enhancer for court reporters — and anyone with tricky audio.**
+**Desktop audio converter and reviewer for court reporters and anyone with difficult recordings.**
 
-Convert proprietary court-recording formats, clean up noisy audio, and keep every case organized. Recordings are processed on the device and are not uploaded.
+Open and convert proprietary court-recording formats, improve levels and clipping, review recordings, and keep cases organized. Recording processing stays on the device.
 
 [![CI](https://github.com/DepoStack/depo-audio/actions/workflows/ci.yml/badge.svg)](../../actions/workflows/ci.yml) ![Published release](https://img.shields.io/badge/release-1.0.2-6E4A9E) ![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Windows-6E4A9E) ![License](https://img.shields.io/badge/license-MIT-2F9E44) ![Runs](https://img.shields.io/badge/recordings-local-C79A3B)
 
@@ -14,14 +14,19 @@ Convert proprietary court-recording formats, clean up noisy audio, and keep ever
 
 ## What it does
 
+> **Release truth:** the download link currently serves published v1.0.2. This
+> branch prepares unpublished v1.0.3 and must not be described as downloadable
+> until its private candidate, installers, approvals, and public release are
+> independently verified.
+
 DepoAudio handles the audio side of a deposition or hearing, end to end:
 
 - 🎧 **Convert** proprietary court formats (Stenograph SGMCA, FTR `.trm`, CourtSmart BWF) and standard audio to WAV, MP3, FLAC, Opus, or M4A — mix to stereo, keep the channel layout, or split one file per source channel and name it by role.
-- ✨ **Clean up** with on-device AI: remove background noise, balance quiet vs. loud microphone channels, reconstruct clipped peaks, and extend narrow-band phone audio — all recommended automatically by a one-click **Scan**.
+- **Improve** audio with local, non-learned controls for microphone-channel leveling, clipped peaks, high-pass filtering, normalization, silence trim, and fades.
 - ▶️ **Play & review** in a built-in player — color-coded audio tracks, 0.5×–2× speed, A-B loop, bookmarks, and a synced transcript editor.
 - 🗂️ **Organize** every conversion into an auto-filed case library, and pull recordings straight from installed court software.
 
-> **Recordings stay local.** Conversion, playback, analysis, and cleanup run on your machine. Optional update checks and model downloads may use the network, but audio is not uploaded. No account or subscription is required.
+> **Recordings stay local.** Conversion, playback, analysis, and cleanup run on your machine; audio is not uploaded. Optional update checks may use the network. No account or subscription is required. Unpublished v1.0.3 does not install or download learned-model files.
 
 ---
 
@@ -44,15 +49,15 @@ DepoAudio handles the audio side of a deposition or hearing, end to end:
 flowchart LR
     A([Drop recordings]) --> B[Scan]
     B --> C{Issues found?}
-    C -->|noise · clipping · imbalance · narrowband| D[Recommend fixes]
+    C -->|clipping · imbalance · narrowband| D[Explain local controls]
     C -->|clean| E
     D --> E[You choose what to apply]
-    E --> F[Rust AI pass<br/>denoise · de-clip · enhance · auto-level]
-    F --> G[FFmpeg<br/>filters · channel mode · format]
+    E --> F[FFmpeg<br/>level · de-clip · filters · channel mode · format]
+    F --> G[Local conversion]
     G --> H([Output + auto-filed<br/>in the case Library])
 ```
 
-Scanning is a bounded, cancellable analysis pass; conversion is a two-step pipeline — a Rust AI stage feeds a clean signal into FFmpeg for the final format and channel layout. Recording processing remains local.
+Scanning is a bounded, cancellable local analysis pass. FFmpeg performs the selected non-learned signal controls, final format, and channel layout. Recording processing remains local.
 
 ---
 
@@ -65,14 +70,12 @@ Scanning is a bounded, cancellable analysis pass; conversion is a two-step pipel
 - **Per-channel** labels and volume
 - **Batch** the whole session at once
 
-### ✨ Smart cleanup (on-device AI)
+### Signal cleanup (local, non-learned)
 
-- **Scan** detects noise, level imbalance, clipping, and narrow bandwidth
-- **Denoise** with RNNoise; DeepFilterNet is not part of the released processing pipeline
+- **Scan** measures channel loudness, peaks, clipping, balance, and sample rate
 - **Auto-level** — balances per-channel loudness from a bounded representative sample
-- **De-clip** distorted peaks · **Clarity** (FlashSR bandwidth extension)
-- **Turn / speaker-activity estimate / quality (DNSMOS)** detection; speaker activity is not voice identification
-- **Hardware-aware** — Apple Silicon can use CoreML for eligible models with CPU fallback; the bundled Windows runtime uses the CPU
+- **De-clip** distorted peaks, apply a high-pass filter, normalize, trim leading silence, or add fades
+- Learned denoise, clarity reconstruction, room-echo reduction, turn detection, speaker estimation, and neural quality scoring are not included in v1.0.3
 - **Live progress** with a Cancel button; analysis and sidecar operations use bounded samples, timeouts, and cancellation paths
 
 ### ▶️ Built-in player
@@ -107,20 +110,18 @@ Scanning is a bounded, cancellable analysis pass; conversion is a two-step pipel
 
 ---
 
-## AI models
+## Learned-model boundary
 
-Released light models ship bundled. Optional DNSMOS quality scoring can be installed from
-**Settings → AI Models**. DepoAudio downloads it from the legacy-compatible
-[`models-v1`](../../releases/tag/models-v1) release into the app data directory and verifies
-its size and SHA-256 checksum.
+Unpublished v1.0.3 deliberately distributes and exposes **zero learned
+models**. It does not bundle model weights or ONNX Runtime, download models,
+load model files left in app data by an older build, or present learned
+processing controls. Settings may list an exact legacy regular file only so
+the user can delete it and reclaim storage.
 
-| Model                       | Size   | Purpose                         | Delivery           |
-| --------------------------- | ------ | ------------------------------- | ------------------ |
-| Silero VAD                  | 2.1 MB | Voice activity detection        | Bundled            |
-| Smart Turn v3 (int8)        | 8.2 MB | Speaker turn detection          | Bundled            |
-| FlashSR                     | 487 KB | Bandwidth extension (16→48 kHz) | Bundled            |
-| Speaker segmentation (int8) | 1.5 MB | Active speaker-slot estimate    | Bundled            |
-| DNSMOS                      | 1.1 MB | Audio quality scoring           | Download on demand |
+The public [`models-v1`](../../releases/tag/models-v1) release remains immutable
+because published v1.0.2 can reference it. That historical compatibility
+contract is not a capability or download source for v1.0.3, and its provenance
+and commercial-rights review remains a separate owner decision.
 
 ---
 
@@ -167,9 +168,11 @@ cargo deny --manifest-path src-tauri/Cargo.toml --locked --all-features check ba
 ```
 
 The deterministic size check protects the emitted desktop frontend from accidental JavaScript or CSS growth. Rust
-license, source, and dependency policy lives in [`deny.toml`](deny.toml). Native binaries, installer payloads, and model
-weights require the separate evidence ledger in [`THIRD_PARTY_LICENSES.md`](THIRD_PARTY_LICENSES.md); a green Cargo
-check is not redistribution clearance for those artifacts. The proposed packaged-app automation remains deferred until
+license, source, and dependency policy lives in [`deny.toml`](deny.toml). Native binaries and installer payloads require
+the separate evidence ledger in [`THIRD_PARTY_LICENSES.md`](THIRD_PARTY_LICENSES.md); a green Cargo check is not
+redistribution clearance for those artifacts. The release check also proves the v1.0.3 compiled application graph,
+packaged resources, active setup paths, and user interface contain no learned-model distribution or execution path.
+The proposed packaged-app automation remains deferred until
 its dependency graph passes the documented gate in [`docs/PACKAGED-APP-TESTING.md`](docs/PACKAGED-APP-TESTING.md).
 
 ### Project layout
@@ -182,20 +185,18 @@ src/                     # React 19 frontend
   App.jsx                # app shell — sidebar nav (Convert · Player · Library)
 src-tauri/               # Rust backend (Tauri 2)
   src/
-    analysis.rs          # bounded, cancellable Scan + Smart-Turn inference
-    conversion.rs        # two-step pipeline (Rust AI → FFmpeg)
-    ffmpeg.rs            # sidecar + filter chain      denoise.rs / dereverb.rs
-    enhance.rs           # FlashSR bandwidth extension  vad.rs / mel.rs
-    scoring.rs speakers.rs   # DNSMOS + speaker activity   merge.rs
-    models.rs            # ONNX loader + execution-provider reporting
+    analysis.rs          # bounded non-learned Scan observations
+    conversion.rs        # validated local FFmpeg conversion pipeline
+    ffmpeg.rs            # sidecar + filter chain      merge.rs
+    models.rs            # deletion-only legacy model storage cleanup
     catdetect.rs         # court-software detection     safety.rs / helpers.rs
     commands.rs types.rs persistence.rs
-  resources/models/      # bundled light ONNX models
   binaries/              # FFmpeg/FFprobe sidecars (not committed)
+  resources/third-party/ # deterministic bundled dependency notices
 .github/workflows/       # CI + release builds
 ```
 
-**Stack:** Tauri 2 · Rust · React 19 · Vite · FFmpeg · ONNX Runtime · nnnoiseless
+**Stack:** Tauri 2 · Rust · React 19 · Vite · FFmpeg
 
 See [`PARITY.md`](PARITY.md) for the full capability/contract inventory that the characterization tests pin.
 

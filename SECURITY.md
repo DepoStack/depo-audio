@@ -25,10 +25,12 @@ deadline.
 
 DepoAudio processes audio files locally on your machine and does not upload
 recordings for conversion, playback, analysis, or cleanup. Runtime network
-activity is limited to features the user or release configuration enables:
+activity in v1.0.3 is limited to features the user or release configuration
+enables:
 
-- **Optional AI model downloads** — fetches ONNX model files from GitHub
-  Releases when you install a model from Settings (size and SHA-256 verified).
+- **No learned-model network path** — v1.0.3 does not bundle, install,
+  download, or execute learned-model files. Exact legacy app-data files can be
+  listed only for user-initiated deletion.
 - **Optional update checks and downloads** — available only when a published
   build contains a verified updater configuration. Releases without signed
   updater metadata keep this path dormant.

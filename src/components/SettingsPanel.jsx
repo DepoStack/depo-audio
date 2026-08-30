@@ -5,10 +5,8 @@ import {
   RotateCcw,
   Download,
   Trash2,
-  CheckCircle,
   Loader2,
   AlertCircle,
-  Cpu,
   RefreshCw,
   ExternalLink,
   Boxes,
@@ -21,7 +19,6 @@ import { Dialog, DialogContent, DialogTitle, DialogClose, DialogDescription } fr
 import { Button } from './ui/button'
 import { Input } from './ui/input'
 import { Label } from './ui/label'
-import { Badge } from './ui/badge'
 import { Card, CardHeader, CardTitle, CardContent } from './ui/card'
 import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from './ui/select'
 
@@ -65,7 +62,7 @@ const SETTINGS_PRESETS = [
 
 // The modal's left rail — each entry is a group of Cards on the right.
 const NAV = [
-  { id: 'models', label: 'AI Models', Icon: Boxes },
+  { id: 'models', label: 'Model files', Icon: Boxes },
   { id: 'audio', label: 'Audio', Icon: SlidersHorizontal },
   { id: 'app', label: 'App', Icon: AppWindow },
   { id: 'updates', label: 'Updates', Icon: DownloadCloud },
@@ -169,24 +166,21 @@ function ResetCard({ title, onReset, children }) {
 
 // ── Model Manager ──────────────────────────────────────────────────────────────
 
-function ModelManager() {
+function LegacyModelStorage() {
   const [models, setModels] = useState([])
-  const [caps, setCaps] = useState(null)
-  const [downloading, setDownloading] = useState({})
   const [error, setError] = useState(null)
   const [modelsLoading, setModelsLoading] = useState(true)
   const [modelLoadError, setModelLoadError] = useState('')
 
   const loadModels = useCallback(
     () =>
-      Promise.all([invoke('model_catalog_cmd'), invoke('system_capabilities_cmd')])
-        .then(([catalog, capabilities]) => {
+      invoke('legacy_model_cleanup_catalog_cmd')
+        .then(catalog => {
           setModels(catalog)
-          setCaps(capabilities)
           setModelLoadError('')
         })
         .catch(loadError => {
-          setModelLoadError(`Couldn't load the model catalog or system capabilities: ${String(loadError)}`)
+          setModelLoadError(`Couldn't check for legacy model files: ${String(loadError)}`)
         })
         .finally(() => setModelsLoading(false)),
     [],
@@ -202,50 +196,32 @@ function ModelManager() {
     loadModels()
   }
 
-  const handleDownload = async filename => {
-    setDownloading(d => ({ ...d, [filename]: true }))
-    setError(null)
-    try {
-      await invoke('download_model_cmd', { filename })
-      await loadModels()
-    } catch (e) {
-      setError(`Couldn't download that model: ${e}`)
-    } finally {
-      setDownloading(d => ({ ...d, [filename]: false }))
-    }
-  }
   const handleDelete = async filename => {
     setError(null)
     try {
-      await invoke('delete_model_cmd', { filename })
+      await invoke('delete_legacy_model_cmd', { filename })
       await loadModels()
     } catch (e) {
-      setError(`Couldn't delete that model: ${e}`)
+      setError(`Couldn't delete that legacy model file: ${e}`)
     }
   }
 
-  const groups = {}
-  models.forEach(m => {
-    ;(groups[m.feature] ||= []).push(m)
-  })
-  const activeModels = models.filter(m => m.feature !== 'Legacy unused file')
-  const legacyModels = models.filter(m => m.feature === 'Legacy unused file')
-  const installedCount = activeModels.filter(m => m.installed).length
-  const totalSize = activeModels.filter(m => m.installed).reduce((s, m) => s + m.sizeMb, 0)
-  const legacySize = legacyModels.reduce((s, m) => s + m.sizeMb, 0)
+  const legacyModels = models.filter(model => model.installed)
+  const legacySize = legacyModels.reduce((sum, model) => sum + model.sizeMb, 0)
 
   return (
     <Card>
       <CardHeader>
-        <CardTitle>AI Models</CardTitle>
+        <CardTitle>Legacy model files</CardTitle>
         {modelsLoading ? (
           <span role="status" aria-live="polite" className="font-mono text-[10px] text-[hsl(var(--sub))]">
-            Loading model catalog…
+            Checking local storage…
           </span>
         ) : (
           !modelLoadError && (
             <span className="font-mono text-[10px] text-[hsl(var(--sub))]">
-              {installedCount}/{activeModels.length} active installed · {totalSize.toFixed(1)} MB
+              {legacyModels.length} removable {legacyModels.length === 1 ? 'file' : 'files'} · {legacySize.toFixed(1)}{' '}
+              MB
             </span>
           )
         )}
@@ -261,20 +237,6 @@ function ModelManager() {
             <Button variant="outline" size="sm" onClick={retryLoadModels} disabled={modelsLoading}>
               <RefreshCw size={12} /> Retry
             </Button>
-          </div>
-        )}
-
-        {!modelLoadError && caps && (
-          <div className="flex flex-wrap items-center gap-1.5 text-[11px] text-[hsl(var(--text2))]">
-            <Cpu size={13} className="text-[hsl(var(--sub))]" />
-            <span className="font-medium">{caps.acceleratorDesc}</span>
-            <Badge variant="default">{caps.tier} tier</Badge>
-            {Number.isFinite(caps.cpuCores) && caps.cpuCores > 0 && (
-              <Badge variant="default">{caps.cpuCores} cores</Badge>
-            )}
-            {Number.isFinite(caps.ramMb) && caps.ramMb > 0 && (
-              <Badge variant="default">{Math.round(caps.ramMb / 1024)} GB RAM</Badge>
-            )}
           </div>
         )}
 
@@ -294,87 +256,58 @@ function ModelManager() {
           >
             <AlertCircle size={13} className="mt-0.5 shrink-0 text-warning" />
             <span>
-              {legacyModels.length} legacy unused {legacyModels.length === 1 ? 'file' : 'files'} (
-              {legacySize.toFixed(1)} MB) can be removed below. These files are not used by this release.
+              These {legacyModels.length} unused {legacyModels.length === 1 ? 'file is' : 'files are'} left from an
+              earlier build and use {legacySize.toFixed(1)} MB. This release does not use them.
             </span>
+          </div>
+        )}
+
+        {!modelsLoading && !modelLoadError && legacyModels.length === 0 && (
+          <div
+            role="status"
+            className="rounded-md border border-border bg-secondary/30 px-3 py-3 text-[11px] text-foreground"
+          >
+            No legacy model files were found. This release does not install or download learned-model files.
           </div>
         )}
 
         {!modelLoadError && (
           <div className="flex flex-col gap-3">
-            {Object.entries(groups).map(([feature, items]) => (
-              <div key={feature} className="flex flex-col gap-1">
-                <span className="font-mono text-[9px] font-medium tracking-[1.2px] uppercase text-[hsl(var(--sub))] px-1">
-                  {feature}
-                </span>
-                {items.map(m => (
-                  <div
-                    key={m.filename}
-                    className={`flex items-center gap-3 px-2 py-2 rounded-md transition-colors ${
-                      m.feature === 'Legacy unused file'
-                        ? 'border border-warning/30 bg-warning/10'
-                        : 'hover:bg-secondary/50'
-                    }`}
-                  >
-                    <div className="flex-1 min-w-0">
-                      <div className="flex items-center gap-1.5 text-[12px] font-medium text-foreground">
-                        {m.feature === 'Legacy unused file' ? (
-                          <AlertCircle size={13} className="text-warning shrink-0" />
-                        ) : m.installed ? (
-                          <CheckCircle size={13} className="text-[hsl(var(--success))] shrink-0" />
-                        ) : (
-                          <Download size={13} className="text-[hsl(var(--sub))] shrink-0" />
-                        )}
-                        <span className="truncate">{m.displayName}</span>
-                        {m.required && <Badge variant="active">Required</Badge>}
-                        {m.recommended && !m.required && <Badge variant="done">Recommended</Badge>}
-                      </div>
-                      <div className="text-[11px] text-[hsl(var(--sub))] mt-0.5 ml-[19px]">
-                        {m.description} — {m.sizeMb} MB
-                      </div>
-                    </div>
-                    <div className="shrink-0">
-                      {!m.installed && (
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          disabled={downloading[m.filename]}
-                          aria-busy={downloading[m.filename] || undefined}
-                          onClick={() => handleDownload(m.filename)}
-                          aria-label={`Download ${m.displayName}`}
-                        >
-                          {downloading[m.filename] ? (
-                            <>
-                              <Loader2 size={12} className="animate-spin" /> Downloading…
-                            </>
-                          ) : (
-                            <>
-                              <Download size={12} /> Install
-                            </>
-                          )}
-                        </Button>
-                      )}
-                      {m.installed && m.removable && !m.required && (
-                        <Button
-                          variant="ghost"
-                          size="icon"
-                          className="h-7 w-7 hover:text-destructive"
-                          onClick={() => handleDelete(m.filename)}
-                          aria-label={`Delete ${m.displayName}`}
-                        >
-                          <Trash2 size={12} />
-                        </Button>
-                      )}
-                    </div>
+            {legacyModels.map(m => (
+              <div
+                key={m.filename}
+                className="flex items-center gap-3 rounded-md border border-warning/30 bg-warning/10 px-2 py-2"
+              >
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-1.5 text-[12px] font-medium text-foreground">
+                    <AlertCircle size={13} className="text-warning shrink-0" />
+                    <span className="truncate">{m.displayName}</span>
                   </div>
-                ))}
+                  <div className="text-[11px] text-[hsl(var(--sub))] mt-0.5 ml-[19px]">
+                    {m.description} — {m.sizeMb} MB
+                  </div>
+                </div>
+                <div className="shrink-0">
+                  {m.removable && (
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="h-7 w-7 hover:text-destructive"
+                      onClick={() => handleDelete(m.filename)}
+                      aria-label={`Delete ${m.displayName}`}
+                    >
+                      <Trash2 size={12} />
+                    </Button>
+                  )}
+                </div>
               </div>
             ))}
           </div>
         )}
 
         <p className="text-[11px] text-[hsl(var(--sub))] border-t border-border/60 pt-2.5">
-          Models process audio locally. Optional model downloads use the network; audio never leaves your machine.
+          Learned-model processing is not included in v1.0.3. This page only removes unused files left by an older
+          build; it never downloads or installs model files.
         </p>
       </CardContent>
     </Card>
@@ -485,7 +418,7 @@ export default function SettingsPanel({ open, onOpenChange, prefs, updater = {} 
 
           {/* Content pane */}
           <div className="flex-1 overflow-y-auto p-4 md:p-5 flex flex-col gap-3.5">
-            {section === 'models' && <ModelManager />}
+            {section === 'models' && <LegacyModelStorage />}
 
             {section === 'audio' && (
               <>

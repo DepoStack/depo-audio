@@ -2,20 +2,13 @@ mod analysis;
 mod catdetect;
 mod commands;
 mod conversion;
-mod denoise;
-mod dereverb;
-mod enhance;
 mod ffmpeg;
 mod helpers;
-mod mel;
 mod merge;
 mod models;
 mod persistence;
 mod safety;
-mod scoring;
-mod speakers;
 pub mod types;
-mod vad;
 mod waveform;
 
 use tauri::Manager;
@@ -73,131 +66,6 @@ fn setup_persistence(app: &tauri::AppHandle) {
     }
 }
 
-/// Set ORT_DYLIB_PATH to the bundled ONNX Runtime library so AI features work
-/// without requiring users to install onnxruntime separately.
-///
-/// The dylib is pre-flighted with dlopen before ort ever sees it: ort
-/// 2.0.0-rc.12 deadlocks (it re-enters its own API OnceLock while building
-/// the error) when the dylib fails to load, so a bad library must be caught
-/// here — load_session checks the preflight and degrades gracefully.
-pub(crate) fn validate_onnx_runtime_api(lib: &libloading::Library) -> Result<String, String> {
-    // Loading the DLL/dylib is not enough: OrtGetApiBase can be present while
-    // the runtime is too old for the C API requested by the Rust binding.
-    unsafe {
-        let get_api_base = lib
-            .get::<unsafe extern "system" fn() -> *const ort::sys::OrtApiBase>(b"OrtGetApiBase\0")
-            .map_err(|e| format!("ONNX Runtime is missing OrtGetApiBase: {e}"))?;
-        let base = get_api_base();
-        let base = base
-            .as_ref()
-            .ok_or_else(|| "ONNX Runtime returned a null API base".to_string())?;
-
-        let version_ptr = (base.GetVersionString)();
-        let version = if version_ptr.is_null() {
-            "unknown".to_string()
-        } else {
-            std::ffi::CStr::from_ptr(version_ptr).to_string_lossy().into_owned()
-        };
-        let api = (base.GetApi)(ort::MINOR_VERSION);
-        if api.is_null() {
-            return Err(format!(
-                "ONNX Runtime {version} does not support required C API {}",
-                ort::MINOR_VERSION
-            ));
-        }
-
-        Ok(version)
-    }
-}
-
-fn setup_onnx_runtime(app: &tauri::AppHandle) {
-    // Developer builds may point at a local runtime for model tests. Release
-    // builds must never dlopen a caller-controlled environment path; they load
-    // only the runtime shipped inside the signed application resources.
-    #[cfg(debug_assertions)]
-    let preset = std::env::var("ORT_DYLIB_PATH").ok().filter(|s| !s.is_empty());
-    #[cfg(not(debug_assertions))]
-    let preset: Option<String> = None;
-    let lib_path = if let Some(p) = preset {
-        std::path::PathBuf::from(p) // explicit developer override
-    } else if let Ok(resource_dir) = app.path().resource_dir() {
-        #[cfg(target_os = "macos")]
-        let lib_path = match resource_dir.parent() {
-            Some(contents_dir) => contents_dir.join("Frameworks").join("libonnxruntime.dylib"),
-            None => {
-                models::set_ort_preflight(Err("Cannot resolve the app Frameworks directory".into()));
-                return;
-            }
-        };
-        #[cfg(target_os = "windows")]
-        let lib_path = resource_dir
-            .join("resources")
-            .join("onnxruntime")
-            .join("onnxruntime.dll");
-        #[cfg(not(any(target_os = "macos", target_os = "windows")))]
-        let lib_path = resource_dir
-            .join("resources")
-            .join("onnxruntime")
-            .join("libonnxruntime.so");
-
-        // `scripts/setup-dev.sh` intentionally stages ORT under the source
-        // tree instead of mutating Tauri's generated dev resource directory.
-        // Release builds never take this fallback and therefore continue to
-        // load only the library shipped inside the signed application.
-        #[cfg(debug_assertions)]
-        let lib_path = if lib_path.exists() {
-            lib_path
-        } else {
-            #[cfg(target_os = "macos")]
-            let filename = "libonnxruntime.dylib";
-            #[cfg(target_os = "windows")]
-            let filename = "onnxruntime.dll";
-            #[cfg(not(any(target_os = "macos", target_os = "windows")))]
-            let filename = "libonnxruntime.so";
-            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                .join("resources")
-                .join("onnxruntime")
-                .join(filename)
-        };
-
-        if !lib_path.exists() {
-            #[cfg(debug_assertions)]
-            let error = "ONNX Runtime library not found in app resources or the local development resources directory";
-            #[cfg(not(debug_assertions))]
-            let error = "ONNX Runtime library not found in signed app resources";
-            models::set_ort_preflight(Err(error.into()));
-            return;
-        }
-        lib_path
-    } else {
-        models::set_ort_preflight(Err("Cannot resolve app resource directory".into()));
-        return;
-    };
-
-    // dlopen exactly what ort will dlopen. Keeping the handle alive means
-    // ort's own load of the same path reuses it (no second TLS allocation).
-    match unsafe { libloading::Library::new(&lib_path) } {
-        Ok(lib) => match validate_onnx_runtime_api(&lib) {
-            Ok(version) => {
-                std::mem::forget(lib); // keep loaded for the process lifetime
-                std::env::set_var("ORT_DYLIB_PATH", &lib_path);
-                models::set_ort_preflight(Ok(()));
-                eprintln!("[ort] Loaded ONNX Runtime {version} with C API {}", ort::MINOR_VERSION);
-            }
-            Err(e) => {
-                eprintln!("[ort] ONNX Runtime is incompatible, AI features disabled: {e}");
-                std::env::remove_var("ORT_DYLIB_PATH");
-                models::set_ort_preflight(Err(e));
-            }
-        },
-        Err(e) => {
-            eprintln!("[ort] ONNX Runtime failed to load, AI features disabled: {e}");
-            std::env::remove_var("ORT_DYLIB_PATH");
-            models::set_ort_preflight(Err(format!("ONNX Runtime failed to load: {}", e)));
-        }
-    }
-}
-
 #[cfg(desktop)]
 fn updater_config_is_valid(config: Option<&serde_json::Value>) -> bool {
     config
@@ -215,7 +83,6 @@ pub fn run() {
         .manage(AppState::default())
         .setup(|app| {
             setup_persistence(app.handle());
-            setup_onnx_runtime(app.handle());
             // Auto-update is available only when the release overlay contains
             // a complete signed-updater configuration. Tauri exposes a missing
             // plugin configuration as JSON null; registering the updater in
@@ -241,13 +108,9 @@ pub fn run() {
             commands::infer_case_name_cmd,
             commands::analyze_audio_cmd,
             commands::cancel_scan_cmd,
-            commands::score_quality_cmd,
-            commands::detect_speakers_cmd,
             commands::system_capabilities_cmd,
-            commands::model_catalog_cmd,
-            commands::download_model_cmd,
-            commands::delete_model_cmd,
-            commands::detect_speech_cmd,
+            commands::legacy_model_cleanup_catalog_cmd,
+            commands::delete_legacy_model_cmd,
             commands::waveform_peaks_cmd,
             commands::cancel_waveform_cmd,
             commands::detect_cat_software_cmd,

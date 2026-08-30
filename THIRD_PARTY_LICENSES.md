@@ -80,11 +80,13 @@ database on every review because this baseline can change after the date above.
 
 ## JavaScript and generated CSS notice status
 
-The production Vite output contains a 66-package JavaScript runtime closure.
-The release workflow generates a production npm CycloneDX inventory, but an
-SBOM does not contain all copyright notices and license texts required for
-redistribution. v1.0.3 is blocked until a deterministic npm notice report is
-generated, committed, bundled, and confirmed in every extracted installer.
+The reviewed production closure contains 58 JavaScript packages plus Tailwind
+CSS and tailwindcss-animate (60 components total). A deterministic generator
+commits and bundles byte-stable HTML and JSON notice evidence from the lockfile
+and reviewed overrides. The release workflow also generates a production npm
+CycloneDX inventory, but an SBOM does not replace copyright notices or license
+texts. v1.0.3 remains blocked until the one unresolved exact-package case below
+is approved and the generated report is confirmed in every extracted installer.
 
 The exact audit found these unresolved notice cases:
 
@@ -104,11 +106,14 @@ The exact audit found these unresolved notice cases:
 - The generated CSS retains Tailwind CSS 4.3.3's legal banner and includes
   output from `tailwindcss-animate@1.0.7`; bundle both complete licenses.
 
-The notice generator must be driven by the lockfile plus a reviewed override
-manifest, collect every applicable `LICENSE*`, `NOTICE*`, and `COPYRIGHT*`
-artifact, sort output deterministically, fail on missing or unreviewed
-evidence, and reject checkout paths and timestamps. The final artifact gate
-must require that report in macOS, MSI, and NSIS inventories.
+`scripts/generate-javascript-notices.mjs` is driven by the lockfile plus a
+reviewed override manifest. It collects applicable `LICENSE*`, `NOTICE*`, and
+`COPYRIGHT*` artifacts, sorts output deterministically, rejects checkout paths
+and timestamps, and supports a strict review gate. Normal generation and
+self-tests are deterministic; strict mode intentionally fails on
+`react-remove-scroll-bar@2.3.8` until upstream confirmation or an explicit
+reviewed exception is recorded. The final artifact gate requires the exact
+generated report in macOS, MSI, and NSIS inventories.
 
 ## Evidence record required for every distributed item
 
@@ -138,7 +143,7 @@ unknown, record `Evidence required` and do not treat the item as cleared.
 
 ## Native and installer payloads observed in the release path
 
-This table records repository evidence as of 2026-08-25. `Evidence required`
+This table records repository evidence as of 2026-08-29. `Evidence required`
 means the repository does not yet contain enough material for a distribution
 conclusion.
 
@@ -146,8 +151,6 @@ conclusion.
 | ------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | FFmpeg and ffprobe, macOS arm64/x64               | Official FFmpeg `7.1.5`, LAME `3.100`, and Opus `1.6.1` source archives; exact URLs, sizes, and SHA-256 values are pinned in `.github/workflows/release.yml`                                                                                                                                                                                                                                | `scripts/build-ffmpeg-macos.sh` builds both slices with the same minimum macOS target, disables GPL/nonfree/autodetection/network, enables only LGPL-compatible external libraries, verifies FTR and every released encoder/filter, and preserves source/build/license evidence in the app | **RC2 evidence required.** The previous community binaries enabled FFmpeg's `nonfree`/unredistributable mode and mixed FFmpeg 6.1.1 with 7.1; they are prohibited. Verify the new hosted build, source hashes, exact configuration, LGPL/LAME/Opus notices, system-only linkage, corresponding-source delivery, and codec/patent review. |
 | FFmpeg and ffprobe, Windows x64                   | `BtbN/FFmpeg-Builds` LGPL asset `ffmpeg-N-125875-g5d4d3bdc61-win64-lgpl.zip`, release `autobuild-2026-07-31-14-10`, asset ID `496767001`, size `147672337`, SHA-256 `5d65df0c0ca5346d82df8ade9c2e12db45d1f978f18ff908b42f03f5223dfc90`                                                                                                                                                      | `ffmpeg.exe` and `ffprobe.exe` are extracted; the archive's exact LGPL text, binary-reported configuration, release URL, asset digest, and upstream FFmpeg commit are bundled                                                                                                              | The exact candidate passed native FTR decoding and exposes the released WAV, MP3, FLAC, Opus, and AAC/M4A encoders. **Final evidence required:** verify the bundled notice/configuration/source files after MSI and NSIS extraction, establish corresponding-source delivery, and complete codec/patent review.                          |
-| ONNX Runtime, macOS universal2                    | Microsoft ONNX Runtime `v1.22.0`, asset `onnxruntime-osx-universal2-1.22.0.tgz`, asset ID `253300416`, size `54820264`, SHA-256 `cfa6f6584d87555ed9f6e7e8a000d3947554d589efe3723b8bfa358cd263d03c`                                                                                                                                                                                          | `libonnxruntime.dylib` is copied into the app framework; the archive's exact `LICENSE` and `ThirdPartyNotices.txt` are copied into bundled resources                                                                                                                                       | Byte identity and notice preservation are implemented. **Final evidence required:** confirm the two notice files and runtime library in the extracted app archive/DMG and record their installed paths.                                                                                                                                  |
-| ONNX Runtime, Windows x64 CPU                     | Microsoft ONNX Runtime `v1.22.0`, asset `onnxruntime-win-x64-1.22.0.zip`, asset ID `253300435`, size `72368545`, SHA-256 `174c616efc0271194488642a72f1a514e01487da4dfe84c49296d66e40ebe0da`                                                                                                                                                                                                 | `onnxruntime.dll` is copied into app resources; the archive's exact `LICENSE` and `ThirdPartyNotices.txt` are copied into bundled resources                                                                                                                                                | Byte identity and notice preservation are implemented. **Final evidence required:** confirm the two notice files and runtime DLL in extracted MSI/NSIS inventories and record their installed paths.                                                                                                                                     |
 | Microsoft Edge WebView2 Runtime offline installer | Tauri config selects `webviewInstallMode.type = "offlineInstaller"`. Tauri CLI 2.11.4 / bundler 2.9.4 resolves a moving Microsoft fwlink independently for WiX and NSIS, so the repository lockfile cannot pin the downloaded bytes. `scripts/windows-webview2-evidence.ps1` fails unless both resolved build inputs are byte-identical and carry a valid Microsoft Authenticode signature. | Added during Windows installer construction                                                                                                                                                                                                                                                | **Final evidence required.** Retain the generated filename/version/size/SHA-256/signature report, extract the final MSI Binary table and NSIS payload to match that digest, and review the exact Microsoft redistribution terms. The build-input report deliberately does not claim final-installer extraction.                          |
 | Tauri-generated NSIS/WiX installer payloads       | Generated by the Tauri bundler; repository config selects both installer targets                                                                                                                                                                                                                                                                                                            | Installer/bootstrapper material                                                                                                                                                                                                                                                            | **Evidence required.** Inventory an extracted final installer, including bundler-added libraries and redistributables, and retain the applicable notices for the exact toolchain versions.                                                                                                                                               |
 | Permission-cleared private FTR smoke fixture      | No recording locator, size, or digest is committed. Release jobs require private `FTR_FIXTURE_*` secrets plus an owner-approved evidence-record identifier; `scripts/private-ftr-fixture.mjs` downloads only over HTTPS, verifies an exact byte count and SHA-256, and fails closed when the contract is absent or mismatched.                                                              | CI/release test input only; removed from the workspace before packaging and not configured as an app resource                                                                                                                                                                              | **Owner evidence required.** The referenced private record must establish provenance, confidentiality review, and permission for this CI use. Secret presence is not legal approval. Final artifact inventories reject every `.trm` file.                                                                                                |
@@ -156,27 +159,26 @@ The final installer audit is authoritative. Workflow inputs alone cannot prove
 what a bundler, linker, framework packager, or bootstrapper placed in an
 artifact.
 
-## Model inventory observed in the app and `models-v1` workflow
+## Historical model inventory and v1.0.3 non-distribution boundary
 
-The four ONNX files named in `src-tauri/tauri.conf.json` are bundled resources
-for v1.0.3. DNSMOS remains an optional, hash-pinned download. The public
-`models-v1` release also retains nine files for compatibility with already
-published app versions. `.github/workflows/restore-models.yml` verifies that
-legacy contract read-only; it cannot create, upload, or replace model assets.
-The v1.0.3 active/download catalog does not offer the three unused
-DeepFilterNet files or the unused speaker-embedding file. If an exact legacy
-copy already exists in writable app data, the catalog adds a warning-styled,
-removal-only row with no download URL. A future model set requires a new
-versioned tag and catalog URL. Hash verification proves identity, not
-permission to redistribute.
+v1.0.3 distributes and exposes zero learned models. Its resource manifest has
+no model directory, the resolved Rust graph excludes `nnnoiseless` and ONNX
+Runtime, the command/UI surface has no install or download path, and legacy
+app-data files are never resolved or executed. An exact allowlisted regular
+file can be shown only so the user can delete it. Final installer extraction
+must independently prove this source contract.
 
-The five active model hashes are enforced by `models.rs`. Retired asset hashes
-are intentionally absent from the runtime catalog and remain pinned only in
-the read-only verification workflow and this historical ledger.
+The public `models-v1` release retains nine files because already-published
+v1.0.2 can reference that compatibility contract. The read-only restoration
+workflow reconstructs and verifies those historical bytes from immutable
+sources; it cannot create, upload, replace, or delete a public asset. The
+rights findings below therefore remain an owner-governance issue for existing
+public history, not a v1.0.3 capability or distribution path. Hash verification
+proves identity, not permission to redistribute.
 
-### Exact active-model findings (reviewed 2026-08-25)
+### Exact historical findings (reviewed 2026-08-29)
 
-- **FlashSR is not cleared for a commercial v1.0.3 distribution.** The shipped
+- **FlashSR was not cleared for commercial distribution.** The historical
   ONNX is pinned to
   [YatharthS/FlashSR revision `3e19cc92`](https://huggingface.co/YatharthS/FlashSR/blob/3e19cc92e655c2e0661e6268efdade60f42fd0b8/onnx/model.onnx).
   Its SpeechSR-48k lineage is byte-linked to the
@@ -187,8 +189,7 @@ the read-only verification workflow and this historical ledger.
   states CC BY-NC 4.0. Under this repository's evidence policy, that is a direct
   commercial-governance conflict until applicable rights are documented or the
   model is replaced/removed.
-- **Speaker segmentation is not cleared for a commercial v1.0.3
-  distribution.** The
+- **Speaker segmentation was not cleared for commercial distribution.** The
   [exact ONNX conversion at `9403a690`](https://huggingface.co/csukuangfj/sherpa-onnx-pyannote-segmentation-3-0/tree/9403a6902bb58e3d5ae8c7e77c3422de279db2e0)
   derives from pyannote segmentation 3.0. Its
   [immutable model card](https://huggingface.co/pyannote/segmentation-3.0/blob/e66f3d3b9eb0873085418a7b813d3b369bf160bb/README.md)
@@ -200,23 +201,27 @@ the read-only verification workflow and this historical ledger.
   publish separate commercial terms. This does not prove which permissions the
   trainer held; it means the redistribution rights chain required by this gate
   is undocumented.
-- **Smart Turn remains unverified.** The shipped export is pinned to
+- **Smart Turn remains unverified.** The historical export is pinned to
   [revision `dbd03130`](https://huggingface.co/onnx-community/smart-turn-v3-ONNX/blob/dbd03130e87854011fa8c2f203077f2cbfc3adad/onnx/model_quantized.onnx),
   while the exact published
   [training](https://huggingface.co/datasets/pipecat-ai/smart-turn-data-v3.1-train/tree/d1691dd73ec827334a98b9245c47f8f2f0bac935)
   and [test](https://huggingface.co/datasets/pipecat-ai/smart-turn-data-v3.1-test/tree/2a9377baf2bbc73ba176c4505fe4adf988288fe9)
   dataset revisions expose no license field. The applicable Whisper Tiny notice
   and complete export/training record must also be preserved.
-- **Silero VAD remains unverified.** The shipped community conversion is pinned
+- **Silero VAD remains unverified.** The historical community conversion is pinned
   to [revision `e71cae96`](https://huggingface.co/onnx-community/silero-vad/blob/e71cae966052b992a7eca6b17738916ce0eca4ec/onnx/model.onnx),
   but it is not byte-identical to the identified official Silero v5 artifact.
   The exact export lineage, training-data terms, notices, and commercial
   redistribution permission remain incomplete.
 - **DNSMOS has pinned source bytes but incomplete model-specific clearance.**
-  The optional weight comes from
+  The historical optional weight comes from
   [Microsoft revision `82f1b17e`](https://github.com/microsoft/DNS-Challenge/blob/82f1b17e7776a43eee395d0f45bae8abb700ad00/DNSMOS/DNSMOS/sig_bak_ovr.onnx).
   Repository content/code licenses are available, but the exact model's
   training, notice, and commercial-redistribution record is not yet complete.
+
+In the historical delivery column below, `Bundled` and `Download-only` describe
+v1.0.2 behavior. None of these files is bundled, downloaded, or executed by
+v1.0.3.
 
 | Model artifact            | Reviewed SHA-256                                                   | Repository delivery evidence                                                                                                                                                                                                                                                              | Provenance/license status                                                                                                                                                                                                                                                     |
 | ------------------------- | ------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -245,18 +250,19 @@ Before publishing or promoting a release:
 - build installers only from pinned native inputs with recorded hashes;
 - extract each final installer and inventory every executable, library, model,
   font, redistributable, and bundled notice;
-- close every `Evidence required` entry for each artifact actually shipped or
-  offered by the model manager;
+- close every `Evidence required` entry for each artifact actually shipped;
+- prove the resolved dependency graph, app resources, and extracted installers
+  contain no learned-model weight, known model hash, ONNX Runtime library,
+  model download URL, or learned execution command;
 - include required license and notice texts in the installed application and/or
   distribution channel, as the applicable licenses require;
 - preserve corresponding source/build scripts or a compliant source offer when
   required for each FFmpeg/LAME/Opus distribution;
-- archive the model provenance and modification chain next to the immutable
-  model hashes;
+- preserve the historical v1.0.2 model provenance record next to the immutable
+  model hashes and record the owner's separate remediation decision;
 - record codec patent review separately from copyright-license review;
 - compare the extracted inventory on both macOS and Windows with this document;
-- confirm the v1.0.3 inventories contain none of the retired DeepFilterNet,
-  speaker-embedding, or FTR-fixture bytes;
+- confirm the v1.0.3 inventories contain no learned-model or FTR-fixture bytes;
 - record the release tag, app commit, artifact hashes, reviewer, date, and any
   approved time-bounded exception.
 

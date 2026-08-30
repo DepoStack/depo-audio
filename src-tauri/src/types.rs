@@ -116,49 +116,6 @@ impl AudioBuffer {
     }
 }
 
-/// Read a bounded 16 kHz mono PCM WAV produced by an analysis sidecar.
-/// Both the actual file size and the WAV-declared sample count are checked
-/// before allocation, and corrupt samples fail instead of becoming silence.
-pub(crate) fn read_pcm16_mono_wav_bounded(path: &Path, max_samples: usize) -> Result<Vec<f32>, String> {
-    const WAV_HEADER_ALLOWANCE: u64 = 1024 * 1024;
-    let max_audio_bytes = (max_samples as u64)
-        .checked_mul(std::mem::size_of::<i16>() as u64)
-        .and_then(|bytes| bytes.checked_add(WAV_HEADER_ALLOWANCE))
-        .ok_or_else(|| "Decoded WAV size limit overflow".to_string())?;
-    let file_bytes = std::fs::metadata(path)
-        .map_err(|e| format!("Cannot inspect decoded WAV: {e}"))?
-        .len();
-    if file_bytes > max_audio_bytes {
-        return Err("Decoded analysis WAV exceeds its size limit".into());
-    }
-
-    let reader = hound::WavReader::open(path).map_err(|e| format!("WAV read error: {e}"))?;
-    let spec = reader.spec();
-    if spec.channels != 1
-        || spec.sample_rate != 16_000
-        || spec.bits_per_sample != 16
-        || spec.sample_format != hound::SampleFormat::Int
-    {
-        return Err("Decoded analysis WAV has an unexpected audio layout".into());
-    }
-    let declared_values = reader.len() as usize;
-    if declared_values > max_samples {
-        return Err("Decoded analysis WAV exceeds its sample limit".into());
-    }
-
-    let mut samples = Vec::new();
-    samples
-        .try_reserve_exact(declared_values)
-        .map_err(|_| "Cannot reserve memory for decoded analysis WAV".to_string())?;
-    for sample in reader.into_samples::<i16>() {
-        samples.push(sample.map_err(|e| format!("WAV sample decode error: {e}"))? as f32 / 32768.0);
-    }
-    if samples.len() > max_samples {
-        return Err("Decoded analysis WAV exceeds its sample limit".into());
-    }
-    Ok(samples)
-}
-
 // ── Conversion types ─────────────────────────────────────────────────────────
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -197,11 +154,12 @@ pub struct ConvertJob {
     pub fade_dur: f64,
     pub hpf: bool,
     pub case_name: Option<String>,
-    // AI processing options
+    // Retired learned-model fields remain on the wire so old preferences and
+    // queued jobs deserialize safely. v1.0.3 forces them false and rejects a
+    // request that attempts to enable one.
     #[serde(default)]
     pub denoise: bool,
-    /// "fast" (RNNoise). Legacy "best" values are rejected while the
-    /// DeepFilterNet processing pipeline remains unimplemented.
+    /// Historical selector retained for preference compatibility only.
     #[serde(default = "default_denoise_quality")]
     pub denoise_quality: String,
     #[serde(default)]
@@ -385,7 +343,7 @@ pub struct Prefs {
     pub fade: bool,
     pub fade_dur: f64,
     pub hpf: bool,
-    // AI processing
+    // Retired learned-model preferences retained for safe migration only.
     #[serde(default)]
     pub denoise: bool,
     #[serde(default = "default_denoise_quality")]
@@ -433,10 +391,10 @@ impl Default for Prefs {
             mp3_bitrate: 192,
             out_dir: "".into(),
             labels: vec![
-                "Speaker 1".into(),
-                "Speaker 2".into(),
-                "Speaker 3".into(),
-                "Speaker 4".into(),
+                "Microphone 1".into(),
+                "Microphone 2".into(),
+                "Microphone 3".into(),
+                "Microphone 4".into(),
             ],
             chan_vols: vec![1.0, 1.0, 1.0, 1.0],
             normalize: false,
@@ -562,8 +520,6 @@ mod tests {
         }
         writer.finalize().unwrap();
 
-        assert_eq!(read_pcm16_mono_wav_bounded(&path, 4).unwrap().len(), 4);
-        assert!(read_pcm16_mono_wav_bounded(&path, 3).is_err());
         assert!(AudioBuffer::from_wav_bounded(&path, 1, 4).is_err());
         assert!(AudioBuffer::from_wav_bounded(&path, 1024 * 1024, 3).is_err());
 
@@ -603,7 +559,10 @@ mod tests {
         assert_eq!(p.format, "wav");
         assert_eq!(p.rate, "48000");
         assert_eq!(p.mp3_bitrate, 192);
-        assert_eq!(p.labels, vec!["Speaker 1", "Speaker 2", "Speaker 3", "Speaker 4"]);
+        assert_eq!(
+            p.labels,
+            vec!["Microphone 1", "Microphone 2", "Microphone 3", "Microphone 4"]
+        );
         assert_eq!(p.chan_vols, vec![1.0; 4]);
         // Empty string = "remember last used" sentinel for startup format/mode
         assert_eq!(p.default_output_format, "");

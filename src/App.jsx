@@ -73,16 +73,9 @@ export default function App() {
     clearAll,
   } = fileDrop
 
-  // System capabilities (hardware-aware recommendations)
-  const [capabilities, setCapabilities] = useState(null)
   const [systemError, setSystemError] = useState('')
-  useEffect(() => {
-    invoke('system_capabilities_cmd')
-      .then(setCapabilities)
-      .catch(error => setSystemError(`System capabilities could not be loaded: ${String(error)}`))
-  }, [])
 
-  // Sidebar health card: sidecars + installed AI models
+  // Sidebar health card: bundled audio engine
   const [health, setHealth] = useState(null)
   useEffect(() => {
     invoke('health_check')
@@ -138,7 +131,9 @@ export default function App() {
       outDir,
       ...prefs,
       autoLevel: prefs.mode !== 'keep' && prefs.autoLevel,
-      dereverb: Boolean(prefs.dereverb && capabilities?.dereverbAvailable),
+      denoise: false,
+      enhance: false,
+      dereverb: false,
       caseName,
       setCases,
       onLibraryError: reportLibraryError,
@@ -156,7 +151,6 @@ export default function App() {
 
   const ThemeIcon = themeIcons[themeLabel] || Monitor
   const libCount = cases.filter(c => !c.archived).length
-  const modelCount = health?.models?.length ?? null
   const updaterLabel = updater.error
     ? 'Update check unavailable'
     : updater.status === 'available'
@@ -170,9 +164,7 @@ export default function App() {
   const storageSummary = [prefsError && 'preferences', libraryReadError && 'Library data'].filter(Boolean).join(' and ')
   const systemErrorSummary = systemError.startsWith('Could not open DepoStack')
     ? 'The DepoStack website could not be opened. Check your connection or open depostack.com in a browser.'
-    : systemError.startsWith('System capabilities')
-      ? 'System recommendations are unavailable. You can keep working, but review settings before converting.'
-      : 'The audio engine check is unavailable. Verify the engine status before starting a conversion.'
+    : 'The audio engine check is unavailable. Verify the engine status before starting a conversion.'
 
   return (
     <Tabs
@@ -239,15 +231,6 @@ export default function App() {
             />
             {health ? (health.ffmpeg ? 'FFmpeg ready' : 'FFmpeg missing') : 'Checking engine…'}
           </div>
-          {modelCount != null && (
-            <div className="flex items-center gap-2 py-0.5 text-[11px] font-medium text-[hsl(var(--text2))]">
-              <span
-                aria-hidden="true"
-                className={`w-1.5 h-1.5 rounded-full ${modelCount > 0 ? 'bg-[hsl(var(--success))]' : 'bg-[hsl(var(--warning))]'}`}
-              />
-              {modelCount} AI model{modelCount !== 1 ? 's' : ''} installed
-            </div>
-          )}
           <div className="py-0.5 text-[11px] text-[hsl(var(--sub))]">{updaterLabel}</div>
         </div>
 
@@ -370,7 +353,6 @@ export default function App() {
             <TabsContent value="convert" forceMount={tab === 'convert' ? true : undefined}>
               {tab === 'convert' && (
                 <ConvertTab
-                  capabilities={capabilities}
                   files={files}
                   dragOver={dragOver}
                   caseName={caseName}

@@ -33,7 +33,7 @@ The first smoke subset should cover:
 - accessible local file-selection controls without opening a native dialog;
 - an automated WCAG 2 A/AA scan of the initial view that blocks serious and critical violations.
 
-The suite should not convert or inspect a court recording, mutate the Library, install an update, download a model, or call an external service. It does not replace keyboard, screen-reader, clean-install, Gatekeeper, SmartScreen, signing, audio-output, or release-asset testing.
+The suite should not convert or inspect a court recording, mutate the Library, install an update, or call an external service. v1.0.3 has no model-download path; the suite must fail if one appears. It does not replace keyboard, screen-reader, clean-install, Gatekeeper, SmartScreen, signing, audio-output, or release-asset testing.
 
 ## Platform and privacy gates
 

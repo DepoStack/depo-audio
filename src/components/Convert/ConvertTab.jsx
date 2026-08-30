@@ -22,8 +22,7 @@ import { aggregateAnalysisResults } from '../../lib/analysis'
 // staleness — not elapsed time — is the hang signal: a healthy scan of a big
 // multichannel file can legitimately run for many minutes, but it never goes
 // quiet for long. The stall threshold sits above the backend's longest
-// legitimately-silent window (a single blocking model inference / EP compile,
-// which cannot heartbeat mid-run). FILE_CAP_MS is the absolute backstop.
+// legitimately-silent decode window. FILE_CAP_MS is the absolute backstop.
 const SCAN_STALL_MS = 150000 // no progress event for 150s = stuck
 const SCAN_FILE_CAP_MS = 900000 // 15 minutes absolute cap per file
 
@@ -31,11 +30,6 @@ const SCAN_FILE_CAP_MS = 900000 // 15 minutes absolute cap per file
 const SCAN_PHASES = {
   probe: 'Reading file info',
   loudness: 'Measuring loudness',
-  noise: 'Estimating noise floor',
-  speech: 'Detecting speech',
-  turns: 'Detecting speaker turns',
-  quality: 'Scoring quality',
-  speakers: 'Estimating speaker activity',
   done: 'Finishing up',
 }
 
@@ -43,33 +37,18 @@ const SCAN_PHASES = {
 export function countHiddenProcessingOptions({
   hasAnalysis,
   showAllProcessing,
-  dereverbAvailable,
-  showDenoise,
   showAutoLevel,
   showDeclip,
-  showEnhance,
-  showDereverb,
   showHpf,
   showNormalize,
   showTrim,
   showFade,
 }) {
   if (!hasAnalysis || showAllProcessing) return 0
-  return [
-    showDenoise,
-    showAutoLevel,
-    showDeclip,
-    showEnhance,
-    ...(dereverbAvailable ? [showDereverb] : []),
-    showHpf,
-    showNormalize,
-    showTrim,
-    showFade,
-  ].filter(visible => !visible).length
+  return [showAutoLevel, showDeclip, showHpf, showNormalize, showTrim, showFade].filter(visible => !visible).length
 }
 
 export default function ConvertTab({
-  capabilities,
   // Files
   files,
   dragOver,
@@ -120,35 +99,14 @@ export default function ConvertTab({
     setFadeDur,
     hpf,
     setHpf,
-    denoise,
-    setDenoise,
-    denoiseQuality,
-    setDenoiseQuality,
     autoLevel,
     setAutoLevel,
     declip,
     setDeclip,
-    enhance,
-    setEnhance,
-    dereverb,
-    setDereverb,
   } = usePreferencesContext()
   const trimEffective = trim && mode !== 'split'
   const autoLevelEffective = autoLevel && mode !== 'keep'
-  const dereverbEffective = dereverb && capabilities?.dereverbAvailable === true
-  const anyProc = normalize || trimEffective || fade || hpf
-  const anyAi = denoise || autoLevelEffective || declip || enhance || dereverbEffective
-  const hardwareDetails = capabilities
-    ? [
-        Number.isFinite(capabilities.cpuCores) && capabilities.cpuCores > 0 ? `${capabilities.cpuCores} cores` : null,
-        Number.isFinite(capabilities.ramMb) && capabilities.ramMb > 0
-          ? `${Math.round(capabilities.ramMb / 1024)} GB RAM`
-          : null,
-        capabilities.appleSilicon ? 'Apple Silicon' : null,
-      ]
-        .filter(Boolean)
-        .join(' · ')
-    : ''
+  const anyProcessing = normalize || trimEffective || fade || hpf || autoLevelEffective || declip
   const [analysis, setAnalysis] = useState(null)
   const [scanning, setScanning] = useState(false)
   const [scanProgress, setScanProgress] = useState({ current: 0, total: 0, fileName: '', phase: '', filePct: 0 })
@@ -166,10 +124,6 @@ export default function ConvertTab({
   useEffect(() => {
     filesRef.current = files
   }, [files])
-
-  useEffect(() => {
-    if (capabilities && !capabilities.dereverbAvailable && dereverb) setDereverb(false)
-  }, [capabilities, dereverb, setDereverb])
 
   const handleModeChange = nextMode => {
     setMode(nextMode)
@@ -272,7 +226,7 @@ export default function ConvertTab({
     }
 
     try {
-      // Scan files one at a time to avoid overwhelming ONNX Runtime
+      // Scan files one at a time to keep sidecar work bounded and cancellable.
       const results = []
       for (let i = 0; i < scanFiles.length; i++) {
         if (scanIdRef.current !== scanId || scanStopRequestedRef.current) return // cancelled or superseded
@@ -365,19 +319,13 @@ export default function ConvertTab({
       }
 
       if (results.length > 0) {
-        // Aggregate: use worst-case across all files
-        // speechRatio is absent when the VAD model isn't installed — average
-        // only real values so a missing model doesn't read as "0% speech"
+        // Aggregate non-learned signal measurements across all files.
         const aggregated = aggregateAnalysisResults(results)
         setAnalysis(aggregated)
 
         // Only enable processing that the scan actually recommends
-        if (aggregated.needsDenoise) setDenoise(true)
         if (aggregated.needsLeveling && mode !== 'keep') setAutoLevel(true)
         if (aggregated.hasClipping) setDeclip(true)
-        if (aggregated.isNarrowband) setEnhance(true)
-        // Trim silence only if there's significant dead air
-        if (aggregated.speechRatio != null && aggregated.speechRatio < 0.5) setTrim(true)
       }
     } catch (e) {
       console.error('Scan failed:', e)
@@ -402,17 +350,7 @@ export default function ConvertTab({
     queueStatuses.some(s => s === 'done')
   const step = converting || queueSettled ? 3 : files.length > 0 ? 2 : 1
   const stepDone = n => n < step || (n === 3 && queueSettled)
-  const procCount = [
-    denoise,
-    autoLevelEffective,
-    declip,
-    enhance,
-    dereverbEffective,
-    hpf,
-    normalize,
-    trimEffective,
-    fade,
-  ].filter(Boolean).length
+  const procCount = [autoLevelEffective, declip, hpf, normalize, trimEffective, fade].filter(Boolean).length
   const formatLabel = FORMATS_OUT.find(f => f.id === formatOut)?.label || formatOut
   const modeLabel = MODES.find(m => m.id === mode)?.label || mode
   const unsupportedFiles = files.filter(file => file.fmt?.status === 'unsupported')
@@ -597,7 +535,7 @@ export default function ConvertTab({
           <div className="flex items-center gap-1.5 flex-wrap mb-1">
             <Label>Quick setup</Label>
             {PRESETS.map(p => {
-              const s = resolvePresetSettings(p.settings, capabilities)
+              const s = resolvePresetSettings(p.settings)
               // Opus always converts at 48 kHz, so compare the effective rate
               const effRate = formatOut === 'opus' ? '48000' : rate
               const sEffRate = s.format === 'opus' ? '48000' : s.rate
@@ -610,12 +548,8 @@ export default function ConvertTab({
                 fade === s.fade &&
                 fadeDur === s.fadeDur &&
                 hpf === s.hpf &&
-                denoise === s.denoise &&
-                denoiseQuality === s.denoiseQuality &&
                 autoLevel === s.autoLevel &&
                 declip === s.declip &&
-                enhance === s.enhance &&
-                dereverb === s.dereverb &&
                 // Bitrate only matters for MP3; presets default to 192 kbps
                 (s.format !== 'mp3' || mp3Bitrate === (s.mp3Bitrate ?? 192))
               return (
@@ -635,12 +569,8 @@ export default function ConvertTab({
                     setFade(s.fade)
                     setFadeDur(s.fadeDur)
                     setHpf(s.hpf)
-                    setDenoise(s.denoise)
-                    setDenoiseQuality(s.denoiseQuality)
                     setAutoLevel(s.autoLevel)
                     setDeclip(s.declip)
-                    setEnhance(s.enhance)
-                    setDereverb(s.dereverb)
                     if (s.format === 'mp3') setMp3Bitrate(s.mp3Bitrate ?? 192)
                   }}
                 >
@@ -884,67 +814,23 @@ export default function ConvertTab({
                 </div>
               )}
 
-              {analysis && (
-                <div
-                  role="status"
-                  aria-label="Recording scan results"
-                  aria-live="polite"
-                  aria-atomic="true"
-                  className="flex flex-wrap gap-1.5 px-4 py-2.5"
-                >
-                  {analysis.qualityScore && (
-                    <Badge
-                      variant="outline"
-                      title={`Signal: ${analysis.qualityScore.sig?.toFixed(1)} · Background: ${analysis.qualityScore.bak?.toFixed(1)}`}
-                    >
-                      Quality: {analysis.qualityScore.ovr?.toFixed(1)}/5
-                    </Badge>
-                  )}
-                  {analysis.speakerCount != null && (
-                    <Badge variant="outline">
-                      {analysis.speakerCount} active speaker slot{analysis.speakerCount !== 1 ? 's' : ''} estimated
-                    </Badge>
-                  )}
-                  {analysis.turns?.length > 0 && (
-                    <Badge variant="outline">
-                      {analysis.turns.length} turn{analysis.turns.length !== 1 ? 's' : ''} found
-                    </Badge>
-                  )}
-                  {analysis.speechRatio != null && (
-                    <Badge variant="outline">{Math.round(analysis.speechRatio * 100)}% speech</Badge>
-                  )}
-                </div>
-              )}
-
               {/* ── Recommended (shown after scan, or all if no scan) ── */}
               {(() => {
                 const hasAnalysis = !!analysis
                 // After scan: only show toggles that are recommended or already enabled
-                const showDenoise = !hasAnalysis || analysis.needsDenoise || denoise || showAllProcessing
                 const showAutoLevel =
                   mode === 'keep' || !hasAnalysis || analysis.needsLeveling || autoLevelEffective || showAllProcessing
                 const showDeclip = !hasAnalysis || analysis.hasClipping || declip || showAllProcessing
-                const showEnhance = !hasAnalysis || analysis.isNarrowband || enhance || showAllProcessing
-                const dereverbAvailable = capabilities?.dereverbAvailable === true
-                const showDereverb = dereverbAvailable && (!hasAnalysis || dereverbEffective || showAllProcessing)
                 const showHpf = !hasAnalysis || hpf || showAllProcessing
                 const showNormalize = !hasAnalysis || normalize || showAllProcessing
-                const showTrim =
-                  !hasAnalysis ||
-                  (analysis.speechRatio != null && analysis.speechRatio < 0.5) ||
-                  trim ||
-                  showAllProcessing
+                const showTrim = !hasAnalysis || trim || showAllProcessing
                 const showFade = !hasAnalysis || fade || showAllProcessing
 
                 const hiddenCount = countHiddenProcessingOptions({
                   hasAnalysis,
                   showAllProcessing,
-                  dereverbAvailable,
-                  showDenoise,
                   showAutoLevel,
                   showDeclip,
-                  showEnhance,
-                  showDereverb,
                   showHpf,
                   showNormalize,
                   showTrim,
@@ -953,46 +839,12 @@ export default function ConvertTab({
 
                 return (
                   <>
-                    {(showDenoise || showAutoLevel || showDeclip || showEnhance || showDereverb) && (
+                    {(showAutoLevel || showDeclip) && (
                       <div className="px-4 py-1.5 bg-secondary/50">
                         <span className="font-mono text-[9px] font-medium tracking-[1.2px] uppercase text-[hsl(var(--sub))]">
-                          {hasAnalysis && !showAllProcessing ? 'RECOMMENDED' : 'SMART'}
+                          {hasAnalysis && !showAllProcessing ? 'RECOMMENDED' : 'SIGNAL REPAIR'}
                         </span>
                       </div>
-                    )}
-
-                    {showDenoise && (
-                      <ProcessingToggle
-                        smart
-                        name="Remove Background Noise"
-                        desc="Cleans up HVAC hum, paper rustling, and room noise"
-                        checked={denoise}
-                        onChange={setDenoise}
-                        detected={analysis?.needsDenoise ? 'Noise detected' : null}
-                        extra={
-                          denoise && (
-                            <span className="inline-flex items-center gap-1 mt-0.5" onClick={e => e.preventDefault()}>
-                              <span className="text-[hsl(var(--sub))]">—</span>
-                              <select
-                                className="font-mono text-[10px] bg-secondary border border-border rounded px-1 py-px text-[hsl(var(--text2))] cursor-pointer"
-                                aria-label="Denoise quality"
-                                value={denoiseQuality}
-                                onChange={e => {
-                                  e.stopPropagation()
-                                  setDenoiseQuality(e.target.value)
-                                }}
-                              >
-                                <option value="fast">Fast</option>
-                                {denoiseQuality === 'best' && (
-                                  <option value="best" disabled>
-                                    Unavailable legacy setting
-                                  </option>
-                                )}
-                              </select>
-                            </span>
-                          )
-                        }
-                      />
                     )}
 
                     {showAutoLevel && (
@@ -1023,31 +875,6 @@ export default function ConvertTab({
                         checked={declip}
                         onChange={setDeclip}
                         detected={analysis?.hasClipping ? 'Clipping found' : null}
-                      />
-                    )}
-
-                    {showEnhance && (
-                      <ProcessingToggle
-                        smart
-                        name="Enhance Clarity"
-                        desc="Improves phone recordings and narrow-band audio"
-                        checked={enhance}
-                        onChange={setEnhance}
-                        detected={
-                          analysis?.isNarrowband ? `${analysis.sampleRate?.toLocaleString() || ''}Hz detected` : null
-                        }
-                      />
-                    )}
-
-                    {/* The DCCRN+ model is optional and self-exported; hide the
-                      toggle when it isn't installed so the switch isn't a lie */}
-                    {showDereverb && (
-                      <ProcessingToggle
-                        smart
-                        name="Reduce Room Echo"
-                        desc="Removes reverb from large rooms or hallways"
-                        checked={dereverbEffective}
-                        onChange={setDereverb}
                       />
                     )}
 
@@ -1143,26 +970,8 @@ export default function ConvertTab({
                 <span className="font-mono text-[9px] font-medium tracking-[1.2px] uppercase text-[hsl(var(--sub))] shrink-0">
                   CHAIN
                 </span>
-                {anyProc || anyAi ? (
+                {anyProcessing ? (
                   <div className="flex items-center gap-1 flex-wrap">
-                    {denoise && (
-                      <>
-                        <Badge variant="info">Denoise</Badge>
-                        <span className="text-[10px] text-[hsl(var(--sub))]">→</span>
-                      </>
-                    )}
-                    {dereverbEffective && (
-                      <>
-                        <Badge variant="info">De-reverb</Badge>
-                        <span className="text-[10px] text-[hsl(var(--sub))]">→</span>
-                      </>
-                    )}
-                    {enhance && (
-                      <>
-                        <Badge variant="info">Enhance</Badge>
-                        <span className="text-[10px] text-[hsl(var(--sub))]">→</span>
-                      </>
-                    )}
                     {declip && (
                       <>
                         <Badge variant="info">De-clip</Badge>
@@ -1204,17 +1013,6 @@ export default function ConvertTab({
 
               <p className="px-4 py-2 text-[10px] text-[hsl(var(--sub))] border-t border-border/60">
                 All processing runs on your machine — nothing is uploaded or sent anywhere.
-                {capabilities && (
-                  <span className="opacity-60" title={hardwareDetails || undefined}>
-                    {' '}
-                    ·{' '}
-                    {capabilities.tier === 'high'
-                      ? 'High performance'
-                      : capabilities.tier === 'mid'
-                        ? 'Standard performance'
-                        : 'Lightweight mode'}
-                  </span>
-                )}
               </p>
             </CardContent>
           </Card>
@@ -1295,7 +1093,7 @@ export default function ConvertTab({
               {procCount > 0 && (
                 <>
                   {' '}
-                  with {procCount} enhancement{procCount !== 1 ? 's' : ''}
+                  with {procCount} processing option{procCount !== 1 ? 's' : ''}
                 </>
               )}{' '}
               → {outDir || 'same folder as source'}
