@@ -869,11 +869,11 @@ const candidateBuildRunUrl = 'https://github.com/DepoStack/depo-audio/actions/ru
 const candidateInspectionRunUrl = 'https://github.com/DepoStack/depo-audio/actions/runs/33340819049'
 for (const blockerId of ['javascript-runtime-notices', 'macos-ffmpeg-rc2-evidence', 'synthetic-ftr-packaged-decode']) {
   const blocker = gateBlockerById.get(blockerId)
+  const evidenceRefs = Array.isArray(blocker?.evidenceRefs) ? new Set(blocker.evidenceRefs) : null
   expect(
     blocker?.status === 'open' &&
-      Array.isArray(blocker.evidenceRefs) &&
-      blocker.evidenceRefs.includes(candidateBuildRunUrl) &&
-      blocker.evidenceRefs.includes(candidateInspectionRunUrl),
+      evidenceRefs?.has(candidateBuildRunUrl) &&
+      evidenceRefs.has(candidateInspectionRunUrl),
     `technical blocker ${blockerId} must retain exact candidate evidence and remain open until a named reviewer closes it`,
   )
 }
