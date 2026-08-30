@@ -571,6 +571,9 @@ expect(
     webviewEvidence.includes("$tauriCliVersion -ne '2.11.4'") &&
     webviewEvidence.includes('Get-AuthenticodeSignature') &&
     webviewEvidence.includes('$wixHash -ne $nsisHash') &&
+    webviewEvidence.includes('& $signToolPath verify /pa /v') &&
+    !webviewEvidence.includes('& $signToolPath verify /pa /all /v') &&
+    webviewEvidence.includes('primary-signature verification failed') &&
     webviewEvidence.includes('finalInstallerEmbeddingVerified = $false'),
   'Windows releases must verify and retain exact Microsoft-signed, byte-identical WebView2 build-input evidence without overstating final extraction',
 )
