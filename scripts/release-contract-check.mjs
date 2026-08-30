@@ -51,6 +51,12 @@ const modelsSource = read('src-tauri/src/models.rs')
 const canonicalReleaseUrl = 'https://github.com/DepoStack/depo-audio/releases'
 const configuredReleaseUrl = appConstants.match(/^export const DEPOAUDIO_RELEASES_URL = ['"]([^'"]+)['"]$/m)?.[1]
 const installerReleaseUrl = installerLicense.match(/^(https:\/\/[^\s]+)\. DepoAudio's MIT license does\\par$/m)?.[1]
+const releaseFinalizeJob = releaseWorkflow.slice(releaseWorkflow.indexOf('\n  finalize:\n'))
+const releaseInspectionJob = publishReleaseWorkflow.slice(
+  publishReleaseWorkflow.indexOf('\n  inspect:\n'),
+  publishReleaseWorkflow.indexOf('\n  publish:\n'),
+)
+const releaseFinalizeGhCommands = releaseFinalizeJob.match(/\bgh\s+/g) ?? []
 expect(!process.argv.includes('--published'), 'use --publication-ready; --published no longer describes this check')
 const requiresPublicationReadyHeading = process.argv.includes('--publication-ready')
 const candidateIsGo = releaseCandidate.includes('Status: **GO for publication**')
@@ -386,11 +392,15 @@ expect(
   'release evidence uploads must target the verified draft ID through the self-tested fail-closed upload helper',
 )
 expect(
-  releaseWorkflow.includes('name: Verify the complete release remains a private draft') &&
-    releaseWorkflow.includes('.draft == true') &&
-    releaseWorkflow.includes('a published release appeared before final draft verification') &&
-    !releaseWorkflow.includes('gh release edit') &&
-    !releaseWorkflow.includes('make_latest'),
+  releaseFinalizeJob.includes('name: Verify the complete release remains a private draft') &&
+    releaseFinalizeJob.includes('contents: write') &&
+    !releaseFinalizeJob.includes('uses: actions/checkout') &&
+    releaseFinalizeGhCommands.length === 2 &&
+    releaseFinalizeJob.includes('release=$(gh api "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID")') &&
+    releaseFinalizeJob.includes('if gh api "repos/$GITHUB_REPOSITORY/releases/tags/$TAG" >/dev/null 2>&1; then') &&
+    releaseFinalizeJob.includes('.draft == true') &&
+    releaseFinalizeJob.includes('a published release appeared before final draft verification') &&
+    !releaseFinalizeJob.includes('make_latest'),
   'release finalization must only audit the complete private draft and must never publish it',
 )
 expect(
@@ -408,6 +418,17 @@ expect(
 )
 const protectedPublicationJob = publishReleaseWorkflow.slice(publishReleaseWorkflow.indexOf('\n  publish:\n'))
 const publicationReadyCalls = publishReleaseWorkflow.match(/release-contract-check\.mjs --publication-ready/g) ?? []
+expect(
+  releaseInspectionJob.includes('contents: write') &&
+    releaseInspectionJob.includes('--phase inspect') &&
+    releaseInspectionJob.includes('persist-credentials: false') &&
+    !releaseInspectionJob.includes('scripts/upload-draft-release-assets.mjs') &&
+    publicationHelper.includes("let githubRequestMode = 'read-only'") &&
+    publicationHelper.includes("githubRequestMode === 'read-only' && normalized !== 'GET'") &&
+    publicationHelper.includes('configureGitHubRequestMode(options.phase)') &&
+    publicationHelper.includes("fail('Read-only inspection accepted a GitHub mutation')"),
+  'candidate inspection must retain a read-only implementation while requesting the access GitHub requires for private drafts',
+)
 expect(
   protectedPublicationJob.includes('environment: release-publication') &&
     protectedPublicationJob.includes('ref: ${{ github.sha }}') &&
@@ -515,7 +536,11 @@ expect(
 expect(
   releaseWorkflow.includes('Publish macOS inventory and checksum evidence to the draft') &&
     releaseWorkflow.includes('SHA256SUMS-macos.txt') &&
-    releaseWorkflow.includes('RELEASE-INVENTORY-macos-dmg.json'),
+    releaseWorkflow.includes('RELEASE-INVENTORY-macos-dmg.json') &&
+    releaseWorkflow.includes('canonical_app_archive="$RUNNER_TEMP/DepoAudio_${version}_universal.app.tar.gz"') &&
+    releaseWorkflow.includes('cp "$app_archive" "$canonical_app_archive"') &&
+    releaseWorkflow.includes('canonical_app_signature="${canonical_app_archive}.sig"') &&
+    releaseWorkflow.includes('release_assets=("$dmg" "$canonical_app_archive")'),
   'release.yml must publish an extracted inventory and checksum manifest for the macOS artifacts',
 )
 expect(

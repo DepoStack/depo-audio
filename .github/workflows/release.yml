@@ -857,6 +857,31 @@ jobs:
           test -n "$dmg" && test -n "$app_archive" || {
             echo "ERROR: macOS artifact pair is incomplete"; exit 1;
           }
+          version=$(node -p "require('./package.json').version")
+          expected_dmg="DepoAudio_${version}_universal.dmg"
+          test "$(basename "$dmg")" = "$expected_dmg" || {
+            echo "ERROR: unexpected macOS DMG name $(basename "$dmg")"; exit 1;
+          }
+          canonical_app_archive="$RUNNER_TEMP/DepoAudio_${version}_universal.app.tar.gz"
+          cp "$app_archive" "$canonical_app_archive"
+
+          unexpected_signature=$(find src-tauri/target/universal-apple-darwin/release/bundle \
+            -type f -name '*.sig' ! -name '*.app.tar.gz.sig' -print -quit)
+          [ -z "$unexpected_signature" ] || {
+            echo "ERROR: unexpected macOS signature asset $unexpected_signature"; exit 1;
+          }
+          app_archive_signature_count=$(find src-tauri/target/universal-apple-darwin/release/bundle \
+            -type f -name '*.app.tar.gz.sig' | wc -l | tr -d '[:space:]')
+          [ "$app_archive_signature_count" -le 1 ] || {
+            echo "ERROR: multiple macOS app-archive signatures found"; exit 1;
+          }
+          canonical_app_signature=''
+          if [ "$app_archive_signature_count" = '1' ]; then
+            app_archive_signature=$(find src-tauri/target/universal-apple-darwin/release/bundle \
+              -type f -name '*.app.tar.gz.sig' -print -quit)
+            canonical_app_signature="${canonical_app_archive}.sig"
+            cp "$app_archive_signature" "$canonical_app_signature"
+          fi
 
           mount_point="$RUNNER_TEMP/depoaudio-dmg-audit"
           archive_root="$RUNNER_TEMP/depoaudio-app-archive-audit"
@@ -889,11 +914,10 @@ jobs:
           mounted=false
 
           manifest="$RUNNER_TEMP/SHA256SUMS-macos.txt"
-          while IFS= read -r artifact; do
+          for artifact in "$dmg" "$canonical_app_archive"; do
             hash=$(shasum -a 256 "$artifact" | awk '{print $1}')
             printf '%s  %s\n' "$hash" "$(basename "$artifact")"
-          done < <(find src-tauri/target/universal-apple-darwin/release/bundle -type f \
-            \( -name '*.dmg' -o -name '*.app.tar.gz' \) | sort) > "$manifest"
+          done > "$manifest"
           test "$(wc -l < "$manifest" | tr -d '[:space:]')" = "2" || {
             echo "ERROR: expected exactly one DMG and one app archive"; cat "$manifest"; exit 1;
           }
@@ -914,7 +938,6 @@ jobs:
           test ! -s "$source_dir/changes.diff" || {
             echo "ERROR: no-patch changes.diff must be empty"; exit 1;
           }
-          version=$(node -p "require('./package.json').version")
           source_archive="$RUNNER_TEMP/DepoAudio_${version}_third-party-source.tar.gz"
           tar czf "$source_archive" -C "$RUNNER_TEMP" depoaudio-third-party-source
           source_manifest="$RUNNER_TEMP/SHA256SUMS-third-party-source.txt"
@@ -922,11 +945,10 @@ jobs:
           printf '%s  %s\n' "$source_hash" "$(basename "$source_archive")" > "$source_manifest"
           cat "$source_manifest"
 
-          release_assets=("$dmg" "$app_archive")
-          while IFS= read -r signature; do
-            release_assets+=("$signature")
-          done < <(find src-tauri/target/universal-apple-darwin/release/bundle \
-            -type f -name '*.sig' | sort)
+          release_assets=("$dmg" "$canonical_app_archive")
+          if [ -n "$canonical_app_signature" ]; then
+            release_assets+=("$canonical_app_signature")
+          fi
           node scripts/upload-draft-release-assets.mjs \
             --repo "$GITHUB_REPOSITORY" --release-id "$RELEASE_ID" \
             --tag "$TAG" --commit "$GITHUB_SHA" -- \
@@ -1216,8 +1238,11 @@ jobs:
   finalize:
     needs: [prepare, release, publish-dependency-evidence]
     runs-on: ubuntu-latest
+    # GitHub's Actions token returns 403 for a private draft at contents:read.
+    # This job receives release access but executes only the inline GET audit
+    # below; the release contract rejects mutation commands in this job.
     permissions:
-      contents: read
+      contents: write
     steps:
       - name: Verify the complete release remains a private draft
         env:

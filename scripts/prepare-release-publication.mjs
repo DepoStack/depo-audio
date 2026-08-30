@@ -14,9 +14,22 @@ const RECEIPT_NAME = 'RELEASE-APPROVAL.json'
 const UPDATER_NAME = 'latest.json'
 const INSPECTION_NAME = 'RELEASE-CANDIDATE-INSPECTION.json'
 const UPLOAD_PLAN_NAME = 'PUBLICATION-UPLOAD-PLAN.json'
+let githubRequestMode = 'read-only'
 
 function fail(message) {
   throw new Error(message)
+}
+
+function configureGitHubRequestMode(phase) {
+  githubRequestMode = phase === 'publish' ? 'publish' : 'read-only'
+}
+
+function authorizeGitHubRequest(method = 'GET') {
+  const normalized = method.toUpperCase()
+  if (githubRequestMode === 'read-only' && normalized !== 'GET') {
+    fail(`Read-only release inspection rejected GitHub ${normalized}`)
+  }
+  return normalized
 }
 
 function parseArguments(argv) {
@@ -381,8 +394,10 @@ function assertSameManifest(actual, approved) {
 }
 
 async function githubRequest(url, token, init = {}, acceptedStatuses = []) {
+  const method = authorizeGitHubRequest(init.method)
   const response = await fetch(url, {
     ...init,
+    method,
     headers: {
       Accept: 'application/vnd.github+json',
       Authorization: `Bearer ${token}`,
@@ -817,6 +832,18 @@ async function publish({ repo, outputDir }, gate, candidate, token, approval) {
 }
 
 async function selfTest() {
+  configureGitHubRequestMode('inspect')
+  let rejectedInspectionMutation = false
+  try {
+    authorizeGitHubRequest('PATCH')
+  } catch {
+    rejectedInspectionMutation = true
+  }
+  if (!rejectedInspectionMutation) fail('Read-only inspection accepted a GitHub mutation')
+  configureGitHubRequestMode('publish')
+  if (authorizeGitHubRequest('PATCH') !== 'PATCH') fail('Publication request authorization is invalid')
+  configureGitHubRequestMode('inspect')
+
   const publicKeyText =
     'untrusted comment: minisign public key E7620F1842B4E81F\n' +
     'RWQf6LRCGA9i53mlYecO4IzT51TGPpvWucNSCh1CBM0QTaLn73Y7GFO3'
@@ -1012,6 +1039,7 @@ if (process.argv.includes('--self-test')) {
   await selfTest()
 } else {
   const options = parseArguments(process.argv.slice(2))
+  configureGitHubRequestMode(options.phase)
   validateRepo(options.repo)
   const gate = await readJson(GATE_PATH)
   const candidate = validateGate(gate, { phase: options.phase })

@@ -33,8 +33,11 @@ jobs:
     if: inputs.operation == 'inspect'
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    # Private draft assets are not exposed to the Actions token at
+    # contents:read. The inspection path remains read-only in code and is
+    # statically checked to contain no release mutation command.
     permissions:
-      contents: read
+      contents: write
     steps:
       - name: Require main and explicit inspection confirmation
         env:
@@ -52,6 +55,7 @@ jobs:
         with:
           ref: ${{ github.sha }}
           fetch-depth: 0
+          persist-credentials: false
 
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
