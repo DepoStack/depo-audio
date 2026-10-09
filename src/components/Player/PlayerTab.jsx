@@ -694,6 +694,7 @@ export default function PlayerTab({ dropHandlerRef, onConvertFiles, active = tru
                             <input
                               className="flex-1 min-w-0 bg-transparent border-none p-0 text-[11px] text-foreground focus:outline-hidden"
                               value={b.label}
+                              aria-label={`Bookmark note at ${fmtTime(b.time)}`}
                               placeholder="Add a note…"
                               onChange={e =>
                                 setBookmarks(prev => prev.map(x => (x === b ? { ...x, label: e.target.value } : x)))
@@ -701,7 +702,7 @@ export default function PlayerTab({ dropHandlerRef, onConvertFiles, active = tru
                             />
                             <button
                               className="text-[hsl(var(--sub))] opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 hover:text-destructive transition-all shrink-0 rounded focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring"
-                              aria-label="Remove bookmark"
+                              aria-label={`Remove bookmark at ${fmtTime(b.time)}`}
                               onClick={() => setBookmarks(prev => prev.filter(x => x !== b))}
                             >
                               <X size={10} />

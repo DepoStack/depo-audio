@@ -711,6 +711,7 @@ export default function ConvertTab({
                         className="h-7 text-[11px] w-32 shrink-0"
                         value={l}
                         maxLength={24}
+                        aria-label={`Channel ${i + 1} name`}
                         placeholder={`Channel ${i + 1}`}
                         onChange={e => setLabels(p => p.map((v, j) => (j === i ? e.target.value : v)))}
                       />
