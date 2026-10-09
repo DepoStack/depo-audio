@@ -63,9 +63,9 @@ const SETTINGS_PRESETS = [
 
 // The modal's left rail — each entry is a group of Cards on the right.
 const NAV = [
-  { id: 'models', label: 'Model files', Icon: Boxes },
-  { id: 'audio', label: 'Audio', Icon: SlidersHorizontal },
   { id: 'app', label: 'App', Icon: AppWindow },
+  { id: 'audio', label: 'Audio', Icon: SlidersHorizontal },
+  { id: 'models', label: 'Model files', Icon: Boxes },
   { id: 'updates', label: 'Updates', Icon: DownloadCloud },
 ]
 
@@ -350,7 +350,7 @@ export default function SettingsPanel({ open, onOpenChange, prefs, updater = {} 
     defaultOutputMode,
     setDefaultOutputMode,
   } = prefs
-  const [section, setSection] = useState('models')
+  const [section, setSection] = useState('app')
   const [externalLinkError, setExternalLinkError] = useState('')
   const updateProgressPercent = Math.min(100, Math.max(0, Math.round((updateProgress || 0) * 100)))
 

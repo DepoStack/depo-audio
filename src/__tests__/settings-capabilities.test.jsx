@@ -21,10 +21,22 @@ describe('SettingsPanel release boundaries', () => {
     openUrl.mockReset()
   })
 
+  it('opens on app settings and checks legacy storage only when requested', () => {
+    invoke.mockResolvedValue([])
+    renderSettings({ ffmpegTimeout: 300, maxScanDepth: 5, maxFileSizeGb: 2 })
+
+    expect(screen.getByRole('button', { name: 'App' })).toHaveAttribute('aria-pressed', 'true')
+    expect(screen.getByRole('spinbutton', { name: 'Processing timeout (seconds)' })).toBeVisible()
+    expect(invoke).not.toHaveBeenCalledWith('legacy_model_cleanup_catalog_cmd')
+    fireEvent.click(screen.getByRole('button', { name: 'Model files' }))
+    expect(invoke).toHaveBeenCalledWith('legacy_model_cleanup_catalog_cmd')
+  })
+
   it('shows a deletion-only empty state without requesting capabilities or model downloads', async () => {
     invoke.mockResolvedValue([])
 
     renderSettings()
+    fireEvent.click(screen.getByRole('button', { name: 'Model files' }))
 
     expect(await screen.findByText(/does not install or download learned-model files/i)).toBeVisible()
     expect(screen.queryByRole('button', { name: /install/i })).not.toBeInTheDocument()
@@ -56,6 +68,7 @@ describe('SettingsPanel release boundaries', () => {
     })
 
     renderSettings()
+    fireEvent.click(screen.getByRole('button', { name: 'Model files' }))
 
     fireEvent.click(await screen.findByRole('button', { name: 'Delete Speaker embedding (legacy)' }))
     await waitFor(() =>
@@ -72,6 +85,7 @@ describe('SettingsPanel release boundaries', () => {
     })
 
     renderSettings()
+    fireEvent.click(screen.getByRole('button', { name: 'Model files' }))
 
     expect(await screen.findByRole('alert')).toHaveTextContent('catalog unavailable')
     available = true
