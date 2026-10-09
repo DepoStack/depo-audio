@@ -134,10 +134,33 @@ pub(crate) fn atomic_write(path: &std::path::Path, bytes: &[u8]) -> Result<(), S
     Ok(())
 }
 
+/// Every successful save must remain readable after restart. Check the actual
+/// serialized UTF-8 byte count before creating a temporary file or replacing
+/// the live store; callers publish their in-memory candidate only on success.
+fn save_json_bounded<T: serde::Serialize>(path: &Path, value: &T, label: &str, max_bytes: u64) -> Result<(), String> {
+    let json = serde_json::to_vec_pretty(value).map_err(|error| format!("Failed to serialize {label}: {error}"))?;
+    if json.len() as u64 > max_bytes {
+        return Err(format!(
+            "Cannot save {label}: update exceeds the {max_bytes}-byte safety limit. The previous saved data was kept."
+        ));
+    }
+    atomic_write(path, &json)
+}
+
+fn save_library_at(path: &Path, library: &Library) -> Result<(), String> {
+    save_json_bounded(path, library, "Library", MAX_LIBRARY_BYTES)
+}
+
+fn save_prefs_at(path: &Path, prefs: &Prefs) -> Result<(), String> {
+    save_json_bounded(path, prefs, "Preferences", MAX_PREFS_BYTES)
+}
+
 pub(crate) fn save_library(app: &AppHandle, lib: &Library) -> Result<(), String> {
-    let path = lib_path(app)?;
-    let json = serde_json::to_string_pretty(lib).map_err(|e| format!("Failed to serialize library: {}", e))?;
-    atomic_write(&path, json.as_bytes())
+    save_library_at(&lib_path(app)?, lib)
+}
+
+pub(crate) fn save_prefs(app: &AppHandle, prefs: &Prefs) -> Result<(), String> {
+    save_prefs_at(&prefs_path(app)?, prefs)
 }
 
 fn storage_ready(error: &std::sync::Mutex<Option<String>>, label: &str) -> Result<(), String> {
@@ -337,6 +360,104 @@ mod tests {
 
         let error = read_json_or_default::<Library>(&path, "Library", 32).unwrap_err();
         assert!(error.contains("exceeds the 32-byte safety limit"));
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn bounded_save_at_the_exact_byte_limit_can_be_loaded_again() {
+        let dir = test_dir("save_boundary");
+        let path = dir.join("library.json");
+        let library = Library::default();
+        let limit = serde_json::to_vec_pretty(&library).unwrap().len() as u64;
+
+        save_json_bounded(&path, &library, "Library", limit).unwrap();
+        let loaded: Library = read_json_or_default(&path, "Library", limit).unwrap();
+        assert_eq!(loaded.version, library.version);
+        assert!(loaded.cases.is_empty());
+        assert_eq!(fs::metadata(&path).unwrap().len(), limit);
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn oversized_candidate_preserves_disk_and_memory_without_temp_files() {
+        let dir = test_dir("save_too_large");
+        let path = dir.join("library.json");
+        let mut current = Library::default();
+        save_json_bounded(&path, &current, "Library", MAX_LIBRARY_BYTES).unwrap();
+        let original = fs::read(&path).unwrap();
+        let candidate = Library {
+            version: 1,
+            cases: vec![case("new case", false)],
+        };
+        let limit = serde_json::to_vec_pretty(&candidate).unwrap().len() as u64 - 1;
+
+        let error = commit_candidate(&mut current, candidate, |next| {
+            save_json_bounded(&path, next, "Library", limit)
+        })
+        .unwrap_err();
+        assert!(error.contains("safety limit"));
+        assert_eq!(fs::read(&path).unwrap(), original);
+        assert!(current.cases.is_empty());
+        assert_eq!(current.version, 0);
+        assert_eq!(fs::read_dir(&dir).unwrap().count(), 1);
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn bounded_save_counts_utf8_bytes_rather_than_characters() {
+        let dir = test_dir("save_utf8");
+        let path = dir.join("prefs.json");
+        let value = serde_json::json!({ "label": "é" });
+        let json = serde_json::to_string_pretty(&value).unwrap();
+        let char_count = json.chars().count() as u64;
+        assert_eq!(json.len() as u64, char_count + 1);
+
+        assert!(save_json_bounded(&path, &value, "Preferences", char_count).is_err());
+        assert!(!path.exists());
+        save_json_bounded(&path, &value, "Preferences", json.len() as u64).unwrap();
+        let loaded: serde_json::Value = read_json_or_default(&path, "Preferences", json.len() as u64).unwrap();
+        assert_eq!(loaded, value);
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn preferences_save_rejects_values_larger_than_the_preferences_read_limit() {
+        let dir = test_dir("prefs_too_large");
+        let path = dir.join("prefs.json");
+        let mut current = Prefs::default();
+        save_prefs_at(&path, &current).unwrap();
+        let original = fs::read(&path).unwrap();
+        let mut candidate = current.clone();
+        candidate.labels = vec!["x".repeat(MAX_PREFS_BYTES as usize)];
+
+        assert!(commit_candidate(&mut current, candidate, |next| save_prefs_at(&path, next)).is_err());
+        assert_eq!(fs::read(&path).unwrap(), original);
+        assert_eq!(current.labels, Prefs::default().labels);
+        assert_eq!(fs::read_dir(&dir).unwrap().count(), 1);
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn library_save_rejects_values_larger_than_the_library_read_limit() {
+        let dir = test_dir("library_too_large");
+        let path = dir.join("library.json");
+        let mut current = Library::default();
+        save_library_at(&path, &current).unwrap();
+        let original = fs::read(&path).unwrap();
+        let candidate = Library {
+            version: 1,
+            cases: vec![case(&"x".repeat(MAX_LIBRARY_BYTES as usize), false)],
+        };
+
+        assert!(commit_candidate(&mut current, candidate, |next| save_library_at(&path, next)).is_err());
+        assert_eq!(fs::read(&path).unwrap(), original);
+        assert!(current.cases.is_empty());
+        assert_eq!(fs::read_dir(&dir).unwrap().count(), 1);
 
         let _ = fs::remove_dir_all(dir);
     }

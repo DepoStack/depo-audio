@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useReducer, useRef, useState } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import {
   Search,
@@ -27,6 +27,7 @@ import WorkspaceHeader from '../common/WorkspaceHeader'
 import LibraryFile from './LibraryFile'
 import ImportModal from './ImportModal'
 import { catJobPaths } from '../../lib/queue'
+import { courtSoftwareScanReducer, initialCourtSoftwareScan } from './courtSoftwareScan'
 
 const CAT_JOB_PAGE_SIZE = 20
 
@@ -48,10 +49,11 @@ export default function LibraryTab({
   const [editingCase, setEditingCase] = useState(null)
   const [editName, setEditName] = useState('')
   const [importModal, setImportModal] = useState(false)
-  const [catSoftware, setCatSoftware] = useState(null)
-  const [catJobs, setCatJobs] = useState([])
+  const [catScan, dispatchCatScan] = useReducer(courtSoftwareScanReducer, initialCourtSoftwareScan)
+  const { software: catSoftware, jobs: catJobs } = catScan
+  const catRequestRef = useRef(0)
   const [visibleCatJobCount, setVisibleCatJobCount] = useState(CAT_JOB_PAGE_SIZE)
-  const [scanningCat, setScanningCat] = useState(false)
+  const scanningCat = catScan.phase === 'detecting' || catScan.phase === 'scanning'
   const [confirm, setConfirm] = useState(null) // { title, description, onConfirm }
   const [operationWarning, setOperationWarning] = useState('')
   const renameButtonRefs = useRef(new Map())
@@ -70,27 +72,37 @@ export default function LibraryTab({
     setEditingCase(null)
   }
 
-  const detectSoftware = async () => {
-    setScanningCat(true)
-    setCatJobs([])
+  useEffect(
+    () => () => {
+      catRequestRef.current += 1
+    },
+    [],
+  )
+
+  const scanSource = async source => {
+    const requestId = ++catRequestRef.current
+    dispatchCatScan({ type: 'select', requestId, source })
     setVisibleCatJobCount(CAT_JOB_PAGE_SIZE)
-    setOperationWarning('')
     try {
-      const sw = await invoke('detect_cat_software_cmd', { maxDepth: maxScanDepth })
-      setCatSoftware(sw)
-      if (sw.length > 0) {
-        const jobs = await invoke('scan_cat_jobs_cmd', { path: sw[0].path, maxDepth: maxScanDepth })
-        setCatJobs(jobs)
-      }
-    } catch (e) {
-      console.error('CAT detection failed:', e)
-      setCatSoftware([])
-      setOperationWarning({
-        summary: 'Court-software detection could not finish. Try again, or import audio manually.',
-        detail: String(e),
-      })
+      const jobs = await invoke('scan_cat_jobs_cmd', { path: source.path, maxDepth: maxScanDepth })
+      if (requestId === catRequestRef.current) dispatchCatScan({ type: 'complete', requestId, jobs })
+    } catch (error) {
+      if (requestId === catRequestRef.current) dispatchCatScan({ type: 'failed', requestId, error: String(error) })
     }
-    setScanningCat(false)
+  }
+
+  const detectSoftware = async () => {
+    const requestId = ++catRequestRef.current
+    dispatchCatScan({ type: 'detect', requestId })
+    setVisibleCatJobCount(CAT_JOB_PAGE_SIZE)
+    try {
+      const software = await invoke('detect_cat_software_cmd', { maxDepth: maxScanDepth })
+      if (requestId !== catRequestRef.current) return
+      dispatchCatScan({ type: 'detected', requestId, software })
+      if (software.length > 0) await scanSource(software[0])
+    } catch (error) {
+      if (requestId === catRequestRef.current) dispatchCatScan({ type: 'failed', requestId, error: String(error) })
+    }
   }
 
   const filtered = useMemo(
@@ -189,13 +201,21 @@ export default function LibraryTab({
     : `${filtered.length} ${visibleCaseLabel} case${filtered.length === 1 ? '' : 's'}${
         search.trim() ? ` ${filtered.length === 1 ? 'matches' : 'match'} the search.` : '.'
       }`
-  const catStatus = scanningCat
-    ? 'Scanning for court software and jobs.'
-    : catSoftware === null
-      ? ''
-      : catSoftware.length === 0
-        ? 'No court-software installations were found.'
-        : `Found ${catSoftware.length} court-software installation${catSoftware.length === 1 ? '' : 's'} and ${catJobs.length} job${catJobs.length === 1 ? '' : 's'}.`
+  const catErrorSummary = catScan.selected
+    ? `Could not scan jobs in ${catScan.selected.name}. Retry the scan or choose another source.`
+    : 'Court-software detection could not finish. Try again, or import audio manually.'
+  const catStatus =
+    catScan.phase === 'detecting'
+      ? 'Scanning for court software and jobs.'
+      : catScan.phase === 'scanning'
+        ? `Scanning jobs in ${catScan.selected.name}…`
+        : catScan.error
+          ? catErrorSummary
+          : catSoftware === null
+            ? ''
+            : catSoftware.length === 0
+              ? 'No court-software installations were found.'
+              : `Found ${catSoftware.length} court-software installation${catSoftware.length === 1 ? '' : 's'} and ${catJobs.length} job${catJobs.length === 1 ? '' : 's'}.`
 
   return (
     <div className="flex-1 overflow-y-auto overflow-x-hidden">
@@ -322,6 +342,28 @@ export default function LibraryTab({
           </div>
         )}
 
+        {catScan.error && (
+          <div
+            role="alert"
+            className="rounded-md border border-warning/30 bg-warning/10 px-3 py-2 text-xs text-foreground"
+          >
+            <p>{catErrorSummary}</p>
+            <details className="mt-1.5">
+              <summary className="cursor-pointer font-semibold">Technical details</summary>
+              <p className="mt-1 whitespace-pre-wrap break-words text-[10px] text-[hsl(var(--sub))]">
+                {catScan.error}
+              </p>
+            </details>
+            <Button
+              className="mt-2"
+              size="sm"
+              onClick={() => (catScan.selected ? scanSource(catScan.selected) : detectSoftware())}
+            >
+              {catScan.selected ? `Retry ${catScan.selected.name} scan` : 'Retry court-software detection'}
+            </Button>
+          </div>
+        )}
+
         {/* Court reporting software — a proper dismissible Card */}
         {catSoftware !== null && (
           <Card>
@@ -332,8 +374,7 @@ export default function LibraryTab({
                 className="text-[hsl(var(--sub))] hover:text-foreground transition-colors rounded p-1 focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1"
                 aria-label="Dismiss court-software results"
                 onClick={() => {
-                  setCatSoftware(null)
-                  setCatJobs([])
+                  dispatchCatScan({ type: 'dismiss', requestId: ++catRequestRef.current })
                   setVisibleCatJobCount(CAT_JOB_PAGE_SIZE)
                 }}
               >
@@ -345,34 +386,43 @@ export default function LibraryTab({
                 <p className="text-[12px] text-[hsl(var(--sub))]">No court reporting software found on this machine.</p>
               ) : (
                 <>
-                  <div className="flex flex-wrap gap-1.5">
+                  <div role="group" aria-label="Detected court-software sources" className="flex flex-wrap gap-1.5">
                     {catSoftware.map((sw, i) => (
                       <button
                         key={i}
                         type="button"
                         className="flex items-center gap-2 px-2.5 py-1.5 bg-secondary rounded-md text-[12px] hover:bg-secondary/70 transition-colors focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1"
-                        onClick={async () => {
-                          setCatJobs([])
-                          setVisibleCatJobCount(CAT_JOB_PAGE_SIZE)
-                          try {
-                            setCatJobs(await invoke('scan_cat_jobs_cmd', { path: sw.path, maxDepth: maxScanDepth }))
-                          } catch (error) {
-                            setCatJobs([])
-                            setOperationWarning({
-                              summary:
-                                'Court-job scanning could not finish. Choose the software again or import audio manually.',
-                              detail: String(error),
-                            })
-                          }
-                        }}
+                        aria-pressed={catScan.selected?.path === sw.path}
+                        disabled={
+                          catScan.phase === 'detecting' ||
+                          (catScan.phase === 'scanning' && catScan.selected?.path === sw.path)
+                        }
+                        onClick={() => scanSource(sw)}
                       >
+                        {catScan.phase === 'scanning' && catScan.selected?.path === sw.path && (
+                          <Loader2 className="h-3.5 w-3.5 animate-spin motion-reduce:animate-none" aria-hidden="true" />
+                        )}
                         <span className="font-medium text-foreground">{sw.name}</span>
+                        {catScan.selected?.path === sw.path && <span className="text-[10px]">Selected</span>}
                         <Badge variant="default">
                           {sw.jobCount} file{sw.jobCount !== 1 ? 's' : ''}
                         </Badge>
                       </button>
                     ))}
                   </div>
+                  {catScan.phase === 'scanning' && (
+                    <p className="text-[12px] text-[hsl(var(--sub))]">
+                      Scanning jobs in {catScan.selected.name}…
+                    </p>
+                  )}
+                  {catScan.resultSource && (
+                    <p className="text-[12px] text-[hsl(var(--text2))]">Results from {catScan.resultSource.name}</p>
+                  )}
+                  {catScan.phase === 'ready' && catScan.resultSource && catJobs.length === 0 && (
+                    <p className="text-[12px] text-[hsl(var(--sub))]">
+                      No jobs found in {catScan.resultSource.name}. Choose another source or import audio manually.
+                    </p>
+                  )}
                   {catJobs.length > 0 && (
                     <div className="flex flex-col">
                       <div className="flex items-center justify-between px-1 pb-1.5">

@@ -89,6 +89,38 @@ describe('ConvertTab scan cancellation', () => {
     listen.mockResolvedValue(vi.fn())
   })
 
+  it('describes the current processing preferences and names the fade duration', () => {
+    Object.assign(preferencesContext.current, {
+      hpfCutoff: 120,
+      normalizeLufs: -20,
+      normalizeTp: -2,
+      silenceThresh: -45,
+      fade: true,
+    })
+    render(<ConvertTab {...props()} />)
+    expect(screen.getByText(/120 Hz cutoff/)).toBeVisible()
+    expect(screen.getByText(/Targets -20 LUFS \/ -2 dBTP/)).toBeVisible()
+    expect(screen.getByText(/below -45 dB/)).toBeVisible()
+    const duration = screen.getByRole('spinbutton', { name: 'Fade duration (seconds)' })
+    expect(duration).toHaveValue(0.5)
+    fireEvent.change(duration, { target: { value: '9' } })
+    expect(preferencesContext.current.setFadeDur).toHaveBeenCalledWith(5)
+  })
+
+  it('shows skipped split-channel trim as off without clearing the saved preference', () => {
+    Object.assign(preferencesContext.current, { mode: 'split', trim: true })
+    render(<ConvertTab {...props()} />)
+    const trim = screen.getByRole('switch', { name: 'Trim Leading Silence' })
+    expect(trim).toBeDisabled()
+    expect(trim).toHaveAttribute('aria-checked', 'false')
+    expect(preferencesContext.current.setTrim).not.toHaveBeenCalled()
+  })
+
+  it('explains that in-flight edits apply to the next batch', () => {
+    render(<ConvertTab {...props()} converting />)
+    expect(screen.getByText(/Changes to settings apply to the next batch/)).toBeVisible()
+  })
+
   it('keeps a failed user cancellation visible and retryable', async () => {
     let cancelAttempts = 0
     invoke.mockImplementation(command => {

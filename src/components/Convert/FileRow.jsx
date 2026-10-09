@@ -1,18 +1,20 @@
 import { useState } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import { CH_COLORS } from '../../constants'
-import { FileAudio, X, FolderOpen, ChevronDown, ChevronUp } from 'lucide-react'
+import { FileAudio, X, FolderOpen, ChevronDown, ChevronUp, Play } from 'lucide-react'
 import { Badge } from '../ui/badge'
 import { cn } from '../../lib/utils'
 import StatusChip from '../common/StatusChip'
 import MiniPlayer from './MiniPlayer'
 
-export default function FileRow({ file, job, onRemove, converting }) {
+export default function FileRow({ file, job, onRemove, converting, onOpenInPlayer }) {
   const [expanded, setExpanded] = useState(false)
   const [folderError, setFolderError] = useState('')
   const status = job?.status || 'waiting'
   const isExp = file.fmt?.status === 'experimental'
   const isRej = file.fmt?.status === 'unsupported'
+  const errorFirstLine = String(job?.error || '').split(/\r?\n/)[0].trim()
+  const errorSummary = errorFirstLine.length > 180 ? `${errorFirstLine.slice(0, 180)}…` : errorFirstLine
 
   return (
     <div
@@ -63,6 +65,9 @@ export default function FileRow({ file, job, onRemove, converting }) {
           )}
         </div>
       </div>
+      {file.fmt?.note && (
+        <p className="px-3 pb-2 text-[11px] text-[hsl(var(--text2))]">{file.fmt.note}</p>
+      )}
       {status === 'converting' &&
         (() => {
           // Real percentage when the backend knows the source duration; capped
@@ -110,7 +115,7 @@ export default function FileRow({ file, job, onRemove, converting }) {
           {job.outputs.map((out, i) => (
             <MiniPlayer key={out.path} out={out} color={CH_COLORS[i % 4]} multi={job.outputs.length > 1} />
           ))}
-          {job.outputs.length > 1 && (
+          {job.outputs.length > 0 && (
             <button
               className="flex items-center gap-1 text-[10px] text-[hsl(var(--sub))] hover:text-foreground transition-colors mt-1 self-start"
               onClick={async () => {
@@ -124,6 +129,16 @@ export default function FileRow({ file, job, onRemove, converting }) {
             >
               <FolderOpen size={11} />
               Show in Explorer / Finder
+            </button>
+          )}
+          {onOpenInPlayer && (
+            <button
+              type="button"
+              className="mt-1 flex items-center gap-1 self-start text-[11px] text-foreground hover:underline"
+              onClick={() => onOpenInPlayer(job.outputs.map(output => output.path))}
+            >
+              <Play size={11} aria-hidden="true" />
+              Open in Player
             </button>
           )}
           {folderError && (
@@ -145,6 +160,9 @@ export default function FileRow({ file, job, onRemove, converting }) {
       )}
       {status === 'error' && (
         <div className="px-3 pb-2.5">
+          <p role="alert" className="mb-1 text-[11px] text-destructive">
+            Conversion did not finish. {errorSummary || 'Check the source file and output folder, then retry.'}
+          </p>
           <button
             className="text-[10px] text-[hsl(var(--sub))] hover:text-foreground transition-colors flex items-center gap-1"
             onClick={() => setExpanded(e => !e)}

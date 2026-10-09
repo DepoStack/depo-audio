@@ -8,6 +8,7 @@ mod merge;
 mod models;
 mod persistence;
 mod safety;
+mod store_owner;
 pub mod types;
 mod waveform;
 
@@ -41,6 +42,28 @@ fn allow_library_assets(app: &tauri::AppHandle, library: &types::Library) {
 /// fail closed while still allowing the app to open and report the problem.
 fn setup_persistence(app: &tauri::AppHandle) {
     let state = app.state::<AppState>();
+
+    // Acquire ownership before reading either snapshot. The managed handle is
+    // retained for the entire app lifetime, including if a store fails to load.
+    // Never retry in this process with a potentially stale in-memory snapshot.
+    let owner = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| error.to_string())
+        .and_then(|directory| store_owner::StoreOwner::acquire(&directory).map_err(|error| error.to_string()));
+    match owner {
+        Ok(owner) => {
+            app.manage(owner);
+        }
+        Err(error) => {
+            let message = format!(
+                "Cannot obtain exclusive access to Library and preferences. Close other DepoAudio windows and restart. If the problem persists, check app-data folder permissions. ({error})"
+            );
+            *state.library_load_error.lock().unwrap_or_else(|e| e.into_inner()) = Some(message.clone());
+            *state.prefs_load_error.lock().unwrap_or_else(|e| e.into_inner()) = Some(message);
+            return;
+        }
+    }
 
     match persistence::load_library(app) {
         Ok(library) => {

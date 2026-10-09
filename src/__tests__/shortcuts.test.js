@@ -6,6 +6,16 @@ function keyEvent(target, overrides = {}) {
 }
 
 describe('global navigation shortcuts', () => {
+  it('leaves handled events and custom sliders to their local controls', () => {
+    const doc = document.implementation.createHTMLDocument()
+    const slider = doc.createElement('div')
+    slider.setAttribute('role', 'slider')
+    doc.body.append(slider)
+
+    expect(shouldIgnoreNavigationShortcut(keyEvent(slider), doc)).toBe(true)
+    expect(shouldIgnoreNavigationShortcut(keyEvent(doc.body, { defaultPrevented: true }), doc)).toBe(true)
+  })
+
   it('does not intercept keys from interactive controls', () => {
     const doc = document.implementation.createHTMLDocument()
     const button = doc.createElement('button')

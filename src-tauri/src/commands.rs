@@ -14,7 +14,7 @@ use crate::conversion::{do_convert, ConversionCancel};
 use crate::helpers::{detect_format_for_path, get_formats, infer_case_name};
 use crate::merge;
 use crate::models;
-use crate::persistence::{library_ready, mutate_library, prefs_path, prefs_ready, save_to_library};
+use crate::persistence::{library_ready, mutate_library, prefs_ready, save_prefs, save_to_library};
 use crate::types::*;
 
 // ── Health check ─────────────────────────────────────────────────────────────
@@ -565,9 +565,7 @@ pub fn prefs_set(app: AppHandle, state: State<'_, AppState>, patch: serde_json::
     prefs_ready(&state)?;
     let mut current = state.prefs.lock().unwrap_or_else(|e| e.into_inner());
     let candidate = crate::persistence::merge_prefs(&current, patch)?;
-    let json = serde_json::to_string_pretty(&candidate).map_err(|e| format!("Failed to serialize preferences: {e}"))?;
-    let path = prefs_path(&app)?;
-    crate::persistence::atomic_write(&path, json.as_bytes())?;
+    save_prefs(&app, &candidate)?;
     *current = candidate;
     Ok(true)
 }

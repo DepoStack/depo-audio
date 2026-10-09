@@ -1,3 +1,4 @@
+use std::io::Read;
 use std::path::Path;
 use std::sync::OnceLock;
 
@@ -6,7 +7,7 @@ use tauri::{AppHandle, Emitter};
 use tauri_plugin_shell::process::CommandEvent;
 use tauri_plugin_shell::ShellExt;
 
-use crate::helpers::{ffmpeg_bin_name, ffprobe_bin_name};
+use crate::helpers::{ffmpeg_bin_name, ffprobe_bin_name, safe_ffmpeg_input_prelude};
 use crate::types::{ConvertJob, ProgressEvent};
 
 /// How many seconds of audio the pre-scan / auto-level analysis reads.
@@ -262,6 +263,89 @@ pub(crate) async fn probe_channels_cancellable(
     }
 }
 
+// One mono unsigned byte per sample, at a fixed rate. Only the byte count is
+// used; the samples are discarded as each bounded raw-output event arrives.
+// This avoids relying on reset timestamps or the last logical Ogg stream's
+// duration. It also avoids buffering/reversing a whole court recording.
+const OGG_DURATION_OUTPUT_ARGS: &[&str] = &[
+    "-map", "0:a:0", "-vn", "-sn", "-dn", "-ar", "48000", "-ac", "1", "-c:a", "pcm_u8", "-f", "u8", "pipe:1",
+];
+
+fn feed_is_ogg(feed: &Path) -> Result<bool, String> {
+    let mut file = std::fs::File::open(feed).map_err(|_| "Cannot read audio before placing the fade".to_string())?;
+    let mut magic = [0u8; 4];
+    match file.read_exact(&mut magic) {
+        Ok(()) => Ok(&magic == b"OggS"),
+        Err(error) if error.kind() == std::io::ErrorKind::UnexpectedEof => Ok(false),
+        Err(_) => Err("Cannot inspect audio before placing the fade".into()),
+    }
+}
+
+fn counted_ogg_duration(bytes: u64, success: bool) -> Result<f64, String> {
+    if !success || bytes == 0 {
+        return Err(
+            "Cannot measure the decoded Ogg audio for its fade. Retry without Fade or check the recording.".into(),
+        );
+    }
+    Ok(bytes as f64 / 48_000.0)
+}
+
+/// Ogg's format.duration may describe only its last logical stream. Count a
+/// complete decode only when its fade is requested, with the user's existing
+/// FFmpeg timeout and cancellation bound. This extra pass writes no temp audio.
+async fn decoded_ogg_duration(
+    app: &AppHandle,
+    feed: &Path,
+    timeout_secs: u64,
+    cancelled: CancelCheck<'_>,
+) -> Result<f64, String> {
+    let mut args = safe_ffmpeg_input_prelude();
+    args.extend([
+        "-v".into(),
+        "error".into(),
+        "-i".into(),
+        feed.to_string_lossy().to_string(),
+    ]);
+    args.extend(OGG_DURATION_OUTPUT_ARGS.iter().map(|arg| (*arg).to_string()));
+    let (mut rx, child) = app
+        .shell()
+        .sidecar(ffmpeg_bin_name())
+        .map_err(|e| e.to_string())?
+        .args(args)
+        .set_raw_out(true)
+        .spawn()
+        .map_err(|e| e.to_string())?;
+    let mut child = Some(child);
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(bounded_ffmpeg_timeout(timeout_secs));
+    let mut bytes = 0u64;
+    loop {
+        if cancelled.map(|check| check()).unwrap_or(false) {
+            kill_and_drain(child.take(), &mut rx).await;
+            return Err(crate::types::CONVERSION_CANCELLED_MESSAGE.into());
+        }
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        if remaining.is_zero() {
+            kill_and_drain(child.take(), &mut rx).await;
+            return Err(
+                "Measuring the decoded Ogg audio timed out. Increase the FFmpeg timeout or retry without Fade.".into(),
+            );
+        }
+        match tokio::time::timeout(remaining.min(std::time::Duration::from_secs(1)), rx.recv()).await {
+            Err(_) => continue,
+            Ok(Some(CommandEvent::Stdout(chunk))) => bytes += chunk.len() as u64,
+            Ok(Some(CommandEvent::Terminated(status))) => {
+                child.take();
+                return counted_ogg_duration(bytes, status.code == Some(0));
+            }
+            Ok(None) | Ok(Some(CommandEvent::Error(_))) => {
+                kill_and_drain(child.take(), &mut rx).await;
+                return counted_ogg_duration(bytes, false);
+            }
+            Ok(Some(_)) => {}
+        }
+    }
+}
+
 // ── Filter chain builder ─────────────────────────────────────────────────────
 
 /// Build the processing filter chain, optionally injecting a computed gain
@@ -272,14 +356,26 @@ pub(crate) async fn build_proc_filters_with_gain(
     feed: &Path,
     auto_gain: Option<f64>,
     cancelled: CancelCheck<'_>,
-) -> Vec<String> {
-    // Duration is only needed to place the fade-out, so only probe then.
-    let duration = if opts.fade {
+) -> Result<Vec<String>, String> {
+    // Inspect the prepared feed, so stripped SGMCA and renamed Ogg inputs use
+    // the same rule. Other containers and conversions without Fade are unchanged.
+    let duration = if opts.fade && feed_is_ogg(feed)? {
+        let _ = app.emit(
+            "convert:progress",
+            ProgressEvent {
+                id: opts.id.clone(),
+                seconds: 0.0,
+                phase: Some("analyzing".into()),
+                total: None,
+            },
+        );
+        Some(decoded_ogg_duration(app, feed, opts.ffmpeg_timeout as u64, cancelled).await?)
+    } else if opts.fade {
         probe_duration_cancellable(app, feed, cancelled).await
     } else {
         None
     };
-    proc_filters(opts, auto_gain, duration)
+    Ok(proc_filters(opts, auto_gain, duration))
 }
 
 /// Pure core of the filter-chain builder: everything except the duration
@@ -491,6 +587,35 @@ pub(crate) async fn run_ffmpeg_with_timeout(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn fade_detection_uses_prepared_content_not_filename() {
+        let path = std::env::temp_dir().join(format!("depo-fade-{}.renamed", uuid::Uuid::new_v4()));
+        let _guard = crate::safety::TempFile::new(path.clone());
+        assert!(feed_is_ogg(&path).is_err());
+        std::fs::write(&path, b"OggS\0payload").unwrap();
+        assert!(feed_is_ogg(&path).unwrap());
+        std::fs::write(&path, b"RIFFpayload").unwrap();
+        assert!(!feed_is_ogg(&path).unwrap());
+        std::fs::write(&path, b"Og").unwrap();
+        assert!(!feed_is_ogg(&path).unwrap());
+    }
+
+    #[test]
+    fn ogg_duration_requires_a_complete_successful_decode() {
+        assert_eq!(counted_ogg_duration(192_128, true).unwrap(), 192_128.0 / 48_000.0);
+        assert!(counted_ogg_duration(192_128, false).is_err());
+        assert!(counted_ogg_duration(0, true).is_err());
+    }
+
+    #[test]
+    fn fade_at_chained_ogg_decoded_end_preserves_later_content() {
+        let duration = counted_ogg_duration(192_128, true).unwrap();
+        assert_eq!(
+            proc_filters(&job(r#", "fade": true"#), None, Some(duration)),
+            vec!["afade=t=out:st=3.503:d=0.5", "afade=t=in:d=0.5"]
+        );
+    }
 
     #[test]
     fn sidecar_output_buffers_are_bounded() {

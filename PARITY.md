@@ -68,7 +68,7 @@ argument shapes (camelCase), and return shapes are all contract.
 These define what converted files sound like. Changing them changes output
 for identical inputs — never do it silently.
 
-- ★ Filter order: de-clip → high-pass → auto-level gain → loudnorm → source-relative fade-out → leading trim → fade-in (`proc_filters` tests).
+- ★ Filter order: de-clip → high-pass → auto-level gain → loudnorm → source-relative fade-out → leading trim → fade-in (`proc_filters` tests). Fade placement for Ogg (including prepared SGMCA Ogg feeds) uses a cancellable, timeout-bounded full decode to count samples; container duration can omit earlier chained streams. The count retains no audio and writes no temporary PCM. Measurement failure stops conversion before reserving output, with an option to retry without Fade. Other containers retain the existing duration probe.
 - ★ Stereo mode: unity-gain SUM of all channels on both L/R via `pan=stereo` + `volume=N` compensation; `alimiter=limit=0.97` appended when normalize is off (peak guard for correlated content).
 - ★ Split mode: `asplit` + `pan=mono|c0=cN` per channel (NOT `channelsplit`, which assumes a stereo layout); auto-level injects each channel's own gain right after isolation; near-unity gains (±0.01) skipped.
 - ★ Keep Original mode rejects auto-leveling at the backend boundary; one shared gain cannot perform the documented per-channel balancing while preserving the channel layout.

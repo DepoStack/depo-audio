@@ -1,7 +1,20 @@
 import { useState, useRef, useEffect } from 'react'
 import { convertFileSrc } from '@tauri-apps/api/core'
 import { open } from '@tauri-apps/plugin-dialog'
-import { Play, Pause, SkipBack, SkipForward, Bookmark, X, Plus, Repeat, Copy, Check } from 'lucide-react'
+import {
+  Play,
+  Pause,
+  SkipBack,
+  SkipForward,
+  Bookmark,
+  X,
+  Plus,
+  Repeat,
+  Copy,
+  Check,
+  ArrowUp,
+  ArrowDown,
+} from 'lucide-react'
 import { cn, shouldIgnoreNavigationShortcut } from '../../lib/utils'
 import { fmtTime, sortRecordingChunks } from '../../utils'
 import { useSpeakerColors, speakerColorAt, SPEAKER_COUNT } from '../../lib/speakerColors'
@@ -51,7 +64,7 @@ function loadPlayerStorageState() {
   }
 }
 
-export default function PlayerTab({ dropHandlerRef, onConvertFiles }) {
+export default function PlayerTab({ dropHandlerRef, onConvertFiles, active = true, openRequest = null }) {
   const [tracks, setTracks] = useState([]) // { path, name, colorIndex, label }
   const [activeTrack, setActiveTrack] = useState(null)
   const [playing, setPlaying] = useState(false)
@@ -79,6 +92,8 @@ export default function PlayerTab({ dropHandlerRef, onConvertFiles }) {
     return () => window.clearTimeout(statusTimer)
   }, [bookmarks])
   const [dragIdx, setDragIdx] = useState(null) // playlist drag-reorder
+  const [orderNotice, setOrderNotice] = useState('')
+  const handledOpenRequestRef = useRef(null)
   const audioRef = useRef(null)
   const autoAdvanceRef = useRef(false) // play next track once it loads
   const tracksRef = useRef(tracks)
@@ -136,15 +151,24 @@ export default function PlayerTab({ dropHandlerRef, onConvertFiles }) {
     setDragOver(false)
   }
 
-  // Claim native drops for the playlist while mounted. No dep array: re-register
-  // every render so addFiles sees fresh state.
+  // The workspace remains mounted between visits; only the active tab owns
+  // native drops. No dep array: re-register with the current addFiles closure.
   useEffect(() => {
-    if (!dropHandlerRef) return undefined
-    dropHandlerRef.current = addFiles
+    if (!active || !dropHandlerRef) return undefined
+    const handler = paths => addFiles(paths)
+    dropHandlerRef.current = handler
     return () => {
-      dropHandlerRef.current = null
+      if (dropHandlerRef.current === handler) dropHandlerRef.current = null
     }
   })
+
+  // Pause when leaving, preserving the element, position and loop for return.
+  useEffect(() => {
+    if (!active) {
+      autoAdvanceRef.current = false
+      audioRef.current?.pause()
+    }
+  }, [active])
 
   const toggle = () => {
     const a = audioRef.current
@@ -220,6 +244,29 @@ export default function PlayerTab({ dropHandlerRef, onConvertFiles }) {
     }
   }
 
+  const moveTrack = (path, direction) => {
+    const current = tracksRef.current
+    const from = current.findIndex(track => track.path === path)
+    const to = from + direction
+    if (from < 0 || to < 0 || to >= current.length) return
+    const next = [...current]
+    const [track] = next.splice(from, 1)
+    next.splice(to, 0, track)
+    tracksRef.current = next
+    setTracks(next)
+    setOrderNotice(`${track.name} moved to position ${to + 1} of ${next.length}.`)
+  }
+
+  // Consume a user-requested handoff after the lazy workspace has mounted.
+  // Keep each request distinct so reopening an already queued output selects it.
+  useEffect(() => {
+    if (!active || !openRequest || handledOpenRequestRef.current === openRequest.id) return
+    handledOpenRequestRef.current = openRequest.id
+    addFiles(openRequest.paths)
+    const first = openRequest.paths.map(path => tracksRef.current.find(track => track.path === path)).find(Boolean)
+    if (first) selectTrack(first)
+  })
+
   const copyBookmarks = async () => {
     if (!activeTrack) return
     try {
@@ -237,6 +284,7 @@ export default function PlayerTab({ dropHandlerRef, onConvertFiles }) {
     actionsRef.current = { hasTrack: !!activeTrack, toggle, seekBy, skip, cycleSpeed, addBookmark }
   })
   useEffect(() => {
+    if (!active) return undefined
     const onKey = e => {
       if (shouldIgnoreNavigationShortcut(e)) return
       const a = actionsRef.current
@@ -293,7 +341,7 @@ export default function PlayerTab({ dropHandlerRef, onConvertFiles }) {
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [])
+  }, [active])
 
   // Reload on track change; keep playing if we got here by auto-advance. Reset
   // the A-B loop since its points belong to the previous track.
@@ -498,6 +546,9 @@ export default function PlayerTab({ dropHandlerRef, onConvertFiles }) {
                 </Button>
               </CardHeader>
               <CardContent className="p-1.5">
+                <span role="status" aria-label="Playlist order" aria-live="polite" className="sr-only">
+                  {orderNotice}
+                </span>
                 {tracks.map((t, i) => (
                   <div
                     key={t.path}
@@ -558,6 +609,26 @@ export default function PlayerTab({ dropHandlerRef, onConvertFiles }) {
                         {i + 1}
                       </span>
                     )}
+                    <div className="flex shrink-0 flex-col">
+                      <button
+                        type="button"
+                        className="grid h-6 w-6 place-items-center rounded text-[hsl(var(--sub))] hover:text-foreground disabled:opacity-40"
+                        aria-label={`Move ${t.name} up`}
+                        disabled={i === 0}
+                        onClick={() => moveTrack(t.path, -1)}
+                      >
+                        <ArrowUp size={12} aria-hidden="true" />
+                      </button>
+                      <button
+                        type="button"
+                        className="grid h-6 w-6 place-items-center rounded text-[hsl(var(--sub))] hover:text-foreground disabled:opacity-40"
+                        aria-label={`Move ${t.name} down`}
+                        disabled={i === tracks.length - 1}
+                        onClick={() => moveTrack(t.path, 1)}
+                      >
+                        <ArrowDown size={12} aria-hidden="true" />
+                      </button>
+                    </div>
                     <button
                       className="text-[hsl(var(--sub))] opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-opacity hover:text-destructive shrink-0"
                       aria-label={`Remove ${t.name}`}
@@ -623,6 +694,7 @@ export default function PlayerTab({ dropHandlerRef, onConvertFiles }) {
                             <input
                               className="flex-1 min-w-0 bg-transparent border-none p-0 text-[11px] text-foreground focus:outline-hidden"
                               value={b.label}
+                              aria-label={`Bookmark note at ${fmtTime(b.time)}`}
                               placeholder="Add a note…"
                               onChange={e =>
                                 setBookmarks(prev => prev.map(x => (x === b ? { ...x, label: e.target.value } : x)))
@@ -630,7 +702,7 @@ export default function PlayerTab({ dropHandlerRef, onConvertFiles }) {
                             />
                             <button
                               className="text-[hsl(var(--sub))] opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 hover:text-destructive transition-all shrink-0 rounded focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring"
-                              aria-label="Remove bookmark"
+                              aria-label={`Remove bookmark at ${fmtTime(b.time)}`}
                               onClick={() => setBookmarks(prev => prev.filter(x => x !== b))}
                             >
                               <X size={10} />
@@ -685,6 +757,7 @@ export default function PlayerTab({ dropHandlerRef, onConvertFiles }) {
             }}
             onEnded={() => {
               setPlaying(false)
+              if (!active) return
               const idx = tracks.findIndex(t => t.path === activeTrack.path)
               if (idx >= 0 && idx < tracks.length - 1) {
                 autoAdvanceRef.current = true
@@ -742,7 +815,7 @@ export default function PlayerTab({ dropHandlerRef, onConvertFiles }) {
                   Playing above, so the pinned bar stays cheap (no second
                   decode) while still showing the loop band + position. */}
               <div
-                className="relative h-1.5 bg-border rounded-full cursor-pointer overflow-hidden"
+                className="relative h-6 cursor-pointer rounded focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
                 role="slider"
                 aria-label="Seek"
                 aria-valuemin={0}
@@ -772,14 +845,18 @@ export default function PlayerTab({ dropHandlerRef, onConvertFiles }) {
                   if (duration) seekTo(((e.clientX - r.left) / r.width) * duration)
                 }}
               >
+                <div
+                  aria-hidden="true"
+                  className="absolute inset-x-0 top-1/2 h-1.5 -translate-y-1/2 rounded-full bg-border"
+                />
                 {loopActive && (
                   <div
-                    className="absolute inset-y-0 bg-[hsl(var(--gold-dim))]"
+                    className="absolute top-1/2 h-1.5 -translate-y-1/2 bg-[hsl(var(--gold-dim))]"
                     style={{ left: `${(loopA / duration) * 100}%`, width: `${((loopB - loopA) / duration) * 100}%` }}
                   />
                 )}
                 <div
-                  className="absolute inset-y-0 left-0 bg-primary rounded-full"
+                  className="absolute top-1/2 left-0 h-1.5 -translate-y-1/2 bg-primary rounded-full"
                   style={{ width: `${duration > 0 ? (currentTime / duration) * 100 : 0}%` }}
                 />
               </div>
@@ -787,6 +864,18 @@ export default function PlayerTab({ dropHandlerRef, onConvertFiles }) {
 
             {/* Speed + loop + bookmark */}
             <div className="shrink-0 flex items-center gap-2">
+              <select
+                aria-label="Playback speed"
+                value={speed}
+                onChange={event => applySpeed(Number(event.target.value))}
+                className="h-8 rounded-md border border-border bg-card px-1.5 text-xs text-foreground lg:hidden"
+              >
+                {SPEED_STEPS.map(step => (
+                  <option key={step} value={step}>
+                    {step}×
+                  </option>
+                ))}
+              </select>
               <Segmented
                 size="sm"
                 aria-label="Playback speed"

@@ -38,7 +38,7 @@ export default class AppErrorBoundary extends Component {
           aria-labelledby="app-error-title"
           className="w-full max-w-lg rounded-xl border border-border bg-card p-6 shadow-lg outline-none focus-visible:ring-2 focus-visible:ring-ring"
         >
-          <p className="mb-2 font-mono text-[10px] font-semibold uppercase tracking-widest text-[hsl(var(--gold))]">
+          <p className="mb-2 font-mono text-[10px] font-semibold uppercase tracking-widest text-[hsl(var(--text2))]">
             Interface recovery
           </p>
           <h1 id="app-error-title" className="text-2xl font-semibold tracking-[-0.02em]">

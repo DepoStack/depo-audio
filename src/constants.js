@@ -48,7 +48,14 @@ export const FORMAT_ROWS = [
     group: 'standard',
   },
   // Court reporting formats — require conversion
-  { ext: '.sgmca', vendor: 'Stenograph · Case CATalyst', ch: '4 ch', status: 'supported', group: 'court' },
+  {
+    ext: '.sgmca',
+    vendor: 'Stenograph · Case CATalyst',
+    ch: 'up to 8 ch',
+    status: 'experimental',
+    group: 'court',
+    note: 'Some SGMCA variants may not convert. Keep the original recording.',
+  },
   { ext: '.trm  .ftr', vendor: 'For The Record · FTR Gold', ch: '4–16 ch', status: 'experimental', group: 'court' },
   { ext: '.bwf', vendor: 'CourtSmart · Various', ch: 'varies', status: 'supported', group: 'court' },
   { ext: '.dm', vendor: 'Stenovations · DigitalCAT', ch: '—', status: 'experimental', group: 'court' },

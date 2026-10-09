@@ -76,6 +76,7 @@ function FormatRow({ row }) {
       <div className="min-w-0">
         <span className="block truncate font-mono text-[11px] font-semibold text-foreground">{row.ext}</span>
         <span className="block truncate text-[10.5px] text-[hsl(var(--sub))]">{row.vendor}</span>
+        {row.note && <span className="mt-1 block text-[10.5px] text-[hsl(var(--text2))]">{row.note}</span>}
       </div>
       <div className="flex items-center gap-3">
         <span className="font-mono text-[10px] text-[hsl(var(--sub))]">{row.ch}</span>

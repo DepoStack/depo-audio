@@ -8,17 +8,26 @@ export default function MiniPlayer({ out, color, multi }) {
   const [playing, setPlaying] = useState(false)
   const [current, setCurrent] = useState(0)
   const [duration, setDuration] = useState(0)
+  const [playbackError, setPlaybackError] = useState('')
   const src = convertFileSrc(out.path)
+  const reportPlaybackError = () => {
+    setPlaying(false)
+    setPlaybackError('Could not play this preview. Try Play again, or reveal the output and open it in another audio player.')
+  }
 
   const toggle = () => {
     const a = audioRef.current
     if (!a) return
     if (!a.paused) a.pause()
-    else a.play().catch(() => setPlaying(false))
+    else {
+      setPlaybackError('')
+      if (a.error) a.load()
+      a.play().catch(reportPlaybackError)
+    }
   }
 
   return (
-    <div className="flex items-center gap-2 py-0.5">
+    <div className="flex flex-wrap items-center gap-2 py-0.5">
       {multi && (
         <span className="text-[10px] shrink-0" style={{ color }}>
           ▮
@@ -35,7 +44,7 @@ export default function MiniPlayer({ out, color, multi }) {
         onLoadedMetadata={e => setDuration(e.target.duration)}
         onPlay={() => setPlaying(true)}
         onPause={() => setPlaying(false)}
-        onError={() => setPlaying(false)}
+        onError={reportPlaybackError}
         onTimeUpdate={e => setCurrent(e.target.currentTime)}
         onEnded={() => {
           setPlaying(false)
@@ -44,14 +53,14 @@ export default function MiniPlayer({ out, color, multi }) {
       />
       <div className="flex items-center gap-1.5 shrink-0">
         <button
-          className="w-[22px] h-[22px] rounded-full bg-[hsl(var(--gold-dim))] border border-primary/30 text-foreground flex items-center justify-center shrink-0 transition-colors hover:bg-primary/20 hover:border-primary"
+          className="w-6 h-6 rounded-full bg-[hsl(var(--gold-dim))] border border-primary/30 text-foreground flex items-center justify-center shrink-0 transition-colors hover:bg-primary/20 hover:border-primary"
           aria-label={playing ? `Pause ${out.name}` : `Play ${out.name}`}
           onClick={toggle}
         >
           {playing ? <Pause size={10} fill="currentColor" /> : <Play size={10} fill="currentColor" />}
         </button>
         <div
-          className="w-[90px] h-1 bg-border rounded-sm cursor-pointer overflow-hidden shrink-0"
+          className="w-[90px] h-6 flex items-center cursor-pointer shrink-0 focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
           role="slider"
           aria-label={`Seek ${out.name}`}
           aria-valuemin={0}
@@ -75,10 +84,12 @@ export default function MiniPlayer({ out, color, multi }) {
             audioRef.current.currentTime = ((e.clientX - r.left) / r.width) * duration
           }}
         >
-          <div
-            className="h-full bg-primary rounded-sm transition-[width_0.1s]"
-            style={{ width: duration ? `${(current / duration) * 100}%` : '0%' }}
-          />
+          <div className="h-1 w-full overflow-hidden rounded-sm bg-border">
+            <div
+              className="h-full bg-primary rounded-sm transition-[width_0.1s]"
+              style={{ width: duration ? `${(current / duration) * 100}%` : '0%' }}
+            />
+          </div>
         </div>
         {duration > 0 && (
           <span className="font-mono text-[9px] text-[hsl(var(--sub))] shrink-0 text-right whitespace-nowrap">
@@ -86,6 +97,11 @@ export default function MiniPlayer({ out, color, multi }) {
           </span>
         )}
       </div>
+      {playbackError && (
+        <p role="alert" className="w-full text-[11px] text-destructive">
+          {playbackError}
+        </p>
+      )}
     </div>
   )
 }

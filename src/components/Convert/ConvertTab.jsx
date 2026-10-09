@@ -60,6 +60,7 @@ export default function ConvertTab({
   browseFiles,
   browseOutDir,
   removeFile,
+  onOpenInPlayer,
   clearAll,
   // Conversion
   jobs,
@@ -103,6 +104,10 @@ export default function ConvertTab({
     setAutoLevel,
     declip,
     setDeclip,
+    hpfCutoff = 80,
+    normalizeLufs = -16,
+    normalizeTp = -1.5,
+    silenceThresh = -50,
   } = usePreferencesContext()
   const trimEffective = trim && mode !== 'split'
   const autoLevelEffective = autoLevel && mode !== 'keep'
@@ -491,6 +496,7 @@ export default function ConvertTab({
                     file={f}
                     job={jobs[f.path]}
                     onRemove={() => removeFile(f.path, converting)}
+                    onOpenInPlayer={onOpenInPlayer}
                     converting={converting}
                   />
                 ))}
@@ -526,6 +532,12 @@ export default function ConvertTab({
               className="px-3 py-2 rounded-md border border-destructive/30 bg-destructive/10 text-[11px] text-destructive"
             >
               {conversionError}
+            </p>
+          )}
+
+          {converting && (
+            <p className="text-[11px] text-[hsl(var(--text2))]">
+              This batch uses the settings selected when it started. Changes to settings apply to the next batch.
             </p>
           )}
 
@@ -699,6 +711,7 @@ export default function ConvertTab({
                         className="h-7 text-[11px] w-32 shrink-0"
                         value={l}
                         maxLength={24}
+                        aria-label={`Channel ${i + 1} name`}
                         placeholder={`Channel ${i + 1}`}
                         onChange={e => setLabels(p => p.map((v, j) => (j === i ? e.target.value : v)))}
                       />
@@ -890,7 +903,7 @@ export default function ConvertTab({
                     {showHpf && (
                       <ProcessingToggle
                         name="High-Pass Filter"
-                        desc="80 Hz cutoff — removes low rumble and handling noise"
+                        desc={`${hpfCutoff} Hz cutoff — removes low rumble and handling noise`}
                         checked={hpf}
                         onChange={setHpf}
                       />
@@ -899,7 +912,7 @@ export default function ConvertTab({
                     {showNormalize && (
                       <ProcessingToggle
                         name="Normalize Volume"
-                        desc="Targets –16 LUFS / –1.5 TP for consistent output level"
+                        desc={`Targets ${normalizeLufs} LUFS / ${normalizeTp} dBTP for consistent output level`}
                         checked={normalize}
                         onChange={setNormalize}
                       />
@@ -911,9 +924,10 @@ export default function ConvertTab({
                         desc={
                           mode === 'split'
                             ? 'Skipped in Split Channels mode to preserve cross-channel alignment'
-                            : 'Remove leading dead air only (below –50 dB); interior pauses and the ending are preserved'
+                            : `Remove leading dead air only (below ${silenceThresh} dB); interior pauses and the ending are preserved`
                         }
-                        checked={trim}
+                        checked={trimEffective}
+                        disabled={mode === 'split'}
                         onChange={setTrim}
                       />
                     )}
@@ -930,12 +944,13 @@ export default function ConvertTab({
                               <span className="text-[hsl(var(--sub))]">—</span>
                               <input
                                 type="number"
+                                aria-label="Fade duration (seconds)"
                                 className="w-[42px] bg-secondary border border-border rounded px-1 py-px font-mono text-[11px] text-foreground text-center focus:border-primary outline-hidden"
                                 min="0.1"
                                 max="5"
                                 step="0.1"
                                 value={fadeDur}
-                                onChange={e => setFadeDur(Math.max(0.1, parseFloat(e.target.value) || 0.5))}
+                                onChange={e => setFadeDur(Math.min(5, Math.max(0.1, parseFloat(e.target.value) || 0.5)))}
                               />
                               <span className="text-[11px] text-[hsl(var(--sub))]">s</span>
                             </span>

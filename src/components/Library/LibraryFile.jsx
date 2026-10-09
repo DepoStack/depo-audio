@@ -16,17 +16,26 @@ export default function LibraryFile({ file }) {
   const [playing, setPlaying] = useState(false)
   const [current, setCurrent] = useState(0)
   const [duration, setDuration] = useState(0)
+  const [playbackError, setPlaybackError] = useState('')
   const src = convertFileSrc(file.path)
+  const reportPlaybackError = () => {
+    setPlaying(false)
+    setPlaybackError('Could not play this preview. Try Play again, or check that the original file is still available.')
+  }
 
   const toggle = () => {
     const a = audioRef.current
     if (!a) return
     if (!a.paused) a.pause()
-    else a.play().catch(() => setPlaying(false))
+    else {
+      setPlaybackError('')
+      if (a.error) a.load()
+      a.play().catch(reportPlaybackError)
+    }
   }
 
   return (
-    <div className="library-file flex items-center gap-2 px-2 py-1 bg-secondary rounded-md">
+    <div className="library-file flex flex-wrap items-center gap-2 px-2 py-1 bg-secondary rounded-md">
       <audio
         ref={audioRef}
         src={src}
@@ -34,7 +43,7 @@ export default function LibraryFile({ file }) {
         onLoadedMetadata={e => setDuration(e.target.duration)}
         onPlay={() => setPlaying(true)}
         onPause={() => setPlaying(false)}
-        onError={() => setPlaying(false)}
+        onError={reportPlaybackError}
         onTimeUpdate={e => setCurrent(e.target.currentTime)}
         onEnded={() => {
           setPlaying(false)
@@ -72,7 +81,7 @@ export default function LibraryFile({ file }) {
       </button>
       {duration > 0 && (
         <div
-          className="library-file-seek relative h-2 bg-border rounded-full cursor-pointer overflow-hidden focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+          className="library-file-seek relative h-6 flex items-center cursor-pointer focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
           style={{ width: '80px' }}
           role="slider"
           aria-label={`Seek ${basename(file.path)}`}
@@ -105,16 +114,20 @@ export default function LibraryFile({ file }) {
             if (audioRef.current && duration) audioRef.current.currentTime = ((e.clientX - r.left) / r.width) * duration
           }}
         >
-          <div
-            className="absolute inset-y-0 left-0 bg-primary rounded-full"
-            style={{ width: `${(current / duration) * 100}%` }}
-          />
+          <div className="h-2 w-full overflow-hidden rounded-full bg-border">
+            <div className="h-full bg-primary rounded-full" style={{ width: `${(current / duration) * 100}%` }} />
+          </div>
         </div>
       )}
       {duration > 0 && (
         <span className="library-file-time font-mono text-[10px] text-[hsl(var(--sub))] shrink-0">
           {fmtTime(current)}
         </span>
+      )}
+      {playbackError && (
+        <p role="alert" className="order-12 w-full text-[11px] text-destructive">
+          {playbackError}
+        </p>
       )}
     </div>
   )

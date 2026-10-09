@@ -64,6 +64,37 @@ describe('usePreferences hydration', () => {
     unmount()
   })
 
+  it('rejects fractional integer settings without disabling later preference saves', async () => {
+    invoke.mockImplementation(command =>
+      command === 'prefs_get' ? Promise.resolve({ ffmpegTimeout: 300, maxScanDepth: 5 }) : Promise.resolve(true),
+    )
+    const { result, unmount } = renderHook(() => usePreferences())
+    await waitFor(() => expect(result.current.prefsReady).toBe(true))
+
+    act(() => {
+      result.current.setFfmpegTimeout(300.5)
+      result.current.setMaxScanDepth(5.5)
+    })
+    expect(result.current.ffmpegTimeout).toBe(300)
+    expect(result.current.maxScanDepth).toBe(5)
+    expect(result.current.prefsError).toBe('')
+
+    act(() => {
+      result.current.setFfmpegTimeout(600)
+      result.current.setMaxScanDepth(6)
+    })
+    await waitFor(
+      () =>
+        expect(invoke).toHaveBeenCalledWith(
+          'prefs_set',
+          expect.objectContaining({ patch: expect.objectContaining({ ffmpegTimeout: 600, maxScanDepth: 6 }) }),
+        ),
+      { timeout: 2000 },
+    )
+    expect(result.current.prefsError).toBe('')
+    unmount()
+  })
+
   it('surfaces theme persistence failures through the shared preference error', async () => {
     vi.spyOn(console, 'error').mockImplementation(() => {})
     let failSave

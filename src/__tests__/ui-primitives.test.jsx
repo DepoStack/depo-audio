@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { describe, expect, it } from 'vitest'
 
+import { Segmented } from '../components/ui/segmented'
 import { Switch } from '../components/ui/switch'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '../components/ui/tabs'
 
@@ -50,4 +51,31 @@ describe('updated UI primitives', () => {
     expect(panel).toHaveClass('focus-visible:ring-2')
     expect(panel).not.toHaveClass('contents')
   })
+})
+
+function ControlledSegments() {
+  const [value, setValue] = useState('active')
+  return (
+    <Segmented
+      aria-label="Case filter"
+      value={value}
+      onChange={setValue}
+      options={[
+        { value: 'active', label: 'Active' },
+        { value: 'archived', label: 'Archived' },
+      ]}
+    />
+  )
+}
+
+it('exposes value choices as a button group with pressed state', () => {
+  render(<ControlledSegments />)
+  expect(screen.getByRole('group', { name: 'Case filter' })).toBeVisible()
+  const archived = screen.getByRole('button', { name: 'Archived' })
+  expect(screen.getByRole('button', { name: 'Active' })).toHaveAttribute('aria-pressed', 'true')
+  archived.focus()
+  fireEvent.click(archived)
+  expect(archived).toHaveFocus()
+  expect(archived).toHaveAttribute('aria-pressed', 'true')
+  expect(screen.getByRole('button', { name: 'Active' })).toHaveAttribute('aria-pressed', 'false')
 })

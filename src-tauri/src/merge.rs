@@ -529,6 +529,14 @@ fn mix_all_strategy(sources: &[Vec<f32>], offsets: &[i64], total_samples: usize)
     output
 }
 
+fn aligned_sample(samples: &[f32], offset: i64, output_index: usize) -> Option<f32> {
+    let index = output_index as i64 - offset;
+    usize::try_from(index)
+        .ok()
+        .and_then(|index| samples.get(index))
+        .copied()
+}
+
 /// Select the highest quality segment from available sources.
 /// Uses RMS energy in speech-likely regions as a quality proxy.
 fn best_quality_strategy(sources: &[Vec<f32>], offsets: &[i64], total_samples: usize, sample_rate: usize) -> Vec<f32> {
@@ -547,6 +555,7 @@ fn best_quality_strategy(sources: &[Vec<f32>], offsets: &[i64], total_samples: u
         // Find the best source for this segment (highest RMS)
         let mut best_src = 0;
         let mut best_rms = 0.0f64;
+        let mut segment_rms = Vec::with_capacity(sources.len());
 
         for (src_idx, samples) in sources.iter().enumerate() {
             let offset = offsets[src_idx];
@@ -554,9 +563,8 @@ fn best_quality_strategy(sources: &[Vec<f32>], offsets: &[i64], total_samples: u
             let mut count = 0usize;
 
             for out_idx in pos..end {
-                let src_idx_sample = out_idx as i64 - offset;
-                if src_idx_sample >= 0 && (src_idx_sample as usize) < samples.len() {
-                    let s = samples[src_idx_sample as usize] as f64;
+                if let Some(sample) = aligned_sample(samples, offset, out_idx) {
+                    let s = sample as f64;
                     rms_sum += s * s;
                     count += 1;
                 }
@@ -567,19 +575,33 @@ fn best_quality_strategy(sources: &[Vec<f32>], offsets: &[i64], total_samples: u
             } else {
                 0.0
             };
+            segment_rms.push(rms);
             if rms > best_rms {
                 best_rms = rms;
                 best_src = src_idx;
             }
         }
 
-        // Copy best source to output
+        // Keep the segment's chosen source wherever it exists. At its start
+        // or end, fill uncovered samples from the highest-ranked source that
+        // actually covers that time instead of inserting artificial silence.
         let offset = offsets[best_src];
         for (j, out) in output[pos..end].iter_mut().enumerate() {
-            let src_idx_sample = (pos + j) as i64 - offset;
-            if src_idx_sample >= 0 && (src_idx_sample as usize) < sources[best_src].len() {
-                *out = sources[best_src][src_idx_sample as usize];
-            }
+            let index = pos + j;
+            let sample = aligned_sample(&sources[best_src], offset, index).or_else(|| {
+                let mut fallback = None;
+                let mut fallback_rms = f64::NEG_INFINITY;
+                for (source, samples) in sources.iter().enumerate() {
+                    if let Some(sample) = aligned_sample(samples, offsets[source], index) {
+                        if fallback.is_none() || segment_rms[source] > fallback_rms {
+                            fallback = Some(sample);
+                            fallback_rms = segment_rms[source];
+                        }
+                    }
+                }
+                fallback
+            });
+            *out = sample.unwrap_or(0.0);
         }
 
         // Apply crossfade if source changed
@@ -591,27 +613,21 @@ fn best_quality_strategy(sources: &[Vec<f32>], offsets: &[i64], total_samples: u
 
                 for j in 0..fade_len {
                     let t = j as f32 / fade_len as f32;
-                    let prev_offset = offsets[prev];
-                    let prev_idx = (fade_start + j) as i64 - prev_offset;
-                    let prev_sample = if prev_idx >= 0 && (prev_idx as usize) < sources[prev].len() {
-                        sources[prev][prev_idx as usize]
-                    } else {
-                        0.0
-                    };
+                    let index = fade_start + j;
+                    let prev_sample = aligned_sample(&sources[prev], offsets[prev], index);
 
                     // Fetch the NEW source directly for the whole window: in
                     // the first half output[] still holds the previous source,
                     // so blending against output would make the ramp a no-op
                     // until the midpoint and leave a half-amplitude step.
-                    let new_offset = offsets[best_src];
-                    let new_idx = (fade_start + j) as i64 - new_offset;
-                    let new_sample = if new_idx >= 0 && (new_idx as usize) < sources[best_src].len() {
-                        sources[best_src][new_idx as usize]
-                    } else {
-                        0.0
-                    };
-
-                    output[fade_start + j] = prev_sample * (1.0 - t) + new_sample * t;
+                    let new_sample = aligned_sample(&sources[best_src], offsets[best_src], index);
+                    match (prev_sample, new_sample) {
+                        (Some(previous), Some(next)) => output[index] = previous * (1.0 - t) + next * t,
+                        (Some(sample), None) | (None, Some(sample)) => output[index] = sample,
+                        // Both selected sources can be absent while a third
+                        // source covers this time. Keep the fallback above.
+                        (None, None) => {}
+                    }
                 }
             }
         }
@@ -735,6 +751,55 @@ fn reserve_output(out_dir: &Path, name: &str, ext: &str) -> Result<ReservedOutpu
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn best_quality_fills_a_partial_source_tail_from_the_best_remaining_recording() {
+        let sources = vec![vec![0.8; 750], vec![0.2; 1000], vec![0.4; 1000]];
+        let output = best_quality_strategy(&sources, &[0, 0, 0], 1000, 1000);
+        assert_eq!(&output[..750], sources[0].as_slice());
+        assert!(output[750..].iter().all(|sample| *sample == 0.4));
+    }
+
+    #[test]
+    fn best_quality_preserves_audio_before_a_louder_source_starts() {
+        let sources = vec![vec![0.2; 1000], vec![0.8; 750]];
+        let output = best_quality_strategy(&sources, &[0, 250], 1000, 1000);
+        assert!(output[..250].iter().all(|sample| *sample == 0.2));
+        assert!(output[250..].iter().all(|sample| *sample == 0.8));
+    }
+
+    #[test]
+    fn best_quality_crossfade_does_not_blend_available_audio_with_a_missing_source() {
+        let mut second = vec![0.2; 500];
+        second.extend(vec![1.0; 500]);
+        let sources = vec![vec![0.8; 500], second];
+        let output = best_quality_strategy(&sources, &[0, 0], 1000, 1000);
+        // Preserve the original crossfade wherever both sources exist.
+        for (offset, sample) in output[475..500].iter().enumerate() {
+            let t = offset as f32 / 50.0;
+            assert!((*sample - (0.8 * (1.0 - t) + 0.2 * t)).abs() < 1e-6);
+        }
+        // Beyond the first source's end, only the second can supply audio.
+        assert!(output[500..].iter().all(|sample| *sample == 1.0));
+    }
+
+    #[test]
+    fn best_quality_leaves_silence_only_where_no_recording_covers_the_timeline() {
+        let sources = vec![vec![0.8; 250], vec![0.2; 250]];
+        let output = best_quality_strategy(&sources, &[0, 750], 1000, 1000);
+        assert!(output[..250].iter().all(|sample| *sample == 0.8));
+        assert!(output[250..750].iter().all(|sample| *sample == 0.0));
+        assert!(output[750..].iter().all(|sample| *sample == 0.2));
+    }
+
+    #[test]
+    fn best_quality_crossfade_preserves_a_third_source_when_both_selected_sources_are_absent() {
+        let sources = vec![vec![0.8; 250], vec![0.2; 1000], vec![1.0; 250]];
+        let output = best_quality_strategy(&sources, &[0, 0, 750], 1000, 1000);
+        assert!(output[..250].iter().all(|sample| *sample == 0.8));
+        assert!(output[250..750].iter().all(|sample| *sample == 0.2));
+        assert!(output[750..].iter().all(|sample| *sample == 1.0));
+    }
 
     fn test_dir(label: &str) -> PathBuf {
         std::env::temp_dir().join(format!("depoaudio_merge_{label}_{}", Uuid::new_v4().simple()))

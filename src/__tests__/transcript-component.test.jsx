@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import Transcript from '../components/Player/Transcript'
 import { storageKey, TRANSCRIPT_SAVE_DEBOUNCE_MS } from '../lib/transcript'
 
@@ -23,6 +23,163 @@ afterEach(() => {
 })
 
 describe('Transcript storage and timestamps', () => {
+  it.each([
+    ['another track', false, false],
+    ['the original track after leaving and returning', true, false],
+    ['another track when reading fails', false, true],
+  ])('ignores an old import completion while editing %s', async (_label, returnToOriginal, rejectRead) => {
+    const firstPath = `C:\\audio\\deferred-a-${returnToOriginal}-${rejectRead}.wav`
+    const secondPath = `C:\\audio\\deferred-b-${returnToOriginal}-${rejectRead}.wav`
+    for (const [path, text] of [
+      [firstPath, 'Track A draft'],
+      [secondPath, 'Track B draft'],
+    ]) {
+      localStorage.setItem(storageKey(path), JSON.stringify([{ id: 'draft', start: 1, text }]))
+    }
+    let resolveRead
+    let failRead
+    dialogMocks.open.mockResolvedValue('C:\\audio\\late-import.txt')
+    fileMocks.readTextFile.mockImplementation(
+      () =>
+        new Promise((resolve, reject) => {
+          resolveRead = resolve
+          failRead = reject
+        }),
+    )
+    const view = render(<Transcript trackPath={firstPath} currentTime={0} playing={false} onSeek={vi.fn()} />)
+    fireEvent.click(screen.getByRole('button', { name: /^import$/i }))
+    await waitFor(() => expect(fileMocks.readTextFile).toHaveBeenCalled())
+
+    view.rerender(<Transcript trackPath={secondPath} currentTime={0} playing={false} onSeek={vi.fn()} />)
+    if (returnToOriginal) {
+      view.rerender(<Transcript trackPath={firstPath} currentTime={0} playing={false} onSeek={vi.fn()} />)
+    }
+    fireEvent.click(screen.getByRole('button', { name: 'Delete line' }))
+    expect(screen.getByRole('button', { name: /undo/i })).toBeInTheDocument()
+    await act(async () => {
+      if (rejectRead) failRead(new Error('stale read failed'))
+      else resolveRead('Late import for old track')
+    })
+
+    expect(screen.getByRole('button', { name: /undo/i })).toBeInTheDocument()
+    expect(screen.queryByDisplayValue('Late import for old track')).not.toBeInTheDocument()
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+    expect(screen.queryByText(/stale read failed/i)).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: /undo/i }))
+    expect(screen.getByDisplayValue(returnToOriginal ? 'Track A draft' : 'Track B draft')).toBeInTheDocument()
+  })
+
+  it('does not read an import selected after the editor unmounts', async () => {
+    let selectFile
+    dialogMocks.open.mockImplementation(
+      () =>
+        new Promise(resolve => {
+          selectFile = resolve
+        }),
+    )
+    const view = render(
+      <Transcript trackPath="C:\\audio\\unmounted-import.wav" currentTime={0} playing={false} onSeek={vi.fn()} />,
+    )
+    fireEvent.click(screen.getByRole('button', { name: /^import$/i }))
+    view.unmount()
+    await act(async () => {
+      selectFile('C:\\audio\\late.txt')
+    })
+    expect(fileMocks.readTextFile).not.toHaveBeenCalled()
+  })
+
+  it('keeps the current transcript until replacement is confirmed and supports undoing replacement', async () => {
+    const path = 'C:\\audio\\replace.wav'
+    localStorage.setItem(storageKey(path), JSON.stringify([{ id: 'old', start: 1, end: 2, text: 'Original answer' }]))
+    dialogMocks.open.mockResolvedValue('C:\\audio\\replacement.srt')
+    fileMocks.readTextFile.mockResolvedValue('1\n00:00:10,000 --> 00:00:20,000\nReplacement answer\n')
+    render(<Transcript trackPath={path} currentTime={3} playing={false} onSeek={vi.fn()} />)
+
+    fireEvent.click(screen.getByRole('button', { name: /^import$/i }))
+    const confirmation = await screen.findByRole('dialog', { name: 'Replace this transcript?' })
+    expect(screen.getByDisplayValue('Original answer')).toBeInTheDocument()
+    fireEvent.click(within(confirmation).getByRole('button', { name: 'Cancel' }))
+    expect(screen.getByDisplayValue('Original answer')).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: /^import$/i }))
+    fireEvent.click(within(await screen.findByRole('dialog')).getByRole('button', { name: 'Replace transcript' }))
+    expect(screen.getByDisplayValue('Replacement answer')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: /undo/i }))
+    expect(screen.getByDisplayValue('Original answer')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /undo/i })).not.toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: /^export$/i }))
+    dialogMocks.save.mockResolvedValue('C:\\audio\\restored.srt')
+    fileMocks.writeTextFile.mockResolvedValue()
+    fireEvent.click(screen.getByRole('button', { name: /subtitles/i }))
+    await waitFor(() =>
+      expect(fileMocks.writeTextFile).toHaveBeenCalledWith(
+        'C:\\audio\\restored.srt',
+        expect.stringContaining('00:00:01,000 --> 00:00:02,000'),
+      ),
+    )
+  })
+
+  it('restores a deleted final line with its timing and clears undo after a later edit', () => {
+    const path = 'C:\\audio\\undo-delete.wav'
+    localStorage.setItem(storageKey(path), JSON.stringify([{ id: 'old', start: 1, end: 2, text: 'Keep this answer' }]))
+    render(<Transcript trackPath={path} currentTime={3} playing={false} onSeek={vi.fn()} />)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Delete line' }))
+    expect(screen.queryByDisplayValue('Keep this answer')).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: /undo/i }))
+    expect(screen.getByDisplayValue('Keep this answer')).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Delete line' }))
+    fireEvent.click(screen.getByRole('button', { name: /start typing/i }))
+    expect(screen.queryByRole('button', { name: /undo/i })).not.toBeInTheDocument()
+  })
+
+  it('does not erase existing work when an imported subtitle contains no cues', async () => {
+    const path = 'C:\\audio\\empty-import.wav'
+    localStorage.setItem(storageKey(path), JSON.stringify([{ id: 'old', start: 1, text: 'Original answer' }]))
+    dialogMocks.open.mockResolvedValue('C:\\audio\\empty.srt')
+    fileMocks.readTextFile.mockResolvedValue('')
+    render(<Transcript trackPath={path} currentTime={3} playing={false} onSeek={vi.fn()} />)
+    fireEvent.click(screen.getByRole('button', { name: /^import$/i }))
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(/no transcript lines/i)
+    expect(screen.getByDisplayValue('Original answer')).toBeInTheDocument()
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+  })
+
+  it('does not carry a delete undo across track changes', () => {
+    const firstPath = 'C:\\audio\\undo-track-a.wav'
+    const secondPath = 'C:\\audio\\undo-track-b.wav'
+    localStorage.setItem(storageKey(firstPath), JSON.stringify([{ id: 'a', start: 1, text: 'First track' }]))
+    const view = render(<Transcript trackPath={firstPath} currentTime={0} playing={false} onSeek={vi.fn()} />)
+    fireEvent.click(screen.getByRole('button', { name: 'Delete line' }))
+    expect(screen.getByRole('button', { name: /undo/i })).toBeInTheDocument()
+
+    view.rerender(<Transcript trackPath={secondPath} currentTime={0} playing={false} onSeek={vi.fn()} />)
+    expect(screen.queryByRole('button', { name: /undo/i })).not.toBeInTheDocument()
+    view.rerender(<Transcript trackPath={firstPath} currentTime={0} playing={false} onSeek={vi.fn()} />)
+    expect(screen.queryByRole('button', { name: /undo/i })).not.toBeInTheDocument()
+  })
+
+  it('clears imported end timing when a line is deliberately re-stamped', async () => {
+    const path = 'C:\\audio\\restamp-import.wav'
+    localStorage.setItem(storageKey(path), JSON.stringify([{ id: 'old', start: 1, end: 20, text: 'Answer' }]))
+    dialogMocks.save.mockResolvedValue('C:\\audio\\restamped.srt')
+    fileMocks.writeTextFile.mockResolvedValue()
+    render(<Transcript trackPath={path} currentTime={5} playing={false} onSeek={vi.fn()} />)
+    fireEvent.click(screen.getByRole('button', { name: /set this line's time to the current position/i }))
+    fireEvent.click(screen.getByRole('button', { name: /^export$/i }))
+    fireEvent.click(screen.getByRole('button', { name: /subtitles/i }))
+
+    await waitFor(() =>
+      expect(fileMocks.writeTextFile).toHaveBeenCalledWith(
+        'C:\\audio\\restamped.srt',
+        expect.stringContaining('00:00:05,000 --> 00:00:08,000'),
+      ),
+    )
+  })
+
   it('creates a visibly timed line at playback position zero', () => {
     render(<Transcript trackPath="C:\\audio\\zero.wav" currentTime={0} playing={false} onSeek={vi.fn()} />)
 
