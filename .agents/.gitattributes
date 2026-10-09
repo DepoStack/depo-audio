@@ -1,0 +1,2 @@
+# Preserve vendored upstream skill bytes, including launcher line endings.
+* -text
