@@ -137,12 +137,7 @@ pub(crate) fn atomic_write(path: &std::path::Path, bytes: &[u8]) -> Result<(), S
 /// Every successful save must remain readable after restart. Check the actual
 /// serialized UTF-8 byte count before creating a temporary file or replacing
 /// the live store; callers publish their in-memory candidate only on success.
-fn save_json_bounded<T: serde::Serialize>(
-    path: &Path,
-    value: &T,
-    label: &str,
-    max_bytes: u64,
-) -> Result<(), String> {
+fn save_json_bounded<T: serde::Serialize>(path: &Path, value: &T, label: &str, max_bytes: u64) -> Result<(), String> {
     let json = serde_json::to_vec_pretty(value).map_err(|error| format!("Failed to serialize {label}: {error}"))?;
     if json.len() as u64 > max_bytes {
         return Err(format!(

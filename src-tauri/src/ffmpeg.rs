@@ -283,7 +283,9 @@ fn feed_is_ogg(feed: &Path) -> Result<bool, String> {
 
 fn counted_ogg_duration(bytes: u64, success: bool) -> Result<f64, String> {
     if !success || bytes == 0 {
-        return Err("Cannot measure the decoded Ogg audio for its fade. Retry without Fade or check the recording.".into());
+        return Err(
+            "Cannot measure the decoded Ogg audio for its fade. Retry without Fade or check the recording.".into(),
+        );
     }
     Ok(bytes as f64 / 48_000.0)
 }
@@ -298,7 +300,12 @@ async fn decoded_ogg_duration(
     cancelled: CancelCheck<'_>,
 ) -> Result<f64, String> {
     let mut args = safe_ffmpeg_input_prelude();
-    args.extend(["-v".into(), "error".into(), "-i".into(), feed.to_string_lossy().to_string()]);
+    args.extend([
+        "-v".into(),
+        "error".into(),
+        "-i".into(),
+        feed.to_string_lossy().to_string(),
+    ]);
     args.extend(OGG_DURATION_OUTPUT_ARGS.iter().map(|arg| (*arg).to_string()));
     let (mut rx, child) = app
         .shell()
@@ -309,8 +316,7 @@ async fn decoded_ogg_duration(
         .spawn()
         .map_err(|e| e.to_string())?;
     let mut child = Some(child);
-    let deadline = tokio::time::Instant::now()
-        + std::time::Duration::from_secs(bounded_ffmpeg_timeout(timeout_secs));
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(bounded_ffmpeg_timeout(timeout_secs));
     let mut bytes = 0u64;
     loop {
         if cancelled.map(|check| check()).unwrap_or(false) {
@@ -320,7 +326,9 @@ async fn decoded_ogg_duration(
         let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
         if remaining.is_zero() {
             kill_and_drain(child.take(), &mut rx).await;
-            return Err("Measuring the decoded Ogg audio timed out. Increase the FFmpeg timeout or retry without Fade.".into());
+            return Err(
+                "Measuring the decoded Ogg audio timed out. Increase the FFmpeg timeout or retry without Fade.".into(),
+            );
         }
         match tokio::time::timeout(remaining.min(std::time::Duration::from_secs(1)), rx.recv()).await {
             Err(_) => continue,

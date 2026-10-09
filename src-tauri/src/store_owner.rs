@@ -15,7 +15,10 @@ impl StoreOwner {
         let path = directory.join(".store-owner.lock");
         match fs::symlink_metadata(&path) {
             Ok(metadata) if !metadata.file_type().is_file() => {
-                return Err(io::Error::new(io::ErrorKind::InvalidInput, "Store lock must be a regular file"));
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "Store lock must be a regular file",
+                ));
             }
             Ok(_) => {}
             Err(error) if error.kind() == io::ErrorKind::NotFound => {}
@@ -23,7 +26,10 @@ impl StoreOwner {
         }
         let file = open_locked(&path)?;
         if !file.metadata()?.is_file() {
-            return Err(io::Error::new(io::ErrorKind::InvalidInput, "Store lock must be a regular file"));
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "Store lock must be a regular file",
+            ));
         }
         Ok(Self { _file: file })
     }
@@ -116,7 +122,12 @@ mod tests {
     fn child_command(dir: &std::path::Path, hold: bool) -> Command {
         let mut command = Command::new(std::env::current_exe().unwrap());
         command
-            .args(["--exact", "store_owner::tests::ownership_subprocess", "--ignored", "--nocapture"])
+            .args([
+                "--exact",
+                "store_owner::tests::ownership_subprocess",
+                "--ignored",
+                "--nocapture",
+            ])
             .env("DEPOAUDIO_OWNER_TEST_DIRECTORY", dir)
             .env("DEPOAUDIO_OWNER_TEST_HOLD", if hold { "1" } else { "0" })
             .stdin(Stdio::piped())
@@ -186,7 +197,10 @@ mod tests {
         let mut child = TestChild(child_command(&dir.0, true).spawn().unwrap());
         let deadline = Instant::now() + Duration::from_secs(10);
         while !dir.0.join("ready").exists() {
-            assert!(child.0.try_wait().unwrap().is_none(), "owner child exited before becoming ready");
+            assert!(
+                child.0.try_wait().unwrap().is_none(),
+                "owner child exited before becoming ready"
+            );
             assert!(Instant::now() < deadline, "owner child did not become ready");
             std::thread::sleep(Duration::from_millis(10));
         }

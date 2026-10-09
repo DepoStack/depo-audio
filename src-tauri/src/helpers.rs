@@ -231,9 +231,7 @@ fn strip_sgmca_header_with_cancel(
     let offset = scan_region
         .windows(MAGIC.len())
         .enumerate()
-        .find_map(|(offset, window)| {
-            (window == MAGIC && buf.get(offset + MAGIC.len()) == Some(&0)).then_some(offset)
-        })
+        .find_map(|(offset, window)| (window == MAGIC && buf.get(offset + MAGIC.len()) == Some(&0)).then_some(offset))
         .unwrap_or(first_offset);
 
     // Security note: UUID-based temp filenames are unpredictable, which is sufficient

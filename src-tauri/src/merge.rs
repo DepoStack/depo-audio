@@ -531,7 +531,10 @@ fn mix_all_strategy(sources: &[Vec<f32>], offsets: &[i64], total_samples: usize)
 
 fn aligned_sample(samples: &[f32], offset: i64, output_index: usize) -> Option<f32> {
     let index = output_index as i64 - offset;
-    usize::try_from(index).ok().and_then(|index| samples.get(index)).copied()
+    usize::try_from(index)
+        .ok()
+        .and_then(|index| samples.get(index))
+        .copied()
 }
 
 /// Select the highest quality segment from available sources.
