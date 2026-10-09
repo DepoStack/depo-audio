@@ -772,9 +772,9 @@ mod tests {
         let sources = vec![vec![0.8; 500], second];
         let output = best_quality_strategy(&sources, &[0, 0], 1000, 1000);
         // Preserve the original crossfade wherever both sources exist.
-        for index in 475..500 {
-            let t = (index - 475) as f32 / 50.0;
-            assert!((output[index] - (0.8 * (1.0 - t) + 0.2 * t)).abs() < 1e-6);
+        for (offset, sample) in output[475..500].iter().enumerate() {
+            let t = offset as f32 / 50.0;
+            assert!((*sample - (0.8 * (1.0 - t) + 0.2 * t)).abs() < 1e-6);
         }
         // Beyond the first source's end, only the second can supply audio.
         assert!(output[500..].iter().all(|sample| *sample == 1.0));
