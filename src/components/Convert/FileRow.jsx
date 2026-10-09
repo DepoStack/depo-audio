@@ -13,6 +13,8 @@ export default function FileRow({ file, job, onRemove, converting, onOpenInPlaye
   const status = job?.status || 'waiting'
   const isExp = file.fmt?.status === 'experimental'
   const isRej = file.fmt?.status === 'unsupported'
+  const errorFirstLine = String(job?.error || '').split(/\r?\n/)[0].trim()
+  const errorSummary = errorFirstLine.length > 180 ? `${errorFirstLine.slice(0, 180)}…` : errorFirstLine
 
   return (
     <div
@@ -158,6 +160,9 @@ export default function FileRow({ file, job, onRemove, converting, onOpenInPlaye
       )}
       {status === 'error' && (
         <div className="px-3 pb-2.5">
+          <p role="alert" className="mb-1 text-[11px] text-destructive">
+            Conversion did not finish. {errorSummary || 'Check the source file and output folder, then retry.'}
+          </p>
           <button
             className="text-[10px] text-[hsl(var(--sub))] hover:text-foreground transition-colors flex items-center gap-1"
             onClick={() => setExpanded(e => !e)}

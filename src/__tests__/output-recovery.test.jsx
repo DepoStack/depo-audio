@@ -15,6 +15,25 @@ afterEach(() => {
 beforeEach(() => invoke.mockReset())
 
 describe('output recovery and handoff', () => {
+  it('shows a concise conversion failure before opening technical details', () => {
+    render(
+      <FileRow
+        file={{ path: '/test/source.wav', name: 'source.wav' }}
+        job={{ status: 'error', error: 'Output folder is not writable.\nTechnical decoder detail' }}
+      />,
+    )
+    expect(screen.getByRole('alert')).toHaveTextContent('Output folder is not writable.')
+    expect(screen.queryByText(/Technical decoder detail/)).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: /details/i }))
+    expect(screen.getByText(/Technical decoder detail/)).toBeVisible()
+  })
+
+  it('explains a failure even when the backend supplied no message', () => {
+    render(<FileRow file={{ path: '/test/source.wav', name: 'source.wav' }} job={{ status: 'error' }} />)
+    expect(screen.getByRole('alert')).toHaveTextContent(/conversion did not finish/i)
+    expect(screen.getByRole('alert')).toHaveTextContent(/source file and output folder/i)
+  })
+
   it('reveals a single output and sends completed output paths to Player', async () => {
     const onOpenInPlayer = vi.fn()
     invoke.mockResolvedValue(undefined)

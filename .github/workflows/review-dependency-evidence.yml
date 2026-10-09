@@ -22,9 +22,9 @@ jobs:
         run: npm ci --ignore-scripts --no-audit --no-fund
       - name: Resolve only advisory-affected compatible npm packages
         run: |
-          npm --version
-          npm install --save-dev --save-prefix='^' vitest@4.1.11 --ignore-scripts --no-audit --no-fund --loglevel=verbose
-          npm update baseline-browser-mapping brace-expansion browserslist source-map-js undici --ignore-scripts --no-audit --no-fund --loglevel=verbose
+          npx --yes --package=npm@11.9.0 -- npm --version
+          npx --yes --package=npm@11.9.0 -- npm install --save-dev --save-prefix='^' vitest@4.1.11 --ignore-scripts --no-audit --no-fund --loglevel=verbose
+          npx --yes --package=npm@11.9.0 -- npm update baseline-browser-mapping brace-expansion browserslist source-map-js undici --ignore-scripts --no-audit --no-fund --loglevel=verbose
       - name: Resolve patched rustls
         if: ${{ !cancelled() }}
         run: cargo update --manifest-path src-tauri/Cargo.toml -p rustls --precise 0.23.45

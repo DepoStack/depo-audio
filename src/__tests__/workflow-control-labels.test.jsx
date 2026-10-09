@@ -4,8 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { open } from '@tauri-apps/plugin-dialog'
 import ConvertTab from '../components/Convert/ConvertTab'
 import PlayerTab from '../components/Player/PlayerTab'
-
-const preferencesContext = vi.hoisted(() => ({ current: null }))
+import { TestPreferencesProvider } from '../hooks/PreferencesContext'
 
 vi.mock('@tauri-apps/api/core', () => ({
   convertFileSrc: path => `asset://${path}`,
@@ -13,9 +12,14 @@ vi.mock('@tauri-apps/api/core', () => ({
 }))
 vi.mock('@tauri-apps/api/event', () => ({ listen: vi.fn(() => Promise.resolve(vi.fn())) }))
 vi.mock('@tauri-apps/plugin-dialog', () => ({ open: vi.fn() }))
-vi.mock('../hooks/PreferencesContext', () => ({
-  usePreferencesContext: () => preferencesContext.current,
-}))
+vi.mock('../hooks/PreferencesContext', async () => {
+  const { createContext, useContext } = await import('react')
+  const preferencesContext = createContext(null)
+  return {
+    TestPreferencesProvider: preferencesContext.Provider,
+    usePreferencesContext: () => useContext(preferencesContext),
+  }
+})
 vi.mock('../components/common/Waveform', () => ({ default: () => <div /> }))
 vi.mock('../components/Player/Transcript', () => ({ default: () => <div /> }))
 vi.mock('../lib/speakerColors', () => ({
@@ -28,7 +32,7 @@ const files = [{ path: '/recordings/hearing.wav', name: 'hearing.wav', fmt: null
 
 function ChannelNames({ mode }) {
   const [labels, setLabels] = useState(['', 'Witness'])
-  preferencesContext.current = {
+  const preferences = {
     mode,
     formatOut: 'wav',
     labels,
@@ -44,7 +48,11 @@ function ChannelNames({ mode }) {
     autoLevel: false,
     declip: false,
   }
-  return <ConvertTab files={files} caseName="" jobs={{}} converting={false} doneCount={0} failCount={0} />
+  return (
+    <TestPreferencesProvider value={preferences}>
+      <ConvertTab files={files} caseName="" jobs={{}} converting={false} doneCount={0} failCount={0} />
+    </TestPreferencesProvider>
+  )
 }
 
 async function openBookmarkedTrack() {
