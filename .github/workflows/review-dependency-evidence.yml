@@ -21,12 +21,16 @@ jobs:
       - name: Materialize the existing locked tree before targeted npm update
         run: npm ci --ignore-scripts --no-audit --no-fund
       - name: Resolve only advisory-affected compatible npm packages
-        run: npm update vitest @vitest/mocker baseline-browser-mapping brace-expansion browserslist source-map-js undici --ignore-scripts --no-audit --no-fund
+        run: |
+          npm --version
+          npm install --save-dev --save-prefix='^' vitest@4.1.11 --ignore-scripts --no-audit --no-fund --loglevel=verbose
+          npm update baseline-browser-mapping brace-expansion browserslist source-map-js undici --ignore-scripts --no-audit --no-fund --loglevel=verbose
       - name: Resolve patched rustls
         if: ${{ !cancelled() }}
         run: cargo update --manifest-path src-tauri/Cargo.toml -p rustls --precise 0.23.45
       - name: Install resolved dependencies
         id: install
+        if: ${{ !cancelled() }}
         run: npm ci
       - name: Audit resolved dependencies
         if: ${{ !cancelled() && steps.install.outcome == 'success' }}
