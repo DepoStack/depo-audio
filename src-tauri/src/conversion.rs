@@ -354,6 +354,7 @@ async fn do_convert_inner(
     // before work starts because one shared gain would not balance channels.
     let proc = build_proc_filters_with_gain(app, job, effective_feed, None, Some(&is_cancelled)).await;
     cancel.check()?;
+    let proc = proc?;
 
     let mut ffmpeg_args = safe_ffmpeg_input_prelude();
     ffmpeg_args.extend(input_codec.clone());
