@@ -871,10 +871,8 @@ for (const blockerId of ['javascript-runtime-notices', 'macos-ffmpeg-rc2-evidenc
   const blocker = gateBlockerById.get(blockerId)
   const evidenceRefs = Array.isArray(blocker?.evidenceRefs) ? new Set(blocker.evidenceRefs) : null
   expect(
-    blocker?.status === 'open' &&
-      evidenceRefs?.has(candidateBuildRunUrl) &&
-      evidenceRefs.has(candidateInspectionRunUrl),
-    `technical blocker ${blockerId} must retain exact candidate evidence and remain open until a named reviewer closes it`,
+    evidenceRefs?.has(candidateBuildRunUrl) && evidenceRefs.has(candidateInspectionRunUrl),
+    `technical blocker ${blockerId} must retain exact candidate evidence after reviewer closure`,
   )
 }
 const otherOpenGateBlockers = openGateBlockers.filter(blocker => blocker.id !== 'release-changelog-finalization')

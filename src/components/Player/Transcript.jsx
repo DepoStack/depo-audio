@@ -17,6 +17,7 @@ import {
 } from '../../lib/transcript'
 import { Card, CardHeader, CardTitle } from '../ui/card'
 import { Button } from '../ui/button'
+import { ConfirmDialog } from '../ui/confirm-dialog'
 
 // ── Synced transcript editor ────────────────────────────────────────────────
 //
@@ -74,9 +75,13 @@ function loadTrackState(path) {
 }
 
 export default function Transcript({ trackPath, currentTime, playing, onSeek, onStorageError }) {
+  const [pendingReplacement, setPendingReplacement] = useState(null)
+  const [undoState, setUndoState] = useState(null)
   const [trackState, setTrackState] = useState(() => loadTrackState(trackPath))
   if (trackState.path !== trackPath) {
     setTrackState(loadTrackState(trackPath))
+    setPendingReplacement(null)
+    setUndoState(null)
   }
   const segments = useMemo(() => (trackState.path === trackPath ? trackState.segments : []), [trackState, trackPath])
   const storageError = trackState.path === trackPath ? trackState.storageError : ''
@@ -94,6 +99,19 @@ export default function Transcript({ trackPath, currentTime, playing, onSeek, on
   const [paste, setPaste] = useState('')
   const [showExport, setShowExport] = useState(false)
   const [operationError, setOperationError] = useState('')
+  const latestSegmentsRef = useRef(segments)
+  useEffect(() => {
+    latestSegmentsRef.current = segments
+  }, [segments])
+  const importGenerationRef = useRef(0)
+  useEffect(
+    () => () => {
+      // Invalidate both picker and read completions when leaving this track,
+      // including leaving and returning to the same path or unmounting.
+      importGenerationRef.current += 1
+    },
+    [trackPath],
+  )
   const rowRefs = useRef({})
   const focusId = useRef(null)
   const saveTimerRef = useRef(null)
@@ -174,10 +192,21 @@ export default function Transcript({ trackPath, currentTime, playing, onSeek, on
     }
   })
 
-  const update = (id, patch) => setSegments(prev => prev.map(s => (s.id === id ? { ...s, ...patch } : s)))
-  const remove = id => setSegments(prev => prev.filter(s => s.id !== id))
+  const update = (id, patch) => {
+    setUndoState(null)
+    setSegments(prev => prev.map(s => (s.id === id ? { ...s, ...patch } : s)))
+  }
+  const remove = id => {
+    setUndoState({ path: trackPath, segments, message: 'Transcript line deleted.' })
+    setSegments(prev => prev.filter(s => s.id !== id))
+  }
+  const replaceTranscript = nextSegments => {
+    setUndoState(segments.length > 0 ? { path: trackPath, segments, message: 'Transcript replaced.' } : null)
+    setSegments(nextSegments)
+  }
 
   const addLine = (afterId = null) => {
+    setUndoState(null)
     const seg = createSegmentAtTime(currentTime)
     focusId.current = seg.id
     setSegments(prev => {
@@ -190,21 +219,34 @@ export default function Transcript({ trackPath, currentTime, playing, onSeek, on
   }
 
   const importFile = async () => {
+    const generation = ++importGenerationRef.current
     setOperationError('')
     try {
       const sel = await open({ multiple: false, filters: [{ name: 'Transcript', extensions: ['srt', 'vtt', 'txt'] }] })
+      if (generation !== importGenerationRef.current) return
       if (!sel) return
       const path = typeof sel === 'string' ? sel : sel.path
       const text = await readTextFile(path)
-      setSegments(parseTranscript(text, path.split('.').pop()?.toLowerCase()))
+      if (generation !== importGenerationRef.current) return
+      const imported = parseTranscript(text, path.split('.').pop()?.toLowerCase())
+      if (imported.length === 0) {
+        setOperationError('No transcript lines were found. Your current transcript was kept.')
+        return
+      }
+      if (latestSegmentsRef.current.length > 0) {
+        setPendingReplacement({ path: trackPath, segments: imported })
+      } else {
+        replaceTranscript(imported)
+      }
     } catch (error) {
+      if (generation !== importGenerationRef.current) return
       setOperationError(`Transcript import failed: ${String(error)}`)
     }
   }
 
   const usePaste = () => {
     if (!paste.trim()) return
-    setSegments(parseTranscript(paste, 'txt'))
+    replaceTranscript(parseTranscript(paste, 'txt'))
     setPaste('')
   }
 
@@ -239,6 +281,18 @@ export default function Transcript({ trackPath, currentTime, playing, onSeek, on
 
   return (
     <Card>
+      <ConfirmDialog
+        open={pendingReplacement?.path === trackPath}
+        onOpenChange={open => {
+          if (!open) setPendingReplacement(null)
+        }}
+        title="Replace this transcript?"
+        description="Importing will replace the current transcript for this recording. You can undo the replacement until your next edit."
+        confirmLabel="Replace transcript"
+        onConfirm={() => {
+          if (pendingReplacement?.path === trackPath) replaceTranscript(pendingReplacement.segments)
+        }}
+      />
       <CardHeader>
         <CardTitle>TRANSCRIPT</CardTitle>
         <div className="flex items-center gap-1.5">
@@ -329,6 +383,22 @@ export default function Transcript({ trackPath, currentTime, playing, onSeek, on
         </p>
       )}
 
+      {undoState?.path === trackPath && (
+        <div role="status" className="mx-4 mt-3 flex items-center justify-between gap-2 text-[11px] text-foreground">
+          <span>{undoState.message}</span>
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={() => {
+              setSegments(undoState.segments)
+              setUndoState(null)
+            }}
+          >
+            Undo
+          </Button>
+        </div>
+      )}
+
       {segments.length === 0 ? (
         <div className="px-4 py-4 flex flex-col gap-3">
           <p className="text-[12px] text-[hsl(var(--sub))]">
@@ -381,7 +451,7 @@ export default function Transcript({ trackPath, currentTime, playing, onSeek, on
                       </button>
                     ) : (
                       <button
-                        onClick={() => update(s.id, { start: currentTime })}
+                        onClick={() => update(s.id, { start: currentTime, end: undefined })}
                         title="Stamp the current audio position onto this line"
                         className="text-[hsl(var(--sub))] hover:text-foreground transition-colors"
                       >
@@ -431,7 +501,7 @@ export default function Transcript({ trackPath, currentTime, playing, onSeek, on
                   {/* Re-stamp + delete (on hover) */}
                   <div className="shrink-0 flex items-center gap-1 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-opacity pt-0.5">
                     <button
-                      onClick={() => update(s.id, { start: currentTime })}
+                      onClick={() => update(s.id, { start: currentTime, end: undefined })}
                       aria-label="Set this line's time to the current position"
                       title="Set this line's time to the current position"
                       className="rounded text-[hsl(var(--sub))] hover:text-foreground transition-colors focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring"
@@ -457,6 +527,10 @@ export default function Transcript({ trackPath, currentTime, playing, onSeek, on
                 <span className="font-mono text-[10px] text-[hsl(var(--sub))] ml-1">@ {fmtTime(currentTime)}</span>
               )}
             </Button>
+            <p className="mt-1 text-[10px] text-[hsl(var(--sub))]">
+              Imported subtitle endings are preserved. New or re-stamped lines end at the next line&apos;s later
+              timestamp, or after 3 seconds.
+            </p>
           </div>
         </div>
       )}

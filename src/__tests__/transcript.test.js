@@ -135,6 +135,22 @@ describe('srtStamp / toSRT', () => {
 })
 
 describe('round trips', () => {
+  it('preserves original imported end times, silent gaps, and millisecond precision', () => {
+    const original =
+      '1\n00:00:01,001 --> 00:00:02,007\nFirst.\n\n2\n00:00:10,003 --> 00:00:20,009\nSecond.\n'
+    const imported = parseTranscript(original, 'srt')
+
+    expect(imported.map(segment => segment.end)).toEqual([2.007, 20.009])
+    expect(toSRT(imported)).toBe(original)
+    expect(toSRT(loadSegments(JSON.stringify(imported)))).toBe(original)
+  })
+
+  it('retains VTT end times when timing lines also contain cue settings', () => {
+    const imported = parseTranscript('WEBVTT\n\n00:01.001 --> 00:03.007 align:start position:0%\nHello\n', 'vtt')
+    expect(imported[0]).toMatchObject({ start: 1.001, end: 3.007, text: 'Hello' })
+    expect(toSRT(imported)).toContain('00:00:01,001 --> 00:00:03,007')
+  })
+
   it('SRT → segments → SRT preserves times, speakers, and text', () => {
     const once = toSRT(parseCues(SRT))
     const twice = toSRT(parseCues(once))
@@ -147,6 +163,24 @@ describe('round trips', () => {
 })
 
 describe('persistence', () => {
+  it('keeps valid optional ends and remains compatible with legacy start-only segments', () => {
+    const legacy = { id: 'legacy', start: 1, speaker: '', text: 'Old transcript' }
+    expect(loadSegments(JSON.stringify([legacy]))).toEqual([legacy])
+    const loaded = loadSegments(
+      JSON.stringify([
+        { id: 'valid', start: 1, end: 2 },
+        { id: 'zero', start: 0, end: 0.25 },
+        { id: 'equal', start: 1, end: 1 },
+        { id: 'before', start: 1, end: 0.5 },
+        { id: 'string', start: 1, end: '2' },
+        { id: 'untimed', start: null, end: 2 },
+      ]),
+    )
+    expect(loaded[0].end).toBe(2)
+    expect(loaded[1].end).toBe(0.25)
+    for (const segment of loaded.slice(2)) expect(segment).not.toHaveProperty('end')
+  })
+
   it('keys transcripts by track path', () => {
     expect(storageKey('/a/b.wav')).toBe('transcript:/a/b.wav')
   })

@@ -16,7 +16,7 @@ const Segmented = React.forwardRef(function Segmented(
   return (
     <div
       ref={ref}
-      role="tablist"
+      role="group"
       aria-label={ariaLabel}
       className={cn('inline-flex items-center gap-0.5 rounded-lg bg-secondary/60 p-0.5', className)}
       {...props}
@@ -27,8 +27,7 @@ const Segmented = React.forwardRef(function Segmented(
           <button
             key={o.value}
             type="button"
-            role="tab"
-            aria-selected={active}
+            aria-pressed={active}
             title={o.title}
             onClick={() => onChange(o.value)}
             className={cn(

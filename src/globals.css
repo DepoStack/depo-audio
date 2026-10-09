@@ -518,7 +518,7 @@
     width: 100%;
   }
 
-  .library-filter [role='tab'] {
+  .library-filter button {
     flex: 1;
   }
 

@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { invoke } from '@tauri-apps/api/core'
+import { INTEGER_PREFERENCE_LIMITS, parseNumericPreference } from '../lib/preferenceNumbers'
 
 export default function usePreferences() {
   const [mode, setModeState] = useState('stereo')
@@ -21,8 +22,8 @@ export default function usePreferences() {
   const [normalizeLufs, setNormalizeLufs] = useState(-16)
   const [normalizeTp, setNormalizeTp] = useState(-1.5)
   const [silenceThresh, setSilenceThresh] = useState(-50)
-  const [ffmpegTimeout, setFfmpegTimeout] = useState(300)
-  const [maxScanDepth, setMaxScanDepth] = useState(5)
+  const [ffmpegTimeout, setFfmpegTimeoutState] = useState(300)
+  const [maxScanDepth, setMaxScanDepthState] = useState(5)
   const [maxFileSizeGb, setMaxFileSizeGb] = useState(2)
   // Empty string is a real persisted value: it means "remember last used".
   const [defaultOutputFormat, setDefaultOutputFormat] = useState('')
@@ -46,6 +47,21 @@ export default function usePreferences() {
     setAutoLevelState(currentValue => {
       const resolvedValue = typeof nextValue === 'function' ? nextValue(currentValue) : nextValue
       return modeRef.current === 'keep' ? false : Boolean(resolvedValue)
+    })
+  }, [])
+
+  // Native preference storage uses unsigned integers for these fields. Reject
+  // invalid drafts before IPC so a user typo cannot disable preference writes.
+  const setFfmpegTimeout = useCallback(nextValue => {
+    setFfmpegTimeoutState(current => {
+      const next = typeof nextValue === 'function' ? nextValue(current) : nextValue
+      return parseNumericPreference(next, INTEGER_PREFERENCE_LIMITS.ffmpegTimeout) ?? current
+    })
+  }, [])
+  const setMaxScanDepth = useCallback(nextValue => {
+    setMaxScanDepthState(current => {
+      const next = typeof nextValue === 'function' ? nextValue(current) : nextValue
+      return parseNumericPreference(next, INTEGER_PREFERENCE_LIMITS.maxScanDepth) ?? current
     })
   }, [])
 
@@ -81,8 +97,8 @@ export default function usePreferences() {
         if (p.normalizeLufs != null) setNormalizeLufs(p.normalizeLufs)
         if (p.normalizeTp != null) setNormalizeTp(p.normalizeTp)
         if (p.silenceThresh != null) setSilenceThresh(p.silenceThresh)
-        if (p.ffmpegTimeout != null) setFfmpegTimeout(p.ffmpegTimeout)
-        if (p.maxScanDepth != null) setMaxScanDepth(p.maxScanDepth)
+        if (p.ffmpegTimeout != null) setFfmpegTimeoutState(p.ffmpegTimeout)
+        if (p.maxScanDepth != null) setMaxScanDepthState(p.maxScanDepth)
         if (p.maxFileSizeGb != null) setMaxFileSizeGb(p.maxFileSizeGb)
         if (p.defaultOutputFormat !== undefined) setDefaultOutputFormat(p.defaultOutputFormat ?? '')
         if (p.defaultOutputMode !== undefined) setDefaultOutputMode(p.defaultOutputMode ?? '')

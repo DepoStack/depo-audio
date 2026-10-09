@@ -100,7 +100,7 @@ Scanning is a bounded, cancellable local analysis pass. FFmpeg performs the sele
 
 | Format                                       | Vendor                     | Status                             |
 | -------------------------------------------- | -------------------------- | ---------------------------------- |
-| **SGMCA**                                    | Stenograph · Case CATalyst | ✅ Supported                       |
+| **SGMCA**                                    | Stenograph · Case CATalyst | 🧪 Experimental; recognized variants only |
 | **FTR / TRM**                                | For The Record             | 🧪 Experimental                    |
 | **BWF**                                      | CourtSmart · Various       | ✅ Supported                       |
 | **DigitalCAT (.dm)**                         | Stenovations               | 🧪 Experimental                    |
@@ -109,6 +109,18 @@ Scanning is a bounded, cancellable local analysis pass. FFmpeg performs the sele
 | **AES (Eclipse AudioSync)**                  | Eclipse CAT                | 🔒 Encrypted — export to WAV first |
 
 ---
+
+SGMCA compatibility uses a bounded embedded-Ogg heuristic: the complete `OggS`
+marker must occur within the first 8 KiB. This is not a complete vendor format
+specification or certification of every variant. CATalyst Direct Audio supports
+up to eight channels; DepoAudio processes channels in the first detected audio
+stream. Keep the original recording. If conversion fails, confirm that the source
+plays in CATalyst and record the DepoAudio version, platform, attempted step and
+error text. Do not post confidential audio to public issues. Consult Stenograph
+for export options available in your CATalyst version.
+
+Sources: [Stenograph Direct Audio FAQ](https://solutioncenter.stenograph.com/direct-audio/directaudiofaq)
+and [DepoAudio SGMCA compatibility guide](https://depoaudio.com/sgmca/).
 
 ## Learned-model boundary
 
@@ -129,7 +141,7 @@ and commercial-rights review remains a separate owner decision.
 
 ### Prerequisites
 
-- [Rust](https://rustup.rs/) 1.88+ · [Node.js](https://nodejs.org/) 22.12+ · [Tauri CLI](https://v2.tauri.app/start/prerequisites/) (`cargo install tauri-cli`)
+- [Rust](https://rustup.rs/) 1.88+ · [Node.js](https://nodejs.org/) 22.13+ within Node 22, or Node 24+ · [Tauri CLI](https://v2.tauri.app/start/prerequisites/) (`cargo install tauri-cli`)
 - Windows builds also require Visual Studio 2022 Build Tools with the **Desktop development with C++** workload and a Windows SDK; Rust's MSVC target needs their `link.exe` and import libraries.
 
 ### FFmpeg sidecars

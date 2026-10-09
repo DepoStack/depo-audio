@@ -77,13 +77,20 @@ export function splitSpeaker(line) {
   return m ? { speaker: m[1], text: m[2] } : { speaker: '', text: line.trim() }
 }
 
+function validCueEnd(start, end) {
+  return Number.isFinite(start) && start >= 0 && Number.isFinite(end) && end > start
+}
+
 export function parseCues(text) {
   const lines = text.replace(/\r/g, '').split('\n')
   const segs = []
   let i = 0
   while (i < lines.length) {
     if (lines[i].includes('-->')) {
-      const start = parseTime(lines[i].split('-->')[0])
+      const [startText, endText] = lines[i].split('-->')
+      const start = parseTime(startText)
+      // VTT may append positioning/alignment settings after the end time.
+      const end = parseTime(endText.trim().split(/\s+/)[0])
       i++
       const body = []
       while (i < lines.length && lines[i].trim() !== '' && !lines[i].includes('-->')) {
@@ -91,7 +98,7 @@ export function parseCues(text) {
         i++
       }
       const { speaker, text } = splitSpeaker(body.join(' ').trim())
-      segs.push({ id: uid(), start, speaker, text })
+      segs.push({ id: uid(), start, ...(validCueEnd(start, end) ? { end } : {}), speaker, text })
     } else {
       i++
     }
@@ -117,10 +124,13 @@ export function parseTranscript(text, ext) {
 }
 
 export const srtStamp = t => {
-  const ms = Math.floor((t % 1) * 1000)
-  const s = Math.floor(t) % 60
-  const m = Math.floor(t / 60) % 60
-  const h = Math.floor(t / 3600)
+  // Round the whole timestamp once: binary floating point can otherwise turn
+  // an imported 1.001 seconds into 00:00:01,000.
+  const totalMs = Math.round(t * 1000)
+  const ms = totalMs % 1000
+  const s = Math.floor(totalMs / 1000) % 60
+  const m = Math.floor(totalMs / 60000) % 60
+  const h = Math.floor(totalMs / 3600000)
   const pad = (n, w = 2) => String(n).padStart(w, '0')
   return `${pad(h)}:${pad(m)}:${pad(s)},${pad(ms, 3)}`
 }
@@ -130,13 +140,16 @@ export function toPlainText(segs) {
 }
 
 export function toSRT(segs) {
-  // Stamped lines can be added out of order, so sort by start time — otherwise
-  // a cue's end (taken from the next line) could precede its start, producing
-  // negative/overlapping durations.
-  const timed = segs.filter(s => s.start != null).sort((a, b) => a.start - b.start)
+  // Preserve imported intervals. Start-only lines (including legacy drafts
+  // and newly stamped lines) infer an end from the next later timestamp,
+  // otherwise three seconds after their start. Equal stamps must not create
+  // zero-duration cues.
+  const timed = segs.filter(s => Number.isFinite(s.start) && s.start >= 0).sort((a, b) => a.start - b.start)
   return timed
     .map((s, idx) => {
-      const end = timed[idx + 1] ? timed[idx + 1].start : s.start + 3
+      const nextStart = timed[idx + 1]?.start
+      const inferredEnd = nextStart > s.start ? nextStart : s.start + 3
+      const end = validCueEnd(s.start, s.end) ? s.end : inferredEnd
       const body = (s.speaker ? `${s.speaker}: ` : '') + s.text
       return `${idx + 1}\n${srtStamp(s.start)} --> ${srtStamp(end)}\n${body}\n`
     })
@@ -180,6 +193,7 @@ export function loadSegments(raw) {
           typeof segment.start === 'number' && Number.isFinite(segment.start) && segment.start >= 0
             ? segment.start
             : null,
+        ...(validCueEnd(segment.start, segment.end) ? { end: segment.end } : {}),
         speaker: typeof segment.speaker === 'string' ? segment.speaker : '',
         text: typeof segment.text === 'string' ? segment.text : '',
       }))

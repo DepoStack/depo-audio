@@ -118,13 +118,28 @@ fn split_labels(num_ch: u32, labels: &[String]) -> Vec<String> {
 /// requires the actual channel layout, which breaks mono and 4-channel court
 /// recordings). Auto-level injects EACH channel's own gain right after the
 /// channel is isolated — a single averaged gain would leave imbalance in place.
-fn split_filter_complex(num_ch: u32, auto_level: bool, channel_gains: Option<&Vec<f64>>, proc: &[String]) -> String {
+fn split_filter_complex(
+    num_ch: u32,
+    auto_level: bool,
+    normalize: bool,
+    channel_gains: Option<&Vec<f64>>,
+    proc: &[String],
+) -> String {
     let sp_tags: Vec<String> = (0..num_ch as usize).map(|i| format!("sp{}", i)).collect();
     let split_str = format!("[0:a]asplit={}[{}]", num_ch, sp_tags.join("]["));
     let per_ch_proc = if proc.is_empty() {
         String::new()
     } else {
         format!(",{}", proc.join(","))
+    };
+    // Loudness-derived gains can push otherwise clean transients above full
+    // scale. loudnorm already controls peaks when enabled; otherwise protect
+    // every auto-leveled channel and compensate the limiter's look-ahead so
+    // split files retain their shared timeline, including their final samples.
+    let peak_limit = if auto_level && !normalize {
+        ",alimiter=limit=0.97:level=false:latency=true"
+    } else {
+        ""
     };
     let chain: Vec<String> = (0..num_ch as usize)
         .map(|i| {
@@ -136,10 +151,29 @@ fn split_filter_complex(num_ch: u32, auto_level: bool, channel_gains: Option<&Ve
             } else {
                 String::new()
             };
-            format!("[sp{}]pan=mono|c0=c{}{}{}[op{}]", i, i, gain_str, per_ch_proc, i)
+            format!(
+                "[sp{}]pan=mono|c0=c{}{}{}{}[op{}]",
+                i, i, gain_str, per_ch_proc, peak_limit, i
+            )
         })
         .collect();
     std::iter::once(split_str).chain(chain).collect::<Vec<_>>().join(";")
+}
+
+/// Keep and Stereo produce one audio stream. Select the same first audio
+/// stream used by the probes instead of FFmpeg's automatic/default selection;
+/// video, subtitles and data must never survive an audio-only conversion.
+fn single_audio_output_args(filters: &[String], codec: &[String], dst: &Path) -> Vec<String> {
+    let mut args: Vec<String> = ["-map", "0:a:0", "-vn", "-sn", "-dn"]
+        .into_iter()
+        .map(String::from)
+        .collect();
+    if !filters.is_empty() {
+        args.extend(["-af".into(), filters.join(",")]);
+    }
+    args.extend_from_slice(codec);
+    args.extend(["-y".into(), dst.to_string_lossy().to_string()]);
+    args
 }
 
 /// Reserve a set of output paths as one operation from the caller's point of
@@ -362,9 +396,7 @@ async fn do_convert_inner(
             let dst = reserve_unique_path(&out_dir.join(format!("{}{}", base, ext)))?;
             output_cleanup.track(dst.clone());
             let mut args = ffmpeg_args.clone();
-            args.extend(["-af".into(), all.join(",")]);
-            args.extend(out_codec.clone());
-            args.extend(["-y".into(), dst.to_string_lossy().to_string()]);
+            args.extend(single_audio_output_args(&all, &out_codec, &dst));
             run_ffmpeg_with_timeout(
                 app,
                 args,
@@ -381,11 +413,7 @@ async fn do_convert_inner(
             let dst = reserve_unique_path(&out_dir.join(format!("{}_orig{}", base, ext)))?;
             output_cleanup.track(dst.clone());
             let mut args = ffmpeg_args.clone();
-            if !proc.is_empty() {
-                args.extend(["-af".into(), proc.join(",")]);
-            }
-            args.extend(out_codec.clone());
-            args.extend(["-y".into(), dst.to_string_lossy().to_string()]);
+            args.extend(single_audio_output_args(&proc, &out_codec, &dst));
             run_ffmpeg_with_timeout(
                 app,
                 args,
@@ -418,7 +446,7 @@ async fn do_convert_inner(
             // Same channel-count guard as the stereo arm: a gains vector from
             // a desynced analysis probe must not be applied per-channel
             let valid_gains = channel_gains.as_ref().filter(|g| g.len() == num_ch as usize);
-            let fc = split_filter_complex(num_ch, job.auto_level, valid_gains, &proc);
+            let fc = split_filter_complex(num_ch, job.auto_level, job.normalize, valid_gains, &proc);
             args.extend(["-filter_complex".into(), fc, "-y".into()]);
             for (i, dst) in dsts.iter().enumerate() {
                 args.extend(["-map".into(), format!("[op{}]", i)]);
@@ -549,7 +577,7 @@ mod tests {
         // channelsplit would assume a stereo layout; asplit+pan works for any
         // channel count — the fix that made 4-channel court files split right
         assert_eq!(
-            split_filter_complex(2, false, None, &[]),
+            split_filter_complex(2, false, false, None, &[]),
             "[0:a]asplit=2[sp0][sp1];[sp0]pan=mono|c0=c0[op0];[sp1]pan=mono|c0=c1[op1]"
         );
     }
@@ -558,7 +586,7 @@ mod tests {
     fn split_filter_appends_shared_proc_chain_per_channel() {
         let proc = vec!["highpass=f=80".to_string(), "loudnorm=I=-16:TP=-1.5:LRA=11".to_string()];
         assert_eq!(
-            split_filter_complex(2, false, None, &proc),
+            split_filter_complex(2, false, true, None, &proc),
             "[0:a]asplit=2[sp0][sp1];[sp0]pan=mono|c0=c0,highpass=f=80,loudnorm=I=-16:TP=-1.5:LRA=11[op0];[sp1]pan=mono|c0=c1,highpass=f=80,loudnorm=I=-16:TP=-1.5:LRA=11[op1]"
         );
     }
@@ -567,8 +595,8 @@ mod tests {
     fn split_filter_injects_each_channels_own_gain() {
         let gains = vec![2.0, 1.0, 0.5];
         assert_eq!(
-            split_filter_complex(3, true, Some(&gains), &[]),
-            "[0:a]asplit=3[sp0][sp1][sp2];[sp0]pan=mono|c0=c0,volume=2.0000[op0];[sp1]pan=mono|c0=c1[op1];[sp2]pan=mono|c0=c2,volume=0.5000[op2]"
+            split_filter_complex(3, true, false, Some(&gains), &[]),
+            "[0:a]asplit=3[sp0][sp1][sp2];[sp0]pan=mono|c0=c0,volume=2.0000,alimiter=limit=0.97:level=false:latency=true[op0];[sp1]pan=mono|c0=c1,alimiter=limit=0.97:level=false:latency=true[op1];[sp2]pan=mono|c0=c2,volume=0.5000,alimiter=limit=0.97:level=false:latency=true[op2]"
         );
     }
 
@@ -576,8 +604,55 @@ mod tests {
     fn split_filter_ignores_gains_when_auto_level_off() {
         let gains = vec![2.0, 0.5];
         assert_eq!(
-            split_filter_complex(2, false, Some(&gains), &[]),
+            split_filter_complex(2, false, false, Some(&gains), &[]),
             "[0:a]asplit=2[sp0][sp1];[sp0]pan=mono|c0=c0[op0];[sp1]pan=mono|c0=c1[op1]"
+        );
+    }
+
+    #[test]
+    fn auto_leveled_split_limits_every_channel_without_changing_the_shared_timeline() {
+        let gains = vec![4.0, 1.0];
+        let proc = vec!["highpass=f=80".into()];
+        assert_eq!(
+            split_filter_complex(2, true, false, Some(&gains), &proc),
+            "[0:a]asplit=2[sp0][sp1];[sp0]pan=mono|c0=c0,volume=4.0000,highpass=f=80,alimiter=limit=0.97:level=false:latency=true[op0];[sp1]pan=mono|c0=c1,highpass=f=80,alimiter=limit=0.97:level=false:latency=true[op1]"
+        );
+    }
+
+    #[test]
+    fn normalized_split_keeps_loudnorm_as_its_peak_control() {
+        let gains = vec![4.0];
+        let proc = vec!["loudnorm=I=-16:TP=-1.5:LRA=11".into()];
+        assert_eq!(
+            split_filter_complex(1, true, true, Some(&gains), &proc),
+            "[0:a]asplit=1[sp0];[sp0]pan=mono|c0=c0,volume=4.0000,loudnorm=I=-16:TP=-1.5:LRA=11[op0]"
+        );
+    }
+
+    #[test]
+    fn single_output_selects_the_probed_audio_stream_and_excludes_other_media() {
+        let codec = vec!["-c:a".into(), "aac".into()];
+        let dst = Path::new("output.m4a");
+        assert_eq!(
+            single_audio_output_args(&[], &codec, dst),
+            ["-map", "0:a:0", "-vn", "-sn", "-dn", "-c:a", "aac", "-y", "output.m4a"]
+        );
+        let filters = vec!["pan=stereo|c0=c0|c1=c0".into(), "highpass=f=80".into()];
+        assert_eq!(
+            single_audio_output_args(&filters, &codec, dst),
+            [
+                "-map",
+                "0:a:0",
+                "-vn",
+                "-sn",
+                "-dn",
+                "-af",
+                "pan=stereo|c0=c0|c1=c0,highpass=f=80",
+                "-c:a",
+                "aac",
+                "-y",
+                "output.m4a"
+            ]
         );
     }
 

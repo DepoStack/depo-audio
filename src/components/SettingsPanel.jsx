@@ -14,6 +14,7 @@ import {
   AppWindow,
   DownloadCloud,
 } from 'lucide-react'
+import { parseNumericPreference } from '../lib/preferenceNumbers'
 import { DEPOAUDIO_RELEASES_URL, DEPOSTACK_URL } from '../constants'
 import { Dialog, DialogContent, DialogTitle, DialogClose, DialogDescription } from './ui/dialog'
 import { Button } from './ui/button'
@@ -70,11 +71,10 @@ const NAV = [
 
 // ── Field helpers (token-styled) ───────────────────────────────────────────────
 
-function NumberField({ label, hint, unit, value, setValue, min, max, step = 1, defaultVal }) {
+function NumberField({ label, hint, unit, value, setValue, min, max, step = 1, integer = false, defaultVal }) {
   const fieldId = useId()
   const hintId = hint ? `${fieldId}-hint` : undefined
-  // Hold the raw text locally so intermediate keystrokes aren't reverted by the
-  // controlled input; clamp on blur.
+  // Invalid drafts stay local; only valid values reach preference persistence.
   const [text, setText] = useState(String(value))
   const [prevValue, setPrevValue] = useState(value)
   if (value !== prevValue) {
@@ -82,15 +82,12 @@ function NumberField({ label, hint, unit, value, setValue, min, max, step = 1, d
     setText(String(value))
   }
 
+  const parsed = parseNumericPreference(text, { min, max, integer })
+  const invalid = text !== String(value) && parsed === null
+  const errorId = `${fieldId}-error`
+  const descriptionIds = [hintId, invalid && errorId].filter(Boolean).join(' ') || undefined
   const commit = () => {
-    const v = parseFloat(text)
-    if (isNaN(v)) {
-      setText(String(value))
-      return
-    }
-    const clamped = Math.min(max, Math.max(min, v))
-    setValue(clamped)
-    setText(String(clamped))
+    if (parsed !== null) setValue(parsed)
   }
 
   return (
@@ -108,7 +105,8 @@ function NumberField({ label, hint, unit, value, setValue, min, max, step = 1, d
         id={fieldId}
         type="number"
         aria-label={`${label}${unit ? ` (${unit})` : ''}`}
-        aria-describedby={hintId}
+        aria-describedby={descriptionIds}
+        aria-invalid={invalid || undefined}
         className="h-8 text-[12px] max-w-[140px]"
         value={text}
         min={min}
@@ -117,11 +115,16 @@ function NumberField({ label, hint, unit, value, setValue, min, max, step = 1, d
         placeholder={String(defaultVal)}
         onChange={e => {
           setText(e.target.value)
-          const v = parseFloat(e.target.value)
-          if (!isNaN(v) && v >= min && v <= max) setValue(v)
+          const next = parseNumericPreference(e.target.value, { min, max, integer })
+          if (next !== null) setValue(next)
         }}
         onBlur={commit}
       />
+      {invalid && (
+        <p id={errorId} role="alert" className="text-[11px] text-destructive">
+          Enter {integer ? 'a whole number' : 'a number'} between {min} and {max}. Your previous value is unchanged.
+        </p>
+      )}
     </div>
   )
 }
@@ -554,6 +557,7 @@ export default function SettingsPanel({ open, onOpenChange, prefs, updater = {} 
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-4">
                     <NumberField
                       label="Processing timeout"
+                      integer
                       unit="seconds"
                       hint="Max time allowed per file before canceling"
                       value={ffmpegTimeout}
@@ -565,6 +569,7 @@ export default function SettingsPanel({ open, onOpenChange, prefs, updater = {} 
                     />
                     <NumberField
                       label="Folder scan depth"
+                      integer
                       unit="levels"
                       hint="How many folder levels deep to search for recordings"
                       value={maxScanDepth}

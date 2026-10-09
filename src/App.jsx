@@ -39,7 +39,20 @@ const NAV = [
 ]
 
 export default function App() {
-  const [tab, setTab] = useState('convert')
+  const [tab, setTabState] = useState('convert')
+  const [playerVisited, setPlayerVisited] = useState(false)
+  const [playerRequest, setPlayerRequest] = useState(null)
+  const setTab = useCallback(nextTab => {
+    setTabState(nextTab)
+    if (nextTab === 'player') setPlayerVisited(true)
+  }, [])
+  const handleOpenInPlayer = useCallback(
+    paths => {
+      setPlayerRequest(previous => ({ id: (previous?.id || 0) + 1, paths }))
+      setTab('player')
+    },
+    [setTab],
+  )
 
   // Custom hooks
   const prefs = usePreferencesContext()
@@ -122,7 +135,7 @@ export default function App() {
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [])
+  }, [setTab])
 
   const handleStartConversion = () => {
     if (!prefsReady || files.some(file => file.fmt?.status === 'unsupported')) return
@@ -375,13 +388,20 @@ export default function App() {
                   doneCount={doneCount}
                   failCount={failCount}
                   cancelledCount={cancelledCount}
+                  onOpenInPlayer={handleOpenInPlayer}
                 />
               )}
             </TabsContent>
 
-            <TabsContent value="player">
+            <TabsContent
+              value="player"
+              forceMount={playerVisited ? true : undefined}
+              style={tab === 'player' ? undefined : { display: 'none' }}
+            >
               <Suspense fallback={<WorkspaceLoading label="Loading Player workspace" />}>
                 <PlayerTab
+                  active={tab === 'player'}
+                  openRequest={playerRequest}
                   dropHandlerRef={dropOverrideRef}
                   onConvertFiles={async paths => {
                     const result = await addFiles(paths)

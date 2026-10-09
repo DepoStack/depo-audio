@@ -44,6 +44,14 @@ describe('CH_COLORS', () => {
 })
 
 describe('FORMAT_ROWS', () => {
+  it('describes SGMCA as experimental rather than promising every vendor variant', () => {
+    expect(FORMAT_ROWS.find(row => row.ext === '.sgmca')).toMatchObject({
+      status: 'experimental',
+      ch: 'up to 8 ch',
+    })
+    expect(FORMAT_ROWS.find(row => row.ext === '.sgmca').note).toMatch(/variants/i)
+  })
+
   it('has standard and court format groups', () => {
     const groups = [...new Set(FORMAT_ROWS.map(r => r.group))]
     expect(groups).toContain('standard')
