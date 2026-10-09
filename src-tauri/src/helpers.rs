@@ -206,7 +206,9 @@ fn strip_sgmca_header_with_cancel(
     if file_size == 0 {
         return Err("SGMCA file is empty".into());
     }
-    let read_size = SCAN.min(usize::try_from(file_size).unwrap_or(usize::MAX));
+    // One lookahead byte checks the version after a marker at byte 8188.
+    // Candidate capture patterns must still fit entirely in the first 8 KiB.
+    let read_size = (SCAN + 1).min(usize::try_from(file_size).unwrap_or(usize::MAX));
     let mut buf = vec![0u8; read_size];
     let bytes_read = file.read(&mut buf).map_err(|e| e.to_string())?;
     if is_cancelled() {
@@ -214,13 +216,25 @@ fn strip_sgmca_header_with_cancel(
     }
     buf.truncate(bytes_read);
 
-    let offset = buf.windows(4).position(|w| w == MAGIC).ok_or_else(|| {
+    let scan_region = &buf[..buf.len().min(SCAN)];
+    let first_offset = scan_region.windows(MAGIC.len()).position(|w| w == MAGIC).ok_or_else(|| {
         "This SGMCA file does not contain an Ogg audio stream in the first 8 KiB recognized by DepoAudio. Keep the original and check that it plays in CATalyst. If needed, re-copy it from the source system or ask Stenograph about standard audio export options for your version."
             .to_string()
     })?;
-    if offset == 0 {
+    if first_offset == 0 {
         return Ok((src.to_path_buf(), false));
     }
+    // Prefer a version-zero page over incidental magic in a vendor prefix.
+    // RFC 3533 section 6 places stream_structure_version immediately after
+    // OggS. This is only a candidate check, not page/CRC/codec validation.
+    // If no such candidate exists, preserve the original FFmpeg recovery path.
+    let offset = scan_region
+        .windows(MAGIC.len())
+        .enumerate()
+        .find_map(|(offset, window)| {
+            (window == MAGIC && buf.get(offset + MAGIC.len()) == Some(&0)).then_some(offset)
+        })
+        .unwrap_or(first_offset);
 
     // Security note: UUID-based temp filenames are unpredictable, which is sufficient
     // for a single-user desktop app. The system temp dir inherits OS-level permissions
@@ -525,6 +539,65 @@ mod tests {
         assert!(is_temp);
         assert_eq!(fs::read(&prepared).unwrap(), b"OggSaudio-payload");
         fs::remove_file(prepared).unwrap();
+    }
+
+    #[test]
+    fn sgmca_header_strip_skips_incidental_marker_before_version_zero_page() {
+        let dir = ReservationTestDir::new();
+        let source = dir.path().join("incidental-marker.sgmca");
+        let mut bytes = b"prefixOggSnot-an-ogg-page".to_vec();
+        let expected = b"OggS\x00\x02synthetic-page-not-a-codec-fixture";
+        bytes.extend_from_slice(expected);
+        fs::write(&source, bytes).unwrap();
+
+        let (prepared, is_temp) = strip_sgmca_header(&source).unwrap();
+
+        assert!(is_temp);
+        assert_eq!(fs::read(&prepared).unwrap(), expected);
+        fs::remove_file(prepared).unwrap();
+    }
+
+    #[test]
+    fn sgmca_header_strip_can_prefer_page_at_last_scan_position() {
+        let dir = ReservationTestDir::new();
+        let source = dir.path().join("last-position.sgmca");
+        let mut bytes = b"prefixOggSnot-an-ogg-page".to_vec();
+        bytes.resize(8188, b'x');
+        let expected = b"OggS\x00\x02synthetic-page-not-a-codec-fixture";
+        bytes.extend_from_slice(expected);
+        fs::write(&source, bytes).unwrap();
+
+        let (prepared, _) = strip_sgmca_header(&source).unwrap();
+
+        assert_eq!(fs::read(&prepared).unwrap(), expected);
+        fs::remove_file(prepared).unwrap();
+    }
+
+    #[test]
+    fn sgmca_header_strip_keeps_first_marker_when_no_version_zero_candidate_exists() {
+        let dir = ReservationTestDir::new();
+        let source = dir.path().join("unknown-pages.sgmca");
+        let expected = b"OggS\x01unknown-pageOggS\x02another-unknown-page";
+        let mut bytes = b"prefix".to_vec();
+        bytes.extend_from_slice(expected);
+        fs::write(&source, bytes).unwrap();
+
+        let (prepared, _) = strip_sgmca_header(&source).unwrap();
+
+        assert_eq!(fs::read(&prepared).unwrap(), expected);
+        fs::remove_file(prepared).unwrap();
+    }
+
+    #[test]
+    fn sgmca_at_offset_zero_is_not_skipped_for_a_later_page() {
+        let dir = ReservationTestDir::new();
+        let source = dir.path().join("plain.SGMCA");
+        fs::write(&source, b"OggS\x01unknown-pageOggS\x00\x02later-page").unwrap();
+
+        let (prepared, is_temp) = strip_sgmca_header(&source).unwrap();
+
+        assert_eq!(prepared, source);
+        assert!(!is_temp);
     }
 
     #[test]
