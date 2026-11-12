@@ -2,6 +2,20 @@
 
 ## [Unreleased]
 
+These changes are on `main` but not in the existing private v1.0.3 candidate, which was built from an earlier commit. Whether they ship as a rebuilt v1.0.3 or as a later version is an open owner decision in the release gate.
+
+### Changed
+
+- **Tauri moves to 2.12.** The Rust crates lock Tauri 2.12.5 (`tauri-utils` 2.10.2, `urlpattern` 0.6.0) and the JavaScript packages use `@tauri-apps/api` and `@tauri-apps/cli` 2.12.4. The minimum Rust version is now 1.90, which Tauri 2.12 requires. The WebView2 evidence script now expects CLI 2.12.4; its download paths were rechecked against tauri-bundler 2.10.4 and are unchanged.
+- **The updater plugin moves to 2.14.1** (Rust crate and JavaScript package). The updater stays dormant unless a release carries a verified updater configuration.
+- **CI also runs weekly on a schedule**, so an expiring exception or a new advisory turns `main` red without waiting for a push.
+
+### Security
+
+- **The expired `rust-unic` advisory exception is deleted.** Tauri 2.12 no longer depends on the five unmaintained `unic-*` crates, and `deny.toml` now carries no advisory exception.
+- **Rust advisories published after the candidate was built are resolved on `main`:** `rustls` 0.23.46, `rustls-webpki` 0.103.17, `tokio` 1.54.1, and `zip` 9.4.1 (through the updater plugin).
+- **Build and test tooling clears `npm audit --audit-level=high`:** `vite` 8.2.4, `vitest` 4.1.12, `postcss` 8.5.32, `eslint` 10.14.0, and patched transitive `undici`, `zod`, `browserslist`, `brace-expansion` and `source-map-js`. None of these is in the shipped frontend bundle. One moderate `minimatch` advisory remains inside `eslint` 10, with no fix that stays on eslint 10.
+
 ## [1.0.3] - Unpublished
 
 ### Added

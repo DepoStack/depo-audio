@@ -51,6 +51,7 @@ const modelsSource = read('src-tauri/src/models.rs')
 const canonicalReleaseUrl = 'https://github.com/DepoStack/depo-audio/releases'
 const configuredReleaseUrl = appConstants.match(/^export const DEPOAUDIO_RELEASES_URL = ['"]([^'"]+)['"]$/m)?.[1]
 const installerReleaseUrl = installerLicense.match(/^(https:\/\/[^\s]+)\. DepoAudio's MIT license does\\par$/m)?.[1]
+const lockedTauriCliVersion = packageLock.packages?.['node_modules/@tauri-apps/cli']?.version
 const releaseFinalizeJob = releaseWorkflow.slice(releaseWorkflow.indexOf('\n  finalize:\n'))
 const releaseInspectionJob = publishReleaseWorkflow.slice(
   publishReleaseWorkflow.indexOf('\n  inspect:\n'),
@@ -62,21 +63,46 @@ const requiresPublicationReadyHeading = process.argv.includes('--publication-rea
 const candidateIsGo = releaseCandidate.includes('Status: **GO for publication**')
 const candidateIsNoGo = releaseCandidate.includes('Status: **NO-GO for publication; private RC evidence only**')
 
-const advisoryExceptionIds = [
-  'RUSTSEC-2025-0081',
-  'RUSTSEC-2025-0075',
-  'RUSTSEC-2025-0080',
-  'RUSTSEC-2025-0100',
-  'RUSTSEC-2025-0098',
-]
-for (const advisory of advisoryExceptionIds) {
-  expect(denyPolicy.includes(`"${advisory}"`), `deny.toml must explicitly scope advisory exception ${advisory}`)
+// The five rust-unic advisories (RUSTSEC-2025-0075, -0080, -0081, -0098,
+// -0100) entered only through urlpattern 0.3 -> tauri-utils 2.9. Tauri 2.12
+// moved tauri-utils to urlpattern 0.6, so the time-bounded exception that
+// expired on 2026-09-30 was deleted rather than renewed. Any future advisory
+// exception must be re-added deliberately with its own owner and expiry.
+const lockedPackageVersions = name =>
+  [...cargoLock.matchAll(/^\[\[package\]\]\s*\r?\nname = "([^"]+)"\s*\r?\nversion = "([^"]+)"/gm)]
+    .filter(match => match[1] === name)
+    .map(match => match[2])
+const atLeast = (actual, minimum) => {
+  const left = actual.split('.').map(Number)
+  const right = minimum.split('.').map(Number)
+  for (let index = 0; index < right.length; index += 1) {
+    if ((left[index] ?? 0) !== right[index]) return (left[index] ?? 0) > right[index]
+  }
+  return true
 }
+const denyAdvisorySection = (denyPolicy.match(/^\[advisories\]\s*\n([\s\S]*?)(?=^\[)/m)?.[1] ?? '')
+  .split('\n')
+  .filter(line => !line.trimStart().startsWith('#'))
+  .join('\n')
 expect(
-  denyPolicy.includes('Review/remove by: 2026-09-30') &&
-    denyPolicy.includes('Owner: Andrew Mayes') &&
-    Date.now() <= Date.parse('2026-09-30T23:59:59Z'),
-  'The rust-unic maintenance exception must have a current named owner and unexpired review date',
+  /^ignore = \[\]$/m.test(denyAdvisorySection) && !/RUSTSEC-\d{4}-\d{4}/.test(denyAdvisorySection),
+  'deny.toml must not carry advisory exceptions; the expired rust-unic exception must stay deleted',
+)
+expect(
+  !/^\[\[package\]\]\s*\r?\nname = "unic-/m.test(cargoLock),
+  'Cargo.lock must not resolve any unmaintained unic-* crate',
+)
+expect(
+  lockedPackageVersions('tauri').length === 1 && atLeast(lockedPackageVersions('tauri')[0], '2.12.5'),
+  'Cargo.lock must resolve exactly one Tauri at 2.12.5 or later',
+)
+expect(
+  lockedPackageVersions('urlpattern').every(locked => atLeast(locked, '0.6.0')),
+  'Cargo.lock must not resolve urlpattern older than 0.6',
+)
+expect(
+  /^ {2}schedule:\s*\n {4}- cron: '[0-9]{1,2} [0-9]{1,2} \* \* [0-6]'$/m.test(ciWorkflow),
+  'CI must also run weekly on a schedule so expiring exceptions and new advisories turn main red',
 )
 expect(
   ciWorkflow.includes('name: Enforce Rust advisory policy') && !ciWorkflow.includes('continue-on-error: true'),
@@ -613,7 +639,7 @@ expect(
   releaseWorkflow.includes('scripts/windows-webview2-evidence.ps1') &&
     releaseWorkflow.includes('WEBVIEW2-EVIDENCE-windows.json') &&
     releaseWorkflow.includes('WEBVIEW2-SIGNATURE-windows.txt') &&
-    webviewEvidence.includes("$tauriCliVersion -ne '2.11.4'") &&
+    webviewEvidence.includes(`$tauriCliVersion -ne '${lockedTauriCliVersion}'`) &&
     webviewEvidence.includes('Get-AuthenticodeSignature') &&
     webviewEvidence.includes('$wixHash -ne $nsisHash') &&
     webviewEvidence.includes('& $signToolPath verify /pa /v') &&
@@ -839,8 +865,11 @@ const releaseGateEvidenceBindings = {
     releaseWorkflow.includes('Remove Windows signing certificate before candidate execution') &&
     macPackagedSmoke.includes('EXPECT_PLATFORM_SIGNING'),
   'rust-advisory-exception-acceptance':
-    advisoryExceptionIds.every(advisory => denyPolicy.includes(`"${advisory}"`)) &&
-    releaseCandidate.includes('Confirm the release owner accepts the five exact INFO/unmaintained'),
+    ciWorkflow.includes('command: check advisories') &&
+    releaseCandidate.includes('was built before the Tauri 2.12 upgrade') &&
+    releaseGate.blockers
+      .find(blocker => blocker?.id === 'rust-advisory-exception-acceptance')
+      ?.evidenceNeeded?.some(item => item.includes('rebuild a new private candidate')),
   'codec-patent-review':
     thirdPartyInventory.includes('complete codec/patent review') &&
     thirdPartyInventory.includes('an open-source copyright license does not grant every patent'),

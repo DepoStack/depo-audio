@@ -4,6 +4,11 @@ on:
   pull_request:
   push:
     branches: [main]
+  # Weekly run on main so an expiring advisory exception, a new RustSec or npm
+  # advisory, or a date-bound release-contract check turns CI red within a
+  # week even when nobody pushes (platform plan 10.2; audit DA-04).
+  schedule:
+    - cron: '23 9 * * 1'
 
 concurrency:
   group: ci-${{ github.ref }}
@@ -75,13 +80,12 @@ jobs:
       # cargo-deny covers only Cargo-resolved packages. Native sidecars,
       # sidecars and installer payloads use the separate
       # release inventory in THIRD_PARTY_LICENSES.md.
-      # Five exact INFO/unmaintained findings have the named, expiring
-      # exception recorded in deny.toml and THIRD_PARTY_LICENSES.md. The job is
-      # blocking, so any advisory outside that reviewed set fails CI.
+      # deny.toml carries no advisory exceptions, so every RustSec finding for
+      # the release targets fails this blocking job.
       - name: Enforce Rust advisory policy
         uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1 (cargo-deny 0.20.2)
         with:
-          rust-version: '1.88.0'
+          rust-version: '1.90.0'
           manifest-path: src-tauri/Cargo.toml
           command: check advisories
           arguments: --locked --all-features
@@ -89,7 +93,7 @@ jobs:
       - name: Enforce Rust license, source, and dependency policy
         uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1 (cargo-deny 0.20.2)
         with:
-          rust-version: '1.88.0'
+          rust-version: '1.90.0'
           manifest-path: src-tauri/Cargo.toml
           command: check bans licenses sources
           arguments: --locked --all-features

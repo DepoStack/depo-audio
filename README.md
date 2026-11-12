@@ -129,7 +129,7 @@ and commercial-rights review remains a separate owner decision.
 
 ### Prerequisites
 
-- [Rust](https://rustup.rs/) 1.88+ · [Node.js](https://nodejs.org/) 22.12+ · [Tauri CLI](https://v2.tauri.app/start/prerequisites/) (`cargo install tauri-cli`)
+- [Rust](https://rustup.rs/) 1.90+ · [Node.js](https://nodejs.org/) 22.12+ · [Tauri CLI](https://v2.tauri.app/start/prerequisites/) (`cargo install tauri-cli`)
 - Windows builds also require Visual Studio 2022 Build Tools with the **Desktop development with C++** workload and a Windows SDK; Rust's MSVC target needs their `link.exe` and import libraries.
 
 ### FFmpeg sidecars

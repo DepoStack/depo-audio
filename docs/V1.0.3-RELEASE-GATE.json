@@ -119,8 +119,8 @@
       "version": "1.0.3",
       "reviewedDate": "2026-08-30",
       "evidenceNeeded": [
-        "Record release-owner acceptance of the five exact rust-unic INFO or unmaintained advisory exceptions in deny.toml.",
-        "Recheck that the exceptions have not expired and that no fixed Tauri release requiring their removal is available at publication time."
+        "Owner decision: the reviewed private candidate (source 2a9053117fc90e5b208b8e29c92646715285f8dc, Tauri 2.11.5) still contains the five rust-unic crates, whose deny.toml exception expired on 2026-09-30, and the RustSec advisories published since 2026-08-30 for its locked rustls 0.23.40, tokio 1.53.1 and zip 4.6.1 (through tauri-plugin-updater 2.10.1). main now resolves Tauri 2.12.5 with no advisory exception and passes cargo deny check advisories. Record either the decision to rebuild a new private candidate from that main commit (recommended), or written acceptance of each expired or new advisory for the existing candidate.",
+        "At publication time, rerun cargo deny check advisories against the exact candidate source commit and retain the result; any advisory without a recorded owner acceptance blocks publication."
       ]
     },
     {
