@@ -1,11 +1,20 @@
 name: Publish approved release
 
 # Publication is deliberately separate from the release build. This workflow
-# cannot build, replace, or delete release assets. It may publish only the exact
-# private draft bound to a fully closed machine-readable release gate.
-# Repository administrators must configure `release-publication` with required
-# reviewers and prevent self-review; repository YAML cannot enforce that
-# external environment policy.
+# cannot build, replace, or delete release assets, and it never creates or
+# moves a tag. It may publish only the exact private draft bound to a fully
+# closed machine-readable release gate.
+#
+# One person can complete it. Instead of a second required reviewer with
+# prevent-self-review, publication requires (docs/V1.0.3-RELEASE-CANDIDATE.md):
+# - the `release-publication` environment has a wait timer of at least 24 hours
+#   (1440 minutes) and deploys only from `main`, so a dispatched run can be
+#   cancelled before anything is written;
+# - an active tag ruleset restricts creation, update, and deletion of `v*` tags;
+# - the release owner has pushed a signed annotated tag at the exact candidate
+#   source commit, and GitHub reports its signature as verified.
+# Repository YAML cannot enforce those dashboard settings, so the publish job
+# reads them back and fails closed before any release write.
 on:
   workflow_dispatch:
     inputs:
@@ -135,14 +144,14 @@ jobs:
           jq -e '
             .name == "release-publication" and
             (.protection_rules | any(
-              .type == "required_reviewers" and
-              .prevent_self_review == true and
-              (.reviewers | length > 0)
+              .type == "wait_timer" and
+              (.wait_timer | type == "number") and
+              .wait_timer >= 1440
             )) and
             .deployment_branch_policy.protected_branches == false and
             .deployment_branch_policy.custom_branch_policies == true
           ' <<<"$environment" >/dev/null || {
-            echo 'ERROR: release-publication must require a reviewer, prevent self-review, and use custom branch policies'
+            echo 'ERROR: release-publication must carry a wait timer of at least 1440 minutes and use custom branch policies'
             exit 1
           }
           policies=$(curl \

@@ -481,7 +481,9 @@ expect(
     protectedPublicationJob.includes('release-contract-check.mjs --publication-ready') &&
     publicationReadyCalls.length === 1 &&
     protectedPublicationJob.includes('Verify publication environment protections') &&
-    protectedPublicationJob.includes('.prevent_self_review == true') &&
+    protectedPublicationJob.includes('.type == "wait_timer"') &&
+    protectedPublicationJob.includes('.wait_timer >= 1440') &&
+    !publishReleaseWorkflow.includes('.prevent_self_review == true') &&
     protectedPublicationJob.includes("--header 'X-GitHub-Api-Version: 2026-03-10'") &&
     protectedPublicationJob.includes('.deployment_branch_policy.custom_branch_policies == true') &&
     protectedPublicationJob.includes('.total_count == 1') &&
@@ -496,10 +498,15 @@ expect(
     !publishReleaseWorkflow.includes('--method DELETE') &&
     !publishReleaseWorkflow.includes('-X DELETE') &&
     publicationHelper.includes('verifyMinisignFile') &&
-    publicationHelper.includes('ensureTagAtCommit') &&
+    publicationHelper.includes('const MINIMUM_WAIT_TIMER_MINUTES = 1440') &&
+    publicationHelper.includes("const REQUIRED_TAG_RULES = ['creation', 'update', 'deletion']") &&
+    (publicationHelper.match(/await verifyReleaseProtections\(repo, candidate, token\)/g) ?? []).length === 3 &&
+    publicationHelper.includes('validateSignedReleaseTag(reference, annotated') &&
+    !publicationHelper.includes('/git/refs`') &&
+    releaseCandidate.includes('git tag -s v1.0.3') &&
     publicationHelper.includes('releaseAssetContract(final) !== finalAssetContract') &&
     packageJson.scripts['release:check'].includes('prepare-release-publication.mjs --self-test'),
-  'publication must use the protected, immutable, approval-bound, self-tested release workflow without deletion or replacement paths',
+  'publication must use the protected (wait timer, protected signed tag), immutable, approval-bound, self-tested release workflow without deletion, replacement, or tag-creation paths',
 )
 expect(
   releaseWorkflow.includes("NODE_VERSION: '22.23.1'") && releaseWorkflow.includes("RUST_VERSION: '1.98.0'"),

@@ -448,25 +448,144 @@ async function resolveTagCommit(repo, tag, token) {
   })
 }
 
-async function ensureTagAtCommit(repo, tag, commit, token) {
-  const existing = await resolveTagCommit(repo, tag, token)
-  if (existing !== null) {
-    if (existing !== commit) fail(`Existing release tag ${tag} does not resolve to the approved source commit`)
-    return
+// Publication is completable by one person. Instead of a second required
+// reviewer with prevent-self-review, three repository facts must hold before
+// any release write:
+// 1. the release-publication environment delays the job by a wait timer of at
+//    least 24 hours and deploys only from main;
+// 2. an active tag ruleset restricts creation, update, and deletion of the
+//    release tag, so only its bypass actors (the release owner) can create it
+//    and nobody can move or delete it afterwards; and
+// 3. the release owner has pushed a signed annotated tag at the exact source
+//    commit, and GitHub reports the signature as verified.
+// The helper never creates, moves, or deletes a tag.
+const MINIMUM_WAIT_TIMER_MINUTES = 1440
+const REQUIRED_TAG_RULES = ['creation', 'update', 'deletion']
+
+function validatePublicationEnvironment(environment, branchPolicies) {
+  if (environment?.name !== 'release-publication') fail('GitHub returned the wrong publication environment')
+  if (!Array.isArray(environment.protection_rules)) fail('Publication environment protection rules are unavailable')
+  const waitTimer = environment.protection_rules.find(rule => rule?.type === 'wait_timer')?.wait_timer
+  if (!Number.isInteger(waitTimer) || waitTimer < MINIMUM_WAIT_TIMER_MINUTES) {
+    fail(`release-publication must carry a wait timer of at least ${MINIMUM_WAIT_TIMER_MINUTES} minutes`)
   }
-  const response = await githubRequest(
-    `https://api.github.com/repos/${repo}/git/refs`,
+  const policy = environment.deployment_branch_policy
+  if (policy?.protected_branches !== false || policy?.custom_branch_policies !== true) {
+    fail('release-publication must use custom deployment branch policies')
+  }
+  const policies = branchPolicies?.branch_policies
+  if (
+    branchPolicies?.total_count !== 1 ||
+    !Array.isArray(policies) ||
+    policies.length !== 1 ||
+    policies[0]?.name !== 'main' ||
+    (policies[0]?.type !== undefined && policies[0].type !== 'branch')
+  ) {
+    fail('release-publication must allow exactly the main branch')
+  }
+  return waitTimer
+}
+
+// GitHub ruleset ref patterns use fnmatch-style wildcards. This accepts the
+// subset a release owner needs (exact names, *, **, ?, and ~ALL) and treats
+// anything else, such as bracket classes, as a non-match so the check fails
+// closed rather than guessing.
+function refPatternMatches(pattern, ref) {
+  if (pattern === '~ALL') return true
+  if (typeof pattern !== 'string' || /[[\]{}\\]/.test(pattern)) return false
+  let expression = '^'
+  for (let index = 0; index < pattern.length; index += 1) {
+    const character = pattern[index]
+    if (character === '*' && pattern[index + 1] === '*') {
+      expression += '.*'
+      index += 1
+    } else if (character === '*') expression += '[^/]*'
+    else if (character === '?') expression += '[^/]'
+    else expression += character.replace(/[.+^$()|]/g, '\\$&')
+  }
+  return new RegExp(`${expression}$`).test(ref)
+}
+
+function validateReleaseTagProtection(rulesets, tag) {
+  if (!Array.isArray(rulesets)) fail('Repository rulesets are unavailable')
+  const ref = `refs/tags/${tag}`
+  const covered = new Set()
+  for (const ruleset of rulesets) {
+    const include = ruleset?.conditions?.ref_name?.include
+    const exclude = ruleset?.conditions?.ref_name?.exclude ?? []
+    if (ruleset?.target !== 'tag' || ruleset?.enforcement !== 'active' || !Array.isArray(include)) continue
+    if (!Array.isArray(exclude)) continue
+    if (!include.some(pattern => refPatternMatches(pattern, ref))) continue
+    if (exclude.some(pattern => pattern === '~ALL' || refPatternMatches(pattern, ref))) continue
+    for (const rule of Array.isArray(ruleset.rules) ? ruleset.rules : []) covered.add(rule?.type)
+  }
+  const missing = REQUIRED_TAG_RULES.filter(type => !covered.has(type))
+  if (missing.length > 0) {
+    fail(`An active tag ruleset must restrict ${missing.join(', ')} for ${ref}`)
+  }
+}
+
+function validateSignedReleaseTag(reference, annotated, { tag, commit }) {
+  if (reference?.ref !== `refs/tags/${tag}`) fail(`Release tag ${tag} does not exist; push the signed tag first`)
+  if (reference.object?.type !== 'tag' || !/^[0-9a-f]{40}$/.test(reference.object?.sha ?? '')) {
+    fail(`Release tag ${tag} must be an annotated, signed tag, not a lightweight tag`)
+  }
+  if (annotated?.sha !== reference.object.sha || annotated?.tag !== tag) {
+    fail(`GitHub returned the wrong tag object for ${tag}`)
+  }
+  if (annotated.object?.type !== 'commit' || annotated.object?.sha !== commit) {
+    fail(`Release tag ${tag} must point directly at the approved source commit`)
+  }
+  const verification = annotated.verification
+  if (
+    verification?.verified !== true ||
+    typeof verification.signature !== 'string' ||
+    verification.signature.trim().length === 0
+  ) {
+    fail(`GitHub does not report a verified signature on release tag ${tag} (${verification?.reason ?? 'unknown'})`)
+  }
+}
+
+async function verifyReleaseProtections(repo, candidate, token) {
+  const environmentUrl = `https://api.github.com/repos/${repo}/environments/release-publication`
+  const environment = await (await githubRequest(environmentUrl, token)).json()
+  const branchPolicies = await (
+    await githubRequest(`${environmentUrl}/deployment-branch-policies?per_page=100`, token)
+  ).json()
+  const waitTimer = validatePublicationEnvironment(environment, branchPolicies)
+
+  const summaries = await (
+    await githubRequest(`https://api.github.com/repos/${repo}/rulesets?includes_parents=true&per_page=100`, token)
+  ).json()
+  if (!Array.isArray(summaries)) fail('Repository rulesets are unavailable')
+  const rulesets = []
+  for (const summary of summaries) {
+    if (!Number.isSafeInteger(summary?.id)) fail('GitHub returned an invalid ruleset ID')
+    const detail = await githubRequest(
+      `https://api.github.com/repos/${repo}/rulesets/${summary.id}?includes_parents=true`,
+      token,
+    )
+    rulesets.push(await detail.json())
+  }
+  validateReleaseTagProtection(rulesets, candidate.tag)
+
+  const referenceResponse = await githubRequest(
+    `https://api.github.com/repos/${repo}/git/ref/tags/${encodeURIComponent(candidate.tag)}`,
     token,
-    {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ ref: `refs/tags/${tag}`, sha: commit }),
-    },
-    [422],
+    {},
+    [404],
   )
-  if (response.status !== 201 && response.status !== 422) fail('GitHub did not create the approved release tag')
-  const resolved = await resolveTagCommit(repo, tag, token)
-  if (resolved !== commit) fail(`Release tag ${tag} does not resolve to the approved source commit`)
+  const reference = referenceResponse.status === 404 ? null : await referenceResponse.json()
+  const annotated =
+    reference?.object?.type === 'tag' && /^[0-9a-f]{40}$/.test(reference.object.sha ?? '')
+      ? await (
+          await githubRequest(`https://api.github.com/repos/${repo}/git/tags/${reference.object.sha}`, token)
+        ).json()
+      : null
+  validateSignedReleaseTag(reference, annotated, { tag: candidate.tag, commit: candidate.sourceCommit })
+  process.stdout.write(
+    `Verified release protections: ${waitTimer}-minute wait timer, protected tag ruleset, signed ${candidate.tag} at ${candidate.sourceCommit}\n`,
+  )
 }
 
 function releaseAssetContract(release) {
@@ -584,6 +703,7 @@ function validateApprovalReceipt(receipt, { gate, candidate, approval, notes, ma
 
 async function prepare({ repo, outputDir }, gate, candidate, token, approval) {
   await mkdir(outputDir, { recursive: false })
+  await verifyReleaseProtections(repo, candidate, token)
   const release = await getRelease(repo, candidate.releaseId, token)
   validateRelease(release, candidate, { allowPublicationAssets: true })
   const notes = extractReleaseNotes(await readFile(CHANGELOG_PATH, 'utf8'), gate.version, candidate.publicationDate)
@@ -707,6 +827,7 @@ async function verifyPublicationFiles(outputDir, gate, candidate, approval) {
 }
 
 async function publish({ repo, outputDir }, gate, candidate, token, approval) {
+  await verifyReleaseProtections(repo, candidate, token)
   const publicationFiles = await verifyPublicationFiles(outputDir, gate, candidate, approval)
   const publicationNames = new Set(publicationFiles.map(file => file.name))
   const release = await getRelease(repo, candidate.releaseId, token)
@@ -758,16 +879,15 @@ async function publish({ repo, outputDir }, gate, candidate, token, approval) {
     }
   }
 
-  const tagBeforePublication = await resolveTagCommit(repo, candidate.tag, token)
-  if (tagBeforePublication !== null && tagBeforePublication !== candidate.sourceCommit) {
-    fail(`Existing release tag ${candidate.tag} does not resolve to the approved source commit`)
+  if ((await resolveTagCommit(repo, candidate.tag, token)) !== candidate.sourceCommit) {
+    fail(`Release tag ${candidate.tag} does not resolve to the approved source commit`)
   }
 
-  // Re-fetch immediately before the bounded publication mutations. A missing
-  // tag is first created at the approved source commit, then the exact release
-  // ID is published. GitHub documents conditional GETs, but not an If-Match
-  // precondition for release updates, so these metadata comparisons avoid
-  // depending on an unsupported header.
+  // Re-fetch immediately before the bounded publication mutation. The signed
+  // tag was created by the release owner and verified above; this helper only
+  // re-verifies it and then publishes the exact release ID. GitHub documents
+  // conditional GETs, but not an If-Match precondition for release updates, so
+  // these metadata comparisons avoid depending on an unsupported header.
   const immediatelyBeforePublish = await getRelease(repo, candidate.releaseId, token)
   validateRelease(immediatelyBeforePublish, candidate, { allowPublicationAssets: true })
   if (
@@ -780,18 +900,18 @@ async function publish({ repo, outputDir }, gate, candidate, token, approval) {
   }
 
   const approvedName = `DepoAudio ${candidate.tag}`
-  await ensureTagAtCommit(repo, candidate.tag, candidate.sourceCommit, token)
-  const releaseAfterTagCreation = await getRelease(repo, candidate.releaseId, token)
-  validateRelease(releaseAfterTagCreation, candidate, { allowPublicationAssets: true })
+  await verifyReleaseProtections(repo, candidate, token)
+  const releaseAfterTagCheck = await getRelease(repo, candidate.releaseId, token)
+  validateRelease(releaseAfterTagCheck, candidate, { allowPublicationAssets: true })
   if (
-    releaseAfterTagCreation.body !== immediatelyBeforePublish.body ||
-    releaseAfterTagCreation.name !== immediatelyBeforePublish.name ||
-    releaseAfterTagCreation.updated_at !== immediatelyBeforePublish.updated_at ||
-    releaseAssetContract(releaseAfterTagCreation) !== releaseAssetContract(immediatelyBeforePublish)
+    releaseAfterTagCheck.body !== immediatelyBeforePublish.body ||
+    releaseAfterTagCheck.name !== immediatelyBeforePublish.name ||
+    releaseAfterTagCheck.updated_at !== immediatelyBeforePublish.updated_at ||
+    releaseAssetContract(releaseAfterTagCheck) !== releaseAssetContract(immediatelyBeforePublish)
   ) {
-    fail('The private draft changed while binding the approved release tag')
+    fail('The private draft changed while re-verifying the signed release tag')
   }
-  const finalAssetContract = releaseAssetContract(releaseAfterTagCreation)
+  const finalAssetContract = releaseAssetContract(releaseAfterTagCheck)
   const response = await githubRequest(`https://api.github.com/repos/${repo}/releases/${candidate.releaseId}`, token, {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
@@ -1032,6 +1152,201 @@ async function selfTest() {
     object: { type: 'commit', sha: candidate.sourceCommit },
   }))
   if (peeled !== candidate.sourceCommit) fail('Annotated release tag did not peel to the source commit')
+
+  // One-person release protections: a wait timer on the environment, a
+  // protected tag ruleset, and a GitHub-verified signed annotated tag at the
+  // exact source commit. A second reviewer is not required.
+  const environment = {
+    name: 'release-publication',
+    protection_rules: [{ id: 1, node_id: 'n1', type: 'wait_timer', wait_timer: 1440 }],
+    deployment_branch_policy: { protected_branches: false, custom_branch_policies: true },
+  }
+  const branchPolicies = { total_count: 1, branch_policies: [{ id: 2, name: 'main', type: 'branch' }] }
+  validatePublicationEnvironment(environment, branchPolicies)
+  validatePublicationEnvironment(
+    {
+      ...environment,
+      protection_rules: [
+        ...environment.protection_rules,
+        { id: 3, node_id: 'n3', type: 'required_reviewers', prevent_self_review: false, reviewers: [] },
+      ],
+    },
+    branchPolicies,
+  )
+  const tagRuleset = {
+    id: 9,
+    target: 'tag',
+    enforcement: 'active',
+    conditions: { ref_name: { include: ['refs/tags/v*'], exclude: [] } },
+    rules: [{ type: 'creation' }, { type: 'update' }, { type: 'deletion' }],
+  }
+  validateReleaseTagProtection([tagRuleset], candidate.tag)
+  validateReleaseTagProtection(
+    [
+      { ...tagRuleset, id: 10, rules: [{ type: 'creation' }, { type: 'deletion' }] },
+      {
+        ...tagRuleset,
+        id: 11,
+        conditions: { ref_name: { include: ['~ALL'], exclude: [] } },
+        rules: [{ type: 'update' }],
+      },
+    ],
+    candidate.tag,
+  )
+  const tagObjectSha = '7'.repeat(40)
+  const tagReference = { ref: `refs/tags/${candidate.tag}`, object: { type: 'tag', sha: tagObjectSha } }
+  const signedTag = {
+    sha: tagObjectSha,
+    tag: candidate.tag,
+    object: { type: 'commit', sha: candidate.sourceCommit },
+    verification: {
+      verified: true,
+      reason: 'valid',
+      signature: '-----BEGIN SSH SIGNATURE-----\nx\n-----END SSH SIGNATURE-----',
+      payload: 'object ...',
+      verified_at: '2026-11-12T00:00:00Z',
+    },
+  }
+  validateSignedReleaseTag(tagReference, signedTag, { tag: candidate.tag, commit: candidate.sourceCommit })
+  const rejectedProtection = []
+  for (const [label, operation] of [
+    [
+      'missing wait timer',
+      () => validatePublicationEnvironment({ ...environment, protection_rules: [] }, branchPolicies),
+    ],
+    [
+      'short wait timer',
+      () =>
+        validatePublicationEnvironment(
+          { ...environment, protection_rules: [{ id: 1, node_id: 'n1', type: 'wait_timer', wait_timer: 60 }] },
+          branchPolicies,
+        ),
+    ],
+    ['wrong environment', () => validatePublicationEnvironment({ ...environment, name: 'Production' }, branchPolicies)],
+    [
+      'all-branch deployment',
+      () => validatePublicationEnvironment({ ...environment, deployment_branch_policy: null }, branchPolicies),
+    ],
+    [
+      'extra deployment branch',
+      () =>
+        validatePublicationEnvironment(environment, {
+          total_count: 2,
+          branch_policies: [...branchPolicies.branch_policies, { id: 3, name: 'release/*', type: 'branch' }],
+        }),
+    ],
+    [
+      'tag deployment policy',
+      () =>
+        validatePublicationEnvironment(environment, {
+          total_count: 1,
+          branch_policies: [{ id: 2, name: 'main', type: 'tag' }],
+        }),
+    ],
+    ['no tag ruleset', () => validateReleaseTagProtection([], candidate.tag)],
+    [
+      'disabled tag ruleset',
+      () => validateReleaseTagProtection([{ ...tagRuleset, enforcement: 'disabled' }], candidate.tag),
+    ],
+    ['branch ruleset only', () => validateReleaseTagProtection([{ ...tagRuleset, target: 'branch' }], candidate.tag)],
+    [
+      'ruleset excludes the tag',
+      () =>
+        validateReleaseTagProtection(
+          [{ ...tagRuleset, conditions: { ref_name: { include: ['refs/tags/v*'], exclude: ['refs/tags/v1.*'] } } }],
+          candidate.tag,
+        ),
+    ],
+    [
+      'ruleset for other tags',
+      () =>
+        validateReleaseTagProtection(
+          [{ ...tagRuleset, conditions: { ref_name: { include: ['refs/tags/models-*'], exclude: [] } } }],
+          candidate.tag,
+        ),
+    ],
+    [
+      'tag can be moved',
+      () =>
+        validateReleaseTagProtection(
+          [{ ...tagRuleset, rules: [{ type: 'creation' }, { type: 'deletion' }] }],
+          candidate.tag,
+        ),
+    ],
+    [
+      'lightweight tag',
+      () =>
+        validateSignedReleaseTag(
+          { ...tagReference, object: { type: 'commit', sha: candidate.sourceCommit } },
+          signedTag,
+          { tag: candidate.tag, commit: candidate.sourceCommit },
+        ),
+    ],
+    [
+      'unsigned tag',
+      () =>
+        validateSignedReleaseTag(
+          tagReference,
+          { ...signedTag, verification: { verified: false, reason: 'unsigned', signature: null, payload: null } },
+          { tag: candidate.tag, commit: candidate.sourceCommit },
+        ),
+    ],
+    [
+      'unverified signature',
+      () =>
+        validateSignedReleaseTag(
+          tagReference,
+          { ...signedTag, verification: { ...signedTag.verification, verified: false, reason: 'unknown_key' } },
+          { tag: candidate.tag, commit: candidate.sourceCommit },
+        ),
+    ],
+    [
+      'tag at another commit',
+      () => validateSignedReleaseTag(tagReference, signedTag, { tag: candidate.tag, commit: 'e'.repeat(40) }),
+    ],
+    [
+      'nested tag object',
+      () =>
+        validateSignedReleaseTag(
+          tagReference,
+          { ...signedTag, object: { type: 'tag', sha: '8'.repeat(40) } },
+          { tag: candidate.tag, commit: candidate.sourceCommit },
+        ),
+    ],
+    [
+      'renamed tag object',
+      () =>
+        validateSignedReleaseTag(
+          tagReference,
+          { ...signedTag, tag: 'v1.0.4' },
+          {
+            tag: candidate.tag,
+            commit: candidate.sourceCommit,
+          },
+        ),
+    ],
+  ]) {
+    try {
+      operation()
+    } catch {
+      continue
+    }
+    rejectedProtection.push(label)
+  }
+  if (rejectedProtection.length > 0) fail(`Publication self-test accepted ${rejectedProtection.join(', ')}`)
+  const ruleRefs = [
+    ['refs/tags/v*', 'refs/tags/v1.0.3', true],
+    ['refs/tags/v*', 'refs/tags/release/v1.0.3', false],
+    ['refs/tags/**', 'refs/tags/release/v1.0.3', true],
+    ['refs/tags/v?.0.3', 'refs/tags/v1.0.3', true],
+    ['refs/tags/v1.0.3', 'refs/tags/v1.0.3', true],
+    ['refs/tags/v1.0.[0-9]', 'refs/tags/v1.0.3', false],
+    ['~ALL', 'refs/tags/v1.0.3', true],
+  ]
+  for (const [pattern, ref, expected] of ruleRefs) {
+    if (refPatternMatches(pattern, ref) !== expected) fail(`Ruleset pattern ${pattern} matched ${ref} incorrectly`)
+  }
+  if (publish.toString().includes("method: 'POST'")) fail('Publication must never create the release tag')
   process.stdout.write('Release publication self-test passed\n')
 }
 

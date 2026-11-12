@@ -9,6 +9,7 @@ These changes are on `main` but not in the existing private v1.0.3 candidate, wh
 - **Tauri moves to 2.12.** The Rust crates lock Tauri 2.12.5 (`tauri-utils` 2.10.2, `urlpattern` 0.6.0) and the JavaScript packages use `@tauri-apps/api` and `@tauri-apps/cli` 2.12.4. The minimum Rust version is now 1.90, which Tauri 2.12 requires. The WebView2 evidence script now expects CLI 2.12.4; its download paths were rechecked against tauri-bundler 2.10.4 and are unchanged.
 - **The updater plugin moves to 2.14.1** (Rust crate and JavaScript package). The updater stays dormant unless a release carries a verified updater configuration.
 - **CI also runs weekly on a schedule**, so an expiring exception or a new advisory turns `main` red without waiting for a push.
+- **One person can complete a release.** The publish workflow no longer requires a second environment reviewer with self-review prevented. It now requires a wait timer of at least 24 hours on `release-publication` (deploying only from `main`), an active tag ruleset that restricts creating, moving and deleting `v*` tags, and a signed annotated release tag at the exact source commit that GitHub reports as verified. The publication helper verifies all three before any release write and no longer creates the tag itself.
 
 ### Security
 
