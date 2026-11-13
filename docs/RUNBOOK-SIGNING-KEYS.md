@@ -60,9 +60,17 @@ release only needs rotating: no user has to do anything.
   different key. Generate a new keypair with offline backups and ship the next
   version with the new public key. Users must download and install that
   version by hand once. Say so in its release notes and on the site.
-- **Apple or Windows certificate lost:** revoke it so it cannot be misused if it
-  turns up, then get a new one. Existing timestamped signatures stay valid.
-  Users need do nothing.
+- **Windows certificate lost:** ask the certificate authority to revoke it,
+  with a revocation date later than the signing time of every published
+  release, so it cannot be misused if it turns up. Then get a new one. Releases timestamped before
+  that date stay trusted, so people who installed them need do nothing.
+- **Apple certificate lost:** do not revoke it straight away. As in the
+  compromise steps above, first ask Apple how revoking it affects copies
+  already notarized and in use: revoking a Developer ID certificate can stop
+  macOS from opening apps signed with it. Then decide whether to revoke and get
+  a new one. Until Apple has answered, do not tell users that they need do
+  nothing; if a revocation would affect installed copies, tell them to install
+  the next release signed with the new certificate.
 
 ## Prevention
 
