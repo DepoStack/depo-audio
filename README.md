@@ -171,6 +171,7 @@ npm run build
 npm run size:check
 cargo test --locked --manifest-path src-tauri/Cargo.toml
 cargo deny --manifest-path src-tauri/Cargo.toml --locked --all-features check bans licenses sources
+gitleaks git --no-banner --redact --exit-code 1 --log-opts=--all .   # skipped by ci:local if not installed
 ```
 
 The deterministic size check protects the emitted desktop frontend from accidental JavaScript or CSS growth. Rust
@@ -238,6 +239,8 @@ Without platform-signing credentials, private candidates contain an ad-hoc-signe
 2. **Add updater secrets**: `TAURI_SIGNING_PRIVATE_KEY`, `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` if set, and `TAURI_UPDATER_PUBLIC_KEY`. The workflow injects the public key and canonical DepoStack update endpoint into release builds only.
 3. **Add macOS secrets**: `APPLE_CERTIFICATE`, `APPLE_CERTIFICATE_PASSWORD`, `APPLE_SIGNING_IDENTITY`, `APPLE_ID`, `APPLE_PASSWORD`, and `APPLE_TEAM_ID`.
 4. **Add Windows secrets**: `WINDOWS_CERTIFICATE` (the PFX encoded as base64), `WINDOWS_CERTIFICATE_PASSWORD`, and `WINDOWS_CERTIFICATE_THUMBPRINT`.
+
+If a key is lost or may be compromised, follow [`docs/RUNBOOK-SIGNING-KEYS.md`](docs/RUNBOOK-SIGNING-KEYS.md). To pull or replace a published release, follow [`docs/RUNBOOK-BAD-RELEASE.md`](docs/RUNBOOK-BAD-RELEASE.md).
 
 The private-candidate workflow scopes signing credentials to packaging, removes the imported Windows private key before executing candidate binaries, and uploads generated signatures through the verified draft helper. It deliberately does not generate or publish `latest.json`, and it never publishes the draft. The manual [`publish-release.yml`](.github/workflows/publish-release.yml) workflow first supports a read-only manifest inspection, then permits publication only from a protected `release-publication` environment after the committed gate binds the exact draft, assets, source and approval commits, updater decision, and current UTC release date. It never rebuilds, deletes, or replaces an installer, and it never creates or moves a tag. One person can complete a release: instead of a second reviewer, the workflow requires a wait timer of at least 24 hours on `release-publication` that administrators cannot bypass (deploying only from `main`), an active tag ruleset that restricts creating, moving, and deleting `v*` tags, and a signed annotated release tag at the exact source commit that GitHub reports as verified and whose tagger is the release owner email recorded in the gate. Those are dashboard settings the release owner makes by hand; the workflow reads them back and fails before any release write. Who is on the tag ruleset's bypass list is the one setting the workflow cannot fully check. Follow the exact [candidate-to-publication runbook](docs/V1.0.3-RELEASE-CANDIDATE.md#exact-candidate-to-publication-sequence).
 

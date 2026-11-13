@@ -112,6 +112,28 @@ expect(
   ciWorkflow.includes('name: Enforce Rust advisory policy') && !ciWorkflow.includes('continue-on-error: true'),
   'Rust advisory policy must block CI outside the exact deny.toml exceptions',
 )
+// DA-13: secret scanning runs on pull requests, pushes to main and the
+// weekly run. The repository is public, so a committed credential is a
+// published credential.
+// Every action stays pinned to a full commit SHA, and the gitleaks binary is
+// built from a module version whose hash the Go checksum database fixes.
+const ciActionRefs = [...ciWorkflow.matchAll(/^\s*-?\s*uses:\s*(\S+)/gm)].map(match => match[1])
+expect(
+  ciActionRefs.length > 0 && ciActionRefs.every(ref => /^[\w.-]+\/[\w./-]+@[0-9a-f]{40}$/.test(ref)),
+  'every action in ci.yml must be pinned to a full commit SHA',
+)
+const secretScanJob = ciWorkflow.match(/^ {2}secret-scan:\n[\s\S]*?(?=^ {2}[\w-]+:\n|(?![\s\S]))/m)?.[0] ?? ''
+expect(
+  secretScanJob.includes('fetch-depth: 0') &&
+    secretScanJob.includes('persist-credentials: false') &&
+    /uses: actions\/setup-go@[0-9a-f]{40} /.test(secretScanJob) &&
+    secretScanJob.includes('GOTOOLCHAIN: local') &&
+    secretScanJob.includes('go install github.com/zricethezav/gitleaks/v8@v8.30.1') &&
+    secretScanJob.includes('h1:PmEvCfVI7ti9dV3s5aMZUY7sS2GxRvG3yzih7E+cS3w=') &&
+    /gitleaks" git --no-banner --redact --exit-code 1 --log-opts=--all/.test(secretScanJob) &&
+    !ciWorkflow.includes('gitleaks/gitleaks-action'),
+  'ci.yml must scan the full git history with the pinned, hash-checked gitleaks v8.30.1 binary',
+)
 
 const version = packageJson.version
 const escapedVersion = version.replaceAll('.', '\\.')

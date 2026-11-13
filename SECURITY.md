@@ -36,3 +36,17 @@ enables:
   updater metadata keep this path dormant.
 - **FFmpeg sidecars** — bundled locally; conversion does not download them or
   send recording data over the network.
+
+## Incident runbooks
+
+- [A bad release](docs/RUNBOOK-BAD-RELEASE.md): how to stop new downloads of a
+  published build, warn people, and replace it with a new version without
+  changing any published asset.
+- [A lost or compromised signing or updater key](docs/RUNBOOK-SIGNING-KEYS.md):
+  how to stop signing, check for misuse, and revoke or rotate the updater key,
+  Apple and Windows certificates, and GitHub access.
+
+CI runs gitleaks over the full git history on pull requests, pushes to
+`main` and the weekly run (`secret-scan` in `.github/workflows/ci.yml`). A
+secret that reaches this public repository counts as compromised, even if the
+commit is removed later.

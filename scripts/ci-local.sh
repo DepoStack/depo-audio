@@ -11,7 +11,8 @@
 #   5. cargo-deny advisories, then bans/licenses/sources (cargo-deny required)
 #   6. cargo clippy -D warnings, cargo fmt --check, cargo test (Tauri system
 #      libraries and an ffmpeg/ffprobe on PATH required)
-#   7. gitleaks (skipped with a message if not installed; not yet in hosted CI)
+#   7. gitleaks over the full local history, as the hosted secret-scan job
+#      does (skipped with a message if not installed; CI builds v8.30.1)
 #   8. evidence file .ci-evidence/<time>-<commit>.json (git-ignored)
 # Needs no secret. Network: the npm registry, crates.io and the RustSec
 # advisory database. The release workflows are not run here.
@@ -112,7 +113,7 @@ step rustfmt cargo fmt --manifest-path src-tauri/Cargo.toml --all -- --check
 step cargo-test cargo test --locked --manifest-path src-tauri/Cargo.toml
 
 if command -v gitleaks >/dev/null; then
-  step gitleaks gitleaks detect --no-banner --redact
+  step gitleaks gitleaks git --no-banner --redact --exit-code 1 --log-opts=--all .
 else
   skip gitleaks 'not installed'
 fi

@@ -76,6 +76,41 @@ jobs:
       - name: Desktop bundle size budget
         run: npm run size:check
 
+  # DA-13: this repository is public, so a committed credential is a
+  # published one. Scan the whole history on pull requests, pushes to main
+  # and the weekly run. The gitleaks GitHub Action is not used: it is under
+  # a proprietary licence and needs a licence-key secret for organisation
+  # repositories. The MIT gitleaks binary is built instead from a module
+  # version whose hash the Go checksum database fixes, and the step checks
+  # that hash again. Findings are printed redacted.
+  secret-scan:
+    name: Secret scan (gitleaks)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: '1.24.11'
+          cache: false
+
+      - name: Install gitleaks v8.30.1
+        env:
+          GOTOOLCHAIN: local
+          GOFLAGS: -mod=readonly
+        run: |
+          go install github.com/zricethezav/gitleaks/v8@v8.30.1
+          go version -m "$(go env GOPATH)/bin/gitleaks" | grep -F 'h1:PmEvCfVI7ti9dV3s5aMZUY7sS2GxRvG3yzih7E+cS3w=' || {
+            echo '::error::the installed gitleaks module hash does not match the reviewed v8.30.1 hash'
+            exit 1
+          }
+
+      - name: Scan the full git history for secrets
+        run: '"$(go env GOPATH)/bin/gitleaks" git --no-banner --redact --exit-code 1 --log-opts=--all .'
+
   rust-dependency-policy:
     name: Rust dependency policy
     runs-on: ubuntu-latest
