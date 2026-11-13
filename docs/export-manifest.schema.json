@@ -79,7 +79,7 @@
         "sourceSampleRate": { "type": ["integer", "null"], "minimum": 1 },
         "secondsSinceMidnight": { "type": ["number", "null"], "minimum": 0 },
         "outputTimeReferenceSamples": { "type": ["integer", "null"], "minimum": 0, "description": "The same start, rescaled to output.sampleRate. Null when the output start differs from the source start (leading-silence trim) or the start is unknown." },
-        "writtenToOutput": { "type": "boolean", "description": "True when the output WAV carries outputTimeReferenceSamples in its own bext chunk." },
+        "writtenToOutput": { "type": "boolean", "description": "True when the output WAV carries outputTimeReferenceSamples in its own bext chunk. When false, the output carries no time_reference at all and this record is the only place the start is kept." },
         "note": { "type": "string" }
       }
     }

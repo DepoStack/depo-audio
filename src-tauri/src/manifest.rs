@@ -60,7 +60,9 @@ fn hex(bytes: &[u8]) -> String {
 
 /// The source's start as a BWF `bext` TimeReference: samples since midnight
 /// at the source sample rate. FFmpeg's WAV demuxer exposes it as the format
-/// tag `time_reference` (checked with FFmpeg 6.1.1, see CHANGELOG).
+/// tag `time_reference` (checked with FFmpeg 6.1.1, see CHANGELOG). Only the
+/// WAV demuxer reads a bext chunk (it also serves RF64 and BW64 files under
+/// the same `wav` format name).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct SourceTiming {
     pub time_reference_samples: u64,
@@ -92,7 +94,12 @@ pub(crate) fn parse_probe(probe: &serde_json::Value) -> ProbedSource {
         .as_str()
         .and_then(|rate| rate.trim().parse::<u32>().ok())
         .filter(|rate| *rate > 0);
+    // A `time_reference` tag in any other container (FLAC, MP3, Ogg, MP4) is
+    // a plain tag, not a bext chunk: FFmpeg copies the tag from a WAV input
+    // into those outputs without rescaling it, so it is not a trusted start.
+    let from_wav = probe["format"]["format_name"].as_str() == Some("wav");
     let time_reference = tag(&probe["format"]["tags"], "time_reference")
+        .filter(|_| from_wav)
         .map(str::trim)
         .filter(|value| !value.is_empty() && value.bytes().all(|byte| byte.is_ascii_digit()))
         .and_then(|value| value.parse::<u64>().ok());
@@ -148,6 +155,25 @@ pub(crate) fn bext_args(
             format!("time_reference={}", rescale_time_reference(timing, rate)),
         ],
         _ => Vec::new(),
+    }
+}
+
+/// The start-time arguments for one output. A WAV output with a known,
+/// unshifted start gets its own bext chunk (`bext_args`). Every other output
+/// gets `-metadata time_reference=`, which deletes the tag: FFmpeg would
+/// otherwise copy the source's `time_reference` into FLAC, MP3 and Opus
+/// outputs unrescaled, and the output would contradict its export record.
+pub(crate) fn start_time_metadata_args(
+    format: &str,
+    timing: Option<SourceTiming>,
+    output_rate: Option<u32>,
+    shifted: bool,
+) -> Vec<String> {
+    let bext = bext_args(format, timing, output_rate, shifted);
+    if bext.is_empty() {
+        vec!["-metadata".into(), "time_reference=".into()]
+    } else {
+        bext
     }
 }
 
@@ -268,11 +294,11 @@ pub(crate) fn start_time_record(
     };
     let written = !bext_args(format, Some(timing), output_rate, shifted).is_empty();
     let note = if shifted {
-        "Leading-silence trim removed audio from the start, so the output starts later than the source by an unrecorded amount. The source start is kept for reference only."
+        "Leading-silence trim removed audio from the start, so the output starts later than the source by an unrecorded amount. The output carries no start time; the source start is kept here for reference only."
     } else if written {
         "The output WAV carries the same start in its own bext chunk, rescaled to the output sample rate."
     } else {
-        "The output starts at the source start. This format has no bext chunk, so the start is recorded here only."
+        "The output starts at the source start. This format has no bext chunk, and DepoAudio removes the copied time_reference tag from it, so the start is recorded here only."
     };
     StartTimeRecord {
         known: true,
@@ -409,7 +435,7 @@ mod tests {
     fn probe(tags: serde_json::Value, rate: &str, channels: u64) -> serde_json::Value {
         serde_json::json!({
             "streams": [{ "sample_rate": rate, "channels": channels }],
-            "format": { "tags": tags }
+            "format": { "format_name": "wav", "tags": tags }
         })
     }
 
@@ -495,6 +521,63 @@ mod tests {
         // A time reference without a sample rate cannot be converted to time.
         let no_rate = serde_json::json!({ "streams": [{}], "format": { "tags": { "time_reference": "10" } } });
         assert_eq!(parse_probe(&no_rate).timing, None);
+    }
+
+    #[test]
+    fn probe_reads_time_reference_only_from_a_wav_container() {
+        // FLAC, MP3 and Ogg have no bext chunk. A plain `time_reference` tag
+        // there (for example one copied by an older conversion, not
+        // rescaled) is not a BWF start and must not be trusted.
+        for format_name in ["flac", "mp3", "ogg", "mov,mp4,m4a,3gp,3g2,mj2", "w64", ""] {
+            let tagged = serde_json::json!({
+                "streams": [{ "sample_rate": "48000", "channels": 1 }],
+                "format": { "format_name": format_name, "tags": { "time_reference": "158760000" } }
+            });
+            assert_eq!(parse_probe(&tagged).timing, None, "{format_name}");
+        }
+        let unnamed = serde_json::json!({
+            "streams": [{ "sample_rate": "48000", "channels": 1 }],
+            "format": { "tags": { "time_reference": "158760000" } }
+        });
+        assert_eq!(parse_probe(&unnamed).timing, None);
+        let wav = serde_json::json!({
+            "streams": [{ "sample_rate": "48000", "channels": 1 }],
+            "format": { "format_name": "wav", "tags": { "time_reference": "158760000" } }
+        });
+        assert!(parse_probe(&wav).timing.is_some());
+    }
+
+    #[test]
+    fn every_output_without_a_bext_chunk_drops_the_copied_time_reference() {
+        let timing = Some(SourceTiming {
+            time_reference_samples: 48_000,
+            sample_rate: 48_000,
+        });
+        let clear = vec!["-metadata".to_string(), "time_reference=".to_string()];
+        assert_eq!(
+            start_time_metadata_args("wav", timing, Some(16_000), false),
+            bext_args("wav", timing, Some(16_000), false)
+        );
+        for format in ["flac", "mp3", "opus", "m4a"] {
+            assert_eq!(
+                start_time_metadata_args(format, timing, Some(48_000), false),
+                clear,
+                "{format}"
+            );
+            assert_eq!(
+                start_time_metadata_args(format, timing, Some(48_000), true),
+                clear,
+                "{format}"
+            );
+            assert_eq!(
+                start_time_metadata_args(format, None, Some(48_000), false),
+                clear,
+                "{format}"
+            );
+        }
+        assert_eq!(start_time_metadata_args("wav", timing, Some(48_000), true), clear);
+        assert_eq!(start_time_metadata_args("wav", None, Some(48_000), false), clear);
+        assert_eq!(start_time_metadata_args("wav", timing, None, false), clear);
     }
 
     #[test]
@@ -781,17 +864,17 @@ mod tests {
         );
     }
 
-    /// Runs only where FFmpeg is on PATH (CI installs it): proves the exact
-    /// arguments carry a rescaled bext TimeReference into a WAV output.
-    #[test]
-    fn ffmpeg_carries_the_rescaled_time_reference_into_wav() {
-        let ffmpeg_available = std::process::Command::new("ffmpeg").arg("-version").output().is_ok()
+    fn ffmpeg_available() -> bool {
+        let available = std::process::Command::new("ffmpeg").arg("-version").output().is_ok()
             && std::process::Command::new("ffprobe").arg("-version").output().is_ok();
-        if !ffmpeg_available {
+        if !available {
             eprintln!("skipping: ffmpeg/ffprobe not on PATH");
-            return;
         }
-        let dir = TestDir::new();
+        available
+    }
+
+    /// A synthetic 1 s, 44.1 kHz WAV whose bext TimeReference is 01:00:00.
+    fn synthetic_bext_source(dir: &TestDir) -> PathBuf {
         let source = dir.0.join("synthetic_bext.wav");
         let status = std::process::Command::new("ffmpeg")
             .args(["-nostdin", "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i"])
@@ -801,24 +884,123 @@ mod tests {
             .status()
             .unwrap();
         assert!(status.success());
+        source
+    }
 
-        let probe_json = |path: &Path| -> serde_json::Value {
-            let output = std::process::Command::new("ffprobe")
-                .args([
-                    "-v",
-                    "quiet",
-                    "-print_format",
-                    "json",
-                    "-show_format",
-                    "-show_streams",
-                    "-select_streams",
-                    "a:0",
-                ])
-                .arg(path)
-                .output()
-                .unwrap();
-            serde_json::from_slice(&output.stdout).unwrap()
-        };
+    fn probe_json(path: &Path) -> serde_json::Value {
+        let output = std::process::Command::new("ffprobe")
+            .args([
+                "-v",
+                "quiet",
+                "-print_format",
+                "json",
+                "-show_format",
+                "-show_streams",
+                "-select_streams",
+                "a:0",
+            ])
+            .arg(path)
+            .output()
+            .unwrap();
+        serde_json::from_slice(&output.stdout).unwrap()
+    }
+
+    /// Encode `source` with the conversion's own argument shape: input
+    /// prelude, optional `-af` filter, then the exact encoder arguments.
+    fn encode(source: &Path, filter: Option<&str>, encoder: &[String], output: &Path) {
+        let mut command = std::process::Command::new("ffmpeg");
+        command
+            .args(crate::helpers::safe_ffmpeg_input_prelude())
+            .args(["-loglevel", "error", "-i"])
+            .arg(source);
+        if let Some(filter) = filter {
+            command.args(["-af", filter]);
+        }
+        let status = command.args(encoder).arg("-y").arg(output).status().unwrap();
+        assert!(status.success(), "{}", output.display());
+    }
+
+    /// Every `time_reference` tag ffprobe reports, in format or stream tags.
+    fn time_reference_tags(probe: &serde_json::Value) -> Vec<String> {
+        let mut found = Vec::new();
+        let mut scopes = vec![&probe["format"]["tags"]];
+        if let Some(streams) = probe["streams"].as_array() {
+            scopes.extend(streams.iter().map(|stream| &stream["tags"]));
+        }
+        for scope in scopes {
+            if let Some(value) = tag(scope, "time_reference") {
+                found.push(value.to_string());
+            }
+        }
+        found
+    }
+
+    /// Runs only where FFmpeg is on PATH (CI installs it): FFmpeg copies the
+    /// input's `time_reference` tag into FLAC, MP3 and Opus outputs without
+    /// rescaling it. Outputs with no bext chunk, and WAV after leading-silence
+    /// trim, must carry no start at all, so the export record is the only one.
+    #[test]
+    fn ffmpeg_drops_the_copied_time_reference_where_no_bext_is_written() {
+        if !ffmpeg_available() {
+            return;
+        }
+        let dir = TestDir::new();
+        let source = synthetic_bext_source(&dir);
+        let probed = parse_probe(&probe_json(&source));
+        assert!(probed.timing.is_some());
+
+        // Control: without the clearing argument the tag is copied as is, so
+        // the assertions below test something real.
+        let copied = dir.0.join("synthetic_copied.flac");
+        encode(
+            &source,
+            None,
+            &crate::helpers::output_args("flac", "48000", 192),
+            &copied,
+        );
+        assert_eq!(time_reference_tags(&probe_json(&copied)), vec!["158760000".to_string()]);
+
+        let trim_filter = "silenceremove=start_periods=1:start_duration=0.3:start_threshold=-50dB:start_mode=any";
+        let cases: [(&str, Option<&str>); 7] = [
+            ("flac", None),
+            ("mp3", None),
+            ("opus", None),
+            ("flac", Some(trim_filter)),
+            ("mp3", Some(trim_filter)),
+            ("opus", Some(trim_filter)),
+            ("wav", Some(trim_filter)),
+        ];
+        for (index, (format, filter)) in cases.into_iter().enumerate() {
+            let filters: Vec<String> = filter.iter().map(|f| f.to_string()).collect();
+            let shifted = filters_shift_start(&filters);
+            let mut encoder = crate::helpers::output_args(format, "48000", 192);
+            let rate = output_sample_rate(&encoder);
+            encoder.extend(start_time_metadata_args(format, probed.timing, rate, shifted));
+            let output = dir
+                .0
+                .join(format!("synthetic_out_{index}{}", crate::helpers::output_ext(format)));
+            encode(&source, filter, &encoder, &output);
+            let probe = probe_json(&output);
+            assert_eq!(
+                time_reference_tags(&probe),
+                Vec::<String>::new(),
+                "{format} filter={filter:?}"
+            );
+            assert_eq!(parse_probe(&probe).timing, None, "{format} filter={filter:?}");
+            let record = start_time_record(probed.timing, rate, shifted, format);
+            assert!(!record.written_to_output, "{format} filter={filter:?}");
+        }
+    }
+
+    /// Runs only where FFmpeg is on PATH (CI installs it): proves the exact
+    /// arguments carry a rescaled bext TimeReference into a WAV output.
+    #[test]
+    fn ffmpeg_carries_the_rescaled_time_reference_into_wav() {
+        if !ffmpeg_available() {
+            return;
+        }
+        let dir = TestDir::new();
+        let source = synthetic_bext_source(&dir);
         let probed = parse_probe(&probe_json(&source));
         assert_eq!(
             probed.timing,
@@ -828,20 +1010,11 @@ mod tests {
             })
         );
 
-        let encoder = crate::helpers::output_args("wav", "48000", 192);
-        let bext = bext_args("wav", probed.timing, output_sample_rate(&encoder), false);
+        let mut encoder = crate::helpers::output_args("wav", "48000", 192);
+        let rate = output_sample_rate(&encoder);
+        encoder.extend(start_time_metadata_args("wav", probed.timing, rate, false));
         let output = dir.0.join("synthetic_bext_out.wav");
-        let status = std::process::Command::new("ffmpeg")
-            .args(crate::helpers::safe_ffmpeg_input_prelude())
-            .args(["-loglevel", "error", "-i"])
-            .arg(&source)
-            .args(&encoder)
-            .args(&bext)
-            .arg("-y")
-            .arg(&output)
-            .status()
-            .unwrap();
-        assert!(status.success());
+        encode(&source, None, &encoder, &output);
         let carried = parse_probe(&probe_json(&output));
         assert_eq!(
             carried.timing,

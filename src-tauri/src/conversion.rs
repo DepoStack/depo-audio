@@ -366,13 +366,14 @@ async fn do_convert_inner(
 
     // Start time (DA-08): read the source's BWF bext TimeReference and carry
     // it into WAV outputs, rescaled to the output rate, unless leading-silence
-    // trim moved the first sample.
+    // trim moved the first sample. Every other output has the copied
+    // `time_reference` tag removed, so only the export record holds the start.
     let probed = probe_manifest_source_cancellable(app, effective_feed, Some(&is_cancelled)).await;
     cancel.check()?;
     let start_shifted = manifest::filters_shift_start(&proc);
     let output_rate = manifest::output_sample_rate(&out_codec);
     let mut encoder_args = out_codec.clone();
-    encoder_args.extend(manifest::bext_args(
+    encoder_args.extend(manifest::start_time_metadata_args(
         &job.format,
         probed.timing,
         output_rate,
