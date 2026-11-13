@@ -94,7 +94,8 @@ fn regular_file_size(path: &Path) -> Option<u64> {
 }
 
 /// Every DepoAudio-owned regular file in `dir`, by exact name. Nothing else in
-/// the folder is listed, and symlinks or folders with these names are skipped.
+/// the folder is listed, and symlinks or folders with these names are skipped,
+/// as is a `models` folder that is a symlink.
 pub(crate) fn stored_items(dir: &Path) -> Vec<StoredItem> {
     let mut items = Vec::new();
     for (name, kind) in [("library.json", "library"), ("prefs.json", "prefs")] {
@@ -125,7 +126,11 @@ pub(crate) fn stored_items(dir: &Path) -> Vec<StoredItem> {
         unfinished.sort_by(|a, b| a.name.cmp(&b.name));
         items.extend(unfinished);
     }
-    let models = dir.join("models");
+    // `symlink_metadata` only refuses a symlink in the last path part, so a
+    // `models` folder that is itself a symlink is skipped as a whole.
+    let Some(models) = crate::models::real_models_dir(dir) else {
+        return items;
+    };
     for filename in crate::models::legacy_model_filenames() {
         if let Some(bytes) = regular_file_size(&models.join(filename)) {
             items.push(StoredItem {
@@ -540,6 +545,59 @@ pub(crate) fn merge_library(current: &mut Library, incoming: Library) -> Result<
     Ok((report, added_paths))
 }
 
+// ── Playback access for restored Library files ───────────────────────────────
+
+/// Resolve a Library path for playback: follow symlinks, then require a
+/// regular file with a playable audio extension on the resolved target. The
+/// same rule as an interactive Library import, so a `.wav` name that points at
+/// some other kind of file is never authorized.
+pub(crate) fn resolve_playable_file(path: &Path) -> Option<PathBuf> {
+    let canonical = fs::canonicalize(path).ok()?;
+    if !fs::metadata(&canonical).ok()?.is_file() {
+        return None;
+    }
+    crate::commands::playable_library_extension(&canonical).ok()?;
+    Some(canonical)
+}
+
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct PlaybackAccess {
+    pub authorized: usize,
+    /// Not on this computer, or not a regular, playable audio file once
+    /// symlinks are followed.
+    pub unavailable: usize,
+    /// On this computer, but playback access was removed earlier in this app
+    /// session (Clear all or a Library delete), or could not be granted.
+    /// Restarting DepoAudio rebuilds access from the Library.
+    pub need_restart: usize,
+}
+
+/// Authorize restored Library files for playback. `is_forbidden` and `allow`
+/// are the asset-protocol scope's; a path the scope forbids is never allowed
+/// again in this process, so it is counted as needing a restart, not missing.
+pub(crate) fn authorize_playback(
+    paths: impl IntoIterator<Item = String>,
+    is_forbidden: impl Fn(&Path) -> bool,
+    mut allow: impl FnMut(&Path) -> Result<(), String>,
+) -> PlaybackAccess {
+    let mut access = PlaybackAccess::default();
+    for path in paths {
+        let Some(canonical) = resolve_playable_file(Path::new(&path))
+            .filter(|canonical| crate::safety::check_file_safe(canonical).is_ok())
+        else {
+            access.unavailable += 1;
+            continue;
+        };
+        if is_forbidden(&canonical) || allow(&canonical).is_err() {
+            access.need_restart += 1;
+        } else {
+            access.authorized += 1;
+        }
+    }
+    access
+}
+
 /// Write a new file only: an existing file is never replaced.
 pub(crate) fn write_new_file(path: &Path, bytes: &[u8]) -> Result<(), String> {
     let mut file = fs::OpenOptions::new()
@@ -702,6 +760,116 @@ mod tests {
 
         let _ = fs::remove_dir_all(dir);
         let _ = fs::remove_dir_all(elsewhere);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn clear_skips_legacy_model_names_inside_a_symlinked_models_folder() {
+        let dir = test_dir("models_link");
+        let elsewhere = test_dir("models_link_target");
+        fs::write(dir.join("library.json"), b"{}").unwrap();
+        fs::write(elsewhere.join("flashsr.onnx"), b"someone else's file").unwrap();
+        std::os::unix::fs::symlink(&elsewhere, dir.join("models")).unwrap();
+
+        let listed: Vec<String> = stored_items(&dir).into_iter().map(|item| item.name).collect();
+        assert_eq!(listed, vec!["library.json"]);
+        assert_eq!(clear_app_data_in(&dir).removed, vec!["library.json"]);
+        assert!(elsewhere.join("flashsr.onnx").exists());
+
+        let _ = fs::remove_dir_all(dir);
+        let _ = fs::remove_dir_all(elsewhere);
+    }
+
+    /// Models the asset-protocol scope as Tauri 2.12 does: patterns and
+    /// queries are canonicalized, and a forbidden path wins over an allowed one.
+    #[derive(Default)]
+    struct FakeScope {
+        allowed: std::cell::RefCell<Vec<PathBuf>>,
+        forbidden: std::cell::RefCell<Vec<PathBuf>>,
+    }
+
+    impl FakeScope {
+        fn canonical(path: &Path) -> PathBuf {
+            fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
+        }
+        fn forbid(&self, path: &Path) {
+            self.forbidden.borrow_mut().push(Self::canonical(path));
+        }
+        fn is_forbidden(&self, path: &Path) -> bool {
+            self.forbidden.borrow().contains(&Self::canonical(path))
+        }
+        fn allow(&self, path: &Path) -> Result<(), String> {
+            self.allowed.borrow_mut().push(Self::canonical(path));
+            Ok(())
+        }
+        fn authorize(&self, paths: Vec<PathBuf>) -> PlaybackAccess {
+            authorize_playback(
+                paths.into_iter().map(|path| path.to_string_lossy().to_string()),
+                |path| self.is_forbidden(path),
+                |path| self.allow(path),
+            )
+        }
+    }
+
+    #[test]
+    fn restore_after_clear_in_the_same_run_says_restart_not_missing() {
+        let outputs = test_dir("clear_then_import");
+        let kept = outputs.join("Smith_Witness.wav");
+        let fresh = outputs.join("Doe_Witness.wav");
+        fs::write(&kept, b"RIFF").unwrap();
+        fs::write(&fresh, b"RIFF").unwrap();
+        let scope = FakeScope::default();
+        // Clear all revoked playback for every Library path in this process.
+        scope.forbid(&kept);
+
+        let access = scope.authorize(vec![kept.clone(), fresh.clone(), outputs.join("gone.wav")]);
+        assert_eq!(
+            access,
+            PlaybackAccess {
+                authorized: 1,
+                unavailable: 1,
+                need_restart: 1,
+            }
+        );
+        // The revoked file is never re-allowed; the new one is.
+        assert_eq!(*scope.allowed.borrow(), vec![fs::canonicalize(&fresh).unwrap()]);
+
+        let refused = authorize_playback(
+            vec![fresh.to_string_lossy().to_string()],
+            |_| false,
+            |_| Err("scope error".into()),
+        );
+        assert_eq!(refused.need_restart, 1);
+
+        let _ = fs::remove_dir_all(outputs);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn restore_authorizes_the_resolved_audio_file_and_never_a_disguised_one() {
+        let outputs = test_dir("restore_symlink");
+        let notes = outputs.join("notes.txt");
+        let audio = outputs.join("real.wav");
+        fs::write(&notes, b"not audio").unwrap();
+        fs::write(&audio, b"RIFF").unwrap();
+        let disguised = outputs.join("x.wav");
+        let alias = outputs.join("alias.wav");
+        std::os::unix::fs::symlink(&notes, &disguised).unwrap();
+        std::os::unix::fs::symlink(&audio, &alias).unwrap();
+
+        assert_eq!(resolve_playable_file(&disguised), None);
+        assert_eq!(resolve_playable_file(&alias), Some(fs::canonicalize(&audio).unwrap()));
+        assert_eq!(resolve_playable_file(&outputs), None);
+
+        let scope = FakeScope::default();
+        let access = scope.authorize(vec![disguised, alias]);
+        assert_eq!(access.authorized, 1);
+        assert_eq!(access.unavailable, 1);
+        let notes = fs::canonicalize(&notes).unwrap();
+        assert!(!scope.allowed.borrow().contains(&notes));
+        assert_eq!(*scope.allowed.borrow(), vec![fs::canonicalize(&audio).unwrap()]);
+
+        let _ = fs::remove_dir_all(outputs);
     }
 
     #[test]

@@ -328,6 +328,7 @@ export default function SettingsPanel({
   updater = {},
   health = null,
   reloadApp = () => window.location.reload(),
+  conversionActive = false,
 }) {
   const {
     status: updateStatus,
@@ -443,7 +444,11 @@ export default function SettingsPanel({
             {section === 'models' && <LegacyModelStorage />}
 
             {section === 'data' && (
-              <LocalDataSettings reloadApp={reloadApp} onReloadNeeded={() => setReloadPending(true)} />
+              <LocalDataSettings
+                reloadApp={reloadApp}
+                onReloadNeeded={() => setReloadPending(true)}
+                conversionActive={conversionActive}
+              />
             )}
 
             {section === 'audio' && (

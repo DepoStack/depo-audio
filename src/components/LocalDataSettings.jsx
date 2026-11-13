@@ -64,13 +64,22 @@ function importSummary(result, restored) {
       `${plural(result.filesUnavailable, 'file')} in the backup ${result.filesUnavailable === 1 ? 'is' : 'are'} not on this computer; the Library entries are kept so you can see them.`,
     )
   }
+  if (result.filesNeedRestart > 0) {
+    lines.push(
+      `${plural(result.filesNeedRestart, 'file')} in the backup ${result.filesNeedRestart === 1 ? 'is' : 'are'} on this computer but ${result.filesNeedRestart === 1 ? 'was' : 'were'} removed from playback earlier in this app session. Restart DepoAudio to play ${result.filesNeedRestart === 1 ? 'it' : 'them'}; the Library entries are kept.`,
+    )
+  }
   if (restored.failed > 0) {
     lines.push(`${plural(restored.failed, 'item')} could not be saved to this app's storage.`)
   }
   return lines
 }
 
-export default function LocalDataSettings({ reloadApp = () => window.location.reload(), onReloadNeeded }) {
+export default function LocalDataSettings({
+  reloadApp = () => window.location.reload(),
+  onReloadNeeded,
+  conversionActive = false,
+}) {
   const [info, setInfo] = useState(null)
   const [infoError, setInfoError] = useState('')
   const [web, setWeb] = useState(() => summarizeWebData(webStorage()))
@@ -341,15 +350,20 @@ export default function LocalDataSettings({ reloadApp = () => window.location.re
         <CardContent className="p-4 flex items-center justify-between gap-3 text-[11px]">
           <span className="min-w-0 text-[hsl(var(--sub))]">
             Removes the case library, settings, transcripts, bookmarks and the other files listed above from this
-            computer. Recordings, converted files, export records and backups are not deleted. Wait for conversions to
-            finish, and export a backup first if you may need this later.
+            computer. Recordings, converted files, export records and backups are not deleted. Export a backup first if
+            you may need this later.
+            {conversionActive && (
+              <span className="mt-1 block text-foreground">
+                Clear all is not available while files are converting. Wait for them to finish or cancel them.
+              </span>
+            )}
           </span>
           <Button
             size="sm"
             variant="outline"
             className="shrink-0 hover:text-destructive"
             onClick={() => setConfirmClear(true)}
-            disabled={!!busy}
+            disabled={!!busy || conversionActive}
           >
             <Trash2 size={12} /> Clear all DepoAudio data…
           </Button>

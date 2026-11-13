@@ -425,6 +425,7 @@ export default function App() {
           prefs={{ ...prefs, cycleThemeTo: setThemeDirect }}
           updater={updater}
           health={health}
+          conversionActive={converting || cancelling}
         />
       </Suspense>
     </Tabs>

@@ -33,9 +33,11 @@ fn allow_library_assets(app: &tauri::AppHandle, library: &types::Library) {
         .flat_map(|session| &session.participants)
         .flat_map(|participant| &participant.files)
     {
-        let path = std::path::Path::new(&file.path);
-        if path.is_file() {
-            if let Err(error) = scope.allow_file(path) {
+        // Authorize the resolved file only, and only when it is a regular
+        // audio file: a Library entry named `.wav` that is a symlink to some
+        // other file is not made playable (same rule as an import).
+        if let Some(path) = localdata::resolve_playable_file(std::path::Path::new(&file.path)) {
+            if let Err(error) = scope.allow_file(&path) {
                 eprintln!("[scope] Could not authorize a library audio file: {error}");
             }
         }

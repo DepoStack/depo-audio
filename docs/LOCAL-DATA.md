@@ -71,6 +71,14 @@ Transcripts and Library entries follow the file paths they were saved with. On
 a new computer, they line up with the audio when the files are at the same
 paths. Library entries whose files are missing are kept and counted.
 
+A restored file is made playable only after DepoAudio follows any symlink and
+finds a regular file with a supported audio extension, the same rule as
+importing audio into the Library. Anything else counts as not on this computer.
+A file that is on this computer but was removed from playback earlier in the
+same app run (by "Clear all DepoAudio data" or by deleting its Library entry)
+cannot be made playable again until DepoAudio restarts. The result counts those
+files separately and says to restart; it does not call them missing.
+
 ## Deleting data
 
 - **Delete transcript for this track** (the bin button in the Player's
@@ -82,8 +90,11 @@ paths. Library entries whose files are missing are kept and counted.
 - **Settings → Your data → Clear all DepoAudio data**: after a confirmation,
   removes everything in the table above. DepoAudio deletes only those exact
   names from the app data folder and only its own keys from web view storage.
-  It never follows a path recorded in the Library. The app then reloads as on
-  first launch. If a file cannot be removed (for example, another program has
+  It never follows a path recorded in the Library, and it skips a symlink with
+  one of those names and the whole `models` folder when that folder is a
+  symlink. It is not available while files are converting, because a
+  conversion that finishes afterwards would write its case back into a new
+  library. The app then reloads as on first launch. If a file cannot be removed (for example, another program has
   it open), the app names it and does not reload, so you can try again.
 
 Uninstalling DepoAudio may leave the app data folder in place. Use "Clear all

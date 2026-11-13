@@ -158,6 +158,52 @@ describe('Local data settings', () => {
     expect(reloadApp).toHaveBeenCalled()
   })
 
+  it('says files removed from playback this session need a restart, not that they are missing', async () => {
+    mockBackend({
+      local_data_import_cmd: () => ({
+        casesAdded: 1,
+        sessionsAdded: 1,
+        sessionsSkipped: 0,
+        filesUnavailable: 0,
+        filesNeedRestart: 2,
+        transcripts: {},
+        bookmarks: [],
+      }),
+    })
+    open.mockResolvedValue('/backups/DepoAudio backup.zip')
+    renderPanel()
+
+    fireEvent.click(await screen.findByRole('button', { name: /import a backup/i }))
+    const status = await screen.findByRole('status', { name: 'Import result' })
+    expect(status).toHaveTextContent(/2 files .*removed from playback .*this app session/i)
+    expect(status).toHaveTextContent(/restart DepoAudio/i)
+    expect(status).not.toHaveTextContent(/not on this computer/i)
+  })
+
+  it('keeps Clear all unavailable while files are converting', async () => {
+    mockBackend()
+    renderPanel({ conversionActive: true })
+
+    expect(await screen.findByRole('button', { name: 'Clear all DepoAudio data…' })).toBeDisabled()
+    expect(screen.getByText(/not available while files are converting/i)).toBeVisible()
+  })
+
+  it('shows the refusal when the app is still converting at the moment of clearing', async () => {
+    mockBackend({
+      local_data_clear_cmd: () => {
+        throw 'Clear all is not available while files are converting. Wait for them to finish or cancel them, then try again.'
+      },
+    })
+    const { reloadApp } = renderPanel()
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Clear all DepoAudio data…' }))
+    fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Clear all data' }))
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(/nothing was cleared.*while files are converting/i)
+    expect(reloadApp).not.toHaveBeenCalled()
+    expect(localStorage.getItem(storageKey('/out/synthetic.wav'))).not.toBeNull()
+  })
+
   it('clears all DepoAudio data only after confirmation, then reloads', async () => {
     mockBackend({ local_data_clear_cmd: () => ({ removed: 2, warning: null }) })
     const { reloadApp } = renderPanel()

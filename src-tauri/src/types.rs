@@ -481,6 +481,9 @@ pub struct AppState {
     /// Serializes Library metadata changes that also alter asset-protocol
     /// authorization, preventing delete/re-import scope races.
     pub library_asset_commit: Mutex<()>,
+    /// `convert` commands running now; "Clear all DepoAudio data" refuses
+    /// while this is above zero.
+    pub active_conversions: std::sync::atomic::AtomicUsize,
     /// Deduplicated, cancellable waveform requests and their bounded LRU.
     pub waveform: crate::waveform::WaveformState,
 }
@@ -496,6 +499,7 @@ impl Default for AppState {
             conversion_epoch: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
             conversion_commit: Mutex::new(()),
             library_asset_commit: Mutex::new(()),
+            active_conversions: std::sync::atomic::AtomicUsize::new(0),
             waveform: crate::waveform::WaveformState::default(),
         }
     }

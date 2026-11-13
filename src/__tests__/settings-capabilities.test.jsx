@@ -131,6 +131,22 @@ describe('SettingsPanel release boundaries', () => {
     expect(screen.getByRole('button', { name: 'Clear all DepoAudio data…' })).toBeVisible()
   })
 
+  it('passes the conversion state to Your data so Clear all waits for conversions', async () => {
+    invoke.mockImplementation(command =>
+      Promise.resolve(
+        command === 'local_data_info_cmd'
+          ? { appDataDir: '/synthetic/app-data', libraryReadable: true, items: [] }
+          : [],
+      ),
+    )
+
+    render(<SettingsPanel open onOpenChange={vi.fn()} prefs={{}} conversionActive />)
+    fireEvent.click(screen.getByRole('button', { name: 'Your data' }))
+
+    expect(await screen.findByText('/synthetic/app-data')).toBeVisible()
+    expect(screen.getByRole('button', { name: 'Clear all DepoAudio data…' })).toBeDisabled()
+  })
+
   it('reloads the app instead of just closing Settings after an import', async () => {
     invoke.mockImplementation(command => {
       if (command === 'local_data_info_cmd') {

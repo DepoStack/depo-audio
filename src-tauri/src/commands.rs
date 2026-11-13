@@ -1,7 +1,7 @@
 use std::collections::HashSet;
 use std::fs;
 use std::path::Path;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
 use chrono::Utc;
 use tauri::{AppHandle, Emitter, Manager, State};
@@ -186,8 +186,38 @@ fn emit_conversion_cancelled(app: &AppHandle, id: String) -> Result<(), String> 
     .map_err(|error| format!("Conversion was cancelled, but cancellation could not be reported: {error}"))
 }
 
+/// Counts `convert` commands that are running. "Clear all DepoAudio data"
+/// refuses while any is, because a conversion that finishes afterwards would
+/// write its case and paths into a fresh library.json.
+pub(crate) struct ActiveConversion<'a>(&'a AtomicUsize);
+
+impl<'a> ActiveConversion<'a> {
+    pub(crate) fn start(counter: &'a AtomicUsize) -> Self {
+        counter.fetch_add(1, Ordering::AcqRel);
+        Self(counter)
+    }
+}
+
+impl Drop for ActiveConversion<'_> {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::AcqRel);
+    }
+}
+
+pub(crate) const CLEAR_WHILE_CONVERTING: &str =
+    "Clear all is not available while files are converting. Wait for them to finish or cancel them, then try again.";
+
+pub(crate) fn refuse_clear_while_converting(active: &AtomicUsize) -> Result<(), String> {
+    if active.load(Ordering::Acquire) > 0 {
+        Err(CLEAR_WHILE_CONVERTING.into())
+    } else {
+        Ok(())
+    }
+}
+
 #[tauri::command]
 pub async fn convert(app: AppHandle, state: State<'_, AppState>, job: ConvertJob) -> Result<(), String> {
+    let _active = ActiveConversion::start(&state.active_conversions);
     let id = job.id.clone();
     let cancel = ConversionCancel::new(state.conversion_epoch.clone(), job.cancel_generation);
 
@@ -618,7 +648,14 @@ pub struct LocalDataClearResult {
 #[tauri::command]
 pub fn local_data_clear_cmd(app: AppHandle, state: State<'_, AppState>) -> Result<LocalDataClearResult, String> {
     let dir = app_data_dir(&app)?;
+    // Same lock order as a conversion's commit. With both held, no conversion
+    // can be committing; one still running is refused below, and advancing
+    // the epoch cancels any job of an earlier batch that starts afterwards,
+    // so nothing writes the old Library back after this clear.
+    let _commit = state.conversion_commit.lock().unwrap_or_else(|e| e.into_inner());
     let _asset_commit = state.library_asset_commit.lock().unwrap_or_else(|e| e.into_inner());
+    refuse_clear_while_converting(&state.active_conversions)?;
+    advance_conversion_epoch(&state.conversion_epoch);
     let mut library = state.library.lock().unwrap_or_else(|e| e.into_inner());
     let mut prefs = state.prefs.lock().unwrap_or_else(|e| e.into_inner());
 
@@ -687,9 +724,14 @@ pub fn local_data_export_cmd(
 pub struct LocalDataImportResult {
     #[serde(flatten)]
     pub report: crate::localdata::MergeReport,
-    /// Imported Library files that are not on this computer (or cannot be
-    /// authorized for playback). Their entries are kept.
+    /// Imported Library files that are not on this computer, or are not a
+    /// regular, playable audio file once symlinks are followed. Their entries
+    /// are kept.
     pub files_unavailable: usize,
+    /// Imported Library files that are on this computer but whose playback
+    /// access was removed earlier in this app session (Clear all or a Library
+    /// delete), or could not be granted. A restart restores playback.
+    pub files_need_restart: usize,
     /// Returned for the frontend to restore into web view storage.
     pub transcripts: serde_json::Value,
     pub bookmarks: serde_json::Value,
@@ -719,19 +761,15 @@ pub fn local_data_import_cmd(
     })?;
 
     let scope = app.asset_protocol_scope();
-    let mut files_unavailable = 0usize;
-    for added in added_paths {
-        let candidate = Path::new(&added);
-        let authorized = crate::safety::check_file_safe(candidate).is_ok()
-            && !scope.is_forbidden(candidate)
-            && scope.allow_file(candidate).is_ok();
-        if !authorized {
-            files_unavailable += 1;
-        }
-    }
+    let access = crate::localdata::authorize_playback(
+        added_paths,
+        |path| scope.is_forbidden(path),
+        |path| scope.allow_file(path).map_err(|error| error.to_string()),
+    );
     Ok(LocalDataImportResult {
         report,
-        files_unavailable,
+        files_unavailable: access.unavailable,
+        files_need_restart: access.need_restart,
         transcripts: backup.transcripts,
         bookmarks: backup.bookmarks,
     })
@@ -795,6 +833,28 @@ built with gcc 14\nconfiguration: --prefix=/Users/reporter/ffmpeg --enable-share
                 }],
             }],
         }
+    }
+
+    #[test]
+    fn clear_all_is_refused_while_a_conversion_runs() {
+        let active = AtomicUsize::new(0);
+        assert!(refuse_clear_while_converting(&active).is_ok());
+        {
+            let _first = ActiveConversion::start(&active);
+            let _second = ActiveConversion::start(&active);
+            assert_eq!(
+                refuse_clear_while_converting(&active).unwrap_err(),
+                CLEAR_WHILE_CONVERTING
+            );
+        }
+        // Every way out of `convert` drops the guard, including an early
+        // return or a panic.
+        let _ = std::panic::catch_unwind(|| {
+            let _guard = ActiveConversion::start(&active);
+            panic!("conversion failed");
+        });
+        assert_eq!(active.load(Ordering::Acquire), 0);
+        assert!(refuse_clear_while_converting(&active).is_ok());
     }
 
     #[test]
