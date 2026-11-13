@@ -105,6 +105,10 @@ expect(
   'CI must also run weekly on a schedule so expiring exceptions and new advisories turn main red',
 )
 expect(
+  ciWorkflow.includes('group: ci-${{ github.event_name }}-${{ github.ref }}'),
+  'a push to main must not cancel the weekly scheduled CI run',
+)
+expect(
   ciWorkflow.includes('name: Enforce Rust advisory policy') && !ciWorkflow.includes('continue-on-error: true'),
   'Rust advisory policy must block CI outside the exact deny.toml exceptions',
 )
@@ -118,6 +122,8 @@ const isIsoDate = value => {
   const parsed = new Date(`${value}T00:00:00Z`)
   return !Number.isNaN(parsed.valueOf()) && parsed.toISOString().slice(0, 10) === value
 }
+// Same rule as isTaggerEmail in prepare-release-publication.mjs.
+const isTaggerEmail = value => typeof value === 'string' && /^[^\s<>@]+@[^\s<>@]+\.[^\s<>@]+$/.test(value)
 const isTauriUpdaterPublicKey = value => {
   if (typeof value !== 'string' || !/^[A-Za-z0-9+/]+={0,2}$/.test(value)) return false
   try {
@@ -177,6 +183,11 @@ expect(
   gateCandidate.approvedBy === null ||
     (typeof gateCandidate.approvedBy === 'string' && gateCandidate.approvedBy.trim().length > 0),
   'the release gate candidate approvedBy must be null or a named accountable reviewer',
+)
+expect(
+  Object.hasOwn(gateCandidate, 'releaseTaggerEmail') &&
+    (gateCandidate.releaseTaggerEmail === null || isTaggerEmail(gateCandidate.releaseTaggerEmail)),
+  "the release gate candidate releaseTaggerEmail must be null or the release owner's verified GitHub email",
 )
 expect(
   gateBlockerIds.length === new Set(gateBlockerIds).size,
@@ -253,6 +264,10 @@ if (requiresPublicationReadyHeading) {
     typeof gateCandidate.approvedBy === 'string' && gateCandidate.approvedBy.trim().length > 0,
     'publication requires a named accountable reviewer',
   )
+  expect(
+    isTaggerEmail(gateCandidate.releaseTaggerEmail),
+    'publication requires the release owner tagger email that the signed release tag must carry',
+  )
 }
 
 expect(packageLock.version === version, 'package-lock.json top-level version must match package.json')
@@ -294,6 +309,16 @@ const bundleResources = tauriConfig.bundle?.resources ?? []
 expect(
   !bundleResources.some(resource => /(?:^|\/)(?:model|models|onnxruntime)(?:\/|$)|\.onnx$/i.test(resource)),
   'tauri.conf.json must not bundle learned-model material or ONNX Runtime',
+)
+// tauri-build 2.7+ statically links the MSVC runtime into the Windows binary
+// unless this is false. Keep the dynamic linking the v1.0.3 candidate was built
+// with; embedding the runtime is a ledger and owner decision, not a default.
+expect(
+  tauriConfig.build?.windows?.staticVCRuntime === false &&
+    tauriConfig.bundle?.windows?.bundleVCRuntime === undefined &&
+    !releaseWorkflow.includes('STATIC_VCRUNTIME') &&
+    !ciWorkflow.includes('STATIC_VCRUNTIME'),
+  'tauri.conf.json must set build.windows.staticVCRuntime to false, and nothing may bundle or statically link the Visual C++ runtime',
 )
 expect(
   modelsSource.includes('legacy_model_cleanup_catalog') &&
@@ -483,6 +508,11 @@ expect(
     protectedPublicationJob.includes('Verify publication environment protections') &&
     protectedPublicationJob.includes('.type == "wait_timer"') &&
     protectedPublicationJob.includes('.wait_timer >= 1440') &&
+    protectedPublicationJob.includes('.can_admins_bypass == false') &&
+    publicationHelper.includes('environment.can_admins_bypass !== false') &&
+    publicationHelper.includes('annotated.tagger?.email') &&
+    publicationHelper.includes('taggerEmail: candidate.releaseTaggerEmail') &&
+    publicationHelper.includes("const ALLOWED_TAG_BYPASS_ACTOR_TYPES = ['RepositoryRole', 'OrganizationAdmin']") &&
     !publishReleaseWorkflow.includes('.prevent_self_review == true') &&
     protectedPublicationJob.includes("--header 'X-GitHub-Api-Version: 2026-03-10'") &&
     protectedPublicationJob.includes('.deployment_branch_policy.custom_branch_policies == true') &&
@@ -506,7 +536,7 @@ expect(
     releaseCandidate.includes('git tag -s v1.0.3') &&
     publicationHelper.includes('releaseAssetContract(final) !== finalAssetContract') &&
     packageJson.scripts['release:check'].includes('prepare-release-publication.mjs --self-test'),
-  'publication must use the protected (wait timer, protected signed tag), immutable, approval-bound, self-tested release workflow without deletion, replacement, or tag-creation paths',
+  'publication must use the protected (wait timer without administrator bypass, protected tag signed by the recorded owner), immutable, approval-bound, self-tested release workflow without deletion, replacement, or tag-creation paths',
 )
 expect(
   releaseWorkflow.includes("NODE_VERSION: '22.23.1'") && releaseWorkflow.includes("RUST_VERSION: '1.98.0'"),
@@ -538,8 +568,10 @@ expect(
 expect(
   releaseWorkflow.includes('already exists at $tagged_commit before candidate construction') &&
     !releaseWorkflow.includes('Existing tag $tag resolves to this run') &&
-    releaseWorkflow.includes('may be bound during protected publication'),
-  'candidate construction must reject every pre-existing release tag so only protected publication can bind it',
+    releaseWorkflow.includes('The release owner pushes the signed tag (runbook step 10) only after the candidate') &&
+    !releaseWorkflow.includes('may be bound during protected publication') &&
+    !releaseWorkflow.includes('must create or verify the approved tag'),
+  "candidate construction must reject every pre-existing release tag and point to the release owner's signed tag",
 )
 expect(
   releaseWorkflow.includes('Smoke-test packaged app startup (Windows)') &&

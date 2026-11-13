@@ -91,6 +91,12 @@ function readApprovalContext(environment = process.env) {
   })
 }
 
+// A plain address without spaces or angle brackets, so it can be compared with
+// the tagger line of a Git tag object exactly.
+function isTaggerEmail(value) {
+  return typeof value === 'string' && /^[^\s<>@]+@[^\s<>@]+\.[^\s<>@]+$/.test(value)
+}
+
 function validateGate(gate, { phase, now = new Date() }) {
   const candidate = gate?.candidate
   if (gate?.schemaVersion !== 2 || !['GO', 'NO-GO'].includes(gate?.status)) {
@@ -119,11 +125,18 @@ function validateGate(gate, { phase, now = new Date() }) {
   if (date.toISOString().slice(0, 10) !== candidate.publicationDate) {
     fail('Candidate publication date does not exist')
   }
-  if (candidate.publicationDate !== now.toISOString().slice(0, 10)) {
-    fail('Candidate publication date must equal the current UTC date')
+  const today = now.toISOString().slice(0, 10)
+  if (candidate.publicationDate !== today) {
+    fail(
+      `Candidate publication date ${candidate.publicationDate} must equal the current UTC date ${today}; ` +
+        'record the UTC date on which the job runs (dispatch time plus the environment wait timer) and dispatch again',
+    )
   }
   if (typeof candidate?.approvedBy !== 'string' || candidate.approvedBy.trim().length === 0) {
     fail('Candidate approval owner is missing')
+  }
+  if (!isTaggerEmail(candidate?.releaseTaggerEmail)) {
+    fail("Candidate releaseTaggerEmail must name the release owner's verified GitHub email")
   }
   if (candidate.updater === 'signed') parseMinisignPublicKey(candidate.updaterPublicKey)
   else if (candidate.updaterPublicKey !== null) fail('Updater-unavailable candidate must not approve a public key')
@@ -452,15 +465,26 @@ async function resolveTagCommit(repo, tag, token) {
 // reviewer with prevent-self-review, three repository facts must hold before
 // any release write:
 // 1. the release-publication environment delays the job by a wait timer of at
-//    least 24 hours and deploys only from main;
+//    least 24 hours, does not let administrators bypass it, and deploys only
+//    from main;
 // 2. an active tag ruleset restricts creation, update, and deletion of the
-//    release tag, so only its bypass actors (the release owner) can create it
-//    and nobody can move or delete it afterwards; and
-// 3. the release owner has pushed a signed annotated tag at the exact source
-//    commit, and GitHub reports the signature as verified.
+//    release tag, so only its bypass actors can create it and nobody can move
+//    or delete it afterwards; and
+// 3. a signed annotated tag sits at the exact source commit, GitHub reports
+//    the signature as verified, and its tagger is the release owner's email
+//    recorded in the gate (candidate.releaseTaggerEmail). GitHub verifies a
+//    signature only against a key on the account that owns the tagger email,
+//    so this binds the tag to the owner's GitHub account.
+// What the job cannot read back: who is on the ruleset bypass list. When the
+// API returns bypass_actors (GitHub may omit them for a token without admin
+// rights; not confirmed), only repository-role and organization-admin actors
+// are accepted, so no app, deploy key or team can create the tag. Which role
+// that is and who holds it are dashboard settings the release owner keeps
+// by hand; the job cannot check them.
 // The helper never creates, moves, or deletes a tag.
 const MINIMUM_WAIT_TIMER_MINUTES = 1440
 const REQUIRED_TAG_RULES = ['creation', 'update', 'deletion']
+const ALLOWED_TAG_BYPASS_ACTOR_TYPES = ['RepositoryRole', 'OrganizationAdmin']
 
 function validatePublicationEnvironment(environment, branchPolicies) {
   if (environment?.name !== 'release-publication') fail('GitHub returned the wrong publication environment')
@@ -468,6 +492,9 @@ function validatePublicationEnvironment(environment, branchPolicies) {
   const waitTimer = environment.protection_rules.find(rule => rule?.type === 'wait_timer')?.wait_timer
   if (!Number.isInteger(waitTimer) || waitTimer < MINIMUM_WAIT_TIMER_MINUTES) {
     fail(`release-publication must carry a wait timer of at least ${MINIMUM_WAIT_TIMER_MINUTES} minutes`)
+  }
+  if (environment.can_admins_bypass !== false) {
+    fail('release-publication must not allow administrators to bypass its protection rules')
   }
   const policy = environment.deployment_branch_policy
   if (policy?.protected_branches !== false || policy?.custom_branch_policies !== true) {
@@ -510,6 +537,7 @@ function validateReleaseTagProtection(rulesets, tag) {
   if (!Array.isArray(rulesets)) fail('Repository rulesets are unavailable')
   const ref = `refs/tags/${tag}`
   const covered = new Set()
+  let bypassListsVisible = true
   for (const ruleset of rulesets) {
     const include = ruleset?.conditions?.ref_name?.include
     const exclude = ruleset?.conditions?.ref_name?.exclude ?? []
@@ -517,15 +545,30 @@ function validateReleaseTagProtection(rulesets, tag) {
     if (!Array.isArray(exclude)) continue
     if (!include.some(pattern => refPatternMatches(pattern, ref))) continue
     if (exclude.some(pattern => pattern === '~ALL' || refPatternMatches(pattern, ref))) continue
+    if (ruleset.bypass_actors === undefined) bypassListsVisible = false
+    else if (!Array.isArray(ruleset.bypass_actors)) fail(`Tag ruleset ${ruleset.id} has an unreadable bypass list`)
+    else {
+      const disallowed = ruleset.bypass_actors.filter(
+        actor => !ALLOWED_TAG_BYPASS_ACTOR_TYPES.includes(actor?.actor_type),
+      )
+      if (disallowed.length > 0) {
+        fail(
+          `Tag ruleset ${ruleset.id} lets ${disallowed.map(actor => actor?.actor_type).join(', ')} bypass it; ` +
+            'only the release owner (repository admin) may be on the bypass list',
+        )
+      }
+    }
     for (const rule of Array.isArray(ruleset.rules) ? ruleset.rules : []) covered.add(rule?.type)
   }
   const missing = REQUIRED_TAG_RULES.filter(type => !covered.has(type))
   if (missing.length > 0) {
     fail(`An active tag ruleset must restrict ${missing.join(', ')} for ${ref}`)
   }
+  return { bypassListsVisible }
 }
 
-function validateSignedReleaseTag(reference, annotated, { tag, commit }) {
+function validateSignedReleaseTag(reference, annotated, { tag, commit, taggerEmail }) {
+  if (!isTaggerEmail(taggerEmail)) fail('The expected release tagger email is missing')
   if (reference?.ref !== `refs/tags/${tag}`) fail(`Release tag ${tag} does not exist; push the signed tag first`)
   if (reference.object?.type !== 'tag' || !/^[0-9a-f]{40}$/.test(reference.object?.sha ?? '')) {
     fail(`Release tag ${tag} must be an annotated, signed tag, not a lightweight tag`)
@@ -543,6 +586,20 @@ function validateSignedReleaseTag(reference, annotated, { tag, commit }) {
     verification.signature.trim().length === 0
   ) {
     fail(`GitHub does not report a verified signature on release tag ${tag} (${verification?.reason ?? 'unknown'})`)
+  }
+  const expected = taggerEmail.toLowerCase()
+  if (typeof annotated.tagger?.email !== 'string' || annotated.tagger.email.toLowerCase() !== expected) {
+    fail(`Release tag ${tag} must be tagged by the release owner (${taggerEmail}), not ${annotated.tagger?.email}`)
+  }
+  const signedTaggers = (typeof verification.payload === 'string' ? verification.payload : '')
+    .split('\n')
+    .filter(line => line.startsWith('tagger '))
+  if (
+    signedTaggers.length !== 1 ||
+    !/^tagger [^<>\n]* <([^<>\s]+)> \d+ [+-]\d{4}$/.test(signedTaggers[0]) ||
+    signedTaggers[0].match(/<([^<>\s]+)>/)[1].toLowerCase() !== expected
+  ) {
+    fail(`The signed payload of release tag ${tag} must name the release owner (${taggerEmail}) as its only tagger`)
   }
 }
 
@@ -567,7 +624,7 @@ async function verifyReleaseProtections(repo, candidate, token) {
     )
     rulesets.push(await detail.json())
   }
-  validateReleaseTagProtection(rulesets, candidate.tag)
+  const { bypassListsVisible } = validateReleaseTagProtection(rulesets, candidate.tag)
 
   const referenceResponse = await githubRequest(
     `https://api.github.com/repos/${repo}/git/ref/tags/${encodeURIComponent(candidate.tag)}`,
@@ -582,9 +639,17 @@ async function verifyReleaseProtections(repo, candidate, token) {
           await githubRequest(`https://api.github.com/repos/${repo}/git/tags/${reference.object.sha}`, token)
         ).json()
       : null
-  validateSignedReleaseTag(reference, annotated, { tag: candidate.tag, commit: candidate.sourceCommit })
+  validateSignedReleaseTag(reference, annotated, {
+    tag: candidate.tag,
+    commit: candidate.sourceCommit,
+    taggerEmail: candidate.releaseTaggerEmail,
+  })
   process.stdout.write(
-    `Verified release protections: ${waitTimer}-minute wait timer, protected tag ruleset, signed ${candidate.tag} at ${candidate.sourceCommit}\n`,
+    `Verified release protections: ${waitTimer}-minute wait timer without administrator bypass, protected tag ruleset, ` +
+      `${candidate.tag} at ${candidate.sourceCommit} signed by ${candidate.releaseTaggerEmail}\n` +
+      (bypassListsVisible
+        ? 'Tag ruleset bypass lists hold only repository-role or organization-admin actors\n'
+        : 'Tag ruleset bypass lists are not visible to this token; who may create the tag rests on dashboard settings\n'),
   )
 }
 
@@ -988,6 +1053,7 @@ async function selfTest() {
       updaterPublicKey,
       publicationDate: '2026-08-25',
       approvedBy: 'Release Owner',
+      releaseTaggerEmail: 'owner@example.com',
     },
   }
   const candidate = validateGate(gate, { phase: 'prepare', now: new Date('2026-08-25T12:00:00Z') })
@@ -1108,6 +1174,22 @@ async function selfTest() {
         validateGate({ ...gate, blockers: [{ status: 'open' }] }, { phase: 'prepare', now: new Date('2026-08-25') }),
     ],
     ['stale publication date', () => validateGate(gate, { phase: 'prepare', now: new Date('2026-08-26T00:00:00Z') })],
+    [
+      'no expected release tagger',
+      () =>
+        validateGate(
+          { ...gate, candidate: { ...gate.candidate, releaseTaggerEmail: null } },
+          { phase: 'prepare', now: new Date('2026-08-25T12:00:00Z') },
+        ),
+    ],
+    [
+      'release tagger is not an email',
+      () =>
+        validateGate(
+          { ...gate, candidate: { ...gate.candidate, releaseTaggerEmail: 'Release Owner <owner@example.com>' } },
+          { phase: 'prepare', now: new Date('2026-08-25T12:00:00Z') },
+        ),
+    ],
     ['wrong release ID', () => validateRelease({ ...validRelease, id: 124 }, candidate)],
     ['published release', () => validateRelease({ ...validRelease, draft: false }, candidate)],
     [
@@ -1159,6 +1241,7 @@ async function selfTest() {
   const environment = {
     name: 'release-publication',
     protection_rules: [{ id: 1, node_id: 'n1', type: 'wait_timer', wait_timer: 1440 }],
+    can_admins_bypass: false,
     deployment_branch_policy: { protected_branches: false, custom_branch_policies: true },
   }
   const branchPolicies = { total_count: 1, branch_policies: [{ id: 2, name: 'main', type: 'branch' }] }
@@ -1180,7 +1263,15 @@ async function selfTest() {
     conditions: { ref_name: { include: ['refs/tags/v*'], exclude: [] } },
     rules: [{ type: 'creation' }, { type: 'update' }, { type: 'deletion' }],
   }
-  validateReleaseTagProtection([tagRuleset], candidate.tag)
+  if (validateReleaseTagProtection([tagRuleset], candidate.tag).bypassListsVisible) {
+    fail('A ruleset without a readable bypass list was reported as visible')
+  }
+  const ownerBypass = [{ actor_id: 5, actor_type: 'RepositoryRole', bypass_mode: 'always' }]
+  if (
+    !validateReleaseTagProtection([{ ...tagRuleset, bypass_actors: ownerBypass }], candidate.tag).bypassListsVisible
+  ) {
+    fail('A readable owner-only bypass list was not reported as visible')
+  }
   validateReleaseTagProtection(
     [
       { ...tagRuleset, id: 10, rules: [{ type: 'creation' }, { type: 'deletion' }] },
@@ -1195,19 +1286,23 @@ async function selfTest() {
   )
   const tagObjectSha = '7'.repeat(40)
   const tagReference = { ref: `refs/tags/${candidate.tag}`, object: { type: 'tag', sha: tagObjectSha } }
+  const tagArguments = { tag: candidate.tag, commit: candidate.sourceCommit, taggerEmail: candidate.releaseTaggerEmail }
+  const tagPayload = tagger =>
+    `object ${candidate.sourceCommit}\ntype commit\ntag ${candidate.tag}\ntagger ${tagger} 1762905600 +0000\n\nDepoAudio ${candidate.tag}\n`
   const signedTag = {
     sha: tagObjectSha,
     tag: candidate.tag,
+    tagger: { name: 'Release Owner', email: 'Owner@Example.com', date: '2026-11-12T00:00:00Z' },
     object: { type: 'commit', sha: candidate.sourceCommit },
     verification: {
       verified: true,
       reason: 'valid',
       signature: '-----BEGIN SSH SIGNATURE-----\nx\n-----END SSH SIGNATURE-----',
-      payload: 'object ...',
+      payload: tagPayload('Release Owner <Owner@Example.com>'),
       verified_at: '2026-11-12T00:00:00Z',
     },
   }
-  validateSignedReleaseTag(tagReference, signedTag, { tag: candidate.tag, commit: candidate.sourceCommit })
+  validateSignedReleaseTag(tagReference, signedTag, tagArguments)
   const rejectedProtection = []
   for (const [label, operation] of [
     [
@@ -1221,6 +1316,14 @@ async function selfTest() {
           { ...environment, protection_rules: [{ id: 1, node_id: 'n1', type: 'wait_timer', wait_timer: 60 }] },
           branchPolicies,
         ),
+    ],
+    [
+      'administrators can bypass the wait timer',
+      () => validatePublicationEnvironment({ ...environment, can_admins_bypass: true }, branchPolicies),
+    ],
+    [
+      'unknown administrator bypass',
+      () => validatePublicationEnvironment({ ...environment, can_admins_bypass: undefined }, branchPolicies),
     ],
     ['wrong environment', () => validatePublicationEnvironment({ ...environment, name: 'Production' }, branchPolicies)],
     [
@@ -1274,12 +1377,79 @@ async function selfTest() {
         ),
     ],
     [
+      'app on the tag bypass list',
+      () =>
+        validateReleaseTagProtection(
+          [
+            {
+              ...tagRuleset,
+              bypass_actors: [...ownerBypass, { actor_id: 15368, actor_type: 'Integration', bypass_mode: 'always' }],
+            },
+          ],
+          candidate.tag,
+        ),
+    ],
+    [
+      'deploy key on the tag bypass list',
+      () =>
+        validateReleaseTagProtection(
+          [{ ...tagRuleset, bypass_actors: [{ actor_id: null, actor_type: 'DeployKey', bypass_mode: 'always' }] }],
+          candidate.tag,
+        ),
+    ],
+    [
+      'team on the tag bypass list',
+      () =>
+        validateReleaseTagProtection(
+          [{ ...tagRuleset, bypass_actors: [{ actor_id: 7, actor_type: 'Team', bypass_mode: 'always' }] }],
+          candidate.tag,
+        ),
+    ],
+    [
+      'tag by another account',
+      () =>
+        validateSignedReleaseTag(
+          tagReference,
+          {
+            ...signedTag,
+            tagger: { ...signedTag.tagger, email: 'someone@example.com' },
+            verification: { ...signedTag.verification, payload: tagPayload('Someone <someone@example.com>') },
+          },
+          tagArguments,
+        ),
+    ],
+    [
+      'signed payload names another tagger',
+      () =>
+        validateSignedReleaseTag(
+          tagReference,
+          {
+            ...signedTag,
+            verification: { ...signedTag.verification, payload: tagPayload('Someone <someone@example.com>') },
+          },
+          tagArguments,
+        ),
+    ],
+    [
+      'signed payload without a tagger',
+      () =>
+        validateSignedReleaseTag(
+          tagReference,
+          { ...signedTag, verification: { ...signedTag.verification, payload: 'object x\n' } },
+          tagArguments,
+        ),
+    ],
+    [
+      'no expected tagger',
+      () => validateSignedReleaseTag(tagReference, signedTag, { ...tagArguments, taggerEmail: null }),
+    ],
+    [
       'lightweight tag',
       () =>
         validateSignedReleaseTag(
           { ...tagReference, object: { type: 'commit', sha: candidate.sourceCommit } },
           signedTag,
-          { tag: candidate.tag, commit: candidate.sourceCommit },
+          tagArguments,
         ),
     ],
     [
@@ -1288,7 +1458,7 @@ async function selfTest() {
         validateSignedReleaseTag(
           tagReference,
           { ...signedTag, verification: { verified: false, reason: 'unsigned', signature: null, payload: null } },
-          { tag: candidate.tag, commit: candidate.sourceCommit },
+          tagArguments,
         ),
     ],
     [
@@ -1297,12 +1467,12 @@ async function selfTest() {
         validateSignedReleaseTag(
           tagReference,
           { ...signedTag, verification: { ...signedTag.verification, verified: false, reason: 'unknown_key' } },
-          { tag: candidate.tag, commit: candidate.sourceCommit },
+          tagArguments,
         ),
     ],
     [
       'tag at another commit',
-      () => validateSignedReleaseTag(tagReference, signedTag, { tag: candidate.tag, commit: 'e'.repeat(40) }),
+      () => validateSignedReleaseTag(tagReference, signedTag, { ...tagArguments, commit: 'e'.repeat(40) }),
     ],
     [
       'nested tag object',
@@ -1310,21 +1480,10 @@ async function selfTest() {
         validateSignedReleaseTag(
           tagReference,
           { ...signedTag, object: { type: 'tag', sha: '8'.repeat(40) } },
-          { tag: candidate.tag, commit: candidate.sourceCommit },
+          tagArguments,
         ),
     ],
-    [
-      'renamed tag object',
-      () =>
-        validateSignedReleaseTag(
-          tagReference,
-          { ...signedTag, tag: 'v1.0.4' },
-          {
-            tag: candidate.tag,
-            commit: candidate.sourceCommit,
-          },
-        ),
-    ],
+    ['renamed tag object', () => validateSignedReleaseTag(tagReference, { ...signedTag, tag: 'v1.0.4' }, tagArguments)],
   ]) {
     try {
       operation()

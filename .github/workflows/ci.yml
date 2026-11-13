@@ -6,12 +6,17 @@ on:
     branches: [main]
   # Weekly run on main so an expiring advisory exception, a new RustSec or npm
   # advisory, or a date-bound release-contract check turns CI red within a
-  # week even when nobody pushes (platform plan 10.2; audit DA-04).
+  # week of a quiet period (platform plan 10.2; audit DA-04). GitHub disables
+  # scheduled workflows on a public repository after 60 days with no
+  # repository activity, so this is not a signal for a repository that has
+  # been quiet longer than that; see README.md (Quality gates).
   schedule:
     - cron: '23 9 * * 1'
 
 concurrency:
-  group: ci-${{ github.ref }}
+  # The event name keeps scheduled runs in their own group, so a push to main
+  # cannot cancel the weekly run part-way through.
+  group: ci-${{ github.event_name }}-${{ github.ref }}
   cancel-in-progress: true
 
 permissions:

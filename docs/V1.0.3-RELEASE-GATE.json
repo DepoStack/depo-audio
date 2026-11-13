@@ -11,7 +11,8 @@
     "updater": "undecided",
     "updaterPublicKey": null,
     "publicationDate": null,
-    "approvedBy": null
+    "approvedBy": null,
+    "releaseTaggerEmail": null
   },
   "blockers": [
     {
