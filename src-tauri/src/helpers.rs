@@ -261,7 +261,7 @@ pub(crate) fn strip_sgmca_header(src: &Path) -> Result<(PathBuf, bool), String> 
     strip_sgmca_header_with_cancel(src, None)
 }
 
-fn prepare_audio_feed_with_cancel(
+pub(crate) fn prepare_audio_feed_with_cancel(
     src: &Path,
     cancelled: Option<&(dyn Fn() -> bool + Send + Sync)>,
 ) -> Result<(PathBuf, Option<crate::safety::TempFile>), String> {

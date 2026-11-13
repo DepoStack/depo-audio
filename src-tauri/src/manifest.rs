@@ -413,7 +413,7 @@ pub(crate) fn write_manifest(path: &Path, manifest: &ExportManifest) -> Result<(
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     struct TestDir(PathBuf);
@@ -827,10 +827,15 @@ mod tests {
     }
 
     fn schema_errors(manifest: &ExportManifest) -> Vec<String> {
+        schema_errors_for_value(&serde_json::to_value(manifest).unwrap())
+    }
+
+    /// Schema errors for a record as written to disk (conversion tests read
+    /// real `<output>.depoaudio.json` files back through this).
+    pub(crate) fn schema_errors_for_value(value: &serde_json::Value) -> Vec<String> {
         let schema: serde_json::Value = serde_json::from_str(SCHEMA).expect("schema is JSON");
-        let value = serde_json::to_value(manifest).unwrap();
         let mut errors = Vec::new();
-        validate(&schema, &value, "$", &mut errors);
+        validate(&schema, value, "$", &mut errors);
         errors
     }
 

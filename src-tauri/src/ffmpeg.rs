@@ -239,7 +239,13 @@ pub(crate) async fn probe_channels_cancellable(
     feed: &Path,
     cancelled: CancelCheck<'_>,
 ) -> Option<u32> {
-    let args: Vec<String> = vec![
+    let out = sidecar_output_cancellable(app, ffprobe_bin_name(), channel_probe_args(feed), 30, cancelled).await?;
+    parse_channel_probe(&out.stdout)
+}
+
+/// ffprobe arguments for the channel count of the first audio stream.
+pub(crate) fn channel_probe_args(feed: &Path) -> Vec<String> {
+    vec![
         "-v".into(),
         "quiet".into(),
         "-protocol_whitelist".into(),
@@ -250,9 +256,12 @@ pub(crate) async fn probe_channels_cancellable(
         "-select_streams".into(),
         "a:0".into(),
         feed.to_string_lossy().to_string(),
-    ];
-    let out = sidecar_output_cancellable(app, ffprobe_bin_name(), args, 30, cancelled).await?;
-    let text = String::from_utf8_lossy(&out.stdout);
+    ]
+}
+
+/// Channel count from `channel_probe_args` output; zero or unreadable is None.
+pub(crate) fn parse_channel_probe(stdout: &[u8]) -> Option<u32> {
+    let text = String::from_utf8_lossy(stdout);
     let v = serde_json::from_str::<serde_json::Value>(&text).ok()?;
     let ch = v["streams"][0]["channels"].as_u64()?;
     if ch > 0 {
@@ -270,7 +279,19 @@ pub(crate) async fn probe_manifest_source_cancellable(
     feed: &Path,
     cancelled: CancelCheck<'_>,
 ) -> crate::manifest::ProbedSource {
-    let args: Vec<String> = vec![
+    let Some(out) = sidecar_output_cancellable(app, ffprobe_bin_name(), manifest_probe_args(feed), 30, cancelled).await
+    else {
+        return crate::manifest::ProbedSource::default();
+    };
+    serde_json::from_slice::<serde_json::Value>(&out.stdout)
+        .map(|probe| crate::manifest::parse_probe(&probe))
+        .unwrap_or_default()
+}
+
+/// ffprobe arguments for the export record's source facts (format tags and
+/// the first audio stream).
+pub(crate) fn manifest_probe_args(feed: &Path) -> Vec<String> {
+    vec![
         "-v".into(),
         "quiet".into(),
         "-protocol_whitelist".into(),
@@ -282,13 +303,7 @@ pub(crate) async fn probe_manifest_source_cancellable(
         "-select_streams".into(),
         "a:0".into(),
         feed.to_string_lossy().to_string(),
-    ];
-    let Some(out) = sidecar_output_cancellable(app, ffprobe_bin_name(), args, 30, cancelled).await else {
-        return crate::manifest::ProbedSource::default();
-    };
-    serde_json::from_slice::<serde_json::Value>(&out.stdout)
-        .map(|probe| crate::manifest::parse_probe(&probe))
-        .unwrap_or_default()
+    ]
 }
 
 // ── Filter chain builder ─────────────────────────────────────────────────────
