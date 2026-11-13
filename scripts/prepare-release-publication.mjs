@@ -528,7 +528,7 @@ function refPatternMatches(pattern, ref) {
       index += 1
     } else if (character === '*') expression += '[^/]*'
     else if (character === '?') expression += '[^/]'
-    else expression += character.replace(/[.+^$()|]/g, '\\$&')
+    else expression += character.replace(/[.+^$()|\\]/g, '\\$&')
   }
   return new RegExp(`${expression}$`).test(ref)
 }
