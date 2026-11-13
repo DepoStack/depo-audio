@@ -48,7 +48,7 @@
       "icons/icon.ico",
       "icons/icon.png"
     ],
-    "category": "public.app-category.music",
+    "category": "public.app-category.productivity",
     "copyright": "2025 Andrew Mayes",
     "licenseFile": "installer/license.rtf",
     "resources": [

@@ -240,16 +240,17 @@ export default function App() {
           <div className="py-0.5 text-[11px] text-[hsl(var(--sub))]">{updaterLabel}</div>
         </div>
 
-        {/* DepoStack brand link — DepoAudio is one tool in the suite */}
+        {/* DepoStack brand link: DepoAudio, powered by DepoStack */}
         <button
           type="button"
           onClick={() =>
             openUrl(DEPOSTACK_URL).catch(error => setSystemError(`Could not open DepoStack: ${String(error)}`))
           }
-          title="Part of the DepoStack suite — opens depostack.com"
+          title="DepoAudio, powered by DepoStack. Opens depostack.com"
           className="hidden sm:block mx-3 mb-1.5 py-1 text-left text-[10.5px] text-[hsl(var(--sub))] hover:text-foreground transition-colors"
         >
-          A <span className="font-semibold text-[hsl(var(--text2))]">DepoStack</span> project&nbsp;↗
+          Powered by <span className="font-semibold text-[hsl(var(--text2))]">DepoStack</span>
+          <span aria-hidden="true">&nbsp;↗</span>
         </button>
 
         <div className="app-sidebar-actions flex sm:justify-start justify-center items-center gap-1 px-2 sm:px-3 pb-3">

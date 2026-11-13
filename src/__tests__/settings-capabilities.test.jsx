@@ -22,6 +22,16 @@ describe('SettingsPanel release boundaries', () => {
     openUrl.mockReset()
   })
 
+  it('names DepoAudio as powered by DepoStack in About', async () => {
+    invoke.mockResolvedValue([])
+
+    renderSettings()
+    fireEvent.click(screen.getByRole('button', { name: 'Updates' }))
+
+    expect(await screen.findByText('DepoAudio, powered by DepoStack')).toBeVisible()
+    expect(screen.queryByText(/part of DepoStack/i)).not.toBeInTheDocument()
+  })
+
   it('shows a deletion-only empty state without requesting capabilities or model downloads', async () => {
     invoke.mockResolvedValue([])
 

@@ -708,7 +708,7 @@ export default function SettingsPanel({
 
                     <div className="flex items-center justify-between gap-3 border-t border-border pt-3">
                       <div className="flex flex-col min-w-0">
-                        <span className="text-[12px] font-medium text-foreground">DepoAudio is part of DepoStack</span>
+                        <span className="text-[12px] font-medium text-foreground">DepoAudio, powered by DepoStack</span>
                         <span className="text-[11px] text-[hsl(var(--sub))] mt-0.5">
                           A growing suite of tools built for court reporters. DepoAudio itself stays free and open
                           source.
