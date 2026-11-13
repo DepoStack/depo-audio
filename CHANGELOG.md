@@ -19,7 +19,7 @@ These changes are on `main` but not in the existing private v1.0.3 candidate, wh
 ### Removed
 
 - **The seven uncompiled learned-model sources left `main`.** `vad.rs`, `denoise.rs`, `dereverb.rs`, `enhance.rs`, `mel.rs`, `scoring.rs` and `speakers.rs` were not compiled into v1.0.3. They stay in git history; the last commit that has them is `ceafc9c`. **Owner action:** to keep them easy to find, tag that commit (suggested name `archive/learned-model-sources`); no tag was created by this change. `npm run models:check` now fails if any of these files returns.
-- **The hidden Merge commands are no longer reachable over IPC.** `detect_sync_cmd` and `merge_audio_cmd` are unregistered while Merge stays hidden; `merge.rs` and `MergeTab.jsx` remain and are still unit-tested, so whether Merge ships is still the owner's decision. The release contract fails if either command is registered again without that decision.
+- **The hidden Merge commands are no longer reachable over IPC.** `detect_sync_cmd` and `merge_audio_cmd` are unregistered while Merge stays hidden; `merge.rs` and `MergeTab.jsx` remain on `main` for now and are still unit-tested. The owner decided on 2026-11-13 to move Merge to a branch and return to it when Transcript handles multi-file proceedings; that move is a separate change and has not been made here. The release contract fails if either command is registered again without that decision.
 
 ### Changed
 
