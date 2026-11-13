@@ -156,6 +156,12 @@ npm run tauri build   # package installers
 
 ### Quality gates
 
+`npm run ci:local` runs every check below in CI order, stops on the first
+failure, and writes a JSON evidence file to `.ci-evidence/`. It needs
+`cargo-deny`, the Tauri system libraries, and an `ffmpeg`/`ffprobe` on `PATH`
+(it stages them as temporary sidecars and removes them afterwards). The
+individual commands are:
+
 ```bash
 npm run release:check
 npm run lint

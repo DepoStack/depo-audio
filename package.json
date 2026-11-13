@@ -25,7 +25,8 @@
     "release:check": "node scripts/release-contract-check.mjs && npm run models:self-test && npm run models:check && npm run ftr:self-test && npm run notices:self-test && npm run notices:check && node scripts/release-artifact-inventory.mjs --self-test && node scripts/normalize-release-sbom.mjs --self-test && node scripts/normalize-cargo-about-report.mjs --self-test && node scripts/upload-draft-release-assets.mjs --self-test && node scripts/prepare-release-publication.mjs --self-test",
     "size:check": "node scripts/check-client-size.mjs",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "ci:local": "bash scripts/ci-local.sh"
   },
   "dependencies": {
     "@radix-ui/react-checkbox": "^1.3.11",
