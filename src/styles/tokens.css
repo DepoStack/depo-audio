@@ -25,7 +25,8 @@
     --input: 267 16% 22%;
     --ring: 36 79% 57%;
     --gold: 36 79% 57%;
-    --gold-hi: 36 83% 65%;
+    /* Hover gold: the brand gold.300 (#F0B456), as color-gold-hi */
+    --gold-hi: 36.6 83.6% 63.9%;
     --gold-dim: 36 79% 57% / 0.14;
     --gold-glow: 36 79% 57% / 0.25;
     --success: 166 51% 51%;
@@ -38,7 +39,7 @@
     --blue: 226 49% 77%;
     --shadow-card: 0 22px 50px -24px rgba(0,0,0,0.6);
     --color-gold: #E8A33A;
-    --color-gold-hi: #f0b65e;
+    --color-gold-hi: #F0B456;
     --color-gold-dim: rgba(232,163,58,0.14);
     --color-sub: #b1a5c1;
     --color-green: #44C2A4;
@@ -77,7 +78,8 @@
     /* Focus ring — plum-2 (gold is invisible on cream); AAA-visible 7.8:1 */
     --ring: 276 28% 34%;
     --gold: 36 79% 57%;
-    --gold-hi: 36 83% 65%;
+    /* Hover gold: the brand gold.300 (#F0B456), as color-gold-hi */
+    --gold-hi: 36.6 83.6% 63.9%;
     --gold-dim: 36 79% 57% / 0.12;
     --gold-glow: 36 79% 57% / 0.22;
     --success: 166 54% 21%;
@@ -90,7 +92,7 @@
     --blue: 226 33% 32%;
     --shadow-card: 0 18px 50px -24px rgba(62,42,78,0.35);
     --color-gold: #E8A33A;
-    --color-gold-hi: #f0b65e;
+    --color-gold-hi: #F0B456;
     --color-gold-dim: rgba(232,163,58,0.12);
     --color-sub: #5b4c68;
     --color-green: #185144;

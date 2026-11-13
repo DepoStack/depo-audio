@@ -38,6 +38,8 @@ function contrast(a, b) {
 }
 
 const PLUM_BLACK = '#20182A' // depo-stack tokens: ref.color.ink.950, "the ink on gold in both themes"
+const BRAND_GOLD = '#E8A33A' // depo-stack tokens: ref.color.gold.400, the gold fill
+const BRAND_GOLD_HOVER = '#F0B456' // depo-stack tokens: ref.color.gold.300, --ds-gold-hover
 
 describe('on-gold ink', () => {
   for (const theme of ['dark', 'light']) {
@@ -59,6 +61,31 @@ describe('on-gold ink', () => {
       for (const [name, fill] of Object.entries(fills)) {
         expect(contrast(ink, fill), `${theme} primary-foreground on ${name}`).toBeGreaterThanOrEqual(7)
       }
+    })
+  }
+
+  for (const theme of ['dark', 'light']) {
+    const group = tokens.semantic[theme]
+
+    it(`${theme}: the hover gold is the brand gold.300 exactly, as hsl and as hex`, () => {
+      expect(hslToRgb(group['gold-hi'].$value)).toEqual(hexToRgb(BRAND_GOLD_HOVER))
+      expect(hexToRgb(group['color-gold-hi'].$value)).toEqual(hexToRgb(BRAND_GOLD_HOVER))
+    })
+
+    it(`${theme}: the hsl and hex variants of each gold agree`, () => {
+      // `gold` is written with whole percentages, so it may round one step
+      // away from its hex form in a channel; anything more is drift.
+      for (const [hsl, hex] of [
+        ['gold', 'color-gold'],
+        ['gold-hi', 'color-gold-hi'],
+      ]) {
+        const a = hslToRgb(group[hsl].$value)
+        const b = hexToRgb(group[hex].$value)
+        a.forEach((channel, index) => {
+          expect(Math.abs(channel - b[index]), `${theme} ${hsl} vs ${hex}`).toBeLessThanOrEqual(1)
+        })
+      }
+      expect(hexToRgb(group['color-gold'].$value)).toEqual(hexToRgb(BRAND_GOLD))
     })
   }
 
