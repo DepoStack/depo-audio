@@ -2,7 +2,7 @@
 name = "depo-audio"
 version = "1.0.3"
 edition = "2021"
-rust-version = "1.88"
+rust-version = "1.90"
 license = "MIT"
 publish = false
 
@@ -25,6 +25,8 @@ tokio = { version = "1", features = ["sync", "time"] }
 regex = "1"
 chrono = "0.4"
 uuid = { version = "1", features = ["v4"] }
+# SHA-256 for the export record (DA-08); already in the Tauri build graph
+sha2 = "0.10"
 
 # System
 dirs-next = "2.0"

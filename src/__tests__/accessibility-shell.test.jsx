@@ -105,6 +105,14 @@ describe('accessible app shell and Library', () => {
     vi.clearAllMocks()
   })
 
+  it('links to DepoStack as "powered by DepoStack"', () => {
+    render(<App />)
+
+    const link = screen.getByRole('button', { name: 'Powered by DepoStack' })
+    expect(link).toHaveAttribute('title', 'DepoAudio, powered by DepoStack. Opens depostack.com')
+    expect(screen.queryByText(/DepoStack suite|DepoStack project/i)).not.toBeInTheDocument()
+  })
+
   it('provides the everyday shell landmark and keeps raw storage diagnostics behind disclosure', async () => {
     invoke.mockRejectedValue(new TypeError('invoke unavailable'))
 

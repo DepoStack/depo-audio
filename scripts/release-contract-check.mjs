@@ -51,6 +51,7 @@ const modelsSource = read('src-tauri/src/models.rs')
 const canonicalReleaseUrl = 'https://github.com/DepoStack/depo-audio/releases'
 const configuredReleaseUrl = appConstants.match(/^export const DEPOAUDIO_RELEASES_URL = ['"]([^'"]+)['"]$/m)?.[1]
 const installerReleaseUrl = installerLicense.match(/^(https:\/\/[^\s]+)\. DepoAudio's MIT license does\\par$/m)?.[1]
+const lockedTauriCliVersion = packageLock.packages?.['node_modules/@tauri-apps/cli']?.version
 const releaseFinalizeJob = releaseWorkflow.slice(releaseWorkflow.indexOf('\n  finalize:\n'))
 const releaseInspectionJob = publishReleaseWorkflow.slice(
   publishReleaseWorkflow.indexOf('\n  inspect:\n'),
@@ -62,25 +63,76 @@ const requiresPublicationReadyHeading = process.argv.includes('--publication-rea
 const candidateIsGo = releaseCandidate.includes('Status: **GO for publication**')
 const candidateIsNoGo = releaseCandidate.includes('Status: **NO-GO for publication; private RC evidence only**')
 
-const advisoryExceptionIds = [
-  'RUSTSEC-2025-0081',
-  'RUSTSEC-2025-0075',
-  'RUSTSEC-2025-0080',
-  'RUSTSEC-2025-0100',
-  'RUSTSEC-2025-0098',
-]
-for (const advisory of advisoryExceptionIds) {
-  expect(denyPolicy.includes(`"${advisory}"`), `deny.toml must explicitly scope advisory exception ${advisory}`)
+// The five rust-unic advisories (RUSTSEC-2025-0075, -0080, -0081, -0098,
+// -0100) entered only through urlpattern 0.3 -> tauri-utils 2.9. Tauri 2.12
+// moved tauri-utils to urlpattern 0.6, so the time-bounded exception that
+// expired on 2026-09-30 was deleted rather than renewed. Any future advisory
+// exception must be re-added deliberately with its own owner and expiry.
+const lockedPackageVersions = name =>
+  [...cargoLock.matchAll(/^\[\[package\]\]\s*\r?\nname = "([^"]+)"\s*\r?\nversion = "([^"]+)"/gm)]
+    .filter(match => match[1] === name)
+    .map(match => match[2])
+const atLeast = (actual, minimum) => {
+  const left = actual.split('.').map(Number)
+  const right = minimum.split('.').map(Number)
+  for (let index = 0; index < right.length; index += 1) {
+    if ((left[index] ?? 0) !== right[index]) return (left[index] ?? 0) > right[index]
+  }
+  return true
 }
+const denyAdvisorySection = (denyPolicy.match(/^\[advisories\]\s*\n([\s\S]*?)(?=^\[)/m)?.[1] ?? '')
+  .split('\n')
+  .filter(line => !line.trimStart().startsWith('#'))
+  .join('\n')
 expect(
-  denyPolicy.includes('Review/remove by: 2026-09-30') &&
-    denyPolicy.includes('Owner: Andrew Mayes') &&
-    Date.now() <= Date.parse('2026-09-30T23:59:59Z'),
-  'The rust-unic maintenance exception must have a current named owner and unexpired review date',
+  /^ignore = \[\]$/m.test(denyAdvisorySection) && !/RUSTSEC-\d{4}-\d{4}/.test(denyAdvisorySection),
+  'deny.toml must not carry advisory exceptions; the expired rust-unic exception must stay deleted',
+)
+expect(
+  !/^\[\[package\]\]\s*\r?\nname = "unic-/m.test(cargoLock),
+  'Cargo.lock must not resolve any unmaintained unic-* crate',
+)
+expect(
+  lockedPackageVersions('tauri').length === 1 && atLeast(lockedPackageVersions('tauri')[0], '2.12.5'),
+  'Cargo.lock must resolve exactly one Tauri at 2.12.5 or later',
+)
+expect(
+  lockedPackageVersions('urlpattern').every(locked => atLeast(locked, '0.6.0')),
+  'Cargo.lock must not resolve urlpattern older than 0.6',
+)
+expect(
+  /^ {2}schedule:\s*\n {4}- cron: '[0-9]{1,2} [0-9]{1,2} \* \* [0-6]'$/m.test(ciWorkflow),
+  'CI must also run weekly on a schedule so expiring exceptions and new advisories turn main red',
+)
+expect(
+  ciWorkflow.includes('group: ci-${{ github.event_name }}-${{ github.ref }}'),
+  'a push to main must not cancel the weekly scheduled CI run',
 )
 expect(
   ciWorkflow.includes('name: Enforce Rust advisory policy') && !ciWorkflow.includes('continue-on-error: true'),
   'Rust advisory policy must block CI outside the exact deny.toml exceptions',
+)
+// DA-13: secret scanning runs on pull requests, pushes to main and the
+// weekly run. The repository is public, so a committed credential is a
+// published credential.
+// Every action stays pinned to a full commit SHA, and the gitleaks binary is
+// built from a module version whose hash the Go checksum database fixes.
+const ciActionRefs = [...ciWorkflow.matchAll(/^\s*-?\s*uses:\s*(\S+)/gm)].map(match => match[1])
+expect(
+  ciActionRefs.length > 0 && ciActionRefs.every(ref => /^[\w.-]+\/[\w./-]+@[0-9a-f]{40}$/.test(ref)),
+  'every action in ci.yml must be pinned to a full commit SHA',
+)
+const secretScanJob = ciWorkflow.match(/^ {2}secret-scan:\n[\s\S]*?(?=^ {2}[\w-]+:\n|(?![\s\S]))/m)?.[0] ?? ''
+expect(
+  secretScanJob.includes('fetch-depth: 0') &&
+    secretScanJob.includes('persist-credentials: false') &&
+    /uses: actions\/setup-go@[0-9a-f]{40} /.test(secretScanJob) &&
+    secretScanJob.includes('GOTOOLCHAIN: local') &&
+    secretScanJob.includes('go install github.com/zricethezav/gitleaks/v8@v8.30.1') &&
+    secretScanJob.includes('h1:PmEvCfVI7ti9dV3s5aMZUY7sS2GxRvG3yzih7E+cS3w=') &&
+    /gitleaks" git --no-banner --redact --exit-code 1 --log-opts=--all/.test(secretScanJob) &&
+    !ciWorkflow.includes('gitleaks/gitleaks-action'),
+  'ci.yml must scan the full git history with the pinned, hash-checked gitleaks v8.30.1 binary',
 )
 
 const version = packageJson.version
@@ -92,6 +144,8 @@ const isIsoDate = value => {
   const parsed = new Date(`${value}T00:00:00Z`)
   return !Number.isNaN(parsed.valueOf()) && parsed.toISOString().slice(0, 10) === value
 }
+// Same rule as isTaggerEmail in prepare-release-publication.mjs.
+const isTaggerEmail = value => typeof value === 'string' && /^[^\s<>@]+@[^\s<>@]+\.[^\s<>@]+$/.test(value)
 const isTauriUpdaterPublicKey = value => {
   if (typeof value !== 'string' || !/^[A-Za-z0-9+/]+={0,2}$/.test(value)) return false
   try {
@@ -151,6 +205,11 @@ expect(
   gateCandidate.approvedBy === null ||
     (typeof gateCandidate.approvedBy === 'string' && gateCandidate.approvedBy.trim().length > 0),
   'the release gate candidate approvedBy must be null or a named accountable reviewer',
+)
+expect(
+  Object.hasOwn(gateCandidate, 'releaseTaggerEmail') &&
+    (gateCandidate.releaseTaggerEmail === null || isTaggerEmail(gateCandidate.releaseTaggerEmail)),
+  "the release gate candidate releaseTaggerEmail must be null or the release owner's verified GitHub email",
 )
 expect(
   gateBlockerIds.length === new Set(gateBlockerIds).size,
@@ -227,6 +286,10 @@ if (requiresPublicationReadyHeading) {
     typeof gateCandidate.approvedBy === 'string' && gateCandidate.approvedBy.trim().length > 0,
     'publication requires a named accountable reviewer',
   )
+  expect(
+    isTaggerEmail(gateCandidate.releaseTaggerEmail),
+    'publication requires the release owner tagger email that the signed release tag must carry',
+  )
 }
 
 expect(packageLock.version === version, 'package-lock.json top-level version must match package.json')
@@ -268,6 +331,16 @@ const bundleResources = tauriConfig.bundle?.resources ?? []
 expect(
   !bundleResources.some(resource => /(?:^|\/)(?:model|models|onnxruntime)(?:\/|$)|\.onnx$/i.test(resource)),
   'tauri.conf.json must not bundle learned-model material or ONNX Runtime',
+)
+// tauri-build 2.7+ statically links the MSVC runtime into the Windows binary
+// unless this is false. Keep the dynamic linking the v1.0.3 candidate was built
+// with; embedding the runtime is a ledger and owner decision, not a default.
+expect(
+  tauriConfig.build?.windows?.staticVCRuntime === false &&
+    tauriConfig.bundle?.windows?.bundleVCRuntime === undefined &&
+    !releaseWorkflow.includes('STATIC_VCRUNTIME') &&
+    !ciWorkflow.includes('STATIC_VCRUNTIME'),
+  'tauri.conf.json must set build.windows.staticVCRuntime to false, and nothing may bundle or statically link the Visual C++ runtime',
 )
 expect(
   modelsSource.includes('legacy_model_cleanup_catalog') &&
@@ -455,7 +528,14 @@ expect(
     protectedPublicationJob.includes('release-contract-check.mjs --publication-ready') &&
     publicationReadyCalls.length === 1 &&
     protectedPublicationJob.includes('Verify publication environment protections') &&
-    protectedPublicationJob.includes('.prevent_self_review == true') &&
+    protectedPublicationJob.includes('.type == "wait_timer"') &&
+    protectedPublicationJob.includes('.wait_timer >= 1440') &&
+    protectedPublicationJob.includes('.can_admins_bypass == false') &&
+    publicationHelper.includes('environment.can_admins_bypass !== false') &&
+    publicationHelper.includes('annotated.tagger?.email') &&
+    publicationHelper.includes('taggerEmail: candidate.releaseTaggerEmail') &&
+    publicationHelper.includes("const ALLOWED_TAG_BYPASS_ACTOR_TYPES = ['RepositoryRole', 'OrganizationAdmin']") &&
+    !publishReleaseWorkflow.includes('.prevent_self_review == true') &&
     protectedPublicationJob.includes("--header 'X-GitHub-Api-Version: 2026-03-10'") &&
     protectedPublicationJob.includes('.deployment_branch_policy.custom_branch_policies == true') &&
     protectedPublicationJob.includes('.total_count == 1') &&
@@ -470,10 +550,15 @@ expect(
     !publishReleaseWorkflow.includes('--method DELETE') &&
     !publishReleaseWorkflow.includes('-X DELETE') &&
     publicationHelper.includes('verifyMinisignFile') &&
-    publicationHelper.includes('ensureTagAtCommit') &&
+    publicationHelper.includes('const MINIMUM_WAIT_TIMER_MINUTES = 1440') &&
+    publicationHelper.includes("const REQUIRED_TAG_RULES = ['creation', 'update', 'deletion']") &&
+    (publicationHelper.match(/await verifyReleaseProtections\(repo, candidate, token\)/g) ?? []).length === 3 &&
+    publicationHelper.includes('validateSignedReleaseTag(reference, annotated') &&
+    !publicationHelper.includes('/git/refs`') &&
+    releaseCandidate.includes('git tag -s v1.0.3') &&
     publicationHelper.includes('releaseAssetContract(final) !== finalAssetContract') &&
     packageJson.scripts['release:check'].includes('prepare-release-publication.mjs --self-test'),
-  'publication must use the protected, immutable, approval-bound, self-tested release workflow without deletion or replacement paths',
+  'publication must use the protected (wait timer without administrator bypass, protected tag signed by the recorded owner), immutable, approval-bound, self-tested release workflow without deletion, replacement, or tag-creation paths',
 )
 expect(
   releaseWorkflow.includes("NODE_VERSION: '22.23.1'") && releaseWorkflow.includes("RUST_VERSION: '1.98.0'"),
@@ -505,8 +590,10 @@ expect(
 expect(
   releaseWorkflow.includes('already exists at $tagged_commit before candidate construction') &&
     !releaseWorkflow.includes('Existing tag $tag resolves to this run') &&
-    releaseWorkflow.includes('may be bound during protected publication'),
-  'candidate construction must reject every pre-existing release tag so only protected publication can bind it',
+    releaseWorkflow.includes('The release owner pushes the signed tag (runbook step 10) only after the candidate') &&
+    !releaseWorkflow.includes('may be bound during protected publication') &&
+    !releaseWorkflow.includes('must create or verify the approved tag'),
+  "candidate construction must reject every pre-existing release tag and point to the release owner's signed tag",
 )
 expect(
   releaseWorkflow.includes('Smoke-test packaged app startup (Windows)') &&
@@ -613,7 +700,7 @@ expect(
   releaseWorkflow.includes('scripts/windows-webview2-evidence.ps1') &&
     releaseWorkflow.includes('WEBVIEW2-EVIDENCE-windows.json') &&
     releaseWorkflow.includes('WEBVIEW2-SIGNATURE-windows.txt') &&
-    webviewEvidence.includes("$tauriCliVersion -ne '2.11.4'") &&
+    webviewEvidence.includes(`$tauriCliVersion -ne '${lockedTauriCliVersion}'`) &&
     webviewEvidence.includes('Get-AuthenticodeSignature') &&
     webviewEvidence.includes('$wixHash -ne $nsisHash') &&
     webviewEvidence.includes('& $signToolPath verify /pa /v') &&
@@ -764,6 +851,17 @@ expect(
   tauriLib.includes('if updater_config_is_valid(updater_config)'),
   'desktop startup must not register the updater without a valid plugin configuration',
 )
+// DA-06: Merge is hidden in the interface, so its backend commands stay off
+// the IPC surface until the owner decides to ship it (audit open question 3).
+// Re-registering them is a deliberate product change, not a refactor.
+const invokeHandlerList = tauriLib.match(/generate_handler!\[([\s\S]*?)\]/)?.[1] ?? ''
+expect(invokeHandlerList.includes('commands::health_check'), 'lib.rs invoke_handler list could not be read')
+for (const hiddenCommand of ['merge_audio_cmd', 'detect_sync_cmd']) {
+  expect(
+    !invokeHandlerList.includes(hiddenCommand),
+    `hidden Merge command ${hiddenCommand} must not be registered over IPC while Merge is hidden`,
+  )
+}
 expect(
   restoreModelsWorkflow.includes(
     'microsoft/DNS-Challenge/82f1b17e7776a43eee395d0f45bae8abb700ad00/DNSMOS/DNSMOS/sig_bak_ovr.onnx',
@@ -839,8 +937,11 @@ const releaseGateEvidenceBindings = {
     releaseWorkflow.includes('Remove Windows signing certificate before candidate execution') &&
     macPackagedSmoke.includes('EXPECT_PLATFORM_SIGNING'),
   'rust-advisory-exception-acceptance':
-    advisoryExceptionIds.every(advisory => denyPolicy.includes(`"${advisory}"`)) &&
-    releaseCandidate.includes('Confirm the release owner accepts the five exact INFO/unmaintained'),
+    ciWorkflow.includes('command: check advisories') &&
+    releaseCandidate.includes('was built before the Tauri 2.12 upgrade') &&
+    releaseGate.blockers
+      .find(blocker => blocker?.id === 'rust-advisory-exception-acceptance')
+      ?.evidenceNeeded?.some(item => item.includes('rebuild a new private candidate')),
   'codec-patent-review':
     thirdPartyInventory.includes('complete codec/patent review') &&
     thirdPartyInventory.includes('an open-source copyright license does not grant every patent'),

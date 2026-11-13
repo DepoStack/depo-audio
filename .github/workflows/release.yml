@@ -139,10 +139,10 @@ jobs:
           fi
           if [ -n "$tagged_commit" ]; then
             echo "ERROR: tag $tag already exists at $tagged_commit before candidate construction"
-            echo 'The protected publication workflow must create or verify the approved tag.'
+            echo 'The release owner pushes the signed tag (runbook step 10) only after the candidate is built and recorded.'
             exit 1
           fi
-          echo "Tag $tag does not exist yet and may be bound during protected publication"
+          echo "Tag $tag does not exist yet; the release owner pushes the signed tag only after this candidate is built and recorded"
 
       - name: Create or reuse one empty commit-bound draft release
         id: create-draft

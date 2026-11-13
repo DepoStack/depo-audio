@@ -4,6 +4,12 @@ mod commands;
 mod conversion;
 mod ffmpeg;
 mod helpers;
+mod localdata;
+mod manifest;
+// Merge is hidden in the interface and its commands are not registered over
+// IPC (DA-06). The module stays compiled and tested so it can return if the
+// owner decides to ship Merge; nothing in the app can reach it today.
+#[allow(dead_code)]
 mod merge;
 mod models;
 mod persistence;
@@ -27,9 +33,11 @@ fn allow_library_assets(app: &tauri::AppHandle, library: &types::Library) {
         .flat_map(|session| &session.participants)
         .flat_map(|participant| &participant.files)
     {
-        let path = std::path::Path::new(&file.path);
-        if path.is_file() {
-            if let Err(error) = scope.allow_file(path) {
+        // Authorize the resolved file only, and only when it is a regular
+        // audio file: a Library entry named `.wav` that is a symlink to some
+        // other file is not made playable (same rule as an import).
+        if let Some(path) = localdata::resolve_playable_file(std::path::Path::new(&file.path)) {
+            if let Err(error) = scope.allow_file(&path) {
                 eprintln!("[scope] Could not authorize a library audio file: {error}");
             }
         }
@@ -115,8 +123,6 @@ pub fn run() {
             commands::cancel_waveform_cmd,
             commands::detect_cat_software_cmd,
             commands::scan_cat_jobs_cmd,
-            commands::detect_sync_cmd,
-            commands::merge_audio_cmd,
             commands::begin_conversion_batch_cmd,
             commands::cancel_conversion_cmd,
             commands::convert,
@@ -130,6 +136,10 @@ pub fn run() {
             commands::library_import_files,
             commands::prefs_get,
             commands::prefs_set,
+            commands::local_data_info_cmd,
+            commands::local_data_clear_cmd,
+            commands::local_data_export_cmd,
+            commands::local_data_import_cmd,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

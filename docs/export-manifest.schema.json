@@ -1,0 +1,87 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "depoaudio.export-manifest.v1",
+  "title": "DepoAudio export manifest, version 1",
+  "description": "Written by DepoAudio as <output>.depoaudio.json next to each converted file. It records what was converted, by which build, and how. It never contains folder paths. Mirror of src-tauri/src/manifest.rs; a Rust test checks real manifests against this file.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["kind", "manifestVersion", "createdAt", "app", "source", "output", "processing", "channel", "startTime"],
+  "properties": {
+    "kind": { "const": "depoaudio.export-manifest" },
+    "manifestVersion": { "const": 1 },
+    "createdAt": {
+      "type": "string",
+      "description": "UTC time the manifest was written (RFC 3339, seconds).",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"
+    },
+    "app": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "version"],
+      "properties": {
+        "name": { "const": "DepoAudio" },
+        "version": { "type": "string", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+([-+][0-9A-Za-z.-]+)?$" }
+      }
+    },
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["fileName", "sha256", "sizeBytes"],
+      "properties": {
+        "fileName": { "type": "string", "description": "File name only, never a folder path." },
+        "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$", "description": "SHA-256 of the original file as selected, before any format preparation." },
+        "sizeBytes": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "output": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["fileName", "sha256", "sizeBytes", "format", "sampleRate"],
+      "properties": {
+        "fileName": { "type": "string", "description": "File name only; the manifest sits next to this file." },
+        "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "sizeBytes": { "type": "integer", "minimum": 1 },
+        "format": { "enum": ["wav", "mp3", "flac", "opus", "m4a"] },
+        "sampleRate": { "type": ["integer", "null"], "minimum": 8000, "maximum": 192000 }
+      }
+    },
+    "processing": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["mode", "filterOption", "filterChain", "encoderArgs"],
+      "properties": {
+        "mode": { "enum": ["stereo", "keep", "split"] },
+        "filterOption": { "enum": ["-af", "-filter_complex", null], "description": "The FFmpeg option that carried filterChain, or null when no filter ran." },
+        "filterChain": { "type": ["string", "null"], "description": "The exact FFmpeg filter string used. In split mode it is the whole graph; channel.sourceChannelIndex names this file's branch." },
+        "encoderArgs": { "type": "array", "items": { "type": "string" }, "description": "The exact FFmpeg encoder and metadata arguments for this output, without file paths." }
+      }
+    },
+    "channel": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["output", "sourceChannelCount", "sourceChannelIndex", "label", "labels"],
+      "properties": {
+        "output": { "enum": ["stereo-mix", "all-channels", "single-channel"] },
+        "sourceChannelCount": { "type": ["integer", "null"], "minimum": 1, "maximum": 16 },
+        "sourceChannelIndex": { "type": ["integer", "null"], "minimum": 0, "maximum": 15, "description": "Zero-based source channel for a split file (FFmpeg c0 is 0); null otherwise." },
+        "label": { "type": ["string", "null"], "description": "The channel or microphone label the person entered for this split file." },
+        "labels": { "type": "array", "items": { "type": "string" }, "description": "Labels entered for each source channel, in channel order." }
+      }
+    },
+    "startTime": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["known", "source", "sourceTimeReferenceSamples", "sourceSampleRate", "secondsSinceMidnight", "outputTimeReferenceSamples", "writtenToOutput", "note"],
+      "properties": {
+        "known": { "type": "boolean" },
+        "source": { "enum": ["bwf-bext-time-reference", null] },
+        "sourceTimeReferenceSamples": { "type": ["integer", "null"], "minimum": 0, "description": "BWF bext TimeReference of the source: samples since midnight at sourceSampleRate." },
+        "sourceSampleRate": { "type": ["integer", "null"], "minimum": 1 },
+        "secondsSinceMidnight": { "type": ["number", "null"], "minimum": 0 },
+        "outputTimeReferenceSamples": { "type": ["integer", "null"], "minimum": 0, "description": "The same start, rescaled to output.sampleRate. Null when the output start differs from the source start (leading-silence trim) or the start is unknown." },
+        "writtenToOutput": { "type": "boolean", "description": "True when the output WAV carries outputTimeReferenceSamples in its own bext chunk. When false, the output carries no time_reference at all and this record is the only place the start is kept." },
+        "note": { "type": "string" }
+      }
+    }
+  }
+}

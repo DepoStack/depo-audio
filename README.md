@@ -129,7 +129,7 @@ and commercial-rights review remains a separate owner decision.
 
 ### Prerequisites
 
-- [Rust](https://rustup.rs/) 1.88+ · [Node.js](https://nodejs.org/) 22.12+ · [Tauri CLI](https://v2.tauri.app/start/prerequisites/) (`cargo install tauri-cli`)
+- [Rust](https://rustup.rs/) 1.90+ · [Node.js](https://nodejs.org/) 22.12+ · [Tauri CLI](https://v2.tauri.app/start/prerequisites/) (`cargo install tauri-cli`)
 - Windows builds also require Visual Studio 2022 Build Tools with the **Desktop development with C++** workload and a Windows SDK; Rust's MSVC target needs their `link.exe` and import libraries.
 
 ### FFmpeg sidecars
@@ -156,6 +156,12 @@ npm run tauri build   # package installers
 
 ### Quality gates
 
+`npm run ci:local` runs every check below in CI order, stops on the first
+failure, and writes a JSON evidence file to `.ci-evidence/`. It needs
+`cargo-deny`, the Tauri system libraries, and an `ffmpeg`/`ffprobe` on `PATH`
+(it stages them as temporary sidecars and removes them afterwards). The
+individual commands are:
+
 ```bash
 npm run release:check
 npm run lint
@@ -165,6 +171,7 @@ npm run build
 npm run size:check
 cargo test --locked --manifest-path src-tauri/Cargo.toml
 cargo deny --manifest-path src-tauri/Cargo.toml --locked --all-features check bans licenses sources
+gitleaks git --no-banner --redact --exit-code 1 --log-opts=--all .   # skipped by ci:local if not installed
 ```
 
 The deterministic size check protects the emitted desktop frontend from accidental JavaScript or CSS growth. Rust
@@ -174,6 +181,12 @@ redistribution clearance for those artifacts. The release check also proves the 
 packaged resources, active setup paths, and user interface contain no learned-model distribution or execution path.
 The proposed packaged-app automation remains deferred until
 its dependency graph passes the documented gate in [`docs/PACKAGED-APP-TESTING.md`](docs/PACKAGED-APP-TESTING.md).
+
+Hosted CI also runs weekly on `main`, so an expiring exception or a new advisory turns it red without a push. GitHub
+turns off scheduled workflows on a public repository after 60 days with no repository activity, and nothing here
+notices when that happens. Until the platform alerting follow-up checks that the CI workflow is still enabled, the
+release owner should confirm it on the Actions page (or with `gh workflow list --all`, where its state then reads
+`disabled_inactivity`) and re-enable it after a quiet spell; `npm run ci:local` gives the same result at any time.
 
 ### Project layout
 
@@ -187,9 +200,11 @@ src-tauri/               # Rust backend (Tauri 2)
   src/
     analysis.rs          # bounded non-learned Scan observations
     conversion.rs        # validated local FFmpeg conversion pipeline
-    ffmpeg.rs            # sidecar + filter chain      merge.rs
+    ffmpeg.rs            # sidecar + filter chain      merge.rs (hidden, not on IPC)
+    manifest.rs          # <output>.depoaudio.json export record
     models.rs            # deletion-only legacy model storage cleanup
     catdetect.rs         # court-software detection     safety.rs / helpers.rs
+    localdata.rs         # Your data: storage list, zip backup/import, clear all
     commands.rs types.rs persistence.rs
   binaries/              # FFmpeg/FFprobe sidecars (not committed)
   resources/third-party/ # deterministic bundled dependency notices
@@ -226,7 +241,9 @@ Without platform-signing credentials, private candidates contain an ad-hoc-signe
 3. **Add macOS secrets**: `APPLE_CERTIFICATE`, `APPLE_CERTIFICATE_PASSWORD`, `APPLE_SIGNING_IDENTITY`, `APPLE_ID`, `APPLE_PASSWORD`, and `APPLE_TEAM_ID`.
 4. **Add Windows secrets**: `WINDOWS_CERTIFICATE` (the PFX encoded as base64), `WINDOWS_CERTIFICATE_PASSWORD`, and `WINDOWS_CERTIFICATE_THUMBPRINT`.
 
-The private-candidate workflow scopes signing credentials to packaging, removes the imported Windows private key before executing candidate binaries, and uploads generated signatures through the verified draft helper. It deliberately does not generate or publish `latest.json`, and it never publishes the draft. The manual [`publish-release.yml`](.github/workflows/publish-release.yml) workflow first supports a read-only manifest inspection, then permits publication only from a protected `release-publication` environment after the committed gate binds the exact draft, assets, source and approval commits, updater decision, and current UTC release date. It never rebuilds, deletes, or replaces an installer. Follow the exact [candidate-to-publication runbook](docs/V1.0.3-RELEASE-CANDIDATE.md#exact-candidate-to-publication-sequence); GitHub environment reviewers and prevent-self-review remain required dashboard configuration.
+If a key is lost or may be compromised, follow [`docs/RUNBOOK-SIGNING-KEYS.md`](docs/RUNBOOK-SIGNING-KEYS.md). To pull or replace a published release, follow [`docs/RUNBOOK-BAD-RELEASE.md`](docs/RUNBOOK-BAD-RELEASE.md).
+
+The private-candidate workflow scopes signing credentials to packaging, removes the imported Windows private key before executing candidate binaries, and uploads generated signatures through the verified draft helper. It deliberately does not generate or publish `latest.json`, and it never publishes the draft. The manual [`publish-release.yml`](.github/workflows/publish-release.yml) workflow first supports a read-only manifest inspection, then permits publication only from a protected `release-publication` environment after the committed gate binds the exact draft, assets, source and approval commits, updater decision, and current UTC release date. It never rebuilds, deletes, or replaces an installer, and it never creates or moves a tag. One person can complete a release: instead of a second reviewer, the workflow requires a wait timer of at least 24 hours on `release-publication` that administrators cannot bypass (deploying only from `main`), an active tag ruleset that restricts creating, moving, and deleting `v*` tags, and a signed annotated release tag at the exact source commit that GitHub reports as verified and whose tagger is the release owner email recorded in the gate. Those are dashboard settings the release owner makes by hand; the workflow reads them back and fails before any release write. Who is on the tag ruleset's bypass list is the one setting the workflow cannot fully check. Follow the exact [candidate-to-publication runbook](docs/V1.0.3-RELEASE-CANDIDATE.md#exact-candidate-to-publication-sequence).
 
 ---
 

@@ -1,4 +1,4 @@
-use std::path::{Component, Path};
+use std::path::{Component, Path, PathBuf};
 
 use tauri::{AppHandle, Manager};
 
@@ -59,6 +59,20 @@ const LEGACY_MODEL_FILES: &[LegacyModelFile] = &[
     },
 ];
 
+/// The exact legacy file names, for "Clear all DepoAudio data" (DA-07).
+pub(crate) fn legacy_model_filenames() -> impl Iterator<Item = &'static str> {
+    LEGACY_MODEL_FILES.iter().map(|model| model.filename)
+}
+
+/// `<app data>/models`, only when it is a real folder. A `models` symlink (or
+/// Windows junction) could point anywhere, so legacy cleanup, the Settings
+/// list and "Clear all DepoAudio data" never look inside one.
+pub(crate) fn real_models_dir(app_data_dir: &Path) -> Option<PathBuf> {
+    let models = app_data_dir.join("models");
+    let metadata = std::fs::symlink_metadata(&models).ok()?;
+    metadata.file_type().is_dir().then_some(models)
+}
+
 fn legacy_model_file(filename: &str) -> Option<&'static LegacyModelFile> {
     LEGACY_MODEL_FILES.iter().find(|model| model.filename == filename)
 }
@@ -118,23 +132,30 @@ pub(crate) fn legacy_model_cleanup_catalog(app: &AppHandle) -> Vec<LegacyModelIn
     app.path()
         .app_data_dir()
         .ok()
-        .map(|dir| legacy_model_catalog(&dir.join("models")))
+        .and_then(|dir| real_models_dir(&dir))
+        .map(|models_dir| legacy_model_catalog(&models_dir))
         .unwrap_or_default()
 }
 
 /// Delete one exact regular legacy file from writable app data. Unknown names,
 /// directories, symlinks, and every install/download operation fail closed.
+/// A `models` folder that is a symlink is refused too: only the last path
+/// part is checked by `symlink_metadata`, so the folder is checked first.
 pub(crate) fn delete_legacy_model(app: &AppHandle, filename: &str) -> Result<(), String> {
-    validate_model_filename(filename)?;
-    if legacy_model_file(filename).is_none() {
-        return Err(format!("Unknown legacy model file: {filename}"));
-    }
-
     let data_dir = app
         .path()
         .app_data_dir()
         .map_err(|e| format!("Cannot resolve app data dir: {e}"))?;
-    let path = data_dir.join("models").join(filename);
+    delete_legacy_model_in(&data_dir, filename)
+}
+
+fn delete_legacy_model_in(data_dir: &Path, filename: &str) -> Result<(), String> {
+    validate_model_filename(filename)?;
+    if legacy_model_file(filename).is_none() {
+        return Err(format!("Unknown legacy model file: {filename}"));
+    }
+    let models_dir = real_models_dir(data_dir).ok_or_else(|| "Legacy model file not found".to_string())?;
+    let path = models_dir.join(filename);
     let metadata = std::fs::symlink_metadata(&path).map_err(|_| "Legacy model file not found".to_string())?;
     if !metadata.file_type().is_file() {
         return Err("Legacy model cleanup accepts regular files only".into());
@@ -280,6 +301,36 @@ mod tests {
         assert!(legacy.installed && legacy.removable);
 
         std::fs::remove_dir_all(models_dir).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_symlinked_models_folder_is_never_listed_or_cleaned() {
+        let data_dir =
+            std::env::temp_dir().join(format!("depoaudio-legacy-model-link-{}", uuid::Uuid::new_v4().simple()));
+        let elsewhere = std::env::temp_dir().join(format!(
+            "depoaudio-legacy-model-elsewhere-{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        std::fs::create_dir_all(&data_dir).unwrap();
+        std::fs::create_dir_all(&elsewhere).unwrap();
+        // A file outside app data that happens to carry a legacy model name.
+        std::fs::write(elsewhere.join("flashsr.onnx"), b"not DepoAudio's").unwrap();
+        std::os::unix::fs::symlink(&elsewhere, data_dir.join("models")).unwrap();
+
+        assert!(real_models_dir(&data_dir).is_none());
+        assert!(delete_legacy_model_in(&data_dir, "flashsr.onnx").is_err());
+        assert!(elsewhere.join("flashsr.onnx").exists());
+
+        std::fs::remove_file(data_dir.join("models")).unwrap();
+        std::fs::create_dir_all(data_dir.join("models")).unwrap();
+        std::fs::write(data_dir.join("models/flashsr.onnx"), b"legacy").unwrap();
+        assert_eq!(real_models_dir(&data_dir), Some(data_dir.join("models")));
+        delete_legacy_model_in(&data_dir, "flashsr.onnx").unwrap();
+        assert!(!data_dir.join("models/flashsr.onnx").exists());
+
+        let _ = std::fs::remove_dir_all(data_dir);
+        let _ = std::fs::remove_dir_all(elsewhere);
     }
 
     #[test]

@@ -17,15 +17,17 @@ if (-not (Test-Path -LiteralPath $tauriCliPackagePath -PathType Leaf)) {
 }
 $tauriCliPackage = Get-Content -LiteralPath $tauriCliPackagePath -Raw | ConvertFrom-Json
 $tauriCliVersion = $tauriCliPackage.version
-if ($tauriCliVersion -ne '2.11.4') {
-  throw "WebView2 evidence paths must be reviewed for the locked Tauri CLI; expected 2.11.4, found $tauriCliVersion"
+if ($tauriCliVersion -ne '2.12.4') {
+  throw "WebView2 evidence paths must be reviewed for the locked Tauri CLI; expected 2.12.4, found $tauriCliVersion"
 }
 
-# tauri-bundler 2.9.4 deletes and recreates target/release/wix/x64, then puts
+# tauri-bundler 2.10.4 deletes and recreates target/release/wix/x64, then puts
 # the x64 offline installer at wix/x64/x64/<resolved-guid>/<resolved-filename>.
 # It separately caches the NSIS input at %LOCALAPPDATA%/tauri/x64 using the same
 # moving Microsoft fwlink resolution. These paths come from the exact source
-# used by @tauri-apps/cli 2.11.4; this script intentionally fails if they drift.
+# used by @tauri-apps/cli 2.12.4 (re-reviewed against 2.9.4 on 2026-11-12: the
+# WebView2 download, cache and GUID-path code is unchanged); this script
+# intentionally fails if they drift.
 $wixDownloadRoot = Join-Path $repoRoot 'src-tauri\target\release\wix\x64\x64'
 if (-not (Test-Path -LiteralPath $wixDownloadRoot -PathType Container)) {
   throw "Tauri WiX WebView2 download directory is missing: $wixDownloadRoot"
@@ -143,7 +145,7 @@ $evidence = [ordered]@{
   releaseTag = if ($env:RELEASE_TAG) { $env:RELEASE_TAG } else { $null }
   architecture = 'x64'
   tauriCliVersion = $tauriCliVersion
-  tauriBundlerSourceTag = 'tauri-bundler-v2.9.4'
+  tauriBundlerSourceTag = 'tauri-bundler-v2.10.4'
   sourceFwlink = 'https://go.microsoft.com/fwlink/?linkid=2124701'
   resolvedDownloadUrl = "https://msedge.sf.dl.delivery.mp.microsoft.com/filestreamingservice/files/$cacheIdentityPortable"
   resolvedCacheIdentity = $cacheIdentityPortable

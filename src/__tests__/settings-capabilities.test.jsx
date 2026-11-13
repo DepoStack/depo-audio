@@ -2,11 +2,13 @@ import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/re
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { invoke } from '@tauri-apps/api/core'
 import { openUrl } from '@tauri-apps/plugin-opener'
+import { open as openDialog } from '@tauri-apps/plugin-dialog'
 import SettingsPanel from '../components/SettingsPanel'
 import { DEPOAUDIO_RELEASES_URL } from '../constants'
 
 vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn() }))
 vi.mock('@tauri-apps/plugin-opener', () => ({ openUrl: vi.fn() }))
+vi.mock('@tauri-apps/plugin-dialog', () => ({ open: vi.fn(), save: vi.fn() }))
 
 function renderSettings(prefs = {}) {
   return render(<SettingsPanel open onOpenChange={vi.fn()} prefs={prefs} />)
@@ -18,6 +20,16 @@ describe('SettingsPanel release boundaries', () => {
   beforeEach(() => {
     invoke.mockReset()
     openUrl.mockReset()
+  })
+
+  it('names DepoAudio as powered by DepoStack in About', async () => {
+    invoke.mockResolvedValue([])
+
+    renderSettings()
+    fireEvent.click(screen.getByRole('button', { name: 'Updates' }))
+
+    expect(await screen.findByText('DepoAudio, powered by DepoStack')).toBeVisible()
+    expect(screen.queryByText(/part of DepoStack/i)).not.toBeInTheDocument()
   })
 
   it('shows a deletion-only empty state without requesting capabilities or model downloads', async () => {
@@ -110,5 +122,69 @@ describe('SettingsPanel release boundaries', () => {
     expect(screen.getByRole('spinbutton', { name: 'Processing timeout (seconds)' })).toHaveAttribute('id')
     expect(screen.getByRole('spinbutton', { name: 'Folder scan depth (levels)' })).toHaveAttribute('id')
     expect(screen.getByRole('spinbutton', { name: 'Max file size (GB)' })).toHaveAttribute('id')
+  })
+
+  it('offers a Your data section that lists local storage and needs no account', async () => {
+    invoke.mockImplementation(command =>
+      Promise.resolve(
+        command === 'local_data_info_cmd'
+          ? { appDataDir: '/synthetic/app-data', libraryReadable: true, items: [] }
+          : [],
+      ),
+    )
+
+    renderSettings()
+    fireEvent.click(screen.getByRole('button', { name: 'Your data' }))
+
+    expect(await screen.findByText('/synthetic/app-data')).toBeVisible()
+    expect(screen.getByRole('button', { name: /export library and transcripts/i })).toBeEnabled()
+    expect(screen.getByRole('button', { name: 'Clear all DepoAudio data…' })).toBeVisible()
+  })
+
+  it('passes the conversion state to Your data so Clear all waits for conversions', async () => {
+    invoke.mockImplementation(command =>
+      Promise.resolve(
+        command === 'local_data_info_cmd'
+          ? { appDataDir: '/synthetic/app-data', libraryReadable: true, items: [] }
+          : [],
+      ),
+    )
+
+    render(<SettingsPanel open onOpenChange={vi.fn()} prefs={{}} conversionActive />)
+    fireEvent.click(screen.getByRole('button', { name: 'Your data' }))
+
+    expect(await screen.findByText('/synthetic/app-data')).toBeVisible()
+    expect(screen.getByRole('button', { name: 'Clear all DepoAudio data…' })).toBeDisabled()
+  })
+
+  it('reloads the app instead of just closing Settings after an import', async () => {
+    invoke.mockImplementation(command => {
+      if (command === 'local_data_info_cmd') {
+        return Promise.resolve({ appDataDir: '/synthetic/app-data', libraryReadable: true, items: [] })
+      }
+      if (command === 'local_data_import_cmd') {
+        return Promise.resolve({
+          casesAdded: 1,
+          sessionsAdded: 1,
+          sessionsSkipped: 0,
+          filesUnavailable: 0,
+          transcripts: {},
+          bookmarks: [],
+        })
+      }
+      return Promise.resolve([])
+    })
+    openDialog.mockResolvedValue('/synthetic/backup.zip')
+    const onOpenChange = vi.fn()
+    const reloadApp = vi.fn()
+    render(<SettingsPanel open onOpenChange={onOpenChange} prefs={{}} reloadApp={reloadApp} />)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Your data' }))
+    fireEvent.click(await screen.findByRole('button', { name: /import a backup/i }))
+    expect(await screen.findByRole('status', { name: 'Import result' })).toBeVisible()
+
+    fireEvent.keyDown(document.activeElement || document.body, { key: 'Escape' })
+    await waitFor(() => expect(reloadApp).toHaveBeenCalled())
+    expect(onOpenChange).not.toHaveBeenCalledWith(false)
   })
 })

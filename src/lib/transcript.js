@@ -151,7 +151,8 @@ export function canExportSrt(segs) {
 }
 
 // Transcripts persist per track in localStorage, keyed by file path.
-export const storageKey = path => `transcript:${path}`
+export const TRANSCRIPT_KEY_PREFIX = 'transcript:'
+export const storageKey = path => `${TRANSCRIPT_KEY_PREFIX}${path}`
 
 function uniqueStoredId(value, usedIds) {
   const base = typeof value === 'string' && value.trim() ? value.trim() : uid()
@@ -207,6 +208,24 @@ export function saveStoredSegments(storage, path, segments) {
   if (!storage || typeof storage.setItem !== 'function') return false
   try {
     storage.setItem(storageKey(path), JSON.stringify(segments))
+    // An empty transcript keeps no key (DA-07): the key holds the track's
+    // path, which can name the case. The write above still runs first, so a
+    // blocked storage is reported before the person starts typing.
+    if (Array.isArray(segments) && segments.length === 0 && typeof storage.removeItem === 'function') {
+      storage.removeItem(storageKey(path))
+    }
+    return true
+  } catch {
+    return false
+  }
+}
+
+// "Delete transcript for this track" (DA-07): removes the stored copy only.
+// Files the person exported (SRT, TXT) are never touched.
+export function removeStoredSegments(storage, path) {
+  if (!storage || typeof storage.removeItem !== 'function') return false
+  try {
+    storage.removeItem(storageKey(path))
     return true
   } catch {
     return false

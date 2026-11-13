@@ -261,7 +261,7 @@ pub(crate) fn strip_sgmca_header(src: &Path) -> Result<(PathBuf, bool), String> 
     strip_sgmca_header_with_cancel(src, None)
 }
 
-fn prepare_audio_feed_with_cancel(
+pub(crate) fn prepare_audio_feed_with_cancel(
     src: &Path,
     cancelled: Option<&(dyn Fn() -> bool + Send + Sync)>,
 ) -> Result<(PathBuf, Option<crate::safety::TempFile>), String> {
@@ -358,6 +358,18 @@ pub(crate) fn output_ext(format: &str) -> &'static str {
 /// operation. Callers must remove the placeholder if the job fails; FFmpeg
 /// overwrites it on success.
 pub(crate) fn reserve_unique_path(path: &Path) -> Result<PathBuf, String> {
+    reserve_unique_path_with(path, |_| Ok(Some(()))).map(|(path, ())| path)
+}
+
+/// `reserve_unique_path` plus a companion reservation for each candidate.
+/// `companion` runs after the candidate is created; `Ok(None)` means the
+/// companion name is taken, so the candidate placeholder is released and the
+/// next numbered name is tried. Used to keep an output and its export record
+/// (`<output>.depoaudio.json`) on matching, never-overwritten names.
+pub(crate) fn reserve_unique_path_with<T>(
+    path: &Path,
+    mut companion: impl FnMut(&Path) -> Result<Option<T>, String>,
+) -> Result<(PathBuf, T), String> {
     const MAX_ATTEMPTS: u32 = 1_000;
 
     let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("out");
@@ -378,7 +390,17 @@ pub(crate) fn reserve_unique_path(path: &Path) -> Result<PathBuf, String> {
         match fs::OpenOptions::new().write(true).create_new(true).open(&candidate) {
             Ok(file) => {
                 drop(file);
-                return Ok(candidate);
+                match companion(&candidate) {
+                    Ok(Some(value)) => return Ok((candidate, value)),
+                    Ok(None) => {
+                        let _ = fs::remove_file(&candidate);
+                        continue;
+                    }
+                    Err(error) => {
+                        let _ = fs::remove_file(&candidate);
+                        return Err(error);
+                    }
+                }
             }
             Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
             Err(error) => {

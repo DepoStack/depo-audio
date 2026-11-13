@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "generator": "scripts/generate-javascript-notices.mjs",
-  "lockfileSha256": "5bd44c7e4179d18320333beb3bd14f9b12e1cec2c3e09d9f4d476982874efd7d",
+  "lockfileSha256": "99a12b08ab1374206f0b44e0527744fe19354a05dfcda1c9fbc4973683dd5314",
   "componentCount": 59,
   "javascriptComponentCount": 57,
   "generatedCssComponentCount": 2,
@@ -745,8 +745,8 @@
     },
     {
       "name": "@tauri-apps/api",
-      "version": "2.11.1",
-      "integrity": "sha512-M2FPuYND2m+wh5hfW9ZpSdxMPdEJovPBWwoHJmwUpysTYNHaOkVFN419m/K0LIgjb/7KU2vBgsUepJWugQCvAA==",
+      "version": "2.12.4",
+      "integrity": "sha512-pVmfis+4zT8H0Qhp3xPZx9Ju7kpzvA6rr/PSJPyuwfvucTQ8sVt61NYU9KMkK703UFlYadFmjKA4HhybOtN0gg==",
       "license": "Apache-2.0 OR MIT",
       "provenance": [
         "javascript"
@@ -754,7 +754,7 @@
       "status": "resolved",
       "legalMaterials": [
         {
-          "displayName": "LICENSE_APACHE-2.0",
+          "displayName": "LICENSE-APACHE-2.0",
           "sourceKind": "npm-package",
           "sourceUrl": null,
           "sourceRevision": null,
@@ -762,12 +762,20 @@
           "contentSha256": "0d542e0c8804e39aa7f37eb00da5a762149dc682d7829451287e11b938e94594"
         },
         {
-          "displayName": "LICENSE_MIT",
+          "displayName": "LICENSE-MIT",
           "sourceKind": "npm-package",
           "sourceUrl": null,
           "sourceRevision": null,
           "sourceSha256": "9dd42ea92cff2ede5cd477cbfcce051b2d0115c0ac7f368ee88cb545055dff1d",
           "contentSha256": "9dd42ea92cff2ede5cd477cbfcce051b2d0115c0ac7f368ee88cb545055dff1d"
+        },
+        {
+          "displayName": "LICENSE.spdx",
+          "sourceKind": "npm-package",
+          "sourceUrl": null,
+          "sourceRevision": null,
+          "sourceSha256": "5e834fe9788c524210deda859c46a550ffa5aa0cba9ea0572f0d81120e97c008",
+          "contentSha256": "5e834fe9788c524210deda859c46a550ffa5aa0cba9ea0572f0d81120e97c008"
         }
       ],
       "unresolved": null
@@ -922,8 +930,8 @@
     },
     {
       "name": "@tauri-apps/plugin-updater",
-      "version": "2.10.1",
-      "integrity": "sha512-NFYMg+tWOZPJdzE/PpFj2qfqwAWwNS3kXrb1tm1gnBJ9mYzZ4WDRrwy8udzWoAnfGCHLuePNLY1WVCNHnh3eRA==",
+      "version": "2.14.1",
+      "integrity": "sha512-Hr7nlBm1wT6xbwzjZ/S36YULazu8MNlj5vvOwMl47fXI7HTa5Bjl1PbDEwVHaZTAKzE1VZsUy35UqnbrQxmYQw==",
       "license": "MIT OR Apache-2.0",
       "provenance": [
         "javascript"

@@ -1,7 +1,7 @@
 use std::collections::HashSet;
 use std::fs;
 use std::path::Path;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
 use chrono::Utc;
 use tauri::{AppHandle, Emitter, Manager, State};
@@ -12,26 +12,41 @@ use crate::analysis;
 use crate::catdetect;
 use crate::conversion::{do_convert, ConversionCancel};
 use crate::helpers::{detect_format_for_path, get_formats, infer_case_name};
-use crate::merge;
 use crate::models;
 use crate::persistence::{library_ready, mutate_library, prefs_path, prefs_ready, save_to_library};
 use crate::types::*;
 
 // ── Health check ─────────────────────────────────────────────────────────────
 
-async fn sidecar_runs(app: &AppHandle, bin: &str) -> bool {
-    matches!(
-        crate::ffmpeg::sidecar_output_opt(app, bin, vec!["-version".into()], 10).await,
-        Some(output) if output.success
-    )
+async fn sidecar_version(app: &AppHandle, bin: &str) -> Option<Option<String>> {
+    match crate::ffmpeg::sidecar_output_opt(app, bin, vec!["-version".into()], 10).await {
+        Some(output) if output.success => Some(diagnostic_ffmpeg_version(&output.stdout)),
+        _ => None,
+    }
+}
+
+/// The version token from the first line of `ffmpeg -version`
+/// ("ffmpeg version <token> Copyright ..."), for "Copy diagnostics" (DA-09).
+/// Only that token is kept: later lines carry build configuration and can
+/// include folder paths. A token that is long or contains anything other
+/// than letters, digits and `.+-_~` is dropped rather than shown.
+pub(crate) fn diagnostic_ffmpeg_version(stdout: &[u8]) -> Option<String> {
+    let text = String::from_utf8_lossy(stdout);
+    let first = text.lines().next()?.trim();
+    let token = first.strip_prefix("ffmpeg version ")?.split_whitespace().next()?;
+    let allowed = |c: char| c.is_ascii_alphanumeric() || ".+-_~".contains(c);
+    (token.len() <= 64 && token.chars().all(allowed)).then(|| token.to_string())
 }
 
 #[tauri::command]
 pub async fn health_check(app: AppHandle) -> Result<serde_json::Value, String> {
     // Actually execute the sidecars — constructing the command alone does not
     // verify the binary exists or runs.
-    let ffmpeg_ok = sidecar_runs(&app, crate::helpers::ffmpeg_bin_name()).await;
-    let ffprobe_ok = sidecar_runs(&app, crate::helpers::ffprobe_bin_name()).await;
+    let ffmpeg_version = sidecar_version(&app, crate::helpers::ffmpeg_bin_name()).await;
+    let ffmpeg_ok = ffmpeg_version.is_some();
+    let ffprobe_ok = sidecar_version(&app, crate::helpers::ffprobe_bin_name())
+        .await
+        .is_some();
     let ftr_decoder = if ffmpeg_ok {
         crate::ffmpeg::ftr_decoder_available(&app).await.unwrap_or(false)
     } else {
@@ -42,6 +57,10 @@ pub async fn health_check(app: AppHandle) -> Result<serde_json::Value, String> {
         "ffmpeg": ffmpeg_ok,
         "ffprobe": ffprobe_ok,
         "ftrDecoder": ftr_decoder,
+        // Diagnostics only (DA-09): never paths, user names or file names.
+        "ffmpegVersion": ffmpeg_version.flatten(),
+        "os": std::env::consts::OS,
+        "arch": std::env::consts::ARCH,
     }))
 }
 
@@ -138,24 +157,6 @@ pub async fn scan_cat_jobs_cmd(path: String, max_depth: Option<u32>) -> Result<V
         .map_err(|error| format!("CAT job scan failed: {error}"))
 }
 
-// ── Merge commands ───────────────────────────────────────────────────────────
-
-#[tauri::command]
-pub async fn detect_sync_cmd(app: AppHandle, source_a: String, source_b: String) -> Result<merge::SyncResult, String> {
-    merge::detect_sync(&app, &source_a, &source_b).await
-}
-
-#[tauri::command]
-pub async fn merge_audio_cmd(app: AppHandle, job: merge::MergeJob) -> Result<merge::MergeResult, String> {
-    let mut result = merge::merge_audio(&app, &job).await?;
-    if let Err(error) = app.asset_protocol_scope().allow_file(&result.output_path) {
-        result.warning = Some(format!(
-            "Merge finished, but its output could not be authorized for playback. Restart DepoAudio to restore Library playback access: {error}"
-        ));
-    }
-    Ok(result)
-}
-
 // ── Convert command ───────────────────────────────────────────────────────────
 
 fn advance_conversion_epoch(epoch: &AtomicU64) -> u64 {
@@ -185,8 +186,38 @@ fn emit_conversion_cancelled(app: &AppHandle, id: String) -> Result<(), String> 
     .map_err(|error| format!("Conversion was cancelled, but cancellation could not be reported: {error}"))
 }
 
+/// Counts `convert` commands that are running. "Clear all DepoAudio data"
+/// refuses while any is, because a conversion that finishes afterwards would
+/// write its case and paths into a fresh library.json.
+pub(crate) struct ActiveConversion<'a>(&'a AtomicUsize);
+
+impl<'a> ActiveConversion<'a> {
+    pub(crate) fn start(counter: &'a AtomicUsize) -> Self {
+        counter.fetch_add(1, Ordering::AcqRel);
+        Self(counter)
+    }
+}
+
+impl Drop for ActiveConversion<'_> {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::AcqRel);
+    }
+}
+
+pub(crate) const CLEAR_WHILE_CONVERTING: &str =
+    "Clear all is not available while files are converting. Wait for them to finish or cancel them, then try again.";
+
+pub(crate) fn refuse_clear_while_converting(active: &AtomicUsize) -> Result<(), String> {
+    if active.load(Ordering::Acquire) > 0 {
+        Err(CLEAR_WHILE_CONVERTING.into())
+    } else {
+        Ok(())
+    }
+}
+
 #[tauri::command]
 pub async fn convert(app: AppHandle, state: State<'_, AppState>, job: ConvertJob) -> Result<(), String> {
+    let _active = ActiveConversion::start(&state.active_conversions);
     let id = job.id.clone();
     let cancel = ConversionCancel::new(state.conversion_epoch.clone(), job.cancel_generation);
 
@@ -204,6 +235,7 @@ pub async fn convert(app: AppHandle, state: State<'_, AppState>, job: ConvertJob
             if cancel.cancelled() {
                 for file in &files {
                     let _ = fs::remove_file(&file.path);
+                    let _ = fs::remove_file(crate::manifest::manifest_path_for(Path::new(&file.path)));
                 }
                 return emit_conversion_cancelled(&app, id);
             }
@@ -404,7 +436,7 @@ pub struct LibraryMutationResult {
     pub warning: Option<String>,
 }
 
-fn playable_library_extension(path: &Path) -> Result<String, String> {
+pub(crate) fn playable_library_extension(path: &Path) -> Result<String, String> {
     let extension = path
         .extension()
         .and_then(|extension| extension.to_str())
@@ -572,6 +604,177 @@ pub fn prefs_set(app: AppHandle, state: State<'_, AppState>, patch: serde_json::
     Ok(true)
 }
 
+// ── Local data commands (DA-07) ──────────────────────────────────────────────
+
+fn app_data_dir(app: &AppHandle) -> Result<std::path::PathBuf, String> {
+    app.path()
+        .app_data_dir()
+        .map_err(|e| format!("Cannot resolve the app data folder: {e}"))
+}
+
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LocalDataInfo {
+    pub app_data_dir: String,
+    pub items: Vec<crate::localdata::StoredItem>,
+    /// Whether the library loaded. When it did not, export is unavailable but
+    /// "Clear all DepoAudio data" still works and starts a fresh library.
+    pub library_readable: bool,
+}
+
+/// Where DepoAudio keeps its files and which of them exist now. Paths are
+/// shown in Settings so a person can find and check them.
+#[tauri::command]
+pub fn local_data_info_cmd(app: AppHandle, state: State<'_, AppState>) -> Result<LocalDataInfo, String> {
+    let dir = app_data_dir(&app)?;
+    Ok(LocalDataInfo {
+        app_data_dir: dir.to_string_lossy().to_string(),
+        items: crate::localdata::stored_items(&dir),
+        library_readable: library_ready(&state).is_ok(),
+    })
+}
+
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LocalDataClearResult {
+    pub removed: usize,
+    pub warning: Option<String>,
+}
+
+/// Remove DepoAudio's own files from app data (library, settings, unfinished
+/// saves, legacy model files) and reset the in-memory library and settings.
+/// Only exact DepoAudio file names are removed; no path recorded in the
+/// library is ever deleted, so recordings, outputs and backups stay.
+#[tauri::command]
+pub fn local_data_clear_cmd(app: AppHandle, state: State<'_, AppState>) -> Result<LocalDataClearResult, String> {
+    let dir = app_data_dir(&app)?;
+    // Same lock order as a conversion's commit. With both held, no conversion
+    // can be committing; one still running is refused below, and advancing
+    // the epoch cancels any job of an earlier batch that starts afterwards,
+    // so nothing writes the old Library back after this clear.
+    let _commit = state.conversion_commit.lock().unwrap_or_else(|e| e.into_inner());
+    let _asset_commit = state.library_asset_commit.lock().unwrap_or_else(|e| e.into_inner());
+    refuse_clear_while_converting(&state.active_conversions)?;
+    advance_conversion_epoch(&state.conversion_epoch);
+    let mut library = state.library.lock().unwrap_or_else(|e| e.into_inner());
+    let mut prefs = state.prefs.lock().unwrap_or_else(|e| e.into_inner());
+
+    let outcome = crate::localdata::clear_app_data_in(&dir);
+    let failed = |name: &str| outcome.failed.iter().any(|(failed, _)| failed == name);
+
+    let mut warning = None;
+    if !failed("library.json") {
+        let paths: Vec<String> = library.cases.iter().flat_map(case_paths).collect();
+        *library = Library::default();
+        *state.library_load_error.lock().unwrap_or_else(|e| e.into_inner()) = None;
+        warning = revoke_library_assets(&app, &unreferenced_paths(&library, paths));
+    }
+    if !failed("prefs.json") {
+        *prefs = Prefs::default();
+        *state.prefs_load_error.lock().unwrap_or_else(|e| e.into_inner()) = None;
+    }
+    if !outcome.failed.is_empty() {
+        let names: Vec<&str> = outcome.failed.iter().map(|(name, _)| name.as_str()).collect();
+        let reason = &outcome.failed[0].1;
+        let message = format!(
+            "{} file(s) could not be removed ({}; first reason: {reason}). Close other programs that may have them open, then try again.",
+            names.len(),
+            names.join(", ")
+        );
+        warning = Some(match warning {
+            Some(existing) => format!("{message} {existing}"),
+            None => message,
+        });
+    }
+    Ok(LocalDataClearResult {
+        removed: outcome.removed.len(),
+        warning,
+    })
+}
+
+/// Write a backup zip of the library plus the transcripts and bookmarks the
+/// frontend passes in. The zip is always a new file.
+#[tauri::command]
+pub fn local_data_export_cmd(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    path: String,
+    transcripts: serde_json::Value,
+    bookmarks: serde_json::Value,
+) -> Result<crate::localdata::BackupCounts, String> {
+    let path = std::path::PathBuf::from(path);
+    if !crate::localdata::is_zip_path(&path) {
+        return Err("Choose a file name that ends in .zip".into());
+    }
+    library_ready(&state)?;
+    let library = state.library.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    let (zip, counts) = crate::localdata::build_backup(
+        &library,
+        &transcripts,
+        &bookmarks,
+        &app.package_info().version.to_string(),
+        &Utc::now(),
+    )?;
+    crate::localdata::write_new_file(&path, &zip)?;
+    Ok(counts)
+}
+
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LocalDataImportResult {
+    #[serde(flatten)]
+    pub report: crate::localdata::MergeReport,
+    /// Imported Library files that are not on this computer, or are not a
+    /// regular, playable audio file once symlinks are followed. Their entries
+    /// are kept.
+    pub files_unavailable: usize,
+    /// Imported Library files that are on this computer but whose playback
+    /// access was removed earlier in this app session (Clear all or a Library
+    /// delete), or could not be granted. A restart restores playback.
+    pub files_need_restart: usize,
+    /// Returned for the frontend to restore into web view storage.
+    pub transcripts: serde_json::Value,
+    pub bookmarks: serde_json::Value,
+}
+
+/// Read a DepoAudio backup and add its cases and sessions to the library.
+/// Nothing already in the library is removed or replaced.
+#[tauri::command]
+pub fn local_data_import_cmd(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    path: String,
+) -> Result<LocalDataImportResult, String> {
+    let path = Path::new(&path);
+    let size = fs::metadata(path)
+        .map_err(|e| format!("Cannot read the backup file: {}", e.kind()))?
+        .len();
+    if size > crate::localdata::MAX_BACKUP_BYTES {
+        return Err("This file is larger than any DepoAudio backup (64 MB).".into());
+    }
+    let bytes = fs::read(path).map_err(|e| format!("Cannot read the backup file: {}", e.kind()))?;
+    let backup = crate::localdata::parse_backup(&bytes)?;
+
+    let _asset_commit = state.library_asset_commit.lock().unwrap_or_else(|e| e.into_inner());
+    let (report, added_paths) = mutate_library(&app, &state, move |lib| {
+        crate::localdata::merge_library(lib, backup.library)
+    })?;
+
+    let scope = app.asset_protocol_scope();
+    let access = crate::localdata::authorize_playback(
+        added_paths,
+        |path| scope.is_forbidden(path),
+        |path| scope.allow_file(path).map_err(|error| error.to_string()),
+    );
+    Ok(LocalDataImportResult {
+        report,
+        files_unavailable: access.unavailable,
+        files_need_restart: access.need_restart,
+        transcripts: backup.transcripts,
+        bookmarks: backup.bookmarks,
+    })
+}
+
 // ── Shell / opener commands ───────────────────────────────────────────────────
 
 #[tauri::command]
@@ -582,6 +785,38 @@ pub fn show_in_folder(app: AppHandle, path: String) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn diagnostic_ffmpeg_version_keeps_only_the_version_token() {
+        let output = b"ffmpeg version n7.1.1-20250301 Copyright (c) 2000-2025 the FFmpeg developers\n\
+built with gcc 14\nconfiguration: --prefix=/Users/reporter/ffmpeg --enable-shared\n";
+        assert_eq!(diagnostic_ffmpeg_version(output).as_deref(), Some("n7.1.1-20250301"));
+        assert_eq!(
+            diagnostic_ffmpeg_version(b"ffmpeg version 7.1.1 Copyright").as_deref(),
+            Some("7.1.1")
+        );
+    }
+
+    #[test]
+    fn diagnostic_ffmpeg_version_never_returns_a_path() {
+        for output in [
+            &b"ffmpeg version /Users/reporter/Case 123/ffmpeg Copyright"[..],
+            b"ffmpeg version C:\\Users\\reporter\\ffmpeg.exe Copyright",
+            b"ffmpeg version 7.1:/opt/build Copyright",
+            b"configuration: --prefix=/usr/local\nffmpeg version 7.1",
+            b"",
+        ] {
+            let version = diagnostic_ffmpeg_version(output);
+            assert!(
+                version
+                    .as_deref()
+                    .is_none_or(|v| !v.contains('/') && !v.contains('\\') && !v.contains(':')),
+                "{version:?}"
+            );
+        }
+        let long = format!("ffmpeg version {} Copyright", "a".repeat(65));
+        assert_eq!(diagnostic_ffmpeg_version(long.as_bytes()), None);
+    }
 
     fn session(id: &str, path: &str) -> Session {
         Session {
@@ -598,6 +833,28 @@ mod tests {
                 }],
             }],
         }
+    }
+
+    #[test]
+    fn clear_all_is_refused_while_a_conversion_runs() {
+        let active = AtomicUsize::new(0);
+        assert!(refuse_clear_while_converting(&active).is_ok());
+        {
+            let _first = ActiveConversion::start(&active);
+            let _second = ActiveConversion::start(&active);
+            assert_eq!(
+                refuse_clear_while_converting(&active).unwrap_err(),
+                CLEAR_WHILE_CONVERTING
+            );
+        }
+        // Every way out of `convert` drops the guard, including an early
+        // return or a panic.
+        let _ = std::panic::catch_unwind(|| {
+            let _guard = ActiveConversion::start(&active);
+            panic!("conversion failed");
+        });
+        assert_eq!(active.load(Ordering::Acquire), 0);
+        assert!(refuse_clear_while_converting(&active).is_ok());
     }
 
     #[test]

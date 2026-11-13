@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect, useMemo } from 'react'
 import { open, save } from '@tauri-apps/plugin-dialog'
 import { readTextFile, writeTextFile } from '@tauri-apps/plugin-fs'
-import { Upload, Download, Copy, Check, Crosshair, Plus, X, Locate } from 'lucide-react'
+import { Upload, Download, Copy, Check, Crosshair, Plus, X, Locate, Trash2 } from 'lucide-react'
 import { cn } from '../../lib/utils'
 import { fmtTime } from '../../utils'
 import {
@@ -12,11 +12,13 @@ import {
   canExportSrt,
   findActiveTranscriptIndex,
   readStoredSegments,
+  removeStoredSegments,
   saveStoredSegments,
   TRANSCRIPT_SAVE_DEBOUNCE_MS,
 } from '../../lib/transcript'
 import { Card, CardHeader, CardTitle } from '../ui/card'
 import { Button } from '../ui/button'
+import { ConfirmDialog } from '../ui/confirm-dialog'
 
 // ── Synced transcript editor ────────────────────────────────────────────────
 //
@@ -29,6 +31,8 @@ import { Button } from '../ui/button'
 //
 // Parsing/serialization lives in lib/transcript.js (characterization-tested).
 // Transcripts persist per track in localStorage, keyed by file path.
+// "Delete transcript for this track" removes only that stored copy (DA-07);
+// Settings → Your data backs up, restores or clears all of them.
 
 const STORAGE_WARNING =
   'Transcript autosave is unavailable. Unsaved changes are retained only in this open session; export them before closing DepoAudio.'
@@ -94,6 +98,7 @@ export default function Transcript({ trackPath, currentTime, playing, onSeek, on
   const [paste, setPaste] = useState('')
   const [showExport, setShowExport] = useState(false)
   const [operationError, setOperationError] = useState('')
+  const [confirmDelete, setConfirmDelete] = useState(false)
   const rowRefs = useRef({})
   const focusId = useRef(null)
   const saveTimerRef = useRef(null)
@@ -235,6 +240,24 @@ export default function Transcript({ trackPath, currentTime, playing, onSeek, on
     }
   }
 
+  // DA-07: remove this track's saved copy. Any pending autosave is dropped so
+  // it cannot write the old lines back; exported files are never touched.
+  const deleteTranscript = () => {
+    setOperationError('')
+    window.clearTimeout(saveTimerRef.current)
+    saveTimerRef.current = null
+    pendingSaveRef.current = null
+    volatileTranscriptDrafts.delete(trackPath)
+    const removed = removeStoredSegments(browserStorage(), trackPath)
+    if (removed) failedTranscriptDrafts.delete(trackPath)
+    setSegments([])
+    if (!removed) {
+      setOperationError(
+        "The saved transcript could not be deleted because this app's storage is unavailable. It is cleared on screen; try again after restarting DepoAudio.",
+      )
+    }
+  }
+
   const srtReady = canExportSrt(segments)
 
   return (
@@ -306,10 +329,29 @@ export default function Transcript({ trackPath, currentTime, playing, onSeek, on
                   </div>
                 )}
               </div>
+              <Button
+                size="sm"
+                variant="ghost"
+                className="hover:text-destructive"
+                onClick={() => setConfirmDelete(true)}
+                aria-label="Delete transcript for this track"
+                title="Delete the saved transcript for this track"
+              >
+                <Trash2 size={12} />
+              </Button>
             </>
           )}
         </div>
       </CardHeader>
+
+      <ConfirmDialog
+        open={confirmDelete}
+        onOpenChange={setConfirmDelete}
+        title="Delete transcript"
+        description="This removes the transcript DepoAudio saved for this track, on this computer. It cannot be undone. The recording and any exported SRT or TXT files are not affected; export first if you want a copy."
+        confirmLabel="Delete transcript"
+        onConfirm={deleteTranscript}
+      />
 
       {storageError && !onStorageError && (
         <p

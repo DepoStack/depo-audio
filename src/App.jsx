@@ -3,6 +3,7 @@ import { invoke } from '@tauri-apps/api/core'
 import { openUrl } from '@tauri-apps/plugin-opener'
 import { Sun, Moon, Monitor, Settings, AudioLines, Play, FolderOpen, X } from 'lucide-react'
 import { DEPOSTACK_URL } from './constants'
+import { rememberEngineInfo } from './lib/diagnostics'
 import { shouldIgnoreNavigationShortcut } from './lib/utils'
 
 import useTheme from './hooks/useTheme'
@@ -21,8 +22,10 @@ import ConvertTab from './components/Convert/ConvertTab'
 
 const LibraryTab = lazy(() => import('./components/Library/LibraryTab'))
 const PlayerTab = lazy(() => import('./components/Player/PlayerTab'))
-// Merge is hidden for v1 — MergeTab.jsx is retained; re-add the nav entry and
-// TabsContent below to bring it back (see the "Re-add Merge" tracking issue).
+// Merge is hidden for v1 — MergeTab.jsx is retained, and its backend commands
+// (detect_sync_cmd, merge_audio_cmd) are not registered over IPC. Bringing it
+// back is an owner decision: re-register both in src-tauri/src/lib.rs, update
+// the release contract, then re-add the nav entry and TabsContent below.
 const SettingsPanel = lazy(() => import('./components/SettingsPanel'))
 
 const themeIcons = {
@@ -79,7 +82,10 @@ export default function App() {
   const [health, setHealth] = useState(null)
   useEffect(() => {
     invoke('health_check')
-      .then(setHealth)
+      .then(value => {
+        rememberEngineInfo(value)
+        setHealth(value)
+      })
       .catch(error => setSystemError(`Audio engine health could not be checked: ${String(error)}`))
   }, [])
 
@@ -234,16 +240,17 @@ export default function App() {
           <div className="py-0.5 text-[11px] text-[hsl(var(--sub))]">{updaterLabel}</div>
         </div>
 
-        {/* DepoStack brand link — DepoAudio is one tool in the suite */}
+        {/* DepoStack brand link: DepoAudio, powered by DepoStack */}
         <button
           type="button"
           onClick={() =>
             openUrl(DEPOSTACK_URL).catch(error => setSystemError(`Could not open DepoStack: ${String(error)}`))
           }
-          title="Part of the DepoStack suite — opens depostack.com"
+          title="DepoAudio, powered by DepoStack. Opens depostack.com"
           className="hidden sm:block mx-3 mb-1.5 py-1 text-left text-[10.5px] text-[hsl(var(--sub))] hover:text-foreground transition-colors"
         >
-          A <span className="font-semibold text-[hsl(var(--text2))]">DepoStack</span> project&nbsp;↗
+          Powered by <span className="font-semibold text-[hsl(var(--text2))]">DepoStack</span>
+          <span aria-hidden="true">&nbsp;↗</span>
         </button>
 
         <div className="app-sidebar-actions flex sm:justify-start justify-center items-center gap-1 px-2 sm:px-3 pb-3">
@@ -418,6 +425,8 @@ export default function App() {
           onOpenChange={setSettingsOpen}
           prefs={{ ...prefs, cycleThemeTo: setThemeDirect }}
           updater={updater}
+          health={health}
+          conversionActive={converting || cancelling}
         />
       </Suspense>
     </Tabs>

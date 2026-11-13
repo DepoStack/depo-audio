@@ -26,3 +26,6 @@ Thumbs.db
 
 # Claude Code
 .claude/
+
+# Local CI evidence (scripts/ci-local.sh)
+/.ci-evidence/
