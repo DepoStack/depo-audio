@@ -18,19 +18,35 @@ use crate::types::*;
 
 // ── Health check ─────────────────────────────────────────────────────────────
 
-async fn sidecar_runs(app: &AppHandle, bin: &str) -> bool {
-    matches!(
-        crate::ffmpeg::sidecar_output_opt(app, bin, vec!["-version".into()], 10).await,
-        Some(output) if output.success
-    )
+async fn sidecar_version(app: &AppHandle, bin: &str) -> Option<Option<String>> {
+    match crate::ffmpeg::sidecar_output_opt(app, bin, vec!["-version".into()], 10).await {
+        Some(output) if output.success => Some(diagnostic_ffmpeg_version(&output.stdout)),
+        _ => None,
+    }
+}
+
+/// The version token from the first line of `ffmpeg -version`
+/// ("ffmpeg version <token> Copyright ..."), for "Copy diagnostics" (DA-09).
+/// Only that token is kept: later lines carry build configuration and can
+/// include folder paths. A token that is long or contains anything other
+/// than letters, digits and `.+-_~` is dropped rather than shown.
+pub(crate) fn diagnostic_ffmpeg_version(stdout: &[u8]) -> Option<String> {
+    let text = String::from_utf8_lossy(stdout);
+    let first = text.lines().next()?.trim();
+    let token = first.strip_prefix("ffmpeg version ")?.split_whitespace().next()?;
+    let allowed = |c: char| c.is_ascii_alphanumeric() || ".+-_~".contains(c);
+    (token.len() <= 64 && token.chars().all(allowed)).then(|| token.to_string())
 }
 
 #[tauri::command]
 pub async fn health_check(app: AppHandle) -> Result<serde_json::Value, String> {
     // Actually execute the sidecars — constructing the command alone does not
     // verify the binary exists or runs.
-    let ffmpeg_ok = sidecar_runs(&app, crate::helpers::ffmpeg_bin_name()).await;
-    let ffprobe_ok = sidecar_runs(&app, crate::helpers::ffprobe_bin_name()).await;
+    let ffmpeg_version = sidecar_version(&app, crate::helpers::ffmpeg_bin_name()).await;
+    let ffmpeg_ok = ffmpeg_version.is_some();
+    let ffprobe_ok = sidecar_version(&app, crate::helpers::ffprobe_bin_name())
+        .await
+        .is_some();
     let ftr_decoder = if ffmpeg_ok {
         crate::ffmpeg::ftr_decoder_available(&app).await.unwrap_or(false)
     } else {
@@ -41,6 +57,10 @@ pub async fn health_check(app: AppHandle) -> Result<serde_json::Value, String> {
         "ffmpeg": ffmpeg_ok,
         "ffprobe": ffprobe_ok,
         "ftrDecoder": ftr_decoder,
+        // Diagnostics only (DA-09): never paths, user names or file names.
+        "ffmpegVersion": ffmpeg_version.flatten(),
+        "os": std::env::consts::OS,
+        "arch": std::env::consts::ARCH,
     }))
 }
 
@@ -564,6 +584,38 @@ pub fn show_in_folder(app: AppHandle, path: String) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn diagnostic_ffmpeg_version_keeps_only_the_version_token() {
+        let output = b"ffmpeg version n7.1.1-20250301 Copyright (c) 2000-2025 the FFmpeg developers\n\
+built with gcc 14\nconfiguration: --prefix=/Users/reporter/ffmpeg --enable-shared\n";
+        assert_eq!(diagnostic_ffmpeg_version(output).as_deref(), Some("n7.1.1-20250301"));
+        assert_eq!(
+            diagnostic_ffmpeg_version(b"ffmpeg version 7.1.1 Copyright").as_deref(),
+            Some("7.1.1")
+        );
+    }
+
+    #[test]
+    fn diagnostic_ffmpeg_version_never_returns_a_path() {
+        for output in [
+            &b"ffmpeg version /Users/reporter/Case 123/ffmpeg Copyright"[..],
+            b"ffmpeg version C:\\Users\\reporter\\ffmpeg.exe Copyright",
+            b"ffmpeg version 7.1:/opt/build Copyright",
+            b"configuration: --prefix=/usr/local\nffmpeg version 7.1",
+            b"",
+        ] {
+            let version = diagnostic_ffmpeg_version(output);
+            assert!(
+                version
+                    .as_deref()
+                    .is_none_or(|v| !v.contains('/') && !v.contains('\\') && !v.contains(':')),
+                "{version:?}"
+            );
+        }
+        let long = format!("ffmpeg version {} Copyright", "a".repeat(65));
+        assert_eq!(diagnostic_ffmpeg_version(long.as_bytes()), None);
+    }
 
     fn session(id: &str, path: &str) -> Session {
         Session {

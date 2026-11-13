@@ -3,6 +3,7 @@ import { invoke } from '@tauri-apps/api/core'
 import { openUrl } from '@tauri-apps/plugin-opener'
 import { Sun, Moon, Monitor, Settings, AudioLines, Play, FolderOpen, X } from 'lucide-react'
 import { DEPOSTACK_URL } from './constants'
+import { rememberEngineInfo } from './lib/diagnostics'
 import { shouldIgnoreNavigationShortcut } from './lib/utils'
 
 import useTheme from './hooks/useTheme'
@@ -81,7 +82,10 @@ export default function App() {
   const [health, setHealth] = useState(null)
   useEffect(() => {
     invoke('health_check')
-      .then(setHealth)
+      .then(value => {
+        rememberEngineInfo(value)
+        setHealth(value)
+      })
       .catch(error => setSystemError(`Audio engine health could not be checked: ${String(error)}`))
   }, [])
 
@@ -420,6 +424,7 @@ export default function App() {
           onOpenChange={setSettingsOpen}
           prefs={{ ...prefs, cycleThemeTo: setThemeDirect }}
           updater={updater}
+          health={health}
         />
       </Suspense>
     </Tabs>

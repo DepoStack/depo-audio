@@ -21,6 +21,8 @@ import { Input } from './ui/input'
 import { Label } from './ui/label'
 import { Card, CardHeader, CardTitle, CardContent } from './ui/card'
 import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from './ui/select'
+import DiagnosticsCopy from './common/DiagnosticsCopy'
+import { APP_VERSION, buildDiagnostics } from '../lib/diagnostics'
 
 // ── Default values ────────────────────────────────────────────────────────────
 
@@ -316,7 +318,7 @@ function LegacyModelStorage() {
 
 // ── Panel ──────────────────────────────────────────────────────────────────────
 
-export default function SettingsPanel({ open, onOpenChange, prefs, updater = {} }) {
+export default function SettingsPanel({ open, onOpenChange, prefs, updater = {}, health = null }) {
   const {
     status: updateStatus,
     update,
@@ -658,7 +660,24 @@ export default function SettingsPanel({ open, onOpenChange, prefs, updater = {} 
                     <CardTitle>About</CardTitle>
                   </CardHeader>
                   <CardContent className="p-4 flex flex-col gap-3">
-                    <div className="flex items-center justify-between gap-3">
+                    <div className="flex flex-col gap-2">
+                      <div className="flex flex-col min-w-0">
+                        <span className="text-[12px] font-medium text-foreground">Version {APP_VERSION}</span>
+                        <span className="text-[11px] text-[hsl(var(--sub))] mt-0.5">
+                          For a support request, copy the diagnostics: app version, operating system, FFmpeg version and
+                          error type. No file names or folders, and nothing is sent.
+                        </span>
+                      </div>
+                      <DiagnosticsCopy
+                        text={buildDiagnostics({
+                          os: health?.os,
+                          arch: health?.arch,
+                          ffmpegVersion: health?.ffmpegVersion,
+                        })}
+                      />
+                    </div>
+
+                    <div className="flex items-center justify-between gap-3 border-t border-border pt-3">
                       <div className="flex flex-col min-w-0">
                         <span className="text-[12px] font-medium text-foreground">DepoAudio is part of DepoStack</span>
                         <span className="text-[11px] text-[hsl(var(--sub))] mt-0.5">
