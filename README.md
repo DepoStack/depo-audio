@@ -200,6 +200,7 @@ src-tauri/               # Rust backend (Tauri 2)
     analysis.rs          # bounded non-learned Scan observations
     conversion.rs        # validated local FFmpeg conversion pipeline
     ffmpeg.rs            # sidecar + filter chain      merge.rs (hidden, not on IPC)
+    manifest.rs          # <output>.depoaudio.json export record
     models.rs            # deletion-only legacy model storage cleanup
     catdetect.rs         # court-software detection     safety.rs / helpers.rs
     commands.rs types.rs persistence.rs

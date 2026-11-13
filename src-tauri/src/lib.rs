@@ -4,6 +4,7 @@ mod commands;
 mod conversion;
 mod ffmpeg;
 mod helpers;
+mod manifest;
 // Merge is hidden in the interface and its commands are not registered over
 // IPC (DA-06). The module stays compiled and tested so it can return if the
 // owner decides to ship Merge; nothing in the app can reach it today.

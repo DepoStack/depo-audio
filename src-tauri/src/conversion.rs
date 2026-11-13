@@ -7,12 +7,13 @@ use tauri::{AppHandle, Emitter};
 
 use crate::ffmpeg::{
     build_proc_filters_with_gain, ensure_ftr_decoder, probe_channels_cancellable, probe_duration_cancellable,
-    run_ffmpeg_with_timeout,
+    probe_manifest_source_cancellable, run_ffmpeg_with_timeout,
 };
 use crate::helpers::{
     basename, detect_format_for_path, input_codec_args, output_args, output_ext, prepare_audio_feed_cancellable,
-    reserve_unique_path, safe_ffmpeg_input_prelude, safe_label,
+    safe_ffmpeg_input_prelude, safe_label,
 };
+use crate::manifest::{self, FileRecord, ManifestInput, OutputFacts};
 use crate::types::{ConvertJob, OutputFile, ProgressEvent, CONVERSION_CANCELLED_MESSAGE};
 /// FTR's supported registry and the analysis engine both cap court recordings
 /// at 16 channels. Reject corrupt or unsupported headers before allocating
@@ -58,10 +59,6 @@ impl OutputCleanup {
         self.paths.push(path);
     }
 
-    fn track_all(&mut self, paths: &[PathBuf]) {
-        self.paths.extend(paths.iter().cloned());
-    }
-
     fn commit(&mut self) {
         self.committed = true;
     }
@@ -74,6 +71,13 @@ impl Drop for OutputCleanup {
                 let _ = fs::remove_file(path);
             }
         }
+    }
+}
+
+fn track_planned(cleanup: &mut OutputCleanup, planned: &[PlannedOutput]) {
+    for output in planned {
+        cleanup.track(output.path.clone());
+        cleanup.track(output.manifest.clone());
     }
 }
 
@@ -142,17 +146,36 @@ fn split_filter_complex(num_ch: u32, auto_level: bool, channel_gains: Option<&Ve
     std::iter::once(split_str).chain(chain).collect::<Vec<_>>().join(";")
 }
 
-/// Reserve a set of output paths as one operation from the caller's point of
-/// view. If any reservation fails, remove every placeholder already acquired
-/// so a split conversion never leaves a partial set behind.
-fn reserve_output_paths(paths: impl IntoIterator<Item = PathBuf>) -> Result<Vec<PathBuf>, String> {
-    let mut reserved = Vec::new();
-    for path in paths {
-        match reserve_unique_path(&path) {
-            Ok(path) => reserved.push(path),
+/// One reserved output and its export record (`<output>.depoaudio.json`).
+#[derive(Debug, Clone)]
+struct PlannedOutput {
+    path: PathBuf,
+    manifest: PathBuf,
+    /// Zero-based source channel of a split file.
+    channel_index: Option<u32>,
+    label: Option<String>,
+}
+
+/// Reserve a set of outputs, each with its export record, as one operation
+/// from the caller's point of view. If any reservation fails, remove every
+/// placeholder already acquired so a split conversion never leaves a partial
+/// set behind.
+fn reserve_output_paths(
+    paths: impl IntoIterator<Item = (PathBuf, Option<u32>, Option<String>)>,
+) -> Result<Vec<PlannedOutput>, String> {
+    let mut reserved: Vec<PlannedOutput> = Vec::new();
+    for (path, channel_index, label) in paths {
+        match manifest::reserve_output_and_manifest(&path) {
+            Ok((path, manifest)) => reserved.push(PlannedOutput {
+                path,
+                manifest,
+                channel_index,
+                label,
+            }),
             Err(error) => {
-                for path in &reserved {
-                    let _ = fs::remove_file(path);
+                for planned in &reserved {
+                    let _ = fs::remove_file(&planned.path);
+                    let _ = fs::remove_file(&planned.manifest);
                 }
                 return Err(error);
             }
@@ -246,7 +269,26 @@ pub(crate) async fn do_convert(
     cancel.check()?;
     let (feed_path, _feed_guard) = prepared?;
 
-    do_convert_inner(app, job, &feed_path, max_bytes, cancel).await
+    // Fingerprint the original file as the person selected it, before any
+    // format preparation, for the export record (DA-08).
+    let source = hash_file_cancellable(src.to_path_buf(), cancel).await?;
+    let source = FileRecord {
+        file_name: basename(&job.src_path),
+        sha256: source.0,
+        size_bytes: source.1,
+    };
+
+    do_convert_inner(app, job, &feed_path, max_bytes, cancel, source).await
+}
+
+async fn hash_file_cancellable(path: PathBuf, cancel: &ConversionCancel) -> Result<(String, u64), String> {
+    let hash_cancel = cancel.clone();
+    let result =
+        tauri::async_runtime::spawn_blocking(move || manifest::sha256_file(&path, &|| hash_cancel.cancelled()))
+            .await
+            .map_err(|error| format!("Could not fingerprint the file: {error}"))?;
+    cancel.check()?;
+    result
 }
 
 async fn do_convert_inner(
@@ -255,6 +297,7 @@ async fn do_convert_inner(
     feed: &Path,
     max_input_size: u64,
     cancel: &ConversionCancel,
+    source: FileRecord,
 ) -> Result<Vec<OutputFile>, String> {
     cancel.check()?;
     let is_cancelled = || cancel.cancelled();
@@ -321,11 +364,29 @@ async fn do_convert_inner(
     let proc = build_proc_filters_with_gain(app, job, effective_feed, None, Some(&is_cancelled)).await;
     cancel.check()?;
 
+    // Start time (DA-08): read the source's BWF bext TimeReference and carry
+    // it into WAV outputs, rescaled to the output rate, unless leading-silence
+    // trim moved the first sample.
+    let probed = probe_manifest_source_cancellable(app, effective_feed, Some(&is_cancelled)).await;
+    cancel.check()?;
+    let start_shifted = manifest::filters_shift_start(&proc);
+    let output_rate = manifest::output_sample_rate(&out_codec);
+    let mut encoder_args = out_codec.clone();
+    encoder_args.extend(manifest::bext_args(
+        &job.format,
+        probed.timing,
+        output_rate,
+        start_shifted,
+    ));
+
     let mut ffmpeg_args = safe_ffmpeg_input_prelude();
     ffmpeg_args.extend(input_codec.clone());
     ffmpeg_args.extend(["-i".into(), effective_feed.to_string_lossy().to_string()]);
 
     let mut output_cleanup = OutputCleanup::default();
+    let planned: Vec<PlannedOutput>;
+    let filter_option: Option<&'static str>;
+    let filter_chain: Option<String>;
 
     match job.mode.as_str() {
         "stereo" => {
@@ -359,12 +420,16 @@ async fn do_convert_inner(
             if !job.normalize {
                 all.push("alimiter=limit=0.97:level=false".into());
             }
-            let dst = reserve_unique_path(&out_dir.join(format!("{}{}", base, ext)))?;
-            output_cleanup.track(dst.clone());
+            planned = reserve_output_paths([(out_dir.join(format!("{}{}", base, ext)), None, None)])?;
+            track_planned(&mut output_cleanup, &planned);
+            let dst = planned[0].path.clone();
+            let chain = all.join(",");
             let mut args = ffmpeg_args.clone();
-            args.extend(["-af".into(), all.join(",")]);
-            args.extend(out_codec.clone());
+            args.extend(["-af".into(), chain.clone()]);
+            args.extend(encoder_args.clone());
             args.extend(["-y".into(), dst.to_string_lossy().to_string()]);
+            filter_option = Some("-af");
+            filter_chain = Some(chain);
             run_ffmpeg_with_timeout(
                 app,
                 args,
@@ -378,13 +443,20 @@ async fn do_convert_inner(
         }
 
         "keep" => {
-            let dst = reserve_unique_path(&out_dir.join(format!("{}_orig{}", base, ext)))?;
-            output_cleanup.track(dst.clone());
+            planned = reserve_output_paths([(out_dir.join(format!("{}_orig{}", base, ext)), None, None)])?;
+            track_planned(&mut output_cleanup, &planned);
+            let dst = planned[0].path.clone();
             let mut args = ffmpeg_args.clone();
-            if !proc.is_empty() {
-                args.extend(["-af".into(), proc.join(",")]);
+            if proc.is_empty() {
+                filter_option = None;
+                filter_chain = None;
+            } else {
+                let chain = proc.join(",");
+                args.extend(["-af".into(), chain.clone()]);
+                filter_option = Some("-af");
+                filter_chain = Some(chain);
             }
-            args.extend(out_codec.clone());
+            args.extend(encoder_args.clone());
             args.extend(["-y".into(), dst.to_string_lossy().to_string()]);
             run_ffmpeg_with_timeout(
                 app,
@@ -404,12 +476,14 @@ async fn do_convert_inner(
             let num_ch = num_ch.ok_or("Cannot split channels: unable to determine the input's channel count")?;
             let num_ch = validate_conversion_channels(num_ch)?;
             let labels = split_labels(num_ch, &job.labels);
-            let dsts = reserve_output_paths(
-                labels
-                    .iter()
-                    .map(|label| out_dir.join(format!("{}_{}{}", base, label, ext))),
-            )?;
-            output_cleanup.track_all(&dsts);
+            planned = reserve_output_paths(labels.iter().enumerate().map(|(index, label)| {
+                (
+                    out_dir.join(format!("{}_{}{}", base, label, ext)),
+                    Some(index as u32),
+                    job.labels.get(index).cloned(),
+                )
+            }))?;
+            track_planned(&mut output_cleanup, &planned);
 
             // Use asplit + pan=mono per channel instead of channelsplit:
             // channelsplit requires the actual channel layout (defaulting to
@@ -419,12 +493,14 @@ async fn do_convert_inner(
             // a desynced analysis probe must not be applied per-channel
             let valid_gains = channel_gains.as_ref().filter(|g| g.len() == num_ch as usize);
             let fc = split_filter_complex(num_ch, job.auto_level, valid_gains, &proc);
-            args.extend(["-filter_complex".into(), fc, "-y".into()]);
-            for (i, dst) in dsts.iter().enumerate() {
+            args.extend(["-filter_complex".into(), fc.clone(), "-y".into()]);
+            for (i, output) in planned.iter().enumerate() {
                 args.extend(["-map".into(), format!("[op{}]", i)]);
-                args.extend(out_codec.clone());
-                args.push(dst.to_string_lossy().to_string());
+                args.extend(encoder_args.clone());
+                args.push(output.path.to_string_lossy().to_string());
             }
+            filter_option = Some("-filter_complex");
+            filter_chain = Some(fc);
             run_ffmpeg_with_timeout(
                 app,
                 args,
@@ -440,10 +516,10 @@ async fn do_convert_inner(
         _ => return Err(format!("Unknown mode: {}", job.mode)),
     }
 
-    let files: Vec<OutputFile> = output_cleanup
-        .paths
+    let files: Vec<OutputFile> = planned
         .iter()
-        .map(|p| {
+        .map(|output| {
+            let p = &output.path;
             let size = fs::metadata(p).map(|m| m.len()).unwrap_or(0);
             OutputFile {
                 name: basename(&p.to_string_lossy()),
@@ -456,6 +532,40 @@ async fn do_convert_inner(
     if let Some(empty) = files.iter().find(|f| f.size == 0) {
         // OutputCleanup removes this empty file and every valid sibling.
         return Err(format!("Output file is empty: {}", empty.name));
+    }
+
+    // Export record (DA-08). A failure here fails the conversion and removes
+    // every output, so no file is delivered without its record.
+    let manifest_input = ManifestInput {
+        app_version: app.package_info().version.to_string(),
+        created_at: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+        source,
+        probed: &probed,
+        labels: &job.labels,
+        shifted: start_shifted,
+    };
+    for (output, file) in planned.iter().zip(&files) {
+        let (sha256, size_bytes) = hash_file_cancellable(output.path.clone(), cancel).await?;
+        let record = manifest::build_manifest(
+            &manifest_input,
+            OutputFacts {
+                file_name: file.name.clone(),
+                sha256,
+                size_bytes,
+                format: &job.format,
+                mode: &job.mode,
+                filter_option,
+                filter_chain: filter_chain.clone(),
+                encoder_args: encoder_args.clone(),
+                source_channel_index: output.channel_index,
+                label: output.label.clone(),
+            },
+        );
+        manifest::write_manifest(&output.manifest, &record).map_err(|error| {
+            format!(
+                "The audio was converted, but its export record could not be saved, so the output was removed: {error}"
+            )
+        })?;
     }
 
     cancel.check()?;
@@ -587,10 +697,42 @@ mod tests {
         let first = dir.0.join("first.wav");
         let invalid = dir.0.join("missing-parent").join("second.wav");
 
-        let result = reserve_output_paths([first.clone(), invalid]);
+        let result = reserve_output_paths([(first.clone(), Some(0), None), (invalid, Some(1), None)]);
 
         assert!(result.is_err());
         assert!(!first.exists(), "the first reservation must be rolled back");
+        assert!(
+            !crate::manifest::manifest_path_for(&first).exists(),
+            "the first export record reservation must be rolled back"
+        );
+    }
+
+    #[test]
+    fn every_output_reserves_its_export_record_next_to_it() {
+        let dir = ConversionTestDir::new();
+        let planned = reserve_output_paths([
+            (dir.0.join("session_Attorney.wav"), Some(0), Some("Attorney".into())),
+            (dir.0.join("session_Witness.wav"), Some(1), Some("Witness".into())),
+        ])
+        .unwrap();
+        assert_eq!(planned.len(), 2);
+        for output in &planned {
+            assert!(output.path.exists());
+            assert_eq!(output.manifest, crate::manifest::manifest_path_for(&output.path));
+            assert_eq!(fs::metadata(&output.manifest).unwrap().len(), 0);
+        }
+        assert_eq!(planned[1].channel_index, Some(1));
+        assert_eq!(planned[1].label.as_deref(), Some("Witness"));
+
+        // Cleanup of an uncommitted conversion removes outputs and records.
+        {
+            let mut cleanup = OutputCleanup::default();
+            track_planned(&mut cleanup, &planned);
+        }
+        for output in &planned {
+            assert!(!output.path.exists());
+            assert!(!output.manifest.exists());
+        }
     }
 
     #[test]

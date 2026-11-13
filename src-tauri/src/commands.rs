@@ -185,6 +185,7 @@ pub async fn convert(app: AppHandle, state: State<'_, AppState>, job: ConvertJob
             if cancel.cancelled() {
                 for file in &files {
                     let _ = fs::remove_file(&file.path);
+                    let _ = fs::remove_file(crate::manifest::manifest_path_for(Path::new(&file.path)));
                 }
                 return emit_conversion_cancelled(&app, id);
             }

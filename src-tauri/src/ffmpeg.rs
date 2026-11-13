@@ -262,6 +262,35 @@ pub(crate) async fn probe_channels_cancellable(
     }
 }
 
+/// Channel count, sample rate and BWF bext TimeReference of the conversion
+/// input, for the export manifest (DA-08). A failed probe yields an empty
+/// record: the manifest then says the start is unknown instead of guessing.
+pub(crate) async fn probe_manifest_source_cancellable(
+    app: &AppHandle,
+    feed: &Path,
+    cancelled: CancelCheck<'_>,
+) -> crate::manifest::ProbedSource {
+    let args: Vec<String> = vec![
+        "-v".into(),
+        "quiet".into(),
+        "-protocol_whitelist".into(),
+        "file".into(),
+        "-print_format".into(),
+        "json".into(),
+        "-show_format".into(),
+        "-show_streams".into(),
+        "-select_streams".into(),
+        "a:0".into(),
+        feed.to_string_lossy().to_string(),
+    ];
+    let Some(out) = sidecar_output_cancellable(app, ffprobe_bin_name(), args, 30, cancelled).await else {
+        return crate::manifest::ProbedSource::default();
+    };
+    serde_json::from_slice::<serde_json::Value>(&out.stdout)
+        .map(|probe| crate::manifest::parse_probe(&probe))
+        .unwrap_or_default()
+}
+
 // ── Filter chain builder ─────────────────────────────────────────────────────
 
 /// Build the processing filter chain, optionally injecting a computed gain
