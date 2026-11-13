@@ -829,6 +829,17 @@ expect(
   tauriLib.includes('if updater_config_is_valid(updater_config)'),
   'desktop startup must not register the updater without a valid plugin configuration',
 )
+// DA-06: Merge is hidden in the interface, so its backend commands stay off
+// the IPC surface until the owner decides to ship it (audit open question 3).
+// Re-registering them is a deliberate product change, not a refactor.
+const invokeHandlerList = tauriLib.match(/generate_handler!\[([\s\S]*?)\]/)?.[1] ?? ''
+expect(invokeHandlerList.includes('commands::health_check'), 'lib.rs invoke_handler list could not be read')
+for (const hiddenCommand of ['merge_audio_cmd', 'detect_sync_cmd']) {
+  expect(
+    !invokeHandlerList.includes(hiddenCommand),
+    `hidden Merge command ${hiddenCommand} must not be registered over IPC while Merge is hidden`,
+  )
+}
 expect(
   restoreModelsWorkflow.includes(
     'microsoft/DNS-Challenge/82f1b17e7776a43eee395d0f45bae8abb700ad00/DNSMOS/DNSMOS/sig_bak_ovr.onnx',

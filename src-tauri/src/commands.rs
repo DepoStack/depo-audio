@@ -12,7 +12,6 @@ use crate::analysis;
 use crate::catdetect;
 use crate::conversion::{do_convert, ConversionCancel};
 use crate::helpers::{detect_format_for_path, get_formats, infer_case_name};
-use crate::merge;
 use crate::models;
 use crate::persistence::{library_ready, mutate_library, prefs_path, prefs_ready, save_to_library};
 use crate::types::*;
@@ -136,24 +135,6 @@ pub async fn scan_cat_jobs_cmd(path: String, max_depth: Option<u32>) -> Result<V
     tauri::async_runtime::spawn_blocking(move || catdetect::scan_cat_jobs(&path, depth))
         .await
         .map_err(|error| format!("CAT job scan failed: {error}"))
-}
-
-// ── Merge commands ───────────────────────────────────────────────────────────
-
-#[tauri::command]
-pub async fn detect_sync_cmd(app: AppHandle, source_a: String, source_b: String) -> Result<merge::SyncResult, String> {
-    merge::detect_sync(&app, &source_a, &source_b).await
-}
-
-#[tauri::command]
-pub async fn merge_audio_cmd(app: AppHandle, job: merge::MergeJob) -> Result<merge::MergeResult, String> {
-    let mut result = merge::merge_audio(&app, &job).await?;
-    if let Err(error) = app.asset_protocol_scope().allow_file(&result.output_path) {
-        result.warning = Some(format!(
-            "Merge finished, but its output could not be authorized for playback. Restart DepoAudio to restore Library playback access: {error}"
-        ));
-    }
-    Ok(result)
 }
 
 // ── Convert command ───────────────────────────────────────────────────────────

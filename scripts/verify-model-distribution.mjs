@@ -130,6 +130,21 @@ function assertCompiledBoundary(libSource, commandsSource) {
   }
 }
 
+// DA-06: the learned-model sources left main so nobody can re-add a `mod`
+// line by accident. They remain in git history only.
+async function assertNoLearnedSources(root) {
+  for (const moduleName of LEARNED_MODULES) {
+    const relative = `src-tauri/src/${moduleName}.rs`
+    try {
+      await lstat(path.join(root, ...relative.split('/')))
+    } catch (error) {
+      if (error.code === 'ENOENT') continue
+      throw error
+    }
+    throw new Error(`Learned-model source remains on main: ${relative}`)
+  }
+}
+
 function assertConversionBoundary(conversionSource) {
   for (const learnedImport of ['crate::denoise', 'crate::dereverb', 'crate::enhance', 'nnnoiseless']) {
     if (conversionSource.includes(learnedImport)) {
@@ -192,6 +207,7 @@ async function verifyRepository(root = process.cwd()) {
 
   assertCargoBoundary(cargoToml, cargoLock)
   assertCompiledBoundary(libSource, commandsSource)
+  await assertNoLearnedSources(root)
   assertConversionBoundary(conversionSource)
   assertCapabilitiesBoundary(modelsSource)
 
@@ -259,6 +275,16 @@ async function selfTest() {
     await verifyRepository(root)
     await expectFixtureRejection(root, 'src-tauri/Cargo.toml', 'nnnoiseless = "0.5.2"\n', 'nnnoiseless')
     await expectFixtureRejection(root, 'src-tauri/src/lib.rs', 'mod denoise;\n', 'module remains compiled')
+    const learnedSource = path.join(root, 'src-tauri', 'src', 'vad.rs')
+    await writeFile(learnedSource, '// uncompiled learned-model source\n')
+    let learnedSourceRejected = false
+    try {
+      await verifyRepository(root)
+    } catch (error) {
+      learnedSourceRejected = String(error).includes('Learned-model source remains on main')
+    }
+    await rm(learnedSource)
+    if (!learnedSourceRejected) throw new Error('Model distribution self-test did not reject a learned-model source file')
     await expectFixtureRejection(
       root,
       'src-tauri/src/conversion.rs',

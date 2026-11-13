@@ -21,8 +21,10 @@ import ConvertTab from './components/Convert/ConvertTab'
 
 const LibraryTab = lazy(() => import('./components/Library/LibraryTab'))
 const PlayerTab = lazy(() => import('./components/Player/PlayerTab'))
-// Merge is hidden for v1 — MergeTab.jsx is retained; re-add the nav entry and
-// TabsContent below to bring it back (see the "Re-add Merge" tracking issue).
+// Merge is hidden for v1 — MergeTab.jsx is retained, and its backend commands
+// (detect_sync_cmd, merge_audio_cmd) are not registered over IPC. Bringing it
+// back is an owner decision: re-register both in src-tauri/src/lib.rs, update
+// the release contract, then re-add the nav entry and TabsContent below.
 const SettingsPanel = lazy(() => import('./components/SettingsPanel'))
 
 const themeIcons = {

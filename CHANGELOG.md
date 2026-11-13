@@ -4,6 +4,11 @@
 
 These changes are on `main` but not in the existing private v1.0.3 candidate, which was built from an earlier commit. Whether they ship as a rebuilt v1.0.3 or as a later version is an open owner decision in the release gate.
 
+### Removed
+
+- **The seven uncompiled learned-model sources left `main`.** `vad.rs`, `denoise.rs`, `dereverb.rs`, `enhance.rs`, `mel.rs`, `scoring.rs` and `speakers.rs` were not compiled into v1.0.3. They stay in git history; the last commit that has them is `ceafc9c`. **Owner action:** to keep them easy to find, tag that commit (suggested name `archive/learned-model-sources`); no tag was created by this change. `npm run models:check` now fails if any of these files returns.
+- **The hidden Merge commands are no longer reachable over IPC.** `detect_sync_cmd` and `merge_audio_cmd` are unregistered while Merge stays hidden; `merge.rs` and `MergeTab.jsx` remain and are still unit-tested, so whether Merge ships is still the owner's decision. The release contract fails if either command is registered again without that decision.
+
 ### Changed
 
 - **Tauri moves to 2.12.** The Rust crates lock Tauri 2.12.5 (`tauri-utils` 2.10.2, `urlpattern` 0.6.0) and the JavaScript packages use `@tauri-apps/api` and `@tauri-apps/cli` 2.12.4. The minimum Rust version is now 1.90, which Tauri 2.12 requires. The WebView2 evidence script now expects CLI 2.12.4; its download paths were rechecked against tauri-bundler 2.10.4 and are unchanged.
