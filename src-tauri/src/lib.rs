@@ -4,6 +4,7 @@ mod commands;
 mod conversion;
 mod ffmpeg;
 mod helpers;
+mod localdata;
 mod manifest;
 // Merge is hidden in the interface and its commands are not registered over
 // IPC (DA-06). The module stays compiled and tested so it can return if the
@@ -133,6 +134,10 @@ pub fn run() {
             commands::library_import_files,
             commands::prefs_get,
             commands::prefs_set,
+            commands::local_data_info_cmd,
+            commands::local_data_clear_cmd,
+            commands::local_data_export_cmd,
+            commands::local_data_import_cmd,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -406,7 +406,7 @@ pub struct LibraryMutationResult {
     pub warning: Option<String>,
 }
 
-fn playable_library_extension(path: &Path) -> Result<String, String> {
+pub(crate) fn playable_library_extension(path: &Path) -> Result<String, String> {
     let extension = path
         .extension()
         .and_then(|extension| extension.to_str())
@@ -572,6 +572,169 @@ pub fn prefs_set(app: AppHandle, state: State<'_, AppState>, patch: serde_json::
     crate::persistence::atomic_write(&path, json.as_bytes())?;
     *current = candidate;
     Ok(true)
+}
+
+// ── Local data commands (DA-07) ──────────────────────────────────────────────
+
+fn app_data_dir(app: &AppHandle) -> Result<std::path::PathBuf, String> {
+    app.path()
+        .app_data_dir()
+        .map_err(|e| format!("Cannot resolve the app data folder: {e}"))
+}
+
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LocalDataInfo {
+    pub app_data_dir: String,
+    pub items: Vec<crate::localdata::StoredItem>,
+    /// Whether the library loaded. When it did not, export is unavailable but
+    /// "Clear all DepoAudio data" still works and starts a fresh library.
+    pub library_readable: bool,
+}
+
+/// Where DepoAudio keeps its files and which of them exist now. Paths are
+/// shown in Settings so a person can find and check them.
+#[tauri::command]
+pub fn local_data_info_cmd(app: AppHandle, state: State<'_, AppState>) -> Result<LocalDataInfo, String> {
+    let dir = app_data_dir(&app)?;
+    Ok(LocalDataInfo {
+        app_data_dir: dir.to_string_lossy().to_string(),
+        items: crate::localdata::stored_items(&dir),
+        library_readable: library_ready(&state).is_ok(),
+    })
+}
+
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LocalDataClearResult {
+    pub removed: usize,
+    pub warning: Option<String>,
+}
+
+/// Remove DepoAudio's own files from app data (library, settings, unfinished
+/// saves, legacy model files) and reset the in-memory library and settings.
+/// Only exact DepoAudio file names are removed; no path recorded in the
+/// library is ever deleted, so recordings, outputs and backups stay.
+#[tauri::command]
+pub fn local_data_clear_cmd(app: AppHandle, state: State<'_, AppState>) -> Result<LocalDataClearResult, String> {
+    let dir = app_data_dir(&app)?;
+    let _asset_commit = state.library_asset_commit.lock().unwrap_or_else(|e| e.into_inner());
+    let mut library = state.library.lock().unwrap_or_else(|e| e.into_inner());
+    let mut prefs = state.prefs.lock().unwrap_or_else(|e| e.into_inner());
+
+    let outcome = crate::localdata::clear_app_data_in(&dir);
+    let failed = |name: &str| outcome.failed.iter().any(|(failed, _)| failed == name);
+
+    let mut warning = None;
+    if !failed("library.json") {
+        let paths: Vec<String> = library.cases.iter().flat_map(case_paths).collect();
+        *library = Library::default();
+        *state.library_load_error.lock().unwrap_or_else(|e| e.into_inner()) = None;
+        warning = revoke_library_assets(&app, &unreferenced_paths(&library, paths));
+    }
+    if !failed("prefs.json") {
+        *prefs = Prefs::default();
+        *state.prefs_load_error.lock().unwrap_or_else(|e| e.into_inner()) = None;
+    }
+    if !outcome.failed.is_empty() {
+        let names: Vec<&str> = outcome.failed.iter().map(|(name, _)| name.as_str()).collect();
+        let reason = &outcome.failed[0].1;
+        let message = format!(
+            "{} file(s) could not be removed ({}; first reason: {reason}). Close other programs that may have them open, then try again.",
+            names.len(),
+            names.join(", ")
+        );
+        warning = Some(match warning {
+            Some(existing) => format!("{message} {existing}"),
+            None => message,
+        });
+    }
+    Ok(LocalDataClearResult {
+        removed: outcome.removed.len(),
+        warning,
+    })
+}
+
+/// Write a backup zip of the library plus the transcripts and bookmarks the
+/// frontend passes in. The zip is always a new file.
+#[tauri::command]
+pub fn local_data_export_cmd(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    path: String,
+    transcripts: serde_json::Value,
+    bookmarks: serde_json::Value,
+) -> Result<crate::localdata::BackupCounts, String> {
+    let path = std::path::PathBuf::from(path);
+    if !crate::localdata::is_zip_path(&path) {
+        return Err("Choose a file name that ends in .zip".into());
+    }
+    library_ready(&state)?;
+    let library = state.library.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    let (zip, counts) = crate::localdata::build_backup(
+        &library,
+        &transcripts,
+        &bookmarks,
+        &app.package_info().version.to_string(),
+        &Utc::now(),
+    )?;
+    crate::localdata::write_new_file(&path, &zip)?;
+    Ok(counts)
+}
+
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LocalDataImportResult {
+    #[serde(flatten)]
+    pub report: crate::localdata::MergeReport,
+    /// Imported Library files that are not on this computer (or cannot be
+    /// authorized for playback). Their entries are kept.
+    pub files_unavailable: usize,
+    /// Returned for the frontend to restore into web view storage.
+    pub transcripts: serde_json::Value,
+    pub bookmarks: serde_json::Value,
+}
+
+/// Read a DepoAudio backup and add its cases and sessions to the library.
+/// Nothing already in the library is removed or replaced.
+#[tauri::command]
+pub fn local_data_import_cmd(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    path: String,
+) -> Result<LocalDataImportResult, String> {
+    let path = Path::new(&path);
+    let size = fs::metadata(path)
+        .map_err(|e| format!("Cannot read the backup file: {}", e.kind()))?
+        .len();
+    if size > crate::localdata::MAX_BACKUP_BYTES {
+        return Err("This file is larger than any DepoAudio backup (64 MB).".into());
+    }
+    let bytes = fs::read(path).map_err(|e| format!("Cannot read the backup file: {}", e.kind()))?;
+    let backup = crate::localdata::parse_backup(&bytes)?;
+
+    let _asset_commit = state.library_asset_commit.lock().unwrap_or_else(|e| e.into_inner());
+    let (report, added_paths) = mutate_library(&app, &state, move |lib| {
+        crate::localdata::merge_library(lib, backup.library)
+    })?;
+
+    let scope = app.asset_protocol_scope();
+    let mut files_unavailable = 0usize;
+    for added in added_paths {
+        let candidate = Path::new(&added);
+        let authorized = crate::safety::check_file_safe(candidate).is_ok()
+            && !scope.is_forbidden(candidate)
+            && scope.allow_file(candidate).is_ok();
+        if !authorized {
+            files_unavailable += 1;
+        }
+    }
+    Ok(LocalDataImportResult {
+        report,
+        files_unavailable,
+        transcripts: backup.transcripts,
+        bookmarks: backup.bookmarks,
+    })
 }
 
 // ── Shell / opener commands ───────────────────────────────────────────────────

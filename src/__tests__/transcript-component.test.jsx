@@ -195,4 +195,35 @@ describe('Transcript storage and timestamps', () => {
     )
     expect(screen.queryByRole('alert')).not.toBeInTheDocument()
   })
+
+  it('deletes the saved transcript for this track only, after confirmation', async () => {
+    vi.useFakeTimers()
+    const path = 'C:\\audio\\synthetic-hearing.wav'
+    const other = 'C:\\audio\\other.wav'
+    localStorage.setItem(
+      storageKey(path),
+      JSON.stringify([{ id: 'a', start: 1, speaker: 'Q', text: 'Synthetic line' }]),
+    )
+    localStorage.setItem(storageKey(other), JSON.stringify([{ id: 'b', start: 2, speaker: 'A', text: 'Keep me' }]))
+
+    render(<Transcript trackPath={path} currentTime={0} playing={false} onSeek={vi.fn()} />)
+    expect(screen.getByRole('textbox', { name: 'Transcript text for line 1' })).toHaveValue('Synthetic line')
+
+    fireEvent.click(screen.getByRole('button', { name: 'Delete transcript for this track' }))
+    // Cancel keeps it.
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+    expect(localStorage.getItem(storageKey(path))).not.toBeNull()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Delete transcript for this track' }))
+    expect(screen.getByRole('dialog')).toHaveTextContent(/exported SRT or TXT files are not affected/i)
+    fireEvent.click(screen.getByRole('button', { name: 'Delete transcript' }))
+
+    expect(localStorage.getItem(storageKey(path))).toBeNull()
+    expect(screen.getByRole('button', { name: /start typing/i })).toBeVisible()
+    act(() => vi.advanceTimersByTime(TRANSCRIPT_SAVE_DEBOUNCE_MS * 2))
+    // The autosave must not bring the key back, and the other track is untouched.
+    expect(localStorage.getItem(storageKey(path))).toBeNull()
+    expect(JSON.parse(localStorage.getItem(storageKey(other)))[0].text).toBe('Keep me')
+    expect(fileMocks.writeTextFile).not.toHaveBeenCalled()
+  })
 })

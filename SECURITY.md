@@ -37,6 +37,20 @@ enables:
 - **FFmpeg sidecars** — bundled locally; conversion does not download them or
   send recording data over the network.
 
+## Local data and encryption at rest
+
+DepoAudio keeps its case library and settings in the app data folder and
+transcripts and bookmarks in the app's web view storage, all on the user's
+computer. [`docs/LOCAL-DATA.md`](docs/LOCAL-DATA.md) lists every location, the
+backup format, and how to delete one transcript or all DepoAudio data.
+
+**Recorded exception:** DepoAudio does not encrypt that data, or its backup
+zips, itself. The compensating control is the operating system's full-disk
+encryption (FileVault on macOS, BitLocker or Device Encryption on Windows),
+which Settings → Your data asks people to turn on. "Clear all DepoAudio data"
+deletes only DepoAudio's own files and keys, never recordings, converted
+files, export records or backups.
+
 ## Incident runbooks
 
 - [A bad release](docs/RUNBOOK-BAD-RELEASE.md): how to stop new downloads of a

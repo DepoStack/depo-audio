@@ -204,6 +204,7 @@ src-tauri/               # Rust backend (Tauri 2)
     manifest.rs          # <output>.depoaudio.json export record
     models.rs            # deletion-only legacy model storage cleanup
     catdetect.rs         # court-software detection     safety.rs / helpers.rs
+    localdata.rs         # Your data: storage list, zip backup/import, clear all
     commands.rs types.rs persistence.rs
   binaries/              # FFmpeg/FFprobe sidecars (not committed)
   resources/third-party/ # deterministic bundled dependency notices

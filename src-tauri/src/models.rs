@@ -59,6 +59,11 @@ const LEGACY_MODEL_FILES: &[LegacyModelFile] = &[
     },
 ];
 
+/// The exact legacy file names, for "Clear all DepoAudio data" (DA-07).
+pub(crate) fn legacy_model_filenames() -> impl Iterator<Item = &'static str> {
+    LEGACY_MODEL_FILES.iter().map(|model| model.filename)
+}
+
 fn legacy_model_file(filename: &str) -> Option<&'static LegacyModelFile> {
     LEGACY_MODEL_FILES.iter().find(|model| model.filename == filename)
 }
