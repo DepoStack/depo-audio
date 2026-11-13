@@ -175,7 +175,12 @@ jobs:
       - name: Formatting
         run: cargo fmt --manifest-path src-tauri/Cargo.toml --all -- --check
 
+      # The FFmpeg-backed tests (export records, synthetic SGMCA and .dm
+      # conversions) skip themselves when FFmpeg, ffprobe or libopus is
+      # missing; here a missing tool fails the job instead.
       - name: Characterization + unit tests
+        env:
+          DEPOAUDIO_REQUIRE_FFMPEG_TESTS: '1'
         run: cargo test --locked --manifest-path src-tauri/Cargo.toml
 
   rust-macos:

@@ -218,7 +218,13 @@ pub(crate) async fn probe_duration_cancellable(
     feed: &Path,
     cancelled: CancelCheck<'_>,
 ) -> Option<f64> {
-    let args: Vec<String> = vec![
+    let output = sidecar_output_cancellable(app, ffprobe_bin_name(), duration_probe_args(feed), 30, cancelled).await?;
+    parse_duration_probe(&output.stdout)
+}
+
+/// ffprobe arguments for the container duration.
+pub(crate) fn duration_probe_args(feed: &Path) -> Vec<String> {
+    vec![
         "-v".into(),
         "quiet".into(),
         "-protocol_whitelist".into(),
@@ -227,9 +233,12 @@ pub(crate) async fn probe_duration_cancellable(
         "json".into(),
         "-show_format".into(),
         feed.to_string_lossy().to_string(),
-    ];
-    let output = sidecar_output_cancellable(app, ffprobe_bin_name(), args, 30, cancelled).await?;
-    let text = String::from_utf8_lossy(&output.stdout);
+    ]
+}
+
+/// Duration in seconds from `duration_probe_args` output, if readable.
+pub(crate) fn parse_duration_probe(stdout: &[u8]) -> Option<f64> {
+    let text = String::from_utf8_lossy(stdout);
     let v: serde_json::Value = serde_json::from_str(&text).ok()?;
     v["format"]["duration"].as_str()?.parse::<f64>().ok()
 }

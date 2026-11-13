@@ -873,6 +873,12 @@ pub(crate) mod tests {
         let available = std::process::Command::new("ffmpeg").arg("-version").output().is_ok()
             && std::process::Command::new("ffprobe").arg("-version").output().is_ok();
         if !available {
+            // CI sets this so a runner image without FFmpeg fails instead of
+            // passing these tests without running them.
+            assert!(
+                std::env::var_os("DEPOAUDIO_REQUIRE_FFMPEG_TESTS").is_none_or(|value| value != "1"),
+                "DEPOAUDIO_REQUIRE_FFMPEG_TESTS=1, but ffmpeg/ffprobe is not on PATH"
+            );
             eprintln!("skipping: ffmpeg/ffprobe not on PATH");
         }
         available

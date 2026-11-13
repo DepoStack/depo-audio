@@ -296,16 +296,6 @@ fn prepare_source(
     Ok((feed, guard, source))
 }
 
-async fn hash_file_cancellable(path: PathBuf, cancel: &ConversionCancel) -> Result<(String, u64), String> {
-    let hash_cancel = cancel.clone();
-    let result =
-        tauri::async_runtime::spawn_blocking(move || manifest::sha256_file(&path, &|| hash_cancel.cancelled()))
-            .await
-            .map_err(|error| format!("Could not fingerprint the file: {error}"))?;
-    cancel.check()?;
-    result
-}
-
 /// What the probes found before the FFmpeg command is planned.
 struct ConversionProbes {
     /// Channel count of the input; probed only for Mix to Stereo and Split.
@@ -532,6 +522,37 @@ fn output_facts<'a>(
     }
 }
 
+/// Everything after FFmpeg exits, shared by `do_convert_inner` and the tests:
+/// check that no output is empty, fingerprint each output, write its export
+/// record (DA-08) and only then commit. An error or a cancel at any point
+/// drops `cleanup` uncommitted, which removes every output and placeholder,
+/// so no file is delivered without its record. Blocking (file hashing): the
+/// app runs it on a blocking thread.
+fn finish_outputs(
+    job: &ConvertJob,
+    plan: &ConversionPlan,
+    input: &ManifestInput<'_>,
+    mut cleanup: OutputCleanup,
+    cancel: &ConversionCancel,
+) -> Result<Vec<OutputFile>, String> {
+    cancel.check()?;
+    let files = collect_outputs(&plan.planned)?;
+    for (output, file) in plan.planned.iter().zip(&files) {
+        let hashed = manifest::sha256_file(&output.path, &|| cancel.cancelled());
+        cancel.check()?;
+        let (sha256, size_bytes) = hashed?;
+        let record = manifest::build_manifest(input, output_facts(job, plan, output, file, sha256, size_bytes));
+        manifest::write_manifest(&output.manifest, &record).map_err(|error| {
+            format!(
+                "The audio was converted, but its export record could not be saved, so the output was removed: {error}"
+            )
+        })?;
+    }
+    cancel.check()?;
+    cleanup.commit();
+    Ok(files)
+}
+
 async fn do_convert_inner(
     app: &AppHandle,
     job: &ConvertJob,
@@ -618,36 +639,27 @@ async fn do_convert_inner(
     .await?;
     cancel.check()?;
 
-    // OutputCleanup removes an empty file and every valid sibling.
-    let files = collect_outputs(&plan.planned)?;
-
-    // Export record (DA-08). A failure here fails the conversion and removes
-    // every output, so no file is delivered without its record.
-    let manifest_input = ManifestInput {
-        app_version: app.package_info().version.to_string(),
-        created_at: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
-        source,
-        probed: &probes.probed,
-        labels: &job.labels,
-        shifted: plan.start_shifted,
-    };
-    for (output, file) in plan.planned.iter().zip(&files) {
-        let (sha256, size_bytes) = hash_file_cancellable(output.path.clone(), cancel).await?;
-        let record = manifest::build_manifest(
-            &manifest_input,
-            output_facts(job, &plan, output, file, sha256, size_bytes),
-        );
-        manifest::write_manifest(&output.manifest, &record).map_err(|error| {
-            format!(
-                "The audio was converted, but its export record could not be saved, so the output was removed: {error}"
-            )
-        })?;
-    }
-
-    cancel.check()?;
-    output_cleanup.commit();
-
-    Ok(files)
+    // Outputs, fingerprints and export records (DA-08), then commit; the same
+    // function the synthetic court-format tests call. `output_cleanup` moves
+    // in, so any failure there removes every output.
+    let app_version = app.package_info().version.to_string();
+    let created_at = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+    let record_job = job.clone();
+    let probed = probes.probed;
+    let record_cancel = cancel.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let input = ManifestInput {
+            app_version,
+            created_at,
+            source,
+            probed: &probed,
+            labels: &record_job.labels,
+            shifted: plan.start_shifted,
+        };
+        finish_outputs(&record_job, &plan, &input, output_cleanup, &record_cancel)
+    })
+    .await
+    .map_err(|error| format!("Could not save the export records: {error}"))?
 }
 
 #[cfg(test)]
@@ -945,12 +957,19 @@ mod tests {
 
     // ── Synthetic court-format conversions (FFmpeg on PATH) ─────────────────
     //
-    // These run the conversion's own preparation, planning, argument building
-    // and export-record code against FFmpeg and ffprobe on PATH (CI installs
-    // them from apt). Only the Tauri sidecar launch and progress events are
-    // replaced. The audio is SYNTHETIC: lavfi sine tones, no speech, and a
-    // made-up vendor prefix. No byte of a real Stenograph or DigitalCAT file is
-    // copied. Each test returns early, with a message, when the tools are missing.
+    // These call the conversion's own request checks, source preparation and
+    // fingerprint, ffprobe arguments, filter builder, plan (outputs and FFmpeg
+    // arguments) and `finish_outputs` (output checks, hashes, export records,
+    // commit) with FFmpeg and ffprobe from PATH (CI installs them from apt).
+    // What `convert_with_system_ffmpeg` does NOT share with `do_convert_inner`
+    // is the async part, which needs the Tauri runtime: the order of the
+    // probes and their cancel checks, the auto-level analysis (a test passes
+    // the gains it wants instead), the sidecar launch and progress events. The
+    // harness mirrors that part, so a change there needs the same change here.
+    // The audio is SYNTHETIC: lavfi sine tones, no speech, and a made-up vendor
+    // prefix. No byte of a real Stenograph or DigitalCAT file is copied. Each
+    // test returns early, with a message, when the tools are missing, unless
+    // DEPOAUDIO_REQUIRE_FFMPEG_TESTS=1 (set in CI), when it fails instead.
 
     /// FFmpeg and ffprobe are on PATH and FFmpeg can encode multichannel Opus
     /// (the shipped LGPL builds use libopus).
@@ -963,6 +982,10 @@ mod tests {
                 .output()
                 .is_ok_and(|output| String::from_utf8_lossy(&output.stdout).contains("libopus"));
         if !libopus {
+            assert!(
+                std::env::var_os("DEPOAUDIO_REQUIRE_FFMPEG_TESTS").is_none_or(|value| value != "1"),
+                "DEPOAUDIO_REQUIRE_FFMPEG_TESTS=1, but ffmpeg/ffprobe with libopus is not on PATH"
+            );
             eprintln!("skipping: ffmpeg/ffprobe with libopus not on PATH");
         }
         libopus
@@ -1074,10 +1097,19 @@ mod tests {
 
     /// Peak level of a decoded file in dBFS, from FFmpeg's volumedetect.
     fn max_volume_db(path: &Path) -> f64 {
+        max_volume_db_with(path, "volumedetect")
+    }
+
+    /// Peak level in dBFS between `start` and `end` seconds.
+    fn max_volume_db_between(path: &Path, start: f64, end: f64) -> f64 {
+        max_volume_db_with(path, &format!("atrim=start={start}:end={end},volumedetect"))
+    }
+
+    fn max_volume_db_with(path: &Path, filter: &str) -> f64 {
         let output = std::process::Command::new("ffmpeg")
             .args(["-nostdin", "-hide_banner", "-i"])
             .arg(path)
-            .args(["-af", "volumedetect", "-f", "null", "-"])
+            .args(["-af", filter, "-f", "null", "-"])
             .output()
             .unwrap();
         assert!(output.status.success());
@@ -1108,9 +1140,14 @@ mod tests {
 
     /// `do_convert` without the Tauri runtime: the same request checks, source
     /// preparation and fingerprint, probes (with the app's own ffprobe
-    /// arguments), plan, FFmpeg arguments and export records, with FFmpeg run
-    /// from PATH instead of the bundled sidecar.
-    fn convert_with_system_ffmpeg(job: &ConvertJob) -> Result<CourtConversion, String> {
+    /// arguments), filters, plan and `finish_outputs`, with FFmpeg run from
+    /// PATH instead of the bundled sidecar. `channel_gains` stands in for the
+    /// auto-level analysis result, which the plan uses only when
+    /// `job.auto_level` is on.
+    fn convert_with_system_ffmpeg(
+        job: &ConvertJob,
+        channel_gains: Option<Vec<f64>>,
+    ) -> Result<CourtConversion, String> {
         validate_convert_request(job)?;
         let format = detect_format_for_path(&job.src_path).ok_or("Unrecognised file format")?;
         assert!(
@@ -1124,10 +1161,16 @@ mod tests {
             assert!(output.status.success(), "ffprobe failed");
             output.stdout
         };
+        // As build_proc_filters_with_gain: the duration only places the fade-out.
+        let duration = if job.fade {
+            crate::ffmpeg::parse_duration_probe(&probe(crate::ffmpeg::duration_probe_args(&feed)))
+        } else {
+            None
+        };
         let probes = ConversionProbes {
             channels: crate::ffmpeg::parse_channel_probe(&probe(crate::ffmpeg::channel_probe_args(&feed))),
-            channel_gains: None,
-            proc: crate::ffmpeg::proc_filters(job, None, None),
+            channel_gains,
+            proc: crate::ffmpeg::proc_filters(job, None, duration),
             probed: serde_json::from_slice::<serde_json::Value>(&probe(crate::ffmpeg::manifest_probe_args(&feed)))
                 .map(|value| manifest::parse_probe(&value))
                 .unwrap_or_default(),
@@ -1141,7 +1184,6 @@ mod tests {
         if !status.success() {
             return Err(format!("ffmpeg exited with {status}"));
         }
-        let files = collect_outputs(&plan.planned)?;
 
         let input = ManifestInput {
             app_version: env!("CARGO_PKG_VERSION").into(),
@@ -1151,12 +1193,8 @@ mod tests {
             labels: &job.labels,
             shifted: plan.start_shifted,
         };
-        for (output, file) in plan.planned.iter().zip(&files) {
-            let (sha256, size_bytes) = manifest::sha256_file(&output.path, &|| false)?;
-            let record = manifest::build_manifest(&input, output_facts(job, &plan, output, file, sha256, size_bytes));
-            manifest::write_manifest(&output.manifest, &record)?;
-        }
-        output_cleanup.commit();
+        let cancel = ConversionCancel::new(Arc::new(AtomicU64::new(1)), 1);
+        let files = finish_outputs(job, &plan, &input, output_cleanup, &cancel)?;
         Ok(CourtConversion { files, feed })
     }
 
@@ -1246,7 +1284,7 @@ mod tests {
         fs::create_dir(&out).unwrap();
         let original = fs::read(&sgmca).unwrap();
 
-        let conversion = convert_with_system_ffmpeg(&court_job(&sgmca, &out, "split", "wav")).unwrap();
+        let conversion = convert_with_system_ffmpeg(&court_job(&sgmca, &out, "split", "wav"), None).unwrap();
         assert_split_outputs(&conversion, &sgmca, ".wav");
 
         // The record fingerprints the .sgmca as selected, not the stripped
@@ -1273,7 +1311,7 @@ mod tests {
         let out = dir.0.join("out");
         fs::create_dir(&out).unwrap();
 
-        let conversion = convert_with_system_ffmpeg(&court_job(&sgmca, &out, "stereo", "wav")).unwrap();
+        let conversion = convert_with_system_ffmpeg(&court_job(&sgmca, &out, "stereo", "wav"), None).unwrap();
         assert_mix_output(&conversion, &sgmca, "synthetic_session.wav");
         assert!(!conversion.feed.exists(), "the stripped Ogg feed was left behind");
     }
@@ -1289,18 +1327,30 @@ mod tests {
         fs::create_dir(&out).unwrap();
         let job = court_job(&sgmca, &out, "split", "flac");
 
-        let first = convert_with_system_ffmpeg(&job).unwrap();
+        let first = convert_with_system_ffmpeg(&job, None).unwrap();
         assert_split_outputs(&first, &sgmca, ".flac");
         let first_digests: Vec<String> = first
             .files
             .iter()
             .map(|file| sha256_of(Path::new(&file.path)))
             .collect();
+        let record_bytes = |files: &[OutputFile]| -> Vec<Vec<u8>> {
+            files
+                .iter()
+                .map(|file| fs::read(manifest::manifest_path_for(Path::new(&file.path))).unwrap())
+                .collect()
+        };
+        let first_records = record_bytes(&first.files);
 
-        let second = convert_with_system_ffmpeg(&job).unwrap();
+        let second = convert_with_system_ffmpeg(&job, None).unwrap();
         assert_eq!(second.files.len(), 4);
         for (before, after) in first.files.iter().zip(&second.files) {
             assert_ne!(before.path, after.path, "a second conversion reused an output name");
+            assert_ne!(
+                manifest::manifest_path_for(Path::new(&before.path)),
+                manifest::manifest_path_for(Path::new(&after.path)),
+                "a second conversion reused an export record name"
+            );
             checked_export_record(after, &sgmca);
         }
         let still: Vec<String> = first
@@ -1309,6 +1359,15 @@ mod tests {
             .map(|file| sha256_of(Path::new(&file.path)))
             .collect();
         assert_eq!(still, first_digests, "a second conversion changed the first outputs");
+        assert_eq!(
+            record_bytes(&first.files),
+            first_records,
+            "a second conversion changed the first export records"
+        );
+        // Each first record still describes its own output.
+        for file in &first.files {
+            checked_export_record(file, &sgmca);
+        }
     }
 
     #[test]
@@ -1322,7 +1381,7 @@ mod tests {
         let out = dir.0.join("out");
         fs::create_dir(&out).unwrap();
 
-        let error = convert_with_system_ffmpeg(&court_job(&sgmca, &out, "split", "wav"))
+        let error = convert_with_system_ffmpeg(&court_job(&sgmca, &out, "split", "wav"), None)
             .err()
             .expect("a file with no Ogg stream must not convert");
         assert!(error.contains("does not contain an Ogg audio stream"), "{error}");
@@ -1341,12 +1400,145 @@ mod tests {
         fs::create_dir(&split_out).unwrap();
         fs::create_dir(&mix_out).unwrap();
 
-        let split = convert_with_system_ffmpeg(&court_job(&dm, &split_out, "split", "wav")).unwrap();
+        let split = convert_with_system_ffmpeg(&court_job(&dm, &split_out, "split", "wav"), None).unwrap();
         assert_eq!(split.feed, dm, "a .dm file is passed to FFmpeg unchanged");
         assert_split_outputs(&split, &dm, ".wav");
 
-        let mix = convert_with_system_ffmpeg(&court_job(&dm, &mix_out, "stereo", "mp3")).unwrap();
+        let mix = convert_with_system_ffmpeg(&court_job(&dm, &mix_out, "stereo", "mp3"), None).unwrap();
         assert_mix_output(&mix, &dm, "synthetic_session.mp3");
         assert!(dm.exists());
+    }
+
+    #[test]
+    fn synthetic_sgmca_split_applies_each_channels_own_auto_level_gain() {
+        if !court_fixture_tools_available() {
+            return;
+        }
+        let dir = ConversionTestDir::new();
+        let (sgmca, _) = synthetic_sgmca(&dir.0);
+        let out = dir.0.join("out");
+        fs::create_dir(&out).unwrap();
+        let mut job = court_job(&sgmca, &out, "split", "wav");
+        job.auto_level = true;
+        // Distinct gains, so a gain that landed on the wrong output (or not at
+        // all) moves that output's level by 6 dB or more.
+        let gains = [1.0, 4.0, 0.5, 8.0];
+
+        let conversion = convert_with_system_ffmpeg(&job, Some(gains.to_vec())).unwrap();
+        assert_eq!(conversion.files.len(), 4);
+        for (index, file) in conversion.files.iter().enumerate() {
+            let path = Path::new(&file.path);
+            assert_audio(path, 1, "48000");
+            let expected = 20.0 * (SYNTHETIC_CHANNEL_VOLUMES[index] * gains[index] / 8.0).log10();
+            let peak = max_volume_db(path);
+            assert!(
+                (peak - expected).abs() < 1.5,
+                "channel {index}: peak {peak} dB, expected {expected:.1} dB with gain {}",
+                gains[index]
+            );
+            let record = checked_export_record(file, &sgmca);
+            assert_eq!(record["channel"]["sourceChannelIndex"], index);
+        }
+        let record = checked_export_record(&conversion.files[0], &sgmca);
+        let chain = record["processing"]["filterChain"].as_str().unwrap();
+        assert!(chain.contains("[sp1]pan=mono|c0=c1,volume=4.0000[op1]"), "{chain}");
+        assert!(chain.contains("[sp3]pan=mono|c0=c3,volume=8.0000[op3]"), "{chain}");
+    }
+
+    #[test]
+    fn synthetic_sgmca_mix_applies_auto_level_gains_to_the_right_channels() {
+        if !court_fixture_tools_available() {
+            return;
+        }
+        let dir = ConversionTestDir::new();
+        let (sgmca, _) = synthetic_sgmca(&dir.0);
+
+        // A mix sums every channel into one signal, so per-channel levels
+        // cannot be read back from it. Keep only source channel 2, at gain 2
+        // (the pan weight and volume make each gain a plain factor): the mix
+        // then peaks at about -30 dBFS; the same gain on channel 0, 1 or 3
+        // would give about -18, -24 or -36 dBFS, and an ignored vector (an
+        // equal mix of all four) at least about -26 dBFS (its RMS).
+        let out = dir.0.join("gains");
+        fs::create_dir(&out).unwrap();
+        let mut job = court_job(&sgmca, &out, "stereo", "wav");
+        job.auto_level = true;
+        let conversion = convert_with_system_ffmpeg(&job, Some(vec![0.0, 0.0, 2.0, 0.0])).unwrap();
+        assert_mix_output(&conversion, &sgmca, "synthetic_session.wav");
+        let record = checked_export_record(&conversion.files[0], &sgmca);
+        let chain = record["processing"]["filterChain"].as_str().unwrap();
+        assert!(chain.contains("0.0000*c1+0.5000*c2+0.0000*c3"), "{chain}");
+        let expected = 20.0 * (SYNTHETIC_CHANNEL_VOLUMES[2] * 2.0 / 8.0).log10();
+        let peak = max_volume_db(Path::new(&conversion.files[0].path));
+        assert!(
+            (peak - expected).abs() < 1.5,
+            "mix peak {peak} dB, expected {expected:.1} dB"
+        );
+
+        // The channel-count guard: a vector for 3 channels must not be applied
+        // to a 4-channel source, so the mix falls back to all four channels.
+        let guarded = dir.0.join("guarded");
+        fs::create_dir(&guarded).unwrap();
+        let mut job = court_job(&sgmca, &guarded, "stereo", "wav");
+        job.auto_level = true;
+        let conversion = convert_with_system_ffmpeg(&job, Some(vec![0.0, 0.0, 0.0])).unwrap();
+        assert_mix_output(&conversion, &sgmca, "synthetic_session.wav");
+        let record = checked_export_record(&conversion.files[0], &sgmca);
+        let chain = record["processing"]["filterChain"].as_str().unwrap();
+        assert!(chain.contains("0.2500*c0+0.2500*c1+0.2500*c2+0.2500*c3"), "{chain}");
+        let peak = max_volume_db(Path::new(&conversion.files[0].path));
+        assert!(peak > -27.0, "a 3-channel gain vector was applied: mix peak {peak} dB");
+    }
+
+    #[test]
+    fn synthetic_sgmca_split_with_loudness_normalize_and_fades_stays_valid() {
+        if !court_fixture_tools_available() {
+            return;
+        }
+        let dir = ConversionTestDir::new();
+        let (sgmca, _) = synthetic_sgmca(&dir.0);
+        let out = dir.0.join("out");
+        fs::create_dir(&out).unwrap();
+        let mut job = court_job(&sgmca, &out, "split", "wav");
+        job.normalize = true;
+        job.fade = true;
+        job.fade_dur = 0.5;
+
+        let conversion = convert_with_system_ffmpeg(&job, None).unwrap();
+        assert_eq!(conversion.files.len(), 4);
+        let mut peaks = Vec::new();
+        for (index, file) in conversion.files.iter().enumerate() {
+            let path = Path::new(&file.path);
+            // loudnorm works at 192 kHz; the encoder arguments bring it back.
+            assert_audio(path, 1, "48000");
+            let middle = max_volume_db_between(path, 0.8, 1.2);
+            let start = max_volume_db_between(path, 0.0, 0.05);
+            let end = max_volume_db_between(path, 1.93, 2.0);
+            assert!(
+                start < middle - 10.0,
+                "channel {index}: no fade-in ({start} vs {middle} dB)"
+            );
+            assert!(
+                end < middle - 10.0,
+                "channel {index}: no fade-out ({end} vs {middle} dB)"
+            );
+            peaks.push(middle);
+
+            let record = checked_export_record(file, &sgmca);
+            assert_eq!(record["channel"]["sourceChannelIndex"], index);
+            let chain = record["processing"]["filterChain"].as_str().unwrap();
+            // The fade-out start comes from the probed duration (Ogg Opus
+            // reports a few ms over 2 s), so only its presence is checked here;
+            // the levels above check where it landed.
+            for filter in ["loudnorm=I=", "afade=t=out:st=", "afade=t=in:d=0.5"] {
+                assert_eq!(chain.matches(filter).count(), 4, "{filter} once per channel: {chain}");
+            }
+        }
+        // The source channels are 18 dB apart; normalized, they are close.
+        let spread = peaks.iter().cloned().fold(f64::MIN, f64::max) - peaks.iter().cloned().fold(f64::MAX, f64::min);
+        assert!(
+            spread < 6.0,
+            "normalized channels still {spread:.1} dB apart: {peaks:?}"
+        );
     }
 }
