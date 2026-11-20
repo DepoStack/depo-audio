@@ -108,7 +108,7 @@ describe('Library re-export into the Convert queue', () => {
     render(<App />)
     await openLibraryAndReexport()
 
-    fireEvent.click(await screen.findByRole('button', { name: 'Replace' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Replace 2 files' }))
     await waitFor(() => expect(fileDrop.current.addFiles).toHaveBeenCalledWith(['/case/source.trm'], { replace: true }))
     await waitFor(() => expect(fileDrop.current.setCaseName).toHaveBeenCalledWith('Smith v. Metro'))
   })
@@ -123,5 +123,67 @@ describe('Library re-export into the Convert queue', () => {
       expect(fileDrop.current.addFiles).toHaveBeenCalledWith(['/case/source.trm'], { replace: false }),
     )
     expect(fileDrop.current.setCaseName).not.toHaveBeenCalled()
+  })
+
+  it('marks Replace as the destructive choice and focuses Add to queue, so Enter never replaces', async () => {
+    fileDrop.current = makeFileDrop(queued)
+    render(<App />)
+    await openLibraryAndReexport()
+
+    const replace = await screen.findByRole('button', { name: 'Replace 2 files' })
+    const add = screen.getByRole('button', { name: 'Add to queue' })
+    expect(replace).toHaveAttribute('data-destructive', 'true')
+    expect(add).not.toHaveAttribute('data-destructive')
+    expect(replace.className).not.toBe(add.className)
+    expect(replace.className).toMatch(/bg-destructive/)
+    // The focused button is the one Enter activates in the browser
+    await waitFor(() => expect(add).toHaveFocus())
+    expect(replace).not.toHaveFocus()
+  })
+
+  it('uses singular copy for one queued file and one Library file', async () => {
+    fileDrop.current = makeFileDrop([queued[0]])
+    render(<App />)
+    await openLibraryAndReexport()
+
+    const dialog = await screen.findByRole('dialog', { name: 'Replace the 1 file in the queue?' })
+    expect(dialog).toHaveTextContent('The file waiting in Convert is taken out of the queue.')
+    expect(dialog).toHaveTextContent('Add to queue keeps it and adds the Library file after it.')
+    expect(dialog).not.toHaveTextContent(/\bfiles\b/)
+    expect(screen.getByRole('button', { name: 'Replace 1 file' })).toBeInTheDocument()
+  })
+
+  it('counts a file dropped while the dialog is open and replaces the queue as it is at click time', async () => {
+    fileDrop.current = makeFileDrop(queued)
+    const { rerender } = render(<App />)
+    await openLibraryAndReexport()
+    expect(await screen.findByRole('dialog', { name: 'Replace the 2 files in the queue?' })).toBeVisible()
+
+    // A third file arrives (drag and drop) while the dialog is open
+    const addFiles = fileDrop.current.addFiles
+    fileDrop.current = { ...makeFileDrop([...queued, { path: '/case/c.wav', name: 'c.wav', fmt: null }]), addFiles }
+    rerender(<App />)
+
+    const dialog = await screen.findByRole('dialog', { name: 'Replace the 3 files in the queue?' })
+    expect(dialog).toHaveTextContent('1 file was added to the queue while this was open and is counted here.')
+    expect(screen.queryByRole('button', { name: 'Replace 2 files' })).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Replace 3 files' }))
+    await waitFor(() => expect(addFiles).toHaveBeenCalledWith(['/case/source.trm'], { replace: true }))
+  })
+
+  it('does not offer Replace once the queue has been emptied while the dialog is open', async () => {
+    fileDrop.current = makeFileDrop(queued)
+    const { rerender } = render(<App />)
+    await openLibraryAndReexport()
+    await screen.findByRole('dialog', { name: 'Replace the 2 files in the queue?' })
+
+    const addFiles = fileDrop.current.addFiles
+    fileDrop.current = { ...makeFileDrop([]), addFiles }
+    rerender(<App />)
+
+    expect(await screen.findByRole('dialog', { name: 'The Convert queue is now empty' })).toBeVisible()
+    expect(screen.queryByRole('button', { name: /Replace/ })).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Queue' }))
+    await waitFor(() => expect(addFiles).toHaveBeenCalledWith(['/case/source.trm'], { replace: true }))
   })
 })

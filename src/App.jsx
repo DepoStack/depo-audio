@@ -5,6 +5,7 @@ import { Sun, Moon, Monitor, Settings, AudioLines, Play, FolderOpen, X } from 'l
 import { DEPOSTACK_URL } from './constants'
 import { rememberEngineInfo } from './lib/diagnostics'
 import { shouldIgnoreNavigationShortcut } from './lib/utils'
+import { reexportConfirmCopy } from './lib/queue'
 
 import useTheme from './hooks/useTheme'
 import { usePreferencesContext } from './hooks/PreferencesContext'
@@ -168,6 +169,13 @@ export default function App() {
     }
     return queueFromLibrary(paths, sourceCaseName, true)
   }
+  const reexportCopy = reexportPending
+    ? reexportConfirmCopy({
+        queued: files.length,
+        queuedAtOpen: reexportPending.queued,
+        incoming: reexportPending.paths.length,
+      })
+    : null
 
   // "Open in Player" on a converted row: the Player tab mounts on demand, so
   // hand it the paths as a request it consumes once.
@@ -456,20 +464,19 @@ export default function App() {
         )}
       </main>
 
+      {/* The copy and the actions read the queue as it is now, not as it was
+          when the dialog opened: Replace removes exactly what the title counts. */}
       <ConfirmDialog
         open={!!reexportPending}
         onOpenChange={next => {
           if (!next) setReexportPending(null)
         }}
-        title={
-          reexportPending
-            ? `Replace the ${reexportPending.queued} ${reexportPending.queued === 1 ? 'file' : 'files'} in the queue?`
-            : ''
-        }
-        description="The files waiting in Convert are taken out of the queue. Nothing is deleted from disk. Add to queue keeps them and adds the Library files after them."
-        confirmLabel="Replace"
-        destructive={false}
-        secondaryLabel="Add to queue"
+        title={reexportCopy?.title ?? ''}
+        description={reexportCopy?.description}
+        confirmLabel={reexportCopy?.confirmLabel}
+        destructive={reexportCopy?.destructive ?? false}
+        secondaryLabel={reexportCopy?.secondaryLabel}
+        initialFocus={reexportCopy?.secondaryLabel ? 'secondary' : 'confirm'}
         onSecondary={() => queueFromLibrary(reexportPending.paths, reexportPending.caseName, false)}
         onConfirm={() => queueFromLibrary(reexportPending.paths, reexportPending.caseName, true)}
       />
