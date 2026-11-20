@@ -37,4 +37,5 @@ scripts/javascript-license-overrides/** text eol=lf
 *.png binary
 *.tgz binary
 *.wav binary
+*.woff2 binary
 *.zip binary

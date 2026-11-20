@@ -154,9 +154,10 @@ export default function Waveform({
 
       // Marker label
       if (marker.label) {
-        ctx.font = '9px "DM Mono", monospace'
+        // Canvas cannot read CSS variables: the Archivo stack from design/tokens.json
+        ctx.font = '600 12px Archivo, "Archivo Fallback", system-ui, sans-serif'
         ctx.fillStyle = resolveCanvasColor(marker.color, styles, markerColor)
-        ctx.fillText(marker.label, x + 2, 10)
+        ctx.fillText(marker.label, x + 2, 12)
       }
     }
   }, [peaks, width, height, currentTime, duration, color, markers, loop])

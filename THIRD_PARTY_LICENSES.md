@@ -255,6 +255,22 @@ bundle with the three inactive weights. The historical/public DeepFilterNet
 distribution record still requires the same reviewed source and license
 evidence; removing it from a new installer does not rewrite that history.
 
+## Bundled fonts
+
+The frontend bundles two DepoStack brand typefaces as web fonts. Vite copies
+`public/fonts/` into the app bundle unchanged, so each font ships beside its
+licence text and nothing is fetched from the network at runtime.
+
+| Font                                                              | Files                                                                                                                                       | Source                                                                                              | License                                                         |
+| ----------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------- | --------------------------------------------------------------- |
+| Archivo (variable, weight 400-800, width 62-100%; italic 400-700) | `public/fonts/archivo-latin-normal.woff2`, `archivo-latin-ext-normal.woff2`, `archivo-latin-italic.woff2`, `archivo-latin-ext-italic.woff2` | The Archivo Project Authors (Omnibus-Type), as subset for depostack.com (`depo-stack/public/fonts`) | SIL Open Font License 1.1, `public/fonts/archivo-OFL.txt`       |
+| Fragment Mono 400                                                 | `public/fonts/fragment-mono-latin-400.woff2`, `fragment-mono-latin-ext-400.woff2`                                                           | The Fragment-Mono Project Authors, as subset for depostack.com (`depo-stack/public/fonts`)          | SIL Open Font License 1.1, `public/fonts/fragment-mono-OFL.txt` |
+
+The OFL permits bundling and redistribution with software provided each copy
+keeps the copyright notice and licence; the licence files above ship in the
+same folder as the fonts. The fonts are not sold on their own and keep their
+reserved names.
+
 ## Release approval checklist
 
 Before publishing or promoting a release:

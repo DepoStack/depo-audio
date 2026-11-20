@@ -1,6 +1,8 @@
 @import 'tailwindcss';
 /* Theme variables are generated from design/tokens.json — edit tokens, not CSS */
 @import './styles/tokens.css';
+/* Bundled Archivo and Fragment Mono (public/fonts) */
+@import './styles/fonts.css';
 
 @plugin 'tailwindcss-animate';
 
@@ -43,9 +45,10 @@
   --radius-md: calc(var(--radius) - 2px);
   --radius-sm: calc(var(--radius) - 4px);
 
-  --font-sans: DM Sans, Segoe UI, system-ui, sans-serif;
-  --font-mono: DM Mono, Consolas, monospace;
-  --font-serif: Crimson Pro, Palatino Linotype, Georgia, serif;
+  /* Archivo for every UI and display word; Fragment Mono for real code only.
+     Both stacks come from design/tokens.json (base.font-sans / base.font-mono). */
+  --font-sans: var(--ds-font-sans);
+  --font-mono: var(--ds-font-mono);
 
   --animate-accordion-down: accordion-down 0.2s ease-out;
   --animate-accordion-up: accordion-up 0.2s ease-out;
