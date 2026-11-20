@@ -20,11 +20,11 @@ export default function MiniPlayer({ out, color, multi }) {
   return (
     <div className="flex items-center gap-2 py-0.5">
       {multi && (
-        <span className="text-[10px] shrink-0" style={{ color }}>
+        <span className="type-small shrink-0" style={{ color }}>
           ▮
         </span>
       )}
-      <span className="text-[11px] text-[hsl(var(--text2))] flex-1 min-w-0 truncate" title={out.path}>
+      <span className="type-small text-[hsl(var(--text2))] flex-1 min-w-0 truncate" title={out.path}>
         {out.name}
       </span>
       <span className="tabular-nums text-[12px] text-[hsl(var(--sub))] shrink-0">{fmtSize(out.size)}</span>
@@ -44,7 +44,7 @@ export default function MiniPlayer({ out, color, multi }) {
       />
       <div className="flex items-center gap-1.5 shrink-0">
         <button
-          className="w-[22px] h-[22px] rounded-full bg-[hsl(var(--gold-dim))] border border-foreground/60 text-foreground flex items-center justify-center shrink-0 transition-colors hover:bg-primary/20 hover:border-foreground"
+          className="w-[22px] h-[22px] bg-secondary border border-foreground/60 text-foreground flex items-center justify-center shrink-0 transition-colors hover:border-foreground"
           aria-label={playing ? `Pause ${out.name}` : `Play ${out.name}`}
           onClick={toggle}
         >
@@ -76,7 +76,7 @@ export default function MiniPlayer({ out, color, multi }) {
           }}
         >
           <div
-            className="h-full bg-primary rounded-sm transition-[width_0.1s]"
+            className="h-full bg-foreground rounded-sm transition-[width_0.1s]"
             style={{ width: duration ? `${(current / duration) * 100}%` : '0%' }}
           />
         </div>

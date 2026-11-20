@@ -227,7 +227,7 @@ export default function LibraryTab({
           {search && (
             <button
               type="button"
-              className="absolute right-2 rounded-sm p-1 text-[hsl(var(--sub))] hover:text-foreground transition-colors focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1"
+              className="absolute right-2 rounded-sm p-1 text-[hsl(var(--sub))] hover:text-foreground transition-colors"
               aria-label="Clear search"
               onClick={() => setSearch('')}
             >
@@ -296,16 +296,16 @@ export default function LibraryTab({
         {operationWarning && (
           <div
             role="alert"
-            className="flex items-start gap-2 rounded-md border border-warning/30 bg-warning/10 px-3 py-2 text-xs text-foreground"
+            className="flex items-start gap-2 rounded-md border border-warning/30 bg-warning/10 px-3 py-2 type-small text-foreground"
           >
             <div className="flex-1">
               <span>{typeof operationWarning === 'string' ? operationWarning : operationWarning.summary}</span>
               {typeof operationWarning !== 'string' && operationWarning.detail && (
                 <details className="mt-1.5">
-                  <summary className="w-fit cursor-pointer font-semibold text-[hsl(var(--text2))] focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1">
+                  <summary className="w-fit cursor-pointer font-semibold text-[hsl(var(--text2))]">
                     Technical details
                   </summary>
-                  <p className="mt-1 whitespace-pre-wrap break-words text-[10px] text-[hsl(var(--sub))]">
+                  <p className="mt-1 whitespace-pre-wrap break-words type-small text-[hsl(var(--sub))]">
                     {operationWarning.detail}
                   </p>
                 </details>
@@ -314,7 +314,7 @@ export default function LibraryTab({
             <button
               type="button"
               aria-label="Dismiss Library warning"
-              className="rounded-sm p-1 text-[hsl(var(--sub))] hover:text-foreground focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1"
+              className="rounded-sm p-1 text-[hsl(var(--sub))] hover:text-foreground"
               onClick={() => setOperationWarning('')}
             >
               <X size={13} aria-hidden="true" />
@@ -329,7 +329,7 @@ export default function LibraryTab({
               <CardTitle>Court reporting software</CardTitle>
               <button
                 type="button"
-                className="text-[hsl(var(--sub))] hover:text-foreground transition-colors rounded p-1 focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1"
+                className="text-[hsl(var(--sub))] hover:text-foreground transition-colors rounded p-1"
                 aria-label="Dismiss court-software results"
                 onClick={() => {
                   setCatSoftware(null)
@@ -350,7 +350,7 @@ export default function LibraryTab({
                       <button
                         key={i}
                         type="button"
-                        className="flex items-center gap-2 px-2.5 py-1.5 bg-secondary rounded-md text-[12px] hover:bg-secondary/70 transition-colors focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1"
+                        className="flex items-center gap-2 px-2.5 py-1.5 bg-secondary rounded-md text-[12px] hover:bg-secondary/70 transition-colors"
                         onClick={async () => {
                           setCatJobs([])
                           setVisibleCatJobCount(CAT_JOB_PAGE_SIZE)
@@ -389,7 +389,7 @@ export default function LibraryTab({
                             key={`${job.path}:${job.name}:${i}`}
                             type="button"
                             aria-label={`Queue ${job.files.length} file${job.files.length === 1 ? '' : 's'} from ${job.name}`}
-                            className="flex items-center gap-3 px-2 py-2 rounded-md transition-colors hover:bg-secondary/50 text-[12px] text-left focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1"
+                            className="flex items-center gap-3 px-2 py-2 rounded-md transition-colors hover:bg-secondary/50 text-[12px] text-left"
                             disabled={conversionLocked || job.files.length === 0}
                             title={
                               conversionLocked
@@ -489,7 +489,7 @@ export default function LibraryTab({
                     <div className="library-case-header flex items-center gap-2.5 px-4 py-3">
                       <button
                         type="button"
-                        className="library-case-toggle flex items-center gap-2.5 flex-1 min-w-0 text-left focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 rounded"
+                        className="library-case-toggle flex items-center gap-2.5 flex-1 min-w-0 text-left rounded"
                         aria-expanded={expanded}
                         aria-controls={panelId}
                         aria-label={`${expanded ? 'Collapse' : 'Expand'} ${c.name}, ${c.sessions.length} session${c.sessions.length === 1 ? '' : 's'}`}
@@ -502,7 +502,7 @@ export default function LibraryTab({
                         )}
                         <div className="flex flex-col flex-1 min-w-0">
                           <span className="text-[14px] font-semibold text-foreground truncate">{c.name}</span>
-                          <span className="text-[11px] text-[hsl(var(--sub))] flex items-center gap-2">
+                          <span className="type-small text-[hsl(var(--sub))] flex items-center gap-2">
                             {c.sessions.length} session{c.sessions.length !== 1 ? 's' : ''} ·{' '}
                             {new Date(c.createdAt).toLocaleDateString()}
                             {c.archived && <Badge variant="warning">archived</Badge>}
@@ -599,7 +599,7 @@ export default function LibraryTab({
                             <div className="library-session-header flex items-center gap-2.5 mb-2">
                               <Badge variant="active">{s.date}</Badge>
                               <span
-                                className="library-session-name text-[11px] text-[hsl(var(--text2))] truncate"
+                                className="library-session-name type-small text-[hsl(var(--text2))] truncate"
                                 title={s.sourceFile}
                               >
                                 {s.sourceName}
@@ -609,7 +609,7 @@ export default function LibraryTab({
                                   type="button"
                                   variant="ghost"
                                   size="sm"
-                                  className="h-6 text-[10px]"
+                                  className="h-6 type-small"
                                   title={
                                     conversionLocked ? 'Wait for the current conversion to finish' : 'Re-export source'
                                   }
@@ -641,9 +641,7 @@ export default function LibraryTab({
                                       className="w-2 h-2 rounded-full shrink-0"
                                       style={{ background: speakerColorAt(speakerColors, pi) }}
                                     />
-                                    <span className="text-[11px] font-semibold text-[hsl(var(--text2))]">
-                                      {p.label}
-                                    </span>
+                                    <span className="type-label text-[hsl(var(--text2))]">{p.label}</span>
                                   </div>
                                   <div className="library-participant-files flex flex-col gap-1 ml-4">
                                     {p.files.map((f, fi) => (

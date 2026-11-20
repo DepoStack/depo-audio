@@ -203,7 +203,7 @@ export default function LocalDataSettings({
         <CardHeader>
           <CardTitle>Where DepoAudio keeps your data</CardTitle>
         </CardHeader>
-        <CardContent className="p-4 flex flex-col gap-3 text-[11px]">
+        <CardContent className="p-4 flex flex-col gap-3 type-small">
           {infoError && (
             <p role="alert" className="rounded-md border-l-[3px] border-l-destructive px-3 py-2 text-destructive">
               {infoError}
@@ -271,7 +271,7 @@ export default function LocalDataSettings({
         <CardHeader>
           <CardTitle>Back up and restore</CardTitle>
         </CardHeader>
-        <CardContent className="p-4 flex flex-col gap-3 text-[11px]">
+        <CardContent className="p-4 flex flex-col gap-3 type-small">
           <div className="flex items-center justify-between gap-3">
             <div className="flex flex-col min-w-0">
               <span className="text-[12px] font-medium text-foreground">Export library and transcripts</span>
@@ -345,7 +345,7 @@ export default function LocalDataSettings({
         <CardHeader>
           <CardTitle>Clear all DepoAudio data</CardTitle>
         </CardHeader>
-        <CardContent className="p-4 flex items-center justify-between gap-3 text-[11px]">
+        <CardContent className="p-4 flex items-center justify-between gap-3 type-small">
           <span className="min-w-0 text-[hsl(var(--sub))]">
             Removes the case library, settings, transcripts, bookmarks and the other files listed above from this
             computer. Recordings, converted files, export records and backups are not deleted. Export a backup first if
@@ -371,7 +371,7 @@ export default function LocalDataSettings({
       {error && (
         <p
           role="alert"
-          className="flex items-start gap-2 rounded-md border-l-[3px] border-l-destructive px-3 py-2 text-[11px] text-destructive"
+          className="flex items-start gap-2 rounded-md border-l-[3px] border-l-destructive px-3 py-2 type-small text-destructive"
         >
           <AlertCircle size={13} className="mt-0.5 shrink-0" /> {error}
         </p>

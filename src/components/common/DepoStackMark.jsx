@@ -1,4 +1,4 @@
-// The DepoStack mark: three stacked isometric plates (depo-stack public/depostack-mark.svg).
+// The DepoStack mark: three stacked isometric plates (depo-stack/public/depostack-mark.svg).
 // The layers read the artifact.mark tokens, so each theme gets its canonical layer
 // colors (violet/plum/gold on the light board, lilac/cream/gold on the dark board).
 // Never recolor, rotate, skew or shadow it, and never draw it under 24px.
@@ -22,7 +22,7 @@ export function DepoStackMark({ size = 24, className }) {
 }
 
 // The DepoStack wordmark: Archivo at 90% width, "Depo" 500 and "Stack" 800, both in ink.
-// "Stack" is set apart by weight, never by color (BRAND.md §2).
+// "Stack" is set apart by weight, never by color (depo-stack/BRAND.md §2).
 export function DepoStackWordmark({ className }) {
   return (
     <span className={className} style={{ fontStretch: '90%' }}>

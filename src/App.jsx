@@ -185,11 +185,13 @@ export default function App() {
         className="app-sidebar w-14 sm:w-48 shrink-0 flex flex-col bg-card border-r border-border select-none"
         data-tauri-drag-region
       >
-        <div className="app-brand flex items-center gap-2.5 px-3 sm:px-4 pt-4 pb-5">
+        <div className="app-brand flex items-center gap-2 px-3 pt-4 pb-5">
           <LogoSvg />
           <div className="hidden sm:flex flex-col leading-none">
             <span className="type-wordmark text-foreground">DepoAudio</span>
-            <span className="mt-1 text-[12px] leading-tight text-[hsl(var(--sub))]">Court-audio workbench</span>
+            <span className="mt-1 whitespace-nowrap text-[12px] leading-tight text-[hsl(var(--sub))]">
+              Court-audio workbench
+            </span>
           </div>
         </div>
 
@@ -207,7 +209,7 @@ export default function App() {
               <Icon size={16} aria-hidden="true" className="shrink-0" />
               <span className="hidden sm:inline">{label}</span>
               {id === 'library' && libCount > 0 && (
-                <Badge variant="outline" className="hidden sm:inline-flex">
+                <Badge variant="default" className="hidden sm:inline-flex bg-foreground text-background">
                   {libCount}
                 </Badge>
               )}
@@ -231,14 +233,14 @@ export default function App() {
           aria-label="Audio engine and update status"
           className="hidden sm:block mx-3 mb-2 border-y border-border/70 py-2.5"
         >
-          <div className="flex items-center gap-2 py-0.5 text-[11px] font-medium text-[hsl(var(--text2))]">
+          <div className="flex items-center gap-2 py-0.5 type-small font-medium text-[hsl(var(--text2))]">
             <span
               aria-hidden="true"
               className={`w-1.5 h-1.5 rounded-full ${health ? (health.ffmpeg ? 'bg-[hsl(var(--success))]' : 'bg-destructive') : 'bg-[hsl(var(--sub))]'}`}
             />
             {health ? (health.ffmpeg ? 'FFmpeg ready' : 'FFmpeg missing') : 'Checking engine…'}
           </div>
-          <div className="py-0.5 text-[11px] text-[hsl(var(--sub))]">{updaterLabel}</div>
+          <div className="py-0.5 type-small text-[hsl(var(--sub))]">{updaterLabel}</div>
         </div>
 
         {/* DepoStack brand link: DepoAudio, powered by DepoStack */}
@@ -248,13 +250,14 @@ export default function App() {
             openUrl(DEPOSTACK_URL).catch(error => setSystemError(`Could not open DepoStack: ${String(error)}`))
           }
           title="DepoAudio, powered by DepoStack. Opens depostack.com"
-          className="group hidden sm:flex flex-col items-start gap-1 mx-3 mb-1.5 py-1.5 text-left text-[12px] text-[hsl(var(--sub))] hover:text-foreground transition-colors"
+          className="group hidden sm:flex flex-col items-start gap-3 mx-3 mb-1.5 py-1.5 text-left text-[12px] text-[hsl(var(--sub))] hover:text-foreground transition-colors"
         >
           <span>Powered by</span>{' '}
-          {/* The DepoStack lockup: the mark (24px or larger) and the wordmark, about 140px wide */}
+          {/* The DepoStack lockup: the mark (24px or larger) and the wordmark, at least ~140px wide
+              (depo-stack/BRAND.md §2), with a plate height of clear space above it */}
           <span className="flex items-center gap-2 text-foreground">
-            <DepoStackMark size={28} />
-            <DepoStackWordmark className="text-[19px] leading-none" />
+            <DepoStackMark size={32} />
+            <DepoStackWordmark className="text-[22px] leading-none" />
             <span aria-hidden="true" className="text-[12px] text-[hsl(var(--sub))] group-hover:text-foreground">
               ↗
             </span>
@@ -301,15 +304,15 @@ export default function App() {
           {(prefsError || libraryReadError) && (
             <div
               role="alert"
-              className="mx-5 md:mx-8 mt-3 rounded-lg border border-destructive/40 bg-destructive/10 px-3 py-2 text-[11px] text-foreground"
+              className="mx-5 md:mx-8 mt-3 rounded-lg border border-destructive/40 bg-destructive/10 px-3 py-2 type-small text-foreground"
             >
               <span className="font-semibold">Storage protection active.</span> {storageSummary || 'Storage'} could not
               be loaded. Changes that could overwrite existing data are disabled.
               <details className="mt-1.5">
-                <summary className="w-fit cursor-pointer font-semibold text-[hsl(var(--text2))] focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1">
+                <summary className="w-fit cursor-pointer font-semibold text-[hsl(var(--text2))]">
                   Technical details
                 </summary>
-                <p className="mt-1 whitespace-pre-wrap break-words text-[10px] text-[hsl(var(--sub))]">
+                <p className="mt-1 whitespace-pre-wrap break-words type-small text-[hsl(var(--sub))]">
                   {[prefsError, libraryReadError].filter(Boolean).join(' ')}
                 </p>
               </details>
@@ -319,14 +322,14 @@ export default function App() {
           {libraryOperationError && (
             <div
               role="alert"
-              className="mx-5 md:mx-8 mt-3 rounded-lg border border-warning/40 bg-warning/10 px-3 py-2 text-[11px] text-foreground"
+              className="mx-5 md:mx-8 mt-3 rounded-lg border border-warning/40 bg-warning/10 px-3 py-2 type-small text-foreground"
             >
               <span className="font-semibold">Library change not saved.</span> Existing Library data remains unchanged.
               <details className="mt-1.5">
-                <summary className="w-fit cursor-pointer font-semibold text-[hsl(var(--text2))] focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1">
+                <summary className="w-fit cursor-pointer font-semibold text-[hsl(var(--text2))]">
                   Technical details
                 </summary>
-                <p className="mt-1 whitespace-pre-wrap break-words text-[10px] text-[hsl(var(--sub))]">
+                <p className="mt-1 whitespace-pre-wrap break-words type-small text-[hsl(var(--sub))]">
                   {libraryOperationError}
                 </p>
               </details>
@@ -336,22 +339,22 @@ export default function App() {
           {systemError && (
             <div
               role="alert"
-              className="mx-5 md:mx-8 mt-3 flex items-start gap-2 rounded-lg border border-warning/40 bg-warning/10 px-3 py-2 text-[11px] text-foreground"
+              className="mx-5 md:mx-8 mt-3 flex items-start gap-2 rounded-lg border border-warning/40 bg-warning/10 px-3 py-2 type-small text-foreground"
             >
               <div className="flex-1">
                 <span>{systemErrorSummary}</span>
                 <details className="mt-1.5">
-                  <summary className="w-fit cursor-pointer font-semibold text-[hsl(var(--text2))] focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1">
+                  <summary className="w-fit cursor-pointer font-semibold text-[hsl(var(--text2))]">
                     Technical details
                   </summary>
-                  <p className="mt-1 whitespace-pre-wrap break-words text-[10px] text-[hsl(var(--sub))]">
+                  <p className="mt-1 whitespace-pre-wrap break-words type-small text-[hsl(var(--sub))]">
                     {systemError}
                   </p>
                 </details>
               </div>
               <button
                 type="button"
-                className="rounded-sm p-1 focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1"
+                className="rounded-sm p-1"
                 aria-label="Dismiss system warning"
                 onClick={() => setSystemError('')}
               >

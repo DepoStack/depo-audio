@@ -20,7 +20,7 @@ export default function FormatTable() {
           <CardTitle as="span" className="block">
             Supported formats
           </CardTitle>
-          <p className="mt-1 text-[10.5px] text-[hsl(var(--sub))]">
+          <p className="mt-1 type-small text-[hsl(var(--sub))]">
             Direct support, experimental court audio, and export-first formats
           </p>
         </div>
@@ -44,7 +44,7 @@ export default function FormatTable() {
           {court.map(row => (
             <FormatRow key={`${row.ext}-${row.vendor}`} row={row} />
           ))}
-          <div className="flex items-start gap-2 border-t border-border/60 bg-secondary px-4 py-2 text-[11px] text-[hsl(var(--sub))]">
+          <div className="flex items-start gap-2 border-t border-border/60 bg-secondary px-4 py-2 type-small text-[hsl(var(--sub))]">
             <CircleX aria-hidden="true" className="mt-0.5 h-3.5 w-3.5 shrink-0 text-destructive" strokeWidth={1.8} />
             <span>
               Eclipse <code className="font-mono text-[0.86em] text-[hsl(var(--text2))]">.aes</code> and Liberty{' '}
@@ -71,7 +71,7 @@ function FormatRow({ row }) {
     <div className="format-support-row grid grid-cols-[minmax(0,1fr)_auto] items-center gap-3 border-b border-border/60 px-4 py-2 last:border-b-0 transition-colors hover:bg-secondary/50">
       <div className="min-w-0">
         <span className="block truncate font-mono text-[12px] text-foreground">{row.ext}</span>
-        <span className="block truncate text-[10.5px] text-[hsl(var(--sub))]">{row.vendor}</span>
+        <span className="block truncate type-small text-[hsl(var(--sub))]">{row.vendor}</span>
       </div>
       <div className="flex items-center gap-3">
         <span className="tabular-nums text-[12px] text-[hsl(var(--sub))]">{row.ch}</span>

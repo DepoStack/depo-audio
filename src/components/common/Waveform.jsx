@@ -100,11 +100,11 @@ export default function Waveform({
     const styles = getComputedStyle(document.documentElement)
     const waveformColor = resolveCanvasColor(color, styles)
     const markerColor = resolveCanvasColor('hsl(var(--destructive))', styles, '#c94e4e')
-    const loopColor = resolveCanvasColor('hsl(var(--gold-dim))', styles, 'rgba(196, 154, 54, 0.14)')
+    const loopColor = resolveCanvasColor('hsl(var(--foreground) / 0.16)', styles, 'rgba(128, 128, 128, 0.16)')
 
     ctx.clearRect(0, 0, width, height)
 
-    // A-B loop region: a translucent gold band behind the bars so the looped
+    // A-B loop region: a translucent ink band behind the bars so the looped
     // span is actually visible (the old control drew nothing).
     if (loop && loop.a != null && loop.b != null && duration > 0 && loop.b > loop.a) {
       const x0 = (loop.a / duration) * width
@@ -180,7 +180,7 @@ export default function Waveform({
   return (
     <div
       ref={containerRef}
-      className={`w-full rounded overflow-hidden bg-secondary focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring ${seekable ? 'cursor-pointer' : ''}`}
+      className={`w-full rounded overflow-hidden bg-secondary ${seekable ? 'cursor-pointer' : ''}`}
       style={{ height }}
       role={seekable ? 'slider' : 'img'}
       aria-label={seekable ? 'Audio waveform seek control' : 'Audio waveform'}
@@ -195,16 +195,16 @@ export default function Waveform({
         <canvas ref={canvasRef} className="block" style={{ width: '100%', height }} />
       ) : error ? (
         <div
-          className="flex items-center justify-center px-3 text-center text-[10px] text-[hsl(var(--sub))]"
+          className="flex items-center justify-center px-3 text-center type-small text-[hsl(var(--sub))]"
           style={{ height }}
         >
           {error}
         </div>
       ) : (
         <div className="flex items-center justify-center px-2" style={{ height }}>
-          <div className="w-full h-0.5 bg-primary/30 rounded-full overflow-hidden">
+          <div className="w-full h-0.5 bg-foreground/20 overflow-hidden">
             <div
-              className="h-full w-1/3 bg-primary rounded-full"
+              className="h-full w-1/3 bg-foreground"
               style={{ animation: 'progress-pulse 1.2s ease-in-out infinite' }}
             />
           </div>

@@ -16,7 +16,7 @@ export default function UpdateBanner({ updater }) {
       role={showError ? 'alert' : undefined}
       aria-live={showError ? 'assertive' : undefined}
       aria-atomic={showError ? 'true' : undefined}
-      className="shrink-0 flex items-center gap-3 px-5 py-2 bg-[hsl(var(--gold-dim))] border-b border-foreground/40 text-[12px]"
+      className="shrink-0 flex items-center gap-3 px-5 py-2 bg-secondary border-b border-foreground/40 text-[12px]"
     >
       {showAvailable && (
         <>
@@ -58,13 +58,13 @@ export default function UpdateBanner({ updater }) {
             aria-valuemax={100}
             aria-valuenow={progress > 0 ? progressPercent : undefined}
             aria-valuetext={progress > 0 ? `${progressPercent}% downloaded` : 'Downloading update'}
-            className="ml-auto w-40 h-1.5 bg-border rounded-full overflow-hidden"
+            className="ml-auto w-40 h-1.5 bg-border overflow-hidden"
           >
             <div
               className={
                 progress > 0
-                  ? 'h-full bg-primary rounded-full transition-all motion-reduce:transition-none'
-                  : 'h-full bg-primary/60 rounded-full animate-pulse motion-reduce:animate-none w-1/3'
+                  ? 'h-full bg-foreground transition-all motion-reduce:transition-none'
+                  : 'h-full bg-foreground/60 animate-pulse motion-reduce:animate-none w-1/3'
               }
               style={progress > 0 ? { width: `${progressPercent}%` } : undefined}
             />

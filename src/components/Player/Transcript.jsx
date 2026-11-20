@@ -272,7 +272,9 @@ export default function Transcript({ trackPath, currentTime, playing, onSeek, on
               title="Auto-scroll to the line playing now"
               className={cn(
                 'flex items-center gap-1 px-1.5 py-0.5 rounded text-[12px] tabular-nums transition-colors',
-                follow ? 'bg-[hsl(var(--gold-dim))] text-foreground' : 'text-[hsl(var(--sub))] hover:text-foreground',
+                follow
+                  ? 'bg-secondary text-foreground ring-1 ring-inset ring-foreground'
+                  : 'text-[hsl(var(--sub))] hover:text-foreground',
               )}
             >
               <Locate size={11} /> Follow
@@ -286,7 +288,7 @@ export default function Transcript({ trackPath, currentTime, playing, onSeek, on
               <button
                 onClick={copyAll}
                 title="Copy transcript to clipboard"
-                className="flex items-center gap-1 px-1.5 py-1 rounded text-[11px] text-[hsl(var(--sub))] hover:text-foreground transition-colors"
+                className="flex items-center gap-1 px-1.5 py-1 rounded type-small text-[hsl(var(--sub))] hover:text-foreground transition-colors"
               >
                 {copied ? (
                   <>
@@ -306,23 +308,23 @@ export default function Transcript({ trackPath, currentTime, playing, onSeek, on
                   <Download size={12} /> Export
                 </Button>
                 {showExport && (
-                  <div className="absolute right-0 top-full mt-1 z-10 bg-card border border-border rounded-md shadow-lg py-1 min-w-[110px]">
+                  <div className="absolute right-0 top-full mt-1 z-10 bg-popover border border-foreground py-1 min-w-[110px]">
                     <button
                       onClick={() => exportFile('txt')}
-                      className="block w-full text-left px-3 py-1.5 text-xs text-foreground hover:bg-secondary"
+                      className="block w-full text-left px-3 py-1.5 type-small text-foreground hover:bg-secondary"
                     >
                       Plain text (.txt)
                     </button>
                     <button
                       onClick={() => exportFile('srt')}
                       disabled={!srtReady}
-                      className="block w-full text-left px-3 py-1.5 text-xs text-foreground hover:bg-secondary disabled:opacity-40 disabled:cursor-not-allowed"
+                      className="block w-full text-left px-3 py-1.5 type-small text-foreground hover:bg-secondary disabled:opacity-40 disabled:cursor-not-allowed"
                       title={srtReady ? '' : 'Stamp every transcript line with a time before exporting SRT'}
                     >
                       Subtitles (.srt)
                     </button>
                     {!srtReady && (
-                      <p className="max-w-40 px-3 py-1 text-[9px] leading-snug text-[hsl(var(--sub))]">
+                      <p className="max-w-40 px-3 py-1 type-small leading-snug text-[hsl(var(--sub))]">
                         Stamp every line before SRT export.
                       </p>
                     )}
@@ -356,7 +358,7 @@ export default function Transcript({ trackPath, currentTime, playing, onSeek, on
       {storageError && !onStorageError && (
         <p
           role="alert"
-          className="mx-4 mt-3 rounded-md border border-warning/40 bg-warning/10 px-3 py-2 text-[11px] text-foreground"
+          className="mx-4 mt-3 rounded-md border border-warning/40 bg-warning/10 px-3 py-2 type-small text-foreground"
         >
           {storageError}
         </p>
@@ -365,7 +367,7 @@ export default function Transcript({ trackPath, currentTime, playing, onSeek, on
       {operationError && (
         <p
           role="alert"
-          className="mx-4 mt-3 rounded-md border border-destructive/30 border-l-[3px] border-l-destructive px-3 py-2 text-[11px] text-destructive"
+          className="mx-4 mt-3 rounded-md border border-destructive/30 border-l-[3px] border-l-destructive px-3 py-2 type-small text-destructive"
         >
           {operationError}
         </p>
@@ -379,7 +381,7 @@ export default function Transcript({ trackPath, currentTime, playing, onSeek, on
           </p>
           <textarea
             aria-label="Transcript text to paste"
-            className="w-full h-24 bg-secondary/40 border border-border rounded-md p-2.5 text-[12px] text-foreground resize-y focus:outline-hidden focus:border-ring"
+            className="w-full h-24 bg-secondary/40 border border-border rounded-md p-2.5 text-[12px] text-foreground resize-y focus:border-ring"
             placeholder="Paste transcript text here…"
             value={paste}
             onChange={e => setPaste(e.target.value)}
@@ -407,7 +409,7 @@ export default function Transcript({ trackPath, currentTime, playing, onSeek, on
                   className={cn(
                     'group flex items-start gap-2 px-2 py-1.5 rounded-md transition-colors',
                     active
-                      ? 'bg-[hsl(var(--gold-dim))] border-l-2 border-l-foreground'
+                      ? 'bg-secondary border-l-2 border-l-foreground'
                       : 'border-l-2 border-l-transparent hover:bg-secondary/40',
                   )}
                 >
@@ -417,7 +419,7 @@ export default function Transcript({ trackPath, currentTime, playing, onSeek, on
                       <button
                         onClick={() => onSeek(s.start)}
                         title="Jump to this point"
-                        className="tabular-nums text-[12px] text-foreground hover:underline focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring rounded"
+                        className="tabular-nums text-[12px] text-foreground hover:underline rounded"
                       >
                         {fmtTime(s.start)}
                       </button>
@@ -435,7 +437,7 @@ export default function Transcript({ trackPath, currentTime, playing, onSeek, on
                   {/* Speaker (optional) */}
                   <input
                     aria-label={`Speaker or role for transcript line ${index + 1}`}
-                    className="shrink-0 w-16 bg-transparent border-none p-0 pt-0.5 text-[12px] tabular-nums text-[hsl(var(--text2))] focus:text-foreground focus:outline-hidden placeholder:text-[hsl(var(--sub))]"
+                    className="shrink-0 w-16 bg-transparent border-none p-0 pt-0.5 text-[12px] tabular-nums text-[hsl(var(--text2))] focus:text-foreground placeholder:text-[hsl(var(--sub))]"
                     value={s.speaker}
                     placeholder="speaker"
                     onChange={e => update(s.id, { speaker: e.target.value })}
@@ -445,7 +447,7 @@ export default function Transcript({ trackPath, currentTime, playing, onSeek, on
                   <textarea
                     aria-label={`Transcript text for line ${index + 1}`}
                     rows={1}
-                    className="flex-1 min-w-0 bg-transparent border-none p-0 text-[12px] leading-snug text-foreground resize-none focus:outline-hidden overflow-hidden"
+                    className="flex-1 min-w-0 bg-transparent border-none p-0 text-[12px] leading-snug text-foreground resize-none overflow-hidden"
                     value={s.text}
                     placeholder="…"
                     ref={el => {
@@ -476,14 +478,14 @@ export default function Transcript({ trackPath, currentTime, playing, onSeek, on
                       onClick={() => update(s.id, { start: currentTime })}
                       aria-label="Set this line's time to the current position"
                       title="Set this line's time to the current position"
-                      className="rounded text-[hsl(var(--sub))] hover:text-foreground transition-colors focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring"
+                      className="rounded text-[hsl(var(--sub))] hover:text-foreground transition-colors"
                     >
                       <Crosshair size={11} />
                     </button>
                     <button
                       onClick={() => remove(s.id)}
                       aria-label="Delete line"
-                      className="rounded text-[hsl(var(--sub))] hover:text-destructive transition-colors focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring"
+                      className="rounded text-[hsl(var(--sub))] hover:text-destructive transition-colors"
                     >
                       <X size={11} />
                     </button>

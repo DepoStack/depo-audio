@@ -19,7 +19,7 @@ export default function WorkspaceHeader({ eyebrow, title, description, status, a
       {(status || actions) && (
         <div className="flex shrink-0 flex-wrap items-center gap-2 sm:justify-end">
           {status && (
-            <span className="inline-flex items-center gap-1.5 rounded-md border border-border/80 bg-[hsl(var(--surface))] px-2.5 py-1.5 text-[10.5px] font-medium text-[hsl(var(--text2))]">
+            <span className="inline-flex items-center gap-1.5 rounded-md border border-border/80 bg-[hsl(var(--surface))] px-2.5 py-1.5 type-small font-medium text-[hsl(var(--text2))]">
               <ShieldCheck aria-hidden="true" className="h-3.5 w-3.5 text-success" strokeWidth={1.8} />
               {status}
             </span>
