@@ -1,13 +1,14 @@
 import { useState } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import { CH_COLORS } from '../../constants'
-import { FileAudio, X, FolderOpen, ChevronDown, ChevronUp } from 'lucide-react'
+import { FileAudio, X, FolderOpen, ChevronDown, ChevronUp, Play } from 'lucide-react'
 import { Badge } from '../ui/badge'
 import { cn } from '../../lib/utils'
 import StatusChip from '../common/StatusChip'
 import MiniPlayer from './MiniPlayer'
+import { isPlayerPlayable } from '../../lib/player'
 
-export default function FileRow({ file, job, onRemove, converting }) {
+export default function FileRow({ file, job, onRemove, converting, onOpenInPlayer }) {
   const [expanded, setExpanded] = useState(false)
   const [folderError, setFolderError] = useState('')
   const status = job?.status || 'waiting'
@@ -110,22 +111,50 @@ export default function FileRow({ file, job, onRemove, converting }) {
           {job.outputs.map((out, i) => (
             <MiniPlayer key={out.path} out={out} color={CH_COLORS[i % 4]} multi={job.outputs.length > 1} />
           ))}
-          {job.outputs.length > 1 && (
-            <button
-              className="flex items-center gap-1 type-small text-[hsl(var(--sub))] hover:text-foreground transition-colors mt-1 self-start"
-              onClick={async () => {
-                setFolderError('')
-                try {
-                  await invoke('show_in_folder', { path: job.outputs[0].path })
-                } catch (error) {
-                  setFolderError(`Could not reveal the output folder: ${String(error)}`)
-                }
-              }}
-            >
-              <FolderOpen size={11} />
-              Show in Explorer / Finder
-            </button>
-          )}
+          {(() => {
+            const playable = job.outputs.map(out => out.path).filter(isPlayerPlayable)
+            const actionClass =
+              'flex items-center gap-1 rounded px-1 py-0.5 type-small text-[hsl(var(--text2))] hover:text-foreground hover:bg-secondary/60 transition-colors focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring'
+            return (
+              <div className="flex flex-wrap items-center gap-2 mt-1">
+                <button
+                  type="button"
+                  className={actionClass}
+                  aria-label={
+                    job.outputs.length > 1
+                      ? `Reveal the outputs of ${file.name} in their folder`
+                      : `Reveal ${job.outputs[0].name} in its folder`
+                  }
+                  onClick={async () => {
+                    setFolderError('')
+                    try {
+                      await invoke('show_in_folder', { path: job.outputs[0].path })
+                    } catch (error) {
+                      setFolderError(`Could not reveal the output folder: ${String(error)}`)
+                    }
+                  }}
+                >
+                  <FolderOpen size={11} aria-hidden="true" />
+                  Reveal in folder
+                </button>
+                {onOpenInPlayer && playable.length > 0 && (
+                  <button
+                    type="button"
+                    className={actionClass}
+                    aria-label={
+                      playable.length > 1
+                        ? `Open the ${playable.length} outputs of ${file.name} in Player`
+                        : `Open ${job.outputs.find(out => out.path === playable[0])?.name} in Player`
+                    }
+                    onClick={() => onOpenInPlayer(playable)}
+                  >
+                    <Play size={11} aria-hidden="true" />
+                    Open in Player
+                  </button>
+                )}
+              </div>
+            )
+          })()}
           {folderError && (
             <p
               role="alert"

@@ -73,6 +73,7 @@ export default function ConvertTab({
   doneCount,
   failCount,
   cancelledCount = 0,
+  onOpenInPlayer,
 }) {
   const {
     mode,
@@ -506,6 +507,7 @@ export default function ConvertTab({
                     job={jobs[f.path]}
                     onRemove={() => removeFile(f.path, converting)}
                     converting={converting}
+                    onOpenInPlayer={onOpenInPlayer}
                   />
                 ))}
               </div>

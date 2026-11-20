@@ -156,6 +156,14 @@ export default function App() {
     return true
   }
 
+  // "Open in Player" on a converted row: the Player tab mounts on demand, so
+  // hand it the paths as a request it consumes once.
+  const [playerOpenRequest, setPlayerOpenRequest] = useState(null)
+  const handleOpenInPlayer = paths => {
+    setPlayerOpenRequest({ paths })
+    setTab('player')
+  }
+
   const ThemeIcon = themeIcons[themeLabel] || Monitor
   const libCount = cases.filter(c => !c.archived).length
   const updaterLabel = updater.error
@@ -393,6 +401,7 @@ export default function App() {
                   doneCount={doneCount}
                   failCount={failCount}
                   cancelledCount={cancelledCount}
+                  onOpenInPlayer={handleOpenInPlayer}
                 />
               )}
             </TabsContent>
@@ -401,6 +410,10 @@ export default function App() {
               <Suspense fallback={<WorkspaceLoading label="Loading Player workspace" />}>
                 <PlayerTab
                   dropHandlerRef={dropOverrideRef}
+                  openRequest={playerOpenRequest}
+                  onOpenRequestHandled={request =>
+                    setPlayerOpenRequest(current => (current === request ? null : current))
+                  }
                   onConvertFiles={async paths => {
                     const result = await addFiles(paths)
                     if (!result?.locked) setTab('convert')
