@@ -193,4 +193,36 @@ describe('ConvertTab scan cancellation', () => {
       'Add a recording to choose an output and convert.',
     )
   })
+
+  it('only suggests scan fixes until the person applies them', async () => {
+    invoke.mockImplementation(command => {
+      if (command === 'analyze_audio_cmd') {
+        return Promise.resolve({
+          needsLeveling: true,
+          hasClipping: true,
+          recommendations: ['Channel level spread 9.5 dB'],
+        })
+      }
+      return Promise.resolve()
+    })
+    const prefs = preferencesContext.current
+    render(<ConvertTab {...props()} />)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Scan' }))
+    const apply = await screen.findByRole('button', { name: 'Apply suggestions' })
+    expect(screen.getByText(/Nothing is switched on until you apply them/)).toBeVisible()
+    expect(screen.getAllByText(/^Recommended/)).toHaveLength(2)
+    expect(prefs.setAutoLevel).not.toHaveBeenCalled()
+    expect(prefs.setDeclip).not.toHaveBeenCalled()
+    expect(screen.getByRole('switch', { name: /Balance Microphone Levels/ })).not.toBeChecked()
+
+    // A single suggestion can still be turned on by hand
+    fireEvent.click(screen.getByRole('switch', { name: /Fix Clipped Audio/ }))
+    expect(prefs.setDeclip).toHaveBeenCalledWith(true)
+    prefs.setDeclip.mockClear()
+
+    fireEvent.click(apply)
+    expect(prefs.setAutoLevel).toHaveBeenCalledWith(true)
+    expect(prefs.setDeclip).toHaveBeenCalledWith(true)
+  })
 })

@@ -19,6 +19,7 @@ These changes are on `main` but not in the existing private v1.0.3 candidate, wh
 ### Fixed
 
 - **Every Settings section can be read to the end.** Cards in the Settings content pane were shrunk to fit its fixed height and cut off their lower rows (most visibly in Model files and Your data). Each card now keeps its full height and only the content pane scrolls; the section list and the Settings header stay in place, and each section opens at its top. Checked in a browser at 1160x820 and at the 720x600 minimum window.
+- **Scan no longer switches processing on by itself.** After a scan, Balance Microphone Levels and Fix Clipped Audio are marked Recommended with what was found, and a line names the suggested fixes with an "Apply suggestions" button. Nothing changes until the person presses it or turns a toggle on themselves. Scan progress and Cancel work as before.
 
 ### Removed
 
