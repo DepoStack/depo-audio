@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto'
-import { mkdir, readFile, readdir, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises'
+import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -8,7 +9,7 @@ const overridePath = path.join(repoRoot, 'scripts', 'javascript-notice-overrides
 const outputDirectory = path.join(repoRoot, 'src-tauri', 'resources', 'third-party', 'javascript')
 const htmlPath = path.join(outputDirectory, 'THIRD-PARTY-NOTICES.html')
 const manifestPath = path.join(outputDirectory, 'COMPONENTS.json')
-const fontsDirectory = path.join(repoRoot, 'public', 'fonts')
+const defaultFontsDirectory = path.join(repoRoot, 'public', 'fonts')
 const bundledFontFamilies = [
   { family: 'Archivo', prefix: 'archivo-', licenseFile: 'archivo-OFL.txt' },
   { family: 'Fragment Mono', prefix: 'fragment-mono-', licenseFile: 'fragment-mono-OFL.txt' },
@@ -18,6 +19,16 @@ const legalFilePattern = /^(?:licen[cs]e|notice|copying|copyright)/iu
 const portablePath = value => value.split(path.sep).join('/')
 const sha256 = value => createHash('sha256').update(value).digest('hex')
 const normalizeText = value => value.replace(/\r\n?/gu, '\n')
+// Byte-level CRLF/CR -> LF. 0x0D never occurs inside a UTF-8 multi-byte
+// sequence, so this is safe on undecoded text and keeps any BOM intact.
+const normalizeTextBytes = bytes => {
+  const output = []
+  for (let index = 0; index < bytes.length; index += 1) {
+    if (bytes[index] !== 0x0d) output.push(bytes[index])
+    else if (bytes[index + 1] !== 0x0a) output.push(0x0a)
+  }
+  return Buffer.from(output)
+}
 const escapeHtml = value =>
   String(value)
     .replaceAll('&', '&amp;')
@@ -38,8 +49,20 @@ const resolveInsideRepo = relativePath => {
   return absolutePath
 }
 
-const readTextMaterial = async ({ absolutePath, displayName, sourceKind, sourceUrl = null, sourceRevision = null }) => {
-  const bytes = await readFile(absolutePath)
+// sourceSha256 is the hash of the source file's bytes. For npm package files
+// those are the published tarball bytes and are hashed raw. Repository text
+// files (canonicalLineEndings) are hashed as their canonical LF bytes, i.e. the
+// committed git blob, so a Windows CRLF checkout records the same value.
+const readTextMaterial = async ({
+  absolutePath,
+  displayName,
+  sourceKind,
+  sourceUrl = null,
+  sourceRevision = null,
+  canonicalLineEndings = false,
+}) => {
+  const rawBytes = await readFile(absolutePath)
+  const bytes = canonicalLineEndings ? normalizeTextBytes(rawBytes) : rawBytes
   const text = normalizeText(new TextDecoder('utf-8', { fatal: true }).decode(bytes))
   return {
     displayName,
@@ -73,7 +96,9 @@ const readPinnedMaterial = async specification => {
 // the application binary. They are not npm packages, so they are listed from
 // the folder itself; every font file must belong to a family with an OFL text
 // that carries its copyright line.
-async function loadBundledFonts() {
+// Licence .txt files are text: hashed and embedded with LF line endings so the
+// output does not depend on core.autocrlf. Font binaries are hashed raw.
+async function loadBundledFonts(fontsDirectory = defaultFontsDirectory) {
   const entries = (await readdir(fontsDirectory)).sort()
   const fontFiles = entries.filter(name => /\.(?:woff2?|ttf|otf)$/iu.test(name))
   const claimed = new Set()
@@ -86,6 +111,7 @@ async function loadBundledFonts() {
       absolutePath: path.join(fontsDirectory, family.licenseFile),
       displayName: `public/fonts/${family.licenseFile}`,
       sourceKind: 'bundled-font-licence',
+      canonicalLineEndings: true,
     })
     assert(/^Copyright /u.test(material.text), `Bundled font licence has no copyright line: ${family.licenseFile}`)
     assert(
@@ -415,6 +441,15 @@ async function generate() {
   }
 
   const lockfileSha256 = sha256(lockfileBytes)
+  return {
+    html: renderHtml({ components, fonts, lockfileSha256 }),
+    manifest: renderManifest({ components, fonts, lockfileSha256, javascriptCount, generatedCssCount }),
+    componentCount: components.length,
+    unresolvedComponents: components.filter(component => component.status === 'unresolved').map(componentKey),
+  }
+}
+
+function renderManifest({ components, fonts, lockfileSha256, javascriptCount, generatedCssCount }) {
   const publicComponents = components.map(publicComponent)
   const unresolvedComponents = publicComponents.filter(component => component.status === 'unresolved').map(componentKey)
   const manifest = {
@@ -430,12 +465,7 @@ async function generate() {
     bundledFontCount: fonts.length,
     bundledFonts: fonts.map(publicFont),
   }
-  return {
-    html: renderHtml({ components, fonts, lockfileSha256 }),
-    manifest: `${JSON.stringify(manifest, null, 2)}\n`,
-    componentCount: components.length,
-    unresolvedComponents,
-  }
+  return `${JSON.stringify(manifest, null, 2)}\n`
 }
 
 const assertStrict = result => {
@@ -505,7 +535,56 @@ async function selfTest() {
   }
   const fonts = await loadBundledFonts()
   assert(fonts.length === bundledFontFamilies.length, 'Bundled font self-test did not load every family')
+  await selfTestFontLineEndings(fonts)
   console.log('JavaScript notice self-test passed')
+}
+
+// A Windows checkout (core.autocrlf) gives the licence .txt files CRLF endings.
+// The generated notices must be byte-identical to the LF checkout.
+async function selfTestFontLineEndings(committedFonts) {
+  assert(
+    normalizeTextBytes(Buffer.from('a\r\nb\rc\n\r\r\n')).equals(Buffer.from('a\nb\nc\n\n\n')),
+    'Byte line-ending normalization failed',
+  )
+  const scratch = await mkdtemp(path.join(os.tmpdir(), 'depo-notice-fonts-'))
+  try {
+    const render = async directory => {
+      const fonts = await loadBundledFonts(directory)
+      const input = { components: [], fonts, lockfileSha256: '0'.repeat(64), javascriptCount: 0, generatedCssCount: 0 }
+      return { html: renderHtml(input), manifest: renderManifest(input) }
+    }
+    const lfDirectory = path.join(scratch, 'lf')
+    const crlfDirectory = path.join(scratch, 'crlf')
+    await Promise.all([mkdir(lfDirectory), mkdir(crlfDirectory)])
+    let crlfConverted = 0
+    for (const name of await readdir(defaultFontsDirectory)) {
+      const bytes = await readFile(path.join(defaultFontsDirectory, name))
+      await writeFile(path.join(lfDirectory, name), bytes)
+      if (/\.txt$/iu.test(name)) {
+        const crlf = Buffer.from(normalizeTextBytes(bytes).toString('latin1').replaceAll('\n', '\r\n'), 'latin1')
+        assert(crlf.includes(Buffer.from('\r\n')), `CRLF fixture was not created for ${name}`)
+        crlfConverted += 1
+        await writeFile(path.join(crlfDirectory, name), crlf)
+      } else {
+        await writeFile(path.join(crlfDirectory, name), bytes)
+      }
+    }
+    assert(crlfConverted === bundledFontFamilies.length, 'CRLF self-test did not convert every font licence')
+    const [lf, crlf] = await Promise.all([render(lfDirectory), render(crlfDirectory)])
+    assert(lf.manifest === crlf.manifest, 'COMPONENTS.json depends on font licence line endings')
+    assert(lf.html === crlf.html, 'THIRD-PARTY-NOTICES.html depends on font licence line endings')
+    // The recorded licence hash is the hash of the LF bytes, which on an LF
+    // checkout is exactly the raw file hash committed before this fix.
+    for (const [index, font] of committedFonts.entries()) {
+      const lfBytes = await readFile(path.join(lfDirectory, bundledFontFamilies[index].licenseFile))
+      assert(
+        font.legalMaterial.sourceSha256 === sha256(normalizeTextBytes(lfBytes)),
+        `Font licence hash is not the LF-canonical hash for ${font.family}`,
+      )
+    }
+  } finally {
+    await rm(scratch, { recursive: true, force: true })
+  }
 }
 
 async function main() {
