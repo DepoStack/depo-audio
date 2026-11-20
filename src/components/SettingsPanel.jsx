@@ -16,6 +16,7 @@ import {
   HardDrive,
 } from 'lucide-react'
 import { DEPOAUDIO_RELEASES_URL, DEPOSTACK_URL } from '../constants'
+import { DepoStackMark } from './common/DepoStackMark'
 import { Dialog, DialogContent, DialogTitle, DialogClose, DialogDescription } from './ui/dialog'
 import { Button } from './ui/button'
 import { Input } from './ui/input'
@@ -707,12 +708,19 @@ export default function SettingsPanel({
                     </div>
 
                     <div className="flex items-center justify-between gap-3 border-t border-border pt-3">
-                      <div className="flex flex-col min-w-0">
-                        <span className="text-[12px] font-medium text-foreground">DepoAudio, powered by DepoStack</span>
-                        <span className="text-[11px] text-[hsl(var(--sub))] mt-0.5">
-                          A growing suite of tools built for court reporters. DepoAudio itself stays free and open
-                          source.
-                        </span>
+                      <div className="flex items-start gap-3 min-w-0">
+                        <DepoStackMark size={28} className="shrink-0" />
+                        <div className="flex flex-col min-w-0">
+                          {/* DepoAudio, powered by DepoStack: the wordmark leads, the endorsement follows smaller in ink 2 */}
+                          <span className="text-foreground">
+                            <span className="type-wordmark">DepoAudio</span>
+                            <span className="text-[12px] text-[hsl(var(--text2))]">, powered by DepoStack</span>
+                          </span>
+                          <span className="text-[11px] text-[hsl(var(--sub))] mt-0.5">
+                            A growing suite of tools built for court reporters. DepoAudio itself stays free and open
+                            source.
+                          </span>
+                        </div>
                       </div>
                       <Button
                         size="sm"

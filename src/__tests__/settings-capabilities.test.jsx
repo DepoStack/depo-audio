@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { invoke } from '@tauri-apps/api/core'
 import { openUrl } from '@tauri-apps/plugin-opener'
@@ -28,7 +28,12 @@ describe('SettingsPanel release boundaries', () => {
     renderSettings()
     fireEvent.click(screen.getByRole('button', { name: 'Updates' }))
 
-    expect(await screen.findByText('DepoAudio, powered by DepoStack')).toBeVisible()
+    // The wordmark leads and the endorsement follows in its own smaller run, so match the whole name.
+    const name = await screen.findByText(
+      (_, element) => element?.textContent === 'DepoAudio, powered by DepoStack' && element.children.length === 2,
+    )
+    expect(name).toBeVisible()
+    expect(within(name).getByText('DepoAudio')).toHaveClass('type-wordmark')
     expect(screen.queryByText(/part of DepoStack/i)).not.toBeInTheDocument()
   })
 

@@ -14,6 +14,7 @@ import useUpdater from './hooks/useUpdater'
 import UpdateBanner from './components/UpdateBanner'
 
 import { LogoSvg } from './components/common/Icons'
+import { DepoStackMark, DepoStackWordmark } from './components/common/DepoStackMark'
 import WorkspaceLoading from './components/common/WorkspaceLoading'
 import { Tabs, TabsList, TabsTrigger, TabsContent } from './components/ui/tabs'
 import { Badge } from './components/ui/badge'
@@ -187,8 +188,8 @@ export default function App() {
         <div className="app-brand flex items-center gap-2.5 px-3 sm:px-4 pt-4 pb-5">
           <LogoSvg />
           <div className="hidden sm:flex flex-col leading-none">
-            <span className="text-[16px] font-semibold tracking-[-0.02em] text-foreground">DepoAudio</span>
-            <span className="text-[9.5px] text-[hsl(var(--sub))] tracking-wide">Court-audio workbench</span>
+            <span className="type-wordmark text-foreground">DepoAudio</span>
+            <span className="mt-1 text-[12px] leading-tight text-[hsl(var(--sub))]">Court-audio workbench</span>
           </div>
         </div>
 
@@ -247,10 +248,17 @@ export default function App() {
             openUrl(DEPOSTACK_URL).catch(error => setSystemError(`Could not open DepoStack: ${String(error)}`))
           }
           title="DepoAudio, powered by DepoStack. Opens depostack.com"
-          className="hidden sm:block mx-3 mb-1.5 py-1 text-left text-[10.5px] text-[hsl(var(--sub))] hover:text-foreground transition-colors"
+          className="group hidden sm:flex flex-col items-start gap-1 mx-3 mb-1.5 py-1.5 text-left text-[12px] text-[hsl(var(--sub))] hover:text-foreground transition-colors"
         >
-          Powered by <span className="font-semibold text-[hsl(var(--text2))]">DepoStack</span>
-          <span aria-hidden="true">&nbsp;↗</span>
+          <span>Powered by</span>{' '}
+          {/* The DepoStack lockup: the mark (24px or larger) and the wordmark, about 140px wide */}
+          <span className="flex items-center gap-2 text-foreground">
+            <DepoStackMark size={28} />
+            <DepoStackWordmark className="text-[19px] leading-none" />
+            <span aria-hidden="true" className="text-[12px] text-[hsl(var(--sub))] group-hover:text-foreground">
+              ↗
+            </span>
+          </span>
         </button>
 
         <div className="app-sidebar-actions flex sm:justify-start justify-center items-center gap-1 px-2 sm:px-3 pb-3">
