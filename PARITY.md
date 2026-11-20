@@ -9,7 +9,7 @@ test suite (see [Test index](#test-index)) mechanically enforces the starred
 (★) items. Release automation separately verifies native FTR decoding, zero
 learned-model distribution, and bounded packaged application startup. Every
 other capability requires the manual installed-app checks in
-[`docs/V1.0.3-RELEASE-CANDIDATE.md`](docs/V1.0.3-RELEASE-CANDIDATE.md); a green
+[`docs/V1.1.0-RELEASE-CANDIDATE.md`](docs/V1.1.0-RELEASE-CANDIDATE.md); a green
 automated smoke test is not evidence that the complete capability map was
 exercised.
 

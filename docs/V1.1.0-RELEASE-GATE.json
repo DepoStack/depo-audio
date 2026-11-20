@@ -136,7 +136,7 @@
       "description": "v1.1.0 is the first release to bundle third-party fonts: Archivo and Fragment Mono (SIL Open Font License 1.1) in public/fonts, compiled into the app. They are recorded in THIRD_PARTY_LICENSES.md but need an owner licence and distribution decision.",
       "evidenceNeeded": [
         "Confirm the exact upstream source and copyright notice of the subset Archivo and Fragment Mono woff2 files copied from depo-stack public/fonts, and that each matches its bundled OFL text.",
-        "Confirm from the installed v1.1.0 app that both OFL licence texts ship with the fonts, and decide whether the fonts and their licences also belong in the bundled third-party notices.",
+        "The Tauri build embeds the frontend, fonts and licence texts included, in the application binary, so the installed app has no browsable licence file. Decide whether that meets the OFL condition that the copyright notice and licence accompany each copy, or add the fonts and their licences to the bundled third-party notices or the About screen.",
         "Record the release owner's licence and distribution-ledger decision for bundling the fonts (OFL 1.1 permits bundling with software; the fonts are not sold on their own and keep their reserved names)."
       ]
     },

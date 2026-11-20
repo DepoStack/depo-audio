@@ -25,10 +25,10 @@ deadline.
 
 DepoAudio processes audio files locally on your machine and does not upload
 recordings for conversion, playback, analysis, or cleanup. Runtime network
-activity in v1.0.3 is limited to features the user or release configuration
+activity in v1.1.0 is limited to features the user or release configuration
 enables:
 
-- **No learned-model network path** — v1.0.3 does not bundle, install,
+- **No learned-model network path** — v1.1.0 does not bundle, install,
   download, or execute learned-model files. Exact legacy app-data files can be
   listed only for user-initiated deletion.
 - **Optional update checks and downloads** — available only when a published

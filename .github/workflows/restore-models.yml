@@ -15,7 +15,7 @@ name: Verify historical v1.0.2 model release
 #     DNS-Challenge repo
 # Every asset is verified against a reviewed SHA-256 value below. These assets
 # are retained only in this read-only verification contract for already-
-# published app versions; v1.0.3 must not distribute learned-model material.
+# published app versions; no release after v1.0.2 may distribute learned-model material.
 on:
   workflow_dispatch:
 
