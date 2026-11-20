@@ -164,7 +164,7 @@ jobs:
           if (start < 0) throw new Error(`Missing CHANGELOG section for ${version}`)
           const next = changelog.indexOf('\n## [', start + marker.length)
           const section = changelog.slice(start, next < 0 ? undefined : next).trim()
-          if (!section.includes('### Release scope')) throw new Error('Release notes have no release scope')
+          if (!section.includes('### What this release includes')) throw new Error('Release notes have no "What this release includes" section')
           process.stdout.write(section)
           NODE
           )

@@ -57,11 +57,18 @@ DepoAudio rules that still apply during an incident:
 ## 2. Replace it
 
 1. Fix the problem on `main` with a test that fails without the fix.
-2. Bump the version (a patch number is enough) in `package.json`,
-   `src-tauri/Cargo.toml` and `src-tauri/tauri.conf.json`. Then run
-   `npm run release:check`, which keeps the three versions equal.
-3. Build and publish through the normal sequence in
-   [`V1.0.3-RELEASE-CANDIDATE.md`](V1.0.3-RELEASE-CANDIDATE.md#exact-candidate-to-publication-sequence):
+2. Bump the version (a patch number is enough): run
+   `npm version <version> --no-git-tag-version`, and change
+   `src-tauri/Cargo.toml`, the `depo-audio` entry in `src-tauri/Cargo.lock`
+   and `src-tauri/tauri.conf.json`. Add a `## [<version>] - Unpublished`
+   changelog section with a `### What this release includes`, create
+   `docs/V<version>-RELEASE-GATE.json` and `docs/V<version>-RELEASE-CANDIDATE.md`
+   from the current ones, and change the concurrency group and the
+   INSPECT/PUBLISH confirmations in `publish-release.yml`. Then run
+   `npm run release:check`, which fails until all of these agree.
+3. Build and publish through the normal sequence in the new candidate runbook
+   (the current one is
+   [`V1.1.0-RELEASE-CANDIDATE.md`](V1.1.0-RELEASE-CANDIDATE.md#exact-candidate-to-publication-sequence)):
    `release.yml` builds a private draft, then `publish-release.yml` publishes it
    after the wait timer. The 24-hour wait still applies. Steps 1.2 and 1.3
    above are what protect people in the meantime.

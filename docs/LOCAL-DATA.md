@@ -13,7 +13,7 @@ the app, with the exact folder path on that computer.
 | Case library | app data folder, `library.json` | Case names, sessions, participant labels, the paths and sizes of converted files, and the source file name and path |
 | Settings | app data folder, `prefs.json` | Audio processing settings, startup defaults and theme |
 | Unfinished saves | app data folder, `library.tmp.*` / `prefs.tmp.*` | A temporary copy left only if a save was interrupted |
-| Legacy model files | app data folder, `models/` | Files left by an older build. v1.0.3 never loads them |
+| Legacy model files | app data folder, `models/` | Files left by an older build. DepoAudio never loads them |
 | Transcripts | app web view storage, key `transcript:<track path>` | The transcript lines you edited for a track (speaker, text, time) |
 | Bookmarks | app web view storage, `player-bookmarks` | Bookmark times, labels and the track path |
 | Playback speed and theme | app web view storage, `player-speed`, `depoaudio-theme` | One setting each |
@@ -27,7 +27,7 @@ The web view storage sits in the system web view's data folder for DepoAudio.
 On Windows that is expected under `%LOCALAPPDATA%\com.andrewmayes.depoaudio\EBWebView`;
 on macOS it is expected under `~/Library/WebKit/com.andrewmayes.depoaudio`.
 Neither location has been checked on an installed build yet. The installed-app
-pass in `V1.0.3-RELEASE-CANDIDATE.md` must confirm both before the website
+pass in `V1.1.0-RELEASE-CANDIDATE.md` must confirm both before the website
 states them.
 
 **Not stored by DepoAudio:** your recordings, converted files, the

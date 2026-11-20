@@ -8,6 +8,11 @@ const overridePath = path.join(repoRoot, 'scripts', 'javascript-notice-overrides
 const outputDirectory = path.join(repoRoot, 'src-tauri', 'resources', 'third-party', 'javascript')
 const htmlPath = path.join(outputDirectory, 'THIRD-PARTY-NOTICES.html')
 const manifestPath = path.join(outputDirectory, 'COMPONENTS.json')
+const fontsDirectory = path.join(repoRoot, 'public', 'fonts')
+const bundledFontFamilies = [
+  { family: 'Archivo', prefix: 'archivo-', licenseFile: 'archivo-OFL.txt' },
+  { family: 'Fragment Mono', prefix: 'fragment-mono-', licenseFile: 'fragment-mono-OFL.txt' },
+]
 const legalFilePattern = /^(?:licen[cs]e|notice|copying|copyright)/iu
 
 const portablePath = value => value.split(path.sep).join('/')
@@ -63,6 +68,56 @@ const readPinnedMaterial = async specification => {
   assert(/^[0-9a-f]{64}$/u.test(specification.upstreamRawSha256), `Pinned notice has no upstream raw hash`)
   return material
 }
+
+// Fonts in public/fonts are copied into the Vite dist, which Tauri embeds in
+// the application binary. They are not npm packages, so they are listed from
+// the folder itself; every font file must belong to a family with an OFL text
+// that carries its copyright line.
+async function loadBundledFonts() {
+  const entries = (await readdir(fontsDirectory)).sort()
+  const fontFiles = entries.filter(name => /\.(?:woff2?|ttf|otf)$/iu.test(name))
+  const claimed = new Set()
+  const fonts = []
+  for (const family of bundledFontFamilies) {
+    const files = fontFiles.filter(name => name.startsWith(family.prefix))
+    assert(files.length > 0, `Bundled font family has no files: ${family.family}`)
+    assert(entries.includes(family.licenseFile), `Bundled font family has no licence text: ${family.family}`)
+    const material = await readTextMaterial({
+      absolutePath: path.join(fontsDirectory, family.licenseFile),
+      displayName: `public/fonts/${family.licenseFile}`,
+      sourceKind: 'bundled-font-licence',
+    })
+    assert(/^Copyright /u.test(material.text), `Bundled font licence has no copyright line: ${family.licenseFile}`)
+    assert(
+      material.text.includes('SIL Open Font License, Version 1.1'),
+      `Bundled font licence is not OFL 1.1: ${family.licenseFile}`,
+    )
+    const fileRecords = []
+    for (const name of files) {
+      claimed.add(name)
+      fileRecords.push({
+        path: `public/fonts/${name}`,
+        sha256: sha256(await readFile(path.join(fontsDirectory, name))),
+      })
+    }
+    fonts.push({ family: family.family, license: 'OFL-1.1', files: fileRecords, legalMaterial: material })
+  }
+  const unclaimed = fontFiles.filter(name => !claimed.has(name))
+  assert(unclaimed.length === 0, `Bundled font files have no reviewed family: ${unclaimed.join(', ')}`)
+  return fonts
+}
+
+const publicFont = font => ({
+  family: font.family,
+  license: font.license,
+  files: font.files,
+  legalMaterial: {
+    displayName: font.legalMaterial.displayName,
+    sourceKind: font.legalMaterial.sourceKind,
+    sourceSha256: font.legalMaterial.sourceSha256,
+    contentSha256: font.legalMaterial.contentSha256,
+  },
+})
 
 const packageRootFromModule = moduleId => {
   const normalized = moduleId.replaceAll('\\', '/').replace(/^\0/u, '').split('?')[0]
@@ -227,7 +282,7 @@ const publicComponent = component => ({
   unresolved: component.unresolved,
 })
 
-function renderHtml({ components, lockfileSha256 }) {
+function renderHtml({ components, fonts, lockfileSha256 }) {
   const unresolved = components.filter(component => component.status === 'unresolved')
   const rows = components
     .map(
@@ -249,6 +304,12 @@ function renderHtml({ components, lockfileSha256 }) {
       return `<section id="component-${index + 1}"><h2>${escapeHtml(component.name)} <small>${escapeHtml(component.version)}</small></h2><p><strong>Declared license:</strong> ${escapeHtml(component.license)} · <strong>Payload:</strong> ${escapeHtml(component.provenance.join(', '))}</p>${warning}${materials}</section>`
     })
     .join('\n')
+  const fontSections = fonts
+    .map(
+      font =>
+        `<section id="font-${escapeHtml(font.family.toLowerCase().replaceAll(' ', '-'))}"><h2>${escapeHtml(font.family)} <small>font</small></h2><p><strong>Declared license:</strong> ${escapeHtml(font.license)} · <strong>Files:</strong> ${font.files.map(file => `<code>${escapeHtml(file.path)}</code>`).join(', ')}</p><h3>${escapeHtml(font.legalMaterial.displayName)}</h3><p class="source">Source: ${escapeHtml(font.legalMaterial.sourceKind)} · SHA-256 <code>${escapeHtml(font.legalMaterial.contentSha256)}</code></p><pre>${escapeHtml(font.legalMaterial.text)}</pre></section>`,
+    )
+    .join('\n')
   return `<!doctype html>
 <html lang="en">
 <head>
@@ -260,12 +321,15 @@ function renderHtml({ components, lockfileSha256 }) {
 <body>
 <main>
 <h1>DepoAudio JavaScript and generated-CSS third-party notices</h1>
-<p>This report is generated deterministically from the locked Vite production graph and reviewed generated-CSS inputs. It contains ${components.length} components. Lockfile SHA-256: <code>${lockfileSha256}</code>.</p>
-<p><strong>Unresolved components: ${unresolved.length}.</strong>${unresolved.length ? ' An unresolved record is evidence of a blocked release, not redistribution approval.' : ' All shipped components have reviewed legal material.'}</p>
+<p>This report is generated deterministically from the locked Vite production graph and reviewed generated-CSS inputs. It contains ${components.length} npm components and ${fonts.length} bundled font families. Lockfile SHA-256: <code>${lockfileSha256}</code>.</p>
+<p><strong>Unresolved components: ${unresolved.length}.</strong>${unresolved.length ? ' An unresolved record is evidence of a blocked release, not redistribution approval.' : ' All shipped npm components have reviewed legal material.'}</p>
 <table><thead><tr><th>Component</th><th>Version</th><th>Declared license</th><th>Payload provenance</th><th>Status</th></tr></thead><tbody>
 ${rows}
 </tbody></table>
 ${sections}
+<h2 id="bundled-fonts">Bundled fonts</h2>
+<p>These typefaces are not npm packages. They are copied from <code>public/fonts</code> into the app and are listed here with their SIL Open Font License texts.</p>
+${fontSections}
 </main>
 </body>
 </html>
@@ -273,10 +337,11 @@ ${sections}
 }
 
 async function generate() {
-  const [lockfileBytes, overrides, bundle] = await Promise.all([
+  const [lockfileBytes, overrides, bundle, fonts] = await Promise.all([
     readFile(path.join(repoRoot, 'package-lock.json')),
     readJson(overridePath),
     captureProductionBundle(),
+    loadBundledFonts(),
   ])
   const lockfile = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(lockfileBytes))
   assert(lockfile.lockfileVersion === 3, `Expected npm lockfile version 3`)
@@ -362,9 +427,11 @@ async function generate() {
     unresolvedComponentCount: unresolvedComponents.length,
     unresolvedComponents,
     components: publicComponents,
+    bundledFontCount: fonts.length,
+    bundledFonts: fonts.map(publicFont),
   }
   return {
-    html: renderHtml({ components, lockfileSha256 }),
+    html: renderHtml({ components, fonts, lockfileSha256 }),
     manifest: `${JSON.stringify(manifest, null, 2)}\n`,
     componentCount: components.length,
     unresolvedComponents,
@@ -436,6 +503,8 @@ async function selfTest() {
     assert(sha256(bytes) === evidence.sha256, `Exception provenance self-test failed for ${exception.name}`)
     assert(exception.status === 'unresolved', `Self-test fixture unexpectedly approves ${exception.name}`)
   }
+  const fonts = await loadBundledFonts()
+  assert(fonts.length === bundledFontFamilies.length, 'Bundled font self-test did not load every family')
   console.log('JavaScript notice self-test passed')
 }
 

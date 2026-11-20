@@ -1,0 +1,156 @@
+{
+  "schemaVersion": 2,
+  "version": "1.1.0",
+  "reviewedDate": "2026-11-20",
+  "status": "NO-GO",
+  "candidate": {
+    "tag": "v1.1.0",
+    "releaseId": null,
+    "sourceCommit": null,
+    "assetManifestSha256": null,
+    "updater": "undecided",
+    "updaterPublicKey": null,
+    "publicationDate": null,
+    "approvedBy": null,
+    "releaseTaggerEmail": null
+  },
+  "blockers": [
+    {
+      "id": "shipped-model-commercial-rights",
+      "status": "open",
+      "version": "1.1.0",
+      "reviewedDate": "2026-11-20",
+      "description": "v1.1.0 must ship zero learned models; the already-public v1.0.2 models-v1 assets need a separate owner remediation decision. CI evidence covers the first part only; owner closure required.",
+      "evidenceNeeded": [
+        "From the v1.1.0 release run, retain the models:check result on the exact source commit and the four RELEASE-INVENTORY-*.json files showing every extracted installer (MSI, NSIS EXE, DMG, app archive) carries zero learned-model weights, no ONNX Runtime, and no model install or download path; confirm the installed app never loads legacy app-data models.",
+        "Record the release owner's separate remediation decision for the public v1.0.2 models-v1 release (id 354629817), which stays immutable compatibility history; v1.1.0 non-distribution is not retroactive rights clearance."
+      ]
+    },
+    {
+      "id": "javascript-runtime-notices",
+      "status": "open",
+      "version": "1.1.0",
+      "reviewedDate": "2026-11-20",
+      "description": "The v1.0.3 notice evidence is void: the npm graph changed (Tauri 2.12, the DepoStack brand foundation #201, the UX fixes #202). Needs fresh v1.1.0 run evidence and a named reviewer.",
+      "evidenceNeeded": [
+        "From the v1.1.0 release run, retain the strict notices check (generate-javascript-notices.mjs --strict --check) on the exact source commit and the four RELEASE-INVENTORY-*.json files byte-binding COMPONENTS.json and THIRD-PARTY-NOTICES.html, with zero unresolved components.",
+        "Confirm the emitted graph maps react-remove-scroll-bar imports to the DepoAudio compatibility module and distributes no bytes from react-remove-scroll-bar@2.3.8, and that the Tauri, tslib, Tailwind CSS and tailwindcss-animate notices are preserved."
+      ]
+    },
+    {
+      "id": "macos-ffmpeg-rc2-evidence",
+      "status": "open",
+      "version": "1.1.0",
+      "reviewedDate": "2026-11-20",
+      "description": "macOS FFmpeg sidecar evidence for the v1.1.0 candidate. The v1.0.3 RC2 evidence does not carry over.",
+      "evidenceNeeded": [
+        "From the v1.1.0 release run, retain the macOS job evidence that both universal sidecars build from the hash-pinned FFmpeg 7.1.5, LAME 3.100 and Opus 1.6.1 sources, reject GPL/nonfree configuration, link only to macOS system libraries, and pass native FTR decode and every released encoder/filter check.",
+        "Extract both downloadable macOS containers (DMG and app archive) and verify byte-identical macOS inventories, matching source, configuration, toolchain, license and checksum evidence, and DepoAudio_1.1.0_third-party-source.tar.gz."
+      ]
+    },
+    {
+      "id": "windows-ffmpeg-source-and-notices",
+      "status": "open",
+      "version": "1.1.0",
+      "reviewedDate": "2026-11-20",
+      "description": "Windows FFmpeg payload match is CI evidence; compliant corresponding-source delivery for the BtbN binaries is an owner/legal determination.",
+      "evidenceNeeded": [
+        "Extract the v1.1.0 MSI and NSIS payloads and match the packaged ffmpeg.exe and ffprobe.exe to the reviewed BtbN LGPL build (asset 496767001, ffmpeg-N-125875-g5d4d3bdc61-win64-lgpl.zip).",
+        "Establish compliant corresponding-source delivery and preserve the exact license, configuration, source reference and required notices for the distributed Windows binaries (owner decision)."
+      ]
+    },
+    {
+      "id": "webview2-final-installer-evidence",
+      "status": "open",
+      "version": "1.1.0",
+      "reviewedDate": "2026-11-20",
+      "description": "The workflow records only build-input evidence (finalInstallerEmbeddingVerified=false). Must be fresh for v1.1.0 because tauri-bundler 2.10.4 now pulls NSIS 3.13.",
+      "evidenceNeeded": [
+        "On Windows, extract the v1.1.0 MSI Binary table and NSIS payload, match both embedded WebView2 installers to the SHA-256 recorded in WEBVIEW2-EVIDENCE-windows.json, and retain the extraction evidence.",
+        "Review and record the exact Microsoft redistribution terms that apply to the embedded runtime (owner decision)."
+      ]
+    },
+    {
+      "id": "synthetic-ftr-packaged-decode",
+      "status": "open",
+      "version": "1.1.0",
+      "reviewedDate": "2026-11-20",
+      "description": "Packaged FTR decode evidence for the v1.1.0 candidate. The v1.0.3 run references must not be reused.",
+      "evidenceNeeded": [
+        "From the v1.1.0 release run, prove the exact macOS and Windows sidecars and installer payloads normally decode the deterministic synthetic 440 Hz FTR-tagged fixture generated by scripts/ftr-smoke-fixture.mjs.",
+        "Confirm from the four v1.1.0 inventories that the generated fixture and every derived smoke-test output are absent from all installers, release assets and retained public artifacts."
+      ]
+    },
+    {
+      "id": "packaged-install-and-upgrade-validation",
+      "status": "open",
+      "version": "1.1.0",
+      "reviewedDate": "2026-11-20",
+      "description": "Manual installs and upgrades on real hardware. Windows has never been built on Tauri 2.12, and the Your data, export record, diagnostics, brand, chrono-to-time timestamp and UX changes have never run in an installed app.",
+      "evidenceNeeded": [
+        "Reconcile the exact v1.1.0 MSI, NSIS EXE, DMG and app archive payloads against the binary contract, third-party ledger (including the bundled fonts), checksums and expected resource inventory.",
+        "Install and start both Windows installers on clean Windows 10 and 11 x64 systems without WebView2, start both macOS deliverables on macOS 13.3+ on Apple Silicon and Intel, and upgrade an existing v1.0.2 installation through MSI, NSIS and macOS paths.",
+        "On the installed apps, exercise conversion (including the export record and BWF start time on the release sidecars), Reveal in folder and Open in Player, Scan suggestions, Library re-export confirmation, Settings scrolling, Your data backup/import/clear, Copy diagnostics, the bundled Archivo and Fragment Mono fonts rendering offline, and legacy-model deletion."
+      ]
+    },
+    {
+      "id": "signing-notarization-and-updater-decision",
+      "status": "open",
+      "version": "1.1.0",
+      "reviewedDate": "2026-11-20",
+      "description": "All signing secret groups are reported configured, but the last release run (33338834735) built entirely unsigned. Closure requires v1.1.0 run evidence that signing actually ran, then manual verification and the owner's updater decision.",
+      "evidenceNeeded": [
+        "From the v1.1.0 release.yml run log, retain proof that 'Detect signing configuration' output updater=true and platform_signing=true on both platform jobs; that 'Verify updater signing key pair', 'Import Windows signing certificate', 'Build signed and notarized macOS packages' and 'Remove Windows signing certificate before candidate execution' ran (not skipped) while 'Build unsigned macOS packages' was skipped; and that 'Smoke-test downloadable macOS containers' passed with EXPECT_PLATFORM_SIGNING=true (codesign, stapler, spctl). A run without that evidence does not close this blocker.",
+        "Confirm the private draft carries exactly three updater signatures (DepoAudio_1.1.0_universal.app.tar.gz.sig, DepoAudio_1.1.0_x64_en-US.msi.sig, DepoAudio_1.1.0_x64-setup.exe.sig) and no latest.json.",
+        "On the downloaded v1.1.0 assets, verify Authenticode on both Windows installers, Apple code signing, notarization, stapling and Gatekeeper on both macOS deliverables, and SmartScreen behaviour, or record an explicit owner publication decision for each unavailable protection.",
+        "Owner decision: set candidate.updater to 'signed' with candidate.updaterPublicKey equal to the TAURI_UPDATER_PUBLIC_KEY value, or to 'unavailable'. v1.0.2 has no updater, so installed-updater acceptance cannot be shown from v1.0.2; v1.1.0 is the first updater-enabled build, and the signed updater path is first exercised by the next release."
+      ]
+    },
+    {
+      "id": "rust-advisory-exception-acceptance",
+      "status": "open",
+      "version": "1.1.0",
+      "reviewedDate": "2026-11-20",
+      "description": "The release plan recorded on 2026-11-20 is to rebuild from main instead of publishing the v1.0.3 candidate; deny.toml carries no advisory exception (ignore = []) and main locks Tauri 2.12.5 with no unic-* crate. RUSTSEC-2026-0543 (chrono, unmaintained) was found on 2026-11-20 and cleared by removing chrono from DepoAudio (timestamps use the time crate, #201), not by an exception; chrono is no longer built for any release target. The owner pre-approved a bounded exception for RUSTSEC-2026-0543 only (remove by 2027-03-31) as a fallback in case Tauri makes chrono reachable again; it is not in deny.toml, and release:check accepts it only with its reason, owner, date and ledger entry. The owner's formal sign-off of the supersession (closedBy) and the publication-time advisory rerun are both still required.",
+      "evidenceNeeded": [
+        "Release owner sign-off that the v1.0.3 candidate (source 2a9053117fc90e5b208b8e29c92646715285f8dc) is superseded and that v1.1.0 is built from main with no advisory exception.",
+        "At publication time, rerun cargo deny check advisories against the exact v1.1.0 candidate source commit and retain the result; any advisory without a recorded owner acceptance blocks publication."
+      ]
+    },
+    {
+      "id": "codec-patent-review",
+      "status": "open",
+      "version": "1.1.0",
+      "reviewedDate": "2026-11-20",
+      "description": "Legal codec and patent review; no CI evidence can close it.",
+      "evidenceNeeded": [
+        "Complete and retain a codec and patent-pool review appropriate to the intended commercial distribution territories for the enabled AAC, MP3, Opus, FLAC, WAV and FTR processing path.",
+        "Record the release-owner decision separately from the open-source copyright-license review."
+      ]
+    },
+    {
+      "id": "bundled-fonts-ofl-ledger",
+      "status": "open",
+      "version": "1.1.0",
+      "reviewedDate": "2026-11-20",
+      "description": "v1.1.0 is the first release to bundle third-party fonts: Archivo and Fragment Mono (SIL Open Font License 1.1) in public/fonts, compiled into the app. They are recorded in THIRD_PARTY_LICENSES.md and listed, with their copyright lines and OFL texts, in the bundled third-party notices (THIRD-PARTY-NOTICES.html and COMPONENTS.json), but need an owner licence and distribution decision.",
+      "evidenceNeeded": [
+        "Confirm the exact upstream source and copyright notice of the subset Archivo and Fragment Mono woff2 files copied from depo-stack public/fonts, and that each matches its bundled OFL text.",
+        "The Tauri build embeds the frontend, fonts and licence texts included, in the application binary, so the installed app has no browsable licence file. The bundled third-party notices now reproduce both OFL texts; decide whether that meets the OFL condition that the copyright notice and licence accompany each copy, or whether the About screen should also link to them.",
+        "Record the release owner's licence and distribution-ledger decision for bundling the fonts (OFL 1.1 permits bundling with software; the fonts are not sold on their own and keep their reserved names)."
+      ]
+    },
+    {
+      "id": "release-changelog-finalization",
+      "status": "open",
+      "version": "1.1.0",
+      "reviewedDate": "2026-11-20",
+      "description": "Closes only in the approval commit, after every other blocker is closed.",
+      "evidenceNeeded": [
+        "Replace the v1.1.0 Unpublished changelog marker with the approved publication date (equal to candidate.publicationDate) only after every other publication blocker is closed, without changing the frozen release-notes body.",
+        "Bind the final release notes, source commit, installer inventories and downloadable asset checksums to the exact v1.1.0 publication candidate.",
+        "Check every frozen release-notes statement against the v1.1.0 run evidence before closing: WAV outputs carry the bext start time with the bundled release sidecars (packaged-install-and-upgrade-validation), the macOS release carries DepoAudio_1.1.0_third-party-source.tar.gz for the FFmpeg, LAME and Opus build (macos-ffmpeg-rc2-evidence), and deny.toml still has no advisory exception with the publication-time cargo deny rerun clean (rust-advisory-exception-acceptance). If any statement does not hold, change the notes and build a new candidate."
+      ]
+    }
+  ]
+}

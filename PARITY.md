@@ -9,7 +9,7 @@ test suite (see [Test index](#test-index)) mechanically enforces the starred
 (★) items. Release automation separately verifies native FTR decoding, zero
 learned-model distribution, and bounded packaged application startup. Every
 other capability requires the manual installed-app checks in
-[`docs/V1.0.3-RELEASE-CANDIDATE.md`](docs/V1.0.3-RELEASE-CANDIDATE.md); a green
+[`docs/V1.1.0-RELEASE-CANDIDATE.md`](docs/V1.1.0-RELEASE-CANDIDATE.md); a green
 automated smoke test is not evidence that the complete capability map was
 exercised.
 
@@ -99,4 +99,4 @@ for identical inputs — never do it silently.
 | ------------------------------ | ------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Rust unit + characterization   | `cargo test --manifest-path src-tauri/Cargo.toml` | Filter chains, filtergraphs, learned-flag rejection, export record schema and start-time rescaling, prefs migration, library filing, sanitization, wire shapes, format registry, case-name inference, merge helpers, safety guards, local data (clear removes only DepoAudio's own files, backup zip round trip and refusal of changed zips, add-only import merge) |
 | JS characterization            | `npm test`                                        | Conversion/cancellation state, queue ordering, preferences/theme, transcript persistence and errors, player/waveform logic, utilities, constants, and local data (collect, add-only restore and clear of DepoAudio's own web storage keys; delete one track's transcript; Your data settings flows)                                    |
-| Distribution contract          | `npm run models:check`                            | No learned weights, known model hashes, ONNX Runtime graph entry, model download path, or compiled learned module can enter v1.0.3                                                      |
+| Distribution contract          | `npm run models:check`                            | No learned weights, known model hashes, ONNX Runtime graph entry, model download path, or compiled learned module can enter v1.1.0                                                      |

@@ -14,8 +14,16 @@ const cargoToml = read('src-tauri/Cargo.toml')
 const cargoLock = read('src-tauri/Cargo.lock')
 const changelog = read('CHANGELOG.md')
 const thirdPartyInventory = read('THIRD_PARTY_LICENSES.md')
-const releaseCandidate = read('docs/V1.0.3-RELEASE-CANDIDATE.md')
-const releaseGate = parseJson('docs/V1.0.3-RELEASE-GATE.json')
+// The candidate runbook and machine-readable gate are named after the version
+// being released, so a version bump selects them without editing this check.
+const releaseCandidatePath = `docs/V${packageJson.version}-RELEASE-CANDIDATE.md`
+const releaseGatePath = `docs/V${packageJson.version}-RELEASE-GATE.json`
+expect(existsSync(new URL(`../${releaseCandidatePath}`, import.meta.url)), `${releaseCandidatePath} must exist`)
+expect(existsSync(new URL(`../${releaseGatePath}`, import.meta.url)), `${releaseGatePath} must exist`)
+const releaseCandidate = existsSync(new URL(`../${releaseCandidatePath}`, import.meta.url))
+  ? read(releaseCandidatePath)
+  : ''
+const releaseGate = existsSync(new URL(`../${releaseGatePath}`, import.meta.url)) ? parseJson(releaseGatePath) : {}
 const denyPolicy = read('deny.toml')
 const ciWorkflow = read('.github/workflows/ci.yml')
 const releaseWorkflow = read('.github/workflows/release.yml')
@@ -287,7 +295,7 @@ const gateBlockerById = new Map(gateBlockers.map(blocker => [blocker?.id, blocke
 const openGateBlockers = gateBlockers.filter(blocker => blocker?.status === 'open')
 const gateCandidate = releaseGate.candidate ?? {}
 
-expect(releaseGate.schemaVersion === 2, 'the v1.0.3 release gate must use schemaVersion 2')
+expect(releaseGate.schemaVersion === 2, `the v${version} release gate must use schemaVersion 2`)
 expect(releaseGate.version === version, 'the release-gate version must match package.json')
 expect(isIsoDate(releaseGate.reviewedDate), 'the release gate must carry a valid reviewedDate')
 expect(
@@ -455,8 +463,8 @@ expect(
   'tauri.conf.json must not bundle learned-model material or ONNX Runtime',
 )
 // tauri-build 2.7+ statically links the MSVC runtime into the Windows binary
-// unless this is false. Keep the dynamic linking the v1.0.3 candidate was built
-// with; embedding the runtime is a ledger and owner decision, not a default.
+// unless this is false. Keep the dynamic linking every earlier candidate was
+// built with; embedding the runtime is a ledger and owner decision, not a default.
 expect(
   tauriConfig.build?.windows?.staticVCRuntime === false &&
     tauriConfig.bundle?.windows?.bundleVCRuntime === undefined &&
@@ -478,7 +486,7 @@ expect(
     modelsSource.includes('recommend_speaker_detection: false') &&
     modelsSource.includes('recommend_enhance: false') &&
     modelsSource.includes('dereverb_available: false'),
-  'v1.0.3 system capabilities must fail closed for every learned-model feature',
+  `v${version} system capabilities must fail closed for every learned-model feature`,
 )
 for (const filename of forbiddenModels) {
   expect(artifactInventory.includes(`'${filename}'`), `artifact inventory must reject model material ${filename}`)
@@ -532,6 +540,15 @@ if (releaseMatch) {
   expect(
     unreleasedPosition < releaseMatch.index,
     'The Unreleased changelog heading must precede the current release heading',
+  )
+  // release.yml refuses to build a draft whose notes lack this heading, so
+  // catch a missing one here instead of at dispatch.
+  const sectionEnd = changelog.indexOf('\n## [', releaseMatch.index + releaseMatch[0].length)
+  const releaseSection = changelog.slice(releaseMatch.index, sectionEnd < 0 ? undefined : sectionEnd)
+  expect(
+    releaseSection.includes('\n### What this release includes\n') &&
+      releaseWorkflow.includes("section.includes('### What this release includes')"),
+    `The ${version} changelog section and release.yml must both use the "### What this release includes" heading`,
   )
 }
 expect(
@@ -677,10 +694,31 @@ expect(
     (publicationHelper.match(/await verifyReleaseProtections\(repo, candidate, token\)/g) ?? []).length === 3 &&
     publicationHelper.includes('validateSignedReleaseTag(reference, annotated') &&
     !publicationHelper.includes('/git/refs`') &&
-    releaseCandidate.includes('git tag -s v1.0.3') &&
+    releaseCandidate.includes(`git tag -s v${version}`) &&
     publicationHelper.includes('releaseAssetContract(final) !== finalAssetContract') &&
     packageJson.scripts['release:check'].includes('prepare-release-publication.mjs --self-test'),
   'publication must use the protected (wait timer without administrator bypass, protected tag signed by the recorded owner), immutable, approval-bound, self-tested release workflow without deletion, replacement, or tag-creation paths',
+)
+// publish-release.yml reads the gate through package.json's version. Its
+// concurrency group and confirmation strings are evaluated before checkout, so
+// they stay literal and must name the current release tag.
+expect(
+  !/docs\/V\d+\.\d+\.\d+-RELEASE-(?:GATE|CANDIDATE)/.test(publishReleaseWorkflow.replace(/^\s*#.*$/gm, '')) &&
+    publishReleaseWorkflow.includes("require('./docs/V' + require('./package.json').version + '-RELEASE-GATE.json')") &&
+    !/docs\/V\d+\.\d+\.\d+-RELEASE-GATE/.test(publicationHelper) &&
+    publicationHelper.includes('const GATE_PATH = new URL(`../docs/V${PACKAGE_VERSION}-RELEASE-GATE.json`'),
+  'publish-release.yml and prepare-release-publication.mjs must locate the release gate from package.json',
+)
+expect(
+  publishReleaseWorkflow.includes(`group: release-v${version}\n`) &&
+    publishReleaseWorkflow.includes(`description: 'Type INSPECT v${version} or PUBLISH v${version} exactly'`) &&
+    publishReleaseWorkflow.includes(`test "$CONFIRMATION" = 'INSPECT v${version}'`) &&
+    publishReleaseWorkflow.includes(`test "$CONFIRMATION" = 'PUBLISH v${version}'`) &&
+    !/(?:INSPECT|PUBLISH) v(?!\$)/.test(
+      publishReleaseWorkflow.replaceAll(`INSPECT v${version}`, '').replaceAll(`PUBLISH v${version}`, ''),
+    ) &&
+    !/group: release-v(?!\$)/.test(publishReleaseWorkflow.replace(`group: release-v${version}\n`, '')),
+  `publish-release.yml concurrency group and INSPECT/PUBLISH confirmations must name v${version}`,
 )
 expect(
   releaseWorkflow.includes("NODE_VERSION: '22.23.1'") && releaseWorkflow.includes("RUST_VERSION: '1.98.0'"),
@@ -888,7 +926,13 @@ expect(
     javascriptNoticeComponents.componentCount === 59 &&
     javascriptNoticeComponents.javascriptComponentCount === 57 &&
     javascriptNoticeComponents.generatedCssComponentCount === 2 &&
+    javascriptNoticeComponents.bundledFontCount === 2 &&
+    ['Archivo', 'Fragment Mono'].every(family =>
+      javascriptNoticeComponents.bundledFonts?.some(font => font.family === family && font.license === 'OFL-1.1'),
+    ) &&
     javascriptNoticeHtml.includes('DepoAudio JavaScript and generated-CSS third-party notices') &&
+    javascriptNoticeHtml.includes('<h2 id="bundled-fonts">Bundled fonts</h2>') &&
+    !javascriptNoticeHtml.includes('All shipped components have reviewed legal material') &&
     javascriptNoticeGenerator.includes('javascript-notice-overrides.json') &&
     gitAttributes.includes('scripts/javascript-license-overrides/** text eol=lf') &&
     packageJson.scripts['notices:generate'] === 'node scripts/generate-javascript-notices.mjs' &&
@@ -1027,7 +1071,9 @@ const releaseGateEvidenceBindings = {
     artifactInventory.includes("'javascript-notices-html'") &&
     artifactInventory.includes("'javascript-notices-components'"),
   'macos-ffmpeg-rc2-evidence':
-    releaseCandidate.includes('Build RC2 with the new macOS source-built FFmpeg sidecars') &&
+    releaseCandidate.includes(
+      'Extract both downloadable macOS containers and verify the source-built FFmpeg sidecars',
+    ) &&
     releaseWorkflow.includes('Smoke-test downloadable macOS containers') &&
     macPackagedSmoke.includes('smoke_app "$dmg_app" \'DMG\'') &&
     macPackagedSmoke.includes('smoke_app "$archive_app" \'Archive\''),
@@ -1060,10 +1106,18 @@ const releaseGateEvidenceBindings = {
     macPackagedSmoke.includes('EXPECT_PLATFORM_SIGNING'),
   'rust-advisory-exception-acceptance':
     ciWorkflow.includes('command: check advisories') &&
-    releaseCandidate.includes('was built before the Tauri 2.12 upgrade') &&
-    releaseGate.blockers
+    advisoryPolicyFailures(denyPolicy, thirdPartyInventory, todayUtc).length === 0 &&
+    releaseCandidate.includes('rerun `cargo deny check advisories` against the exact candidate source commit') &&
+    gateBlockers
       .find(blocker => blocker?.id === 'rust-advisory-exception-acceptance')
-      ?.evidenceNeeded?.some(item => item.includes('rebuild a new private candidate')),
+      ?.evidenceNeeded?.some(item => item.includes('cargo deny check advisories')),
+  'bundled-fonts-ofl-ledger':
+    thirdPartyInventory.includes('## Bundled fonts') &&
+    thirdPartyInventory.includes('SIL Open Font License 1.1') &&
+    ['archivo-OFL.txt', 'fragment-mono-OFL.txt'].every(name =>
+      existsSync(new URL(`../public/fonts/${name}`, import.meta.url)),
+    ) &&
+    releaseCandidate.includes('Archivo and Fragment Mono'),
   'codec-patent-review':
     thirdPartyInventory.includes('complete codec/patent review') &&
     thirdPartyInventory.includes('an open-source copyright license does not grant every patent'),
@@ -1077,34 +1131,14 @@ for (const [blockerId, isBoundToEvidence] of Object.entries(releaseGateEvidenceB
   expect(isBoundToEvidence, `release blocker ${blockerId} is no longer tied to its repository evidence gate`)
 }
 
-const reviewedCandidateReceiptIsBound =
-  gateCandidate.releaseId === 379418038 &&
-  gateCandidate.sourceCommit === '2a9053117fc90e5b208b8e29c92646715285f8dc' &&
-  gateCandidate.assetManifestSha256 === '0db9eaa86b8203abeee8d120281bf8696bfb36183b803f9d34b0650fe5198860' &&
-  releaseCandidate.includes('33338834735') &&
-  releaseCandidate.includes('33340819049') &&
-  releaseCandidate.includes('0db9eaa86b8203abeee8d120281bf8696bfb36183b803f9d34b0650fe5198860')
-expect(
-  reviewedCandidateReceiptIsBound,
-  'the reviewed private candidate must remain bound to its exact release, source, inspection manifest, and workflow receipts',
-)
-const candidateBuildRunUrl = 'https://github.com/DepoStack/depo-audio/actions/runs/33338834735'
-const candidateInspectionRunUrl = 'https://github.com/DepoStack/depo-audio/actions/runs/33340819049'
-for (const blockerId of ['javascript-runtime-notices', 'macos-ffmpeg-rc2-evidence', 'synthetic-ftr-packaged-decode']) {
-  const blocker = gateBlockerById.get(blockerId)
-  const evidenceRefs = Array.isArray(blocker?.evidenceRefs) ? new Set(blocker.evidenceRefs) : null
-  expect(
-    blocker?.status === 'open' &&
-      evidenceRefs?.has(candidateBuildRunUrl) &&
-      evidenceRefs.has(candidateInspectionRunUrl),
-    `technical blocker ${blockerId} must retain exact candidate evidence and remain open until a named reviewer closes it`,
-  )
-}
 const otherOpenGateBlockers = openGateBlockers.filter(blocker => blocker.id !== 'release-changelog-finalization')
 const changelogIsDated = datedReleaseHeading.test(changelog)
 const changelogGateIsOpen = gateBlockerById.get('release-changelog-finalization')?.status === 'open'
 if (otherOpenGateBlockers.length > 0) {
-  expect(!changelogIsDated, 'the v1.0.3 changelog must remain Unpublished while another publication blocker is open')
+  expect(
+    !changelogIsDated,
+    `the v${version} changelog must remain Unpublished while another publication blocker is open`,
+  )
 }
 expect(
   changelogGateIsOpen === (!changelogIsDated || otherOpenGateBlockers.length > 0),

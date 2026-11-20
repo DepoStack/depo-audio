@@ -6,7 +6,8 @@ name: Publish approved release
 # closed machine-readable release gate.
 #
 # One person can complete it. Instead of a second required reviewer with
-# prevent-self-review, publication requires (docs/V1.0.3-RELEASE-CANDIDATE.md):
+# prevent-self-review, publication requires (docs/V<version>-RELEASE-CANDIDATE.md,
+# where <version> is package.json's version):
 # - the `release-publication` environment has a wait timer of at least 24 hours
 #   (1440 minutes) that administrators cannot bypass, and deploys only from
 #   `main`, so a dispatched run can be cancelled before anything is written;
@@ -30,14 +31,17 @@ on:
           - inspect
           - publish
       confirmation:
-        description: 'Type INSPECT v1.0.3 or PUBLISH v1.0.3 exactly'
+        description: 'Type INSPECT v1.1.0 or PUBLISH v1.1.0 exactly'
         required: true
         type: string
 
 concurrency:
-  # This is the same group used by release.yml for tag v1.0.3, so candidate
+  # This is the same group used by release.yml for the release tag, so candidate
   # construction and publication cannot mutate the private draft concurrently.
-  group: release-v1.0.3
+  # GitHub evaluates it before checkout, so it cannot read package.json; the
+  # release contract check fails unless this tag, and the two confirmation
+  # strings below, match package.json's version.
+  group: release-v1.1.0
   cancel-in-progress: false
 
 jobs:
@@ -59,8 +63,8 @@ jobs:
           test "$GITHUB_REF" = 'refs/heads/main' || {
             echo "ERROR: inspection must be dispatched from main (got $GITHUB_REF)"; exit 1;
           }
-          test "$CONFIRMATION" = 'INSPECT v1.0.3' || {
-            echo 'ERROR: exact confirmation INSPECT v1.0.3 is required'; exit 1;
+          test "$CONFIRMATION" = 'INSPECT v1.1.0' || {
+            echo 'ERROR: exact confirmation INSPECT v1.1.0 is required'; exit 1;
           }
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -83,7 +87,7 @@ jobs:
           git merge-base --is-ancestor "$GITHUB_SHA" refs/remotes/origin/main || {
             echo "ERROR: inspected approval commit $GITHUB_SHA is no longer contained in main"; exit 1;
           }
-          source_commit=$(node -p "require('./docs/V1.0.3-RELEASE-GATE.json').candidate.sourceCommit")
+          source_commit=$(node -p "require('./docs/V' + require('./package.json').version + '-RELEASE-GATE.json').candidate.sourceCommit")
           [[ "$source_commit" =~ ^[0-9a-f]{40}$ ]] || {
             echo 'ERROR: record the exact candidate source commit before inspection'; exit 1;
           }
@@ -128,8 +132,8 @@ jobs:
           test "$GITHUB_REF" = 'refs/heads/main' || {
             echo "ERROR: publication must be dispatched from main (got $GITHUB_REF)"; exit 1;
           }
-          test "$CONFIRMATION" = 'PUBLISH v1.0.3' || {
-            echo 'ERROR: exact confirmation PUBLISH v1.0.3 is required'; exit 1;
+          test "$CONFIRMATION" = 'PUBLISH v1.1.0' || {
+            echo 'ERROR: exact confirmation PUBLISH v1.1.0 is required'; exit 1;
           }
 
       - name: Verify publication environment protections
@@ -199,7 +203,7 @@ jobs:
           git merge-base --is-ancestor "$GITHUB_SHA" refs/remotes/origin/main || {
             echo "ERROR: approval commit $GITHUB_SHA is no longer contained in main"; exit 1;
           }
-          source_commit=$(node -p "require('./docs/V1.0.3-RELEASE-GATE.json').candidate.sourceCommit")
+          source_commit=$(node -p "require('./docs/V' + require('./package.json').version + '-RELEASE-GATE.json').candidate.sourceCommit")
           git merge-base --is-ancestor "$source_commit" "$GITHUB_SHA" || {
             echo "ERROR: approved source $source_commit is not contained in main"; exit 1;
           }
@@ -226,9 +230,9 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          release_id=$(node -p "require('./docs/V1.0.3-RELEASE-GATE.json').candidate.releaseId")
-          tag=$(node -p "require('./docs/V1.0.3-RELEASE-GATE.json').candidate.tag")
-          commit=$(node -p "require('./docs/V1.0.3-RELEASE-GATE.json').candidate.sourceCommit")
+          release_id=$(node -p "require('./docs/V' + require('./package.json').version + '-RELEASE-GATE.json').candidate.releaseId")
+          tag=$(node -p "require('./docs/V' + require('./package.json').version + '-RELEASE-GATE.json').candidate.tag")
+          commit=$(node -p "require('./docs/V' + require('./package.json').version + '-RELEASE-GATE.json').candidate.sourceCommit")
           mapfile -t upload_names < <(
             jq -r '.[]' "$RUNNER_TEMP/release-publication/PUBLICATION-UPLOAD-PLAN.json"
           )

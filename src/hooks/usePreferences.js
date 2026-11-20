@@ -115,7 +115,7 @@ export default function usePreferences() {
           fade,
           fadeDur,
           hpf,
-          // v1.0.3 does not distribute learned models. Persist false so stale
+          // DepoAudio no longer distributes learned models. Persist false so stale
           // preferences from earlier builds cannot re-enable hidden paths.
           denoise: false,
           denoiseQuality: 'fast',
