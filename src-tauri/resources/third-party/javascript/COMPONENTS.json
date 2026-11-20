@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "generator": "scripts/generate-javascript-notices.mjs",
-  "lockfileSha256": "99a12b08ab1374206f0b44e0527744fe19354a05dfcda1c9fbc4973683dd5314",
+  "lockfileSha256": "7a7ea1667b4ace0c351bedec8d2ac03a688707308803c5720ec5a218cc681185",
   "componentCount": 59,
   "javascriptComponentCount": 57,
   "generatedCssComponentCount": 2,

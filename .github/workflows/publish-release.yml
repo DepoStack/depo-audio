@@ -31,7 +31,7 @@ on:
           - inspect
           - publish
       confirmation:
-        description: 'Type INSPECT v1.0.3 or PUBLISH v1.0.3 exactly'
+        description: 'Type INSPECT v1.1.0 or PUBLISH v1.1.0 exactly'
         required: true
         type: string
 
@@ -41,7 +41,7 @@ concurrency:
   # GitHub evaluates it before checkout, so it cannot read package.json; the
   # release contract check fails unless this tag, and the two confirmation
   # strings below, match package.json's version.
-  group: release-v1.0.3
+  group: release-v1.1.0
   cancel-in-progress: false
 
 jobs:
@@ -63,8 +63,8 @@ jobs:
           test "$GITHUB_REF" = 'refs/heads/main' || {
             echo "ERROR: inspection must be dispatched from main (got $GITHUB_REF)"; exit 1;
           }
-          test "$CONFIRMATION" = 'INSPECT v1.0.3' || {
-            echo 'ERROR: exact confirmation INSPECT v1.0.3 is required'; exit 1;
+          test "$CONFIRMATION" = 'INSPECT v1.1.0' || {
+            echo 'ERROR: exact confirmation INSPECT v1.1.0 is required'; exit 1;
           }
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -132,8 +132,8 @@ jobs:
           test "$GITHUB_REF" = 'refs/heads/main' || {
             echo "ERROR: publication must be dispatched from main (got $GITHUB_REF)"; exit 1;
           }
-          test "$CONFIRMATION" = 'PUBLISH v1.0.3' || {
-            echo 'ERROR: exact confirmation PUBLISH v1.0.3 is required'; exit 1;
+          test "$CONFIRMATION" = 'PUBLISH v1.1.0' || {
+            echo 'ERROR: exact confirmation PUBLISH v1.1.0 is required'; exit 1;
           }
 
       - name: Verify publication environment protections

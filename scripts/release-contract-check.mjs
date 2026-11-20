@@ -1056,7 +1056,9 @@ const releaseGateEvidenceBindings = {
     artifactInventory.includes("'javascript-notices-html'") &&
     artifactInventory.includes("'javascript-notices-components'"),
   'macos-ffmpeg-rc2-evidence':
-    releaseCandidate.includes('Build RC2 with the new macOS source-built FFmpeg sidecars') &&
+    releaseCandidate.includes(
+      'Extract both downloadable macOS containers and verify the source-built FFmpeg sidecars',
+    ) &&
     releaseWorkflow.includes('Smoke-test downloadable macOS containers') &&
     macPackagedSmoke.includes('smoke_app "$dmg_app" \'DMG\'') &&
     macPackagedSmoke.includes('smoke_app "$archive_app" \'Archive\''),
@@ -1089,10 +1091,18 @@ const releaseGateEvidenceBindings = {
     macPackagedSmoke.includes('EXPECT_PLATFORM_SIGNING'),
   'rust-advisory-exception-acceptance':
     ciWorkflow.includes('command: check advisories') &&
-    releaseCandidate.includes('was built before the Tauri 2.12 upgrade') &&
-    releaseGate.blockers
+    advisoryPolicyFailures(denyPolicy, thirdPartyInventory, todayUtc).length === 0 &&
+    releaseCandidate.includes('rerun `cargo deny check advisories` against the exact candidate source commit') &&
+    gateBlockers
       .find(blocker => blocker?.id === 'rust-advisory-exception-acceptance')
-      ?.evidenceNeeded?.some(item => item.includes('rebuild a new private candidate')),
+      ?.evidenceNeeded?.some(item => item.includes('cargo deny check advisories')),
+  'bundled-fonts-ofl-ledger':
+    thirdPartyInventory.includes('## Bundled fonts') &&
+    thirdPartyInventory.includes('SIL Open Font License 1.1') &&
+    ['archivo-OFL.txt', 'fragment-mono-OFL.txt'].every(name =>
+      existsSync(new URL(`../public/fonts/${name}`, import.meta.url)),
+    ) &&
+    releaseCandidate.includes('Archivo and Fragment Mono'),
   'codec-patent-review':
     thirdPartyInventory.includes('complete codec/patent review') &&
     thirdPartyInventory.includes('an open-source copyright license does not grant every patent'),

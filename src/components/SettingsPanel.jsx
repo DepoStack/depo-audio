@@ -312,8 +312,8 @@ function LegacyModelStorage() {
         )}
 
         <p className="type-small text-[hsl(var(--sub))] border-t border-border/60 pt-2.5">
-          Learned-model processing is not included in v1.0.3. This page only removes unused files left by an older
-          build; it never downloads or installs model files.
+          Learned-model processing is not included in this version of DepoAudio. This page only removes unused files
+          left by an older build; it never downloads or installs model files.
         </p>
       </CardContent>
     </Card>

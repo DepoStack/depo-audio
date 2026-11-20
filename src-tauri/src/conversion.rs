@@ -204,10 +204,10 @@ fn validate_finite_range(label: &str, value: f64, min: f64, max: f64) -> Result<
 
 fn validate_convert_request(job: &ConvertJob) -> Result<(), String> {
     if job.denoise || job.enhance || job.dereverb {
-        return Err(
-            "Learned-model processing is not included in DepoAudio v1.0.3. Turn off Noise Removal, Enhance Clarity, and Reduce Room Echo."
-                .into(),
-        );
+        return Err(format!(
+            "Learned-model processing is not included in DepoAudio v{}. Turn off Noise Removal, Enhance Clarity, and Reduce Room Echo.",
+            env!("CARGO_PKG_VERSION")
+        ));
     }
     if !matches!(job.mode.as_str(), "stereo" | "keep" | "split") {
         return Err(format!("Unsupported conversion mode: {}", job.mode));
@@ -835,7 +835,7 @@ mod tests {
             }
 
             let error = validate_convert_request(&job).unwrap_err();
-            assert!(error.contains("DepoAudio v1.0.3"));
+            assert!(error.contains(&format!("DepoAudio v{}", env!("CARGO_PKG_VERSION"))));
             assert!(error.contains("not included"));
             assert!(error.contains("Noise Removal"));
             assert!(error.contains("Enhance Clarity"));
@@ -851,7 +851,7 @@ mod tests {
         job.src_path = "a path that must never be inspected".into();
 
         let error = validate_convert_request(&job).unwrap_err();
-        assert!(error.contains("DepoAudio v1.0.3"));
+        assert!(error.contains(&format!("DepoAudio v{}", env!("CARGO_PKG_VERSION"))));
         assert!(!error.contains("Unsupported conversion mode"));
     }
 
