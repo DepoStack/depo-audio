@@ -5,11 +5,13 @@
   :root {
     --ds-font-sans: Archivo, "Archivo Fallback", system-ui, -apple-system, "Segoe UI", sans-serif;
     --ds-font-mono: "Fragment Mono", "Fragment Mono Fallback", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    --ds-focus-width: 3px;
+    --ds-focus-offset: 3px;
     --ds-type-h3-size: 1.375rem;
     --ds-type-h3-weight: 700;
     --ds-type-h3-width: 86%;
     --ds-type-h3-leading: 1.18;
-    --ds-type-lead-size: 1.0625rem;
+    --ds-type-lead-size: 1.1875rem;
     --ds-type-lead-weight: 400;
     --ds-type-lead-width: 100%;
     --ds-type-lead-leading: 1.45;
@@ -78,13 +80,10 @@
     --gold-hi: 36.6 83.7% 63.9%;
     /* sys.action.primary.press (gold.500); only under large bold button text. */
     --gold-press: 35.9 67.7% 50.2%;
-    /* Gold tint for a selected fill; the text on it is always ink. */
-    --gold-dim: 36.2 79.1% 56.9% / 0.14;
-    --gold-glow: 36.2 79.1% 56.9% / 0.25;
     /* App-local (not in the canonical palette): success text, AAA on every surface; always paired with a glyph or word. */
-    --success: 166 51% 68%;
+    --success: 166.3 50.9% 68%;
     /* App-local (not in the canonical palette): warning text, AAA on every surface; always paired with a glyph or word. */
-    --warning: 36 83% 72%;
+    --warning: 35.8 83.2% 72%;
     /* Inset well inside a sheet (settings sections, the settings rail): the board. */
     --surface: 266.7 20.9% 8.4%;
     --panel2: 266.3 18.6% 16.9%;
@@ -93,14 +92,11 @@
     /* Secondary text: sys.text.secondary (ink 2). The brand has two text inks. */
     --text2: 266.7 17% 79.2%;
     /* App-local info/scan hue (not a canonical status color), AAA on every surface. */
-    --blue: 226 49% 83%;
-    /* The interface is flat (DESIGN.md Elevation & Depth). */
-    --shadow-card: none;
+    --blue: 226 49.4% 82.9%;
     /* Full paint value of the ink, for SVG. */
     --color-ink: #EEEAF2;
     --color-gold: #E8A33A;
     --color-gold-hi: #F0B456;
-    --color-gold-dim: rgba(232,163,58,0.14);
     --color-sub: #C9C1D3;
     /* Full paint value of success. */
     --color-green: #84D7C4;
@@ -113,14 +109,18 @@
     --color-mark-mid: #F4F2ED;
     /* artifact.mark.bottom */
     --color-mark-bottom: #CBBFDB;
-    /* sys.radius.none: the world is square (DESIGN.md Shapes). */
+    /* sys.radius.none: the world is square (depo-stack/DESIGN.md Shapes). */
     --radius: 0px;
     --topbar-h: 50px;
     --bottom-h: 56px;
-    --speaker-1: 40 66% 62%;
-    --speaker-2: 212 62% 66%;
-    --speaker-3: 150 46% 56%;
-    --speaker-4: 6 68% 66%;
+    /* Track/channel mark 1: the canonical mark bottom layer (never a near-gold). */
+    --speaker-1: 265.7 28% 80.4%;
+    /* Track/channel mark 2 (app-local hue, a mark not text). */
+    --speaker-2: 212 61.8% 66.1%;
+    /* Track/channel mark 3 (app-local hue, a mark not text). */
+    --speaker-3: 150.3 45.8% 55.9%;
+    /* Track/channel mark 4 (app-local hue, a mark not text). */
+    --speaker-4: 6.1 67.8% 65.9%;
   }
 
   .light {
@@ -162,13 +162,10 @@
     --gold-hi: 36.6 83.7% 63.9%;
     /* sys.action.primary.press (gold.500); only under large bold button text. */
     --gold-press: 35.9 67.7% 50.2%;
-    /* Gold tint for a selected fill; the text on it is always ink. */
-    --gold-dim: 36.2 79.1% 56.9% / 0.16;
-    --gold-glow: 36.2 79.1% 56.9% / 0.22;
     /* App-local (not in the canonical palette): success text, AAA on every surface; always paired with a glyph or word. */
-    --success: 166 54% 16%;
+    --success: 166.4 53.7% 16.1%;
     /* App-local (not in the canonical palette): warning text, AAA on every surface; always paired with a glyph or word. */
-    --warning: 34 75% 18%;
+    --warning: 33.9 75.8% 17.8%;
     /* Inset well inside a sheet (settings sections, the settings rail): the board. */
     --surface: 75 13.3% 94.1%;
     --panel2: 72 8.8% 88.8%;
@@ -177,14 +174,11 @@
     /* Secondary text: sys.text.secondary (ink 2). The brand has two text inks. */
     --text2: 267.3 15.7% 27.5%;
     /* App-local info/scan hue (not a canonical status color), AAA on every surface. */
-    --blue: 226 33% 26%;
-    /* The interface is flat (DESIGN.md Elevation & Depth). */
-    --shadow-card: none;
+    --blue: 225 33.3% 25.9%;
     /* Full paint value of the ink, for SVG. */
     --color-ink: #20182A;
     --color-gold: #E8A33A;
     --color-gold-hi: #F0B456;
-    --color-gold-dim: rgba(232,163,58,0.16);
     --color-sub: #453B51;
     /* Full paint value of success. */
     --color-green: #133F35;
@@ -197,9 +191,13 @@
     --color-mark-mid: #3E2A4E;
     /* artifact.mark.bottom */
     --color-mark-bottom: #5C3F70;
-    --speaker-1: 40 62% 44%;
-    --speaker-2: 212 62% 48%;
-    --speaker-3: 150 46% 37%;
-    --speaker-4: 6 62% 52%;
+    /* Track/channel mark 1: the canonical mark bottom layer (never a near-gold). */
+    --speaker-1: 275.5 28% 34.3%;
+    /* Track/channel mark 2 (app-local hue, a mark not text). */
+    --speaker-2: 212.2 61.6% 48%;
+    /* Track/channel mark 3 (app-local hue, a mark not text). */
+    --speaker-3: 149.7 46% 37.1%;
+    /* Track/channel mark 4 (app-local hue, a mark not text). */
+    --speaker-4: 6 61.6% 52%;
   }
 }

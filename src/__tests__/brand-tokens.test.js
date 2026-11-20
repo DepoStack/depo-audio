@@ -1,7 +1,7 @@
 import { readFileSync, readdirSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { createResolver, cssValue, hexToRgb, parseChannels } from '../../scripts/lib/tokens.mjs'
+import { EXT, composite, createResolver, cssValue, hexToRgb, parseChannels } from '../../scripts/lib/tokens.mjs'
 
 // DepoStack brand rules for the app's tokens. These checks read the token
 // source (design/tokens.json) through the same resolver that writes
@@ -87,11 +87,19 @@ describe('canonical DepoStack primitives', () => {
   it('renders every canonical alias exactly (no rounding drift through HSL)', () => {
     for (const theme of THEMES) {
       for (const [name, token] of Object.entries(tokens.semantic[theme])) {
-        if (token.$type !== 'color' || name.startsWith('color-')) continue
+        if (token.$type !== 'color' || name.startsWith('color-') || token.$extensions?.[EXT]) continue
         const raw = resolver.raw(token.$value)
         if (!/^#[0-9a-f]{6}$/i.test(raw)) continue
         expect(color(theme, name).rgb, `${theme} ${name}`).toEqual(hexToRgb(raw))
       }
+    }
+  })
+
+  it('composites the hairline onto the board as one opaque value', () => {
+    for (const theme of THEMES) {
+      const { alpha, over: ground } = tokens.semantic[theme].border.$extensions[EXT]
+      const expected = composite(resolver.raw(tokens.semantic[theme].border.$value), alpha, resolver.raw(ground))
+      expect(color(theme, 'border').rgb, theme).toEqual(hexToRgb(expected))
     }
   })
 
@@ -161,7 +169,7 @@ describe('WCAG AAA text pairs', () => {
       }
     })
 
-    it(`${theme}: status text clears 7:1 on its own tint, and ink clears it on the gold tint`, () => {
+    it(`${theme}: status text clears 7:1 on its own tint`, () => {
       for (const surface of ['background', 'card', 'popover']) {
         const ground = color(theme, surface).rgb
         for (const text of TINTED) {
@@ -171,10 +179,6 @@ describe('WCAG AAA text pairs', () => {
             `${theme} ${text} on its tint over ${surface}`,
           ).toBeGreaterThanOrEqual(7)
         }
-        expect(
-          contrast(color(theme, 'foreground').rgb, over(color(theme, 'gold-dim'), ground)),
-          `${theme} foreground on gold-dim over ${surface}`,
-        ).toBeGreaterThanOrEqual(7)
       }
     })
 
@@ -191,6 +195,44 @@ describe('WCAG AAA text pairs', () => {
       }
     })
   }
+})
+
+describe('DTCG value shapes', () => {
+  function leaves(group, path = []) {
+    return Object.entries(group).flatMap(([name, node]) => {
+      if (name.startsWith('$') || !node || typeof node !== 'object') return []
+      if ('$value' in node) return [[[...path, name].join('.'), node]]
+      return leaves(node, [...path, name])
+    })
+  }
+  const all = leaves(tokens)
+
+  it('writes every color as a plain reference or an opaque hex', () => {
+    for (const [path, token] of all.filter(([, t]) => t.$type === 'color')) {
+      expect(token.$value, path).toMatch(/^(\{[\w.-]+\}|#[0-9A-F]{6})$/)
+    }
+  })
+
+  it('writes dimensions as {value, unit}, weights and numbers as numbers', () => {
+    for (const [path, token] of all) {
+      if (token.$type === 'dimension') {
+        expect(Object.keys(token.$value).sort(), path).toEqual(['unit', 'value'])
+        expect(['px', 'rem'], path).toContain(token.$value.unit)
+      }
+      if (token.$type === 'fontWeight' || token.$type === 'number') expect(typeof token.$value, path).toBe('number')
+    }
+  })
+
+  it('has no gold tint token (selected states are an ink border on the quiet fill)', () => {
+    for (const theme of THEMES) {
+      expect(Object.keys(tokens.semantic[theme]).filter(n => /gold-(dim|glow)/.test(n))).toEqual([])
+    }
+  })
+
+  it('carries the canonical focus ring: 3px at a 3px offset', () => {
+    expect(cssValue('w', tokens.base.focus.width, resolver)).toBe('3px')
+    expect(cssValue('o', tokens.base.focus.offset, resolver)).toBe('3px')
+  })
 })
 
 describe('gold is never text', () => {

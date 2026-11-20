@@ -7,19 +7,26 @@
 //   base     mode-independent roles (font stacks, type roles) → :root as --ds-*
 //   semantic the app's role names per theme (dark → :root, light → .light)
 //
-// Alias tokens reference other tokens as {dot.path}; a reference may be
-// embedded in a longer string ("{ref.color.gold.400} / 0.14").
+// Alias tokens reference other tokens as {dot.path}. Every value is plain DTCG:
+// colors are a {reference} or a #RRGGBB hex, dimensions are {value, unit},
+// font weights are numbers. App-specific facts live in
+// $extensions["com.depoaudio"]:
+//   { alpha }           the color painted at that opacity
+//   { alpha, over }     the color at that opacity composited onto the `over`
+//                       color (the hairline on the board) into one opaque value,
+//                       so Tailwind opacity modifiers still work on it
+//   { unit: '%' }       a number written with that unit (type widths →
+//                       font-stretch), as the canonical file does
 //
 // Output formats:
 //   - semantic colors whose name does not start with `color-` become `H S% L%`
-//     channels (consumed as hsl(var(--token))). Each channel triplet is written
-//     with just enough precision to round-trip to the canonical hex exactly; the
-//     build fails otherwise.
+//     channels (consumed as hsl(var(--token))), with ` / alpha` when the token
+//     carries one. Each channel triplet is written with just enough precision to
+//     round-trip to the canonical hex exactly; the build fails otherwise.
 //   - `color-*` tokens stay full paint values: hex, or rgba() with an alpha.
-//   - `{a} / 0.22 over {b}` composites a translucent canonical color onto a
-//     canonical ground (the hairline on the board) into one opaque value, so
-//     Tailwind opacity modifiers still work on it.
 //   - fontFamily arrays become a CSS font-family list.
+
+export const EXT = 'com.depoaudio'
 
 export function createResolver(tokens) {
   function node(path) {
@@ -32,17 +39,14 @@ export function createResolver(tokens) {
     return n
   }
 
-  // Resolve references to their raw values (hex stays hex, arrays stay arrays).
+  // Resolve a whole-value {reference} to its raw value (hex stays hex, arrays
+  // stay arrays). A reference embedded in a longer string is not DTCG; refuse it.
   function raw(value) {
-    if (Array.isArray(value)) return value
     if (typeof value !== 'string') return value
     const whole = /^\{([^}]+)\}$/.exec(value)
     if (whole) return raw(node(whole[1]).$value)
-    return value.replace(/\{([^}]+)\}/g, (_, path) => {
-      const v = raw(node(path).$value)
-      if (typeof v !== 'string') throw new Error(`Reference {${path}} cannot be embedded in a string`)
-      return v
-    })
+    if (value.includes('{')) throw new Error(`Not a plain DTCG value: ${value}`)
+    return value
   }
 
   return { node, raw }
@@ -103,32 +107,50 @@ export function hexToChannels(hex) {
   throw new Error(`${hex} does not round-trip through HSL`)
 }
 
-const HEX = /#[0-9a-f]{6}\b/gi
-const OVER = /^(#[0-9a-f]{6}) \/ (\d*\.?\d+) over (#[0-9a-f]{6})$/i
+const OPAQUE = /^#[0-9a-f]{6}$/i
 
-/** `#fg / alpha over #bg` → the opaque hex of that layer painted on that ground. */
-export function composite(value) {
-  const m = OVER.exec(value)
-  if (!m) return value
-  const [fg, alpha, bg] = [hexToRgb(m[1]), Number(m[2]), hexToRgb(m[3])]
-  const rgb = fg.map((c, i) => Math.round(c * alpha + bg[i] * (1 - alpha)))
+/** `fg` at `alpha` painted on `bg` (all `#RRGGBB`) → the opaque hex. */
+export function composite(fg, alpha, bg) {
+  const [f, b] = [hexToRgb(fg), hexToRgb(bg)]
+  const rgb = f.map((c, i) => Math.round(c * alpha + b[i] * (1 - alpha)))
   return '#' + rgb.map(c => c.toString(16).padStart(2, '0').toUpperCase()).join('')
+}
+
+function dimension(name, value) {
+  if (!value || typeof value !== 'object' || typeof value.value !== 'number' || !/^(px|rem)$/.test(value.unit)) {
+    throw new Error(`${name}: a dimension must be {value: number, unit: 'px' | 'rem'}`)
+  }
+  return `${value.value}${value.unit}`
 }
 
 /** The CSS value of one token in its output format. */
 export function cssValue(name, token, resolver) {
-  let value = resolver.raw(token.$value)
-  if (token.$type === 'color' && typeof value === 'string') value = composite(value)
-  if (token.$type === 'fontFamily') {
-    if (!Array.isArray(value)) throw new Error(`${name}: fontFamily must be an array`)
-    return value.map(f => (/^[\w-]+$/.test(f) && !/\s/.test(f) ? f : `"${f}"`)).join(', ')
+  const ext = token.$extensions?.[EXT] ?? {}
+  const value = resolver.raw(token.$value)
+  switch (token.$type) {
+    case 'fontFamily':
+      if (!Array.isArray(value)) throw new Error(`${name}: fontFamily must be an array`)
+      return value.map(f => (/^[\w-]+$/.test(f) && !/\s/.test(f) ? f : `"${f}"`)).join(', ')
+    case 'dimension':
+      return dimension(name, value)
+    case 'fontWeight':
+    case 'number':
+      if (typeof value !== 'number') throw new Error(`${name}: ${token.$type} must be a number`)
+      return `${value}${ext.unit ?? ''}`
+    case 'color': {
+      if (typeof value !== 'string' || !OPAQUE.test(value)) {
+        throw new Error(`${name}: a color must resolve to #RRGGBB (got ${JSON.stringify(token.$value)})`)
+      }
+      let hex = value
+      let alpha = ext.alpha
+      if (ext.over !== undefined) {
+        hex = composite(hex, alpha, resolver.raw(ext.over))
+        alpha = undefined
+      }
+      if (name.startsWith('color-')) return alpha === undefined ? hex : `rgba(${hexToRgb(hex).join(',')},${alpha})`
+      return alpha === undefined ? hexToChannels(hex) : `${hexToChannels(hex)} / ${alpha}`
+    }
+    default:
+      throw new Error(`${name}: unsupported $type ${token.$type}`)
   }
-  if (typeof value !== 'string') return String(value)
-  if (token.$type !== 'color') return value
-  if (name.startsWith('color-')) {
-    const alpha = /^(#[0-9a-f]{6}) \/ (\d*\.?\d+)$/i.exec(value)
-    if (alpha) return `rgba(${hexToRgb(alpha[1]).join(',')},${alpha[2]})`
-    return value
-  }
-  return value.replace(HEX, hexToChannels)
 }

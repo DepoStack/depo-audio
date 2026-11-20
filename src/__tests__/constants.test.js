@@ -37,9 +37,8 @@ describe('FORMATS_OUT', () => {
 })
 
 describe('CH_COLORS', () => {
-  it('has 4 channel colors', () => {
-    expect(CH_COLORS).toHaveLength(4)
-    CH_COLORS.forEach(c => expect(c).toMatch(/^#[0-9a-f]{6}$/i))
+  it('has 4 channel colors, each a --speaker-N token', () => {
+    expect(CH_COLORS).toEqual([1, 2, 3, 4].map(n => `hsl(var(--speaker-${n}))`))
   })
 })
 
