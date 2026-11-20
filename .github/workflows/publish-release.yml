@@ -6,7 +6,8 @@ name: Publish approved release
 # closed machine-readable release gate.
 #
 # One person can complete it. Instead of a second required reviewer with
-# prevent-self-review, publication requires (docs/V1.0.3-RELEASE-CANDIDATE.md):
+# prevent-self-review, publication requires (docs/V<version>-RELEASE-CANDIDATE.md,
+# where <version> is package.json's version):
 # - the `release-publication` environment has a wait timer of at least 24 hours
 #   (1440 minutes) that administrators cannot bypass, and deploys only from
 #   `main`, so a dispatched run can be cancelled before anything is written;
@@ -35,8 +36,11 @@ on:
         type: string
 
 concurrency:
-  # This is the same group used by release.yml for tag v1.0.3, so candidate
+  # This is the same group used by release.yml for the release tag, so candidate
   # construction and publication cannot mutate the private draft concurrently.
+  # GitHub evaluates it before checkout, so it cannot read package.json; the
+  # release contract check fails unless this tag, and the two confirmation
+  # strings below, match package.json's version.
   group: release-v1.0.3
   cancel-in-progress: false
 
@@ -83,7 +87,7 @@ jobs:
           git merge-base --is-ancestor "$GITHUB_SHA" refs/remotes/origin/main || {
             echo "ERROR: inspected approval commit $GITHUB_SHA is no longer contained in main"; exit 1;
           }
-          source_commit=$(node -p "require('./docs/V1.0.3-RELEASE-GATE.json').candidate.sourceCommit")
+          source_commit=$(node -p "require('./docs/V' + require('./package.json').version + '-RELEASE-GATE.json').candidate.sourceCommit")
           [[ "$source_commit" =~ ^[0-9a-f]{40}$ ]] || {
             echo 'ERROR: record the exact candidate source commit before inspection'; exit 1;
           }
@@ -199,7 +203,7 @@ jobs:
           git merge-base --is-ancestor "$GITHUB_SHA" refs/remotes/origin/main || {
             echo "ERROR: approval commit $GITHUB_SHA is no longer contained in main"; exit 1;
           }
-          source_commit=$(node -p "require('./docs/V1.0.3-RELEASE-GATE.json').candidate.sourceCommit")
+          source_commit=$(node -p "require('./docs/V' + require('./package.json').version + '-RELEASE-GATE.json').candidate.sourceCommit")
           git merge-base --is-ancestor "$source_commit" "$GITHUB_SHA" || {
             echo "ERROR: approved source $source_commit is not contained in main"; exit 1;
           }
@@ -226,9 +230,9 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          release_id=$(node -p "require('./docs/V1.0.3-RELEASE-GATE.json').candidate.releaseId")
-          tag=$(node -p "require('./docs/V1.0.3-RELEASE-GATE.json').candidate.tag")
-          commit=$(node -p "require('./docs/V1.0.3-RELEASE-GATE.json').candidate.sourceCommit")
+          release_id=$(node -p "require('./docs/V' + require('./package.json').version + '-RELEASE-GATE.json').candidate.releaseId")
+          tag=$(node -p "require('./docs/V' + require('./package.json').version + '-RELEASE-GATE.json').candidate.tag")
+          commit=$(node -p "require('./docs/V' + require('./package.json').version + '-RELEASE-GATE.json').candidate.sourceCommit")
           mapfile -t upload_names < <(
             jq -r '.[]' "$RUNNER_TEMP/release-publication/PUBLICATION-UPLOAD-PLAN.json"
           )

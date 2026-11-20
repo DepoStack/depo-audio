@@ -1,14 +1,17 @@
 #!/usr/bin/env node
 
 import { createHash, createPublicKey, verify as verifyCryptographicSignature } from 'node:crypto'
-import { createReadStream, createWriteStream } from 'node:fs'
+import { createReadStream, createWriteStream, readFileSync } from 'node:fs'
 import { mkdir, readFile, stat, writeFile } from 'node:fs/promises'
 import { basename, join, resolve } from 'node:path'
 import { Readable } from 'node:stream'
 import { pipeline } from 'node:stream/promises'
 
 const API_VERSION = '2022-11-28'
-const GATE_PATH = new URL('../docs/V1.0.3-RELEASE-GATE.json', import.meta.url)
+// The gate is named after the version being released (package.json), so a
+// version bump selects it without editing this helper.
+const PACKAGE_VERSION = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version
+const GATE_PATH = new URL(`../docs/V${PACKAGE_VERSION}-RELEASE-GATE.json`, import.meta.url)
 const CHANGELOG_PATH = new URL('../CHANGELOG.md', import.meta.url)
 const RECEIPT_NAME = 'RELEASE-APPROVAL.json'
 const UPDATER_NAME = 'latest.json'
