@@ -1138,8 +1138,10 @@ mod tests {
         assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
         let samples: Vec<f32> = output
             .stdout
-            .chunks_exact(4)
-            .map(|bytes| f32::from_le_bytes(bytes.try_into().unwrap()))
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|bytes| f32::from_le_bytes(*bytes))
             .collect();
         (0..channels)
             .map(|channel| samples.iter().skip(channel).step_by(channels).copied().collect())
