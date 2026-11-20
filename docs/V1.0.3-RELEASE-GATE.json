@@ -7,7 +7,7 @@
     "version": "1.1.0",
     "date": "2026-11-20",
     "gate": "docs/V1.1.0-RELEASE-GATE.json",
-    "note": "Owner decision: release v1.1.0 from main. This v1.0.3 candidate and its private drafts are never to be published."
+    "note": "Release plan recorded on 2026-11-20: release v1.1.0 from main; formal owner sign-off is pending in the v1.1.0 gate (rust-advisory-exception-acceptance). This v1.0.3 candidate and its private drafts are never to be published."
   },
   "candidate": {
     "tag": "v1.0.3",

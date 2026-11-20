@@ -116,12 +116,12 @@ advisory ID, and rejects any other `[advisories]` key that would switch off a
 class of advisories.
 
 The superseded private v1.0.3 candidate was built from the earlier lockfile,
-so it still contains every package named above. On 2026-11-20 the owner
-decided to release v1.1.0 from `main` instead, so no written acceptance of
-those advisories is needed: v1.1.0 is built from this lockfile with no advisory exception. The
-`rust-advisory-exception-acceptance` blocker in
-`docs/V1.1.0-RELEASE-GATE.json` stays open only for the owner's sign-off and a
-publication-time rerun of the advisory check on the exact source commit. The
+so it still contains every package named above. The release plan recorded on
+2026-11-20 is to release v1.1.0 from `main` instead, built from this lockfile
+with no advisory exception. The owner's formal sign-off of that supersession
+is still pending in the `rust-advisory-exception-acceptance` blocker in
+`docs/V1.1.0-RELEASE-GATE.json`, which also requires a publication-time rerun
+of the advisory check on the exact source commit. The
 advisory job is blocking, and CI also runs weekly on a schedule so a new
 advisory turns `main` red within a week. Recheck the live database on every
 review because this baseline can change after the date above.
@@ -293,8 +293,12 @@ evidence; removing it from a new installer does not rewrite that history.
 ## Bundled fonts
 
 The frontend bundles two DepoStack brand typefaces as web fonts. Vite copies
-`public/fonts/` into the app bundle unchanged, so each font ships beside its
-licence text and nothing is fetched from the network at runtime.
+`public/fonts/` into the frontend build unchanged, and the Tauri build embeds
+it, licence texts included, in the application binary, so nothing is fetched
+from the network at runtime. The bundled third-party notices
+(`src-tauri/resources/third-party/javascript/THIRD-PARTY-NOTICES.html` and
+`COMPONENTS.json`) also list both families with their copyright lines and full
+OFL texts.
 
 | Font                                                              | Files                                                                                                                                       | Source                                                                                              | License                                                         |
 | ----------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------- | --------------------------------------------------------------- |
@@ -302,9 +306,9 @@ licence text and nothing is fetched from the network at runtime.
 | Fragment Mono 400                                                 | `public/fonts/fragment-mono-latin-400.woff2`, `fragment-mono-latin-ext-400.woff2`                                                           | The Fragment-Mono Project Authors, as subset for depostack.com (`depo-stack/public/fonts`)          | SIL Open Font License 1.1, `public/fonts/fragment-mono-OFL.txt` |
 
 The OFL permits bundling and redistribution with software provided each copy
-keeps the copyright notice and licence; the licence files above ship in the
-same folder as the fonts. The fonts are not sold on their own and keep their
-reserved names.
+keeps the copyright notice and licence; the licence files above are embedded
+in the app with the fonts and reproduced in the bundled third-party notices.
+The fonts are not sold on their own and keep their reserved names.
 
 **Evidence required.** v1.1.0 is the first release to ship these fonts, and the
 release owner has not yet recorded a licence and distribution decision
@@ -315,12 +319,12 @@ publication:
   from `depo-stack/public/fonts`, and that each matches its OFL text;
 - the Tauri build embeds the frontend, fonts and licence texts included, in the
   application binary, so an extracted-installer inventory does not list them
-  as files and a user cannot browse to the licence texts. Decide whether that
-  meets the OFL condition that the copyright notice and licence accompany each
-  copy, or whether the fonts and their licences should also be added to the
-  bundled third-party notices or the About screen;
-- the fonts are not npm packages, so the generated JavaScript and generated-CSS
-  notice report (`npm run notices:check`) does not list them.
+  as files. The fonts are not npm packages; the notice generator
+  (`npm run notices:check`) lists them from `public/fonts` in the bundled
+  third-party notices, with their copyright lines and OFL texts, and fails if a
+  font file has no reviewed family or licence text. Decide whether those
+  bundled notices meet the OFL condition that the copyright notice and licence
+  accompany each copy, or whether the About screen should also link to them.
 
 ## Release approval checklist
 

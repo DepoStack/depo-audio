@@ -917,7 +917,13 @@ expect(
     javascriptNoticeComponents.componentCount === 59 &&
     javascriptNoticeComponents.javascriptComponentCount === 57 &&
     javascriptNoticeComponents.generatedCssComponentCount === 2 &&
+    javascriptNoticeComponents.bundledFontCount === 2 &&
+    ['Archivo', 'Fragment Mono'].every(family =>
+      javascriptNoticeComponents.bundledFonts?.some(font => font.family === family && font.license === 'OFL-1.1'),
+    ) &&
     javascriptNoticeHtml.includes('DepoAudio JavaScript and generated-CSS third-party notices') &&
+    javascriptNoticeHtml.includes('<h2 id="bundled-fonts">Bundled fonts</h2>') &&
+    !javascriptNoticeHtml.includes('All shipped components have reviewed legal material') &&
     javascriptNoticeGenerator.includes('javascript-notice-overrides.json') &&
     gitAttributes.includes('scripts/javascript-license-overrides/** text eol=lf') &&
     packageJson.scripts['notices:generate'] === 'node scripts/generate-javascript-notices.mjs' &&

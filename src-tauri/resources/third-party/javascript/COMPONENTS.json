@@ -1351,5 +1351,56 @@
       ],
       "unresolved": null
     }
+  ],
+  "bundledFontCount": 2,
+  "bundledFonts": [
+    {
+      "family": "Archivo",
+      "license": "OFL-1.1",
+      "files": [
+        {
+          "path": "public/fonts/archivo-latin-ext-italic.woff2",
+          "sha256": "3f211c700872603c636c2a3fcb4633bbeec5741c76528ed07d0f0ed4e4e2647d"
+        },
+        {
+          "path": "public/fonts/archivo-latin-ext-normal.woff2",
+          "sha256": "f436c2ce7bf1ed4be2a58be6e8c4648c9bf63363dbd04c028349ee65c4bc7539"
+        },
+        {
+          "path": "public/fonts/archivo-latin-italic.woff2",
+          "sha256": "691fac0e3fdaa0f0f04344254761ee8692b7e47df8470ab2ed6c547101748ac1"
+        },
+        {
+          "path": "public/fonts/archivo-latin-normal.woff2",
+          "sha256": "cc4c82625c1bd887b4a69d568ad714fe9395938f1ee3847187d998c356824185"
+        }
+      ],
+      "legalMaterial": {
+        "displayName": "public/fonts/archivo-OFL.txt",
+        "sourceKind": "bundled-font-licence",
+        "sourceSha256": "c3c8402eec0e31dc9a76851235b1c02a0bb821488b2db8e35bcc2ab60ca8fc2b",
+        "contentSha256": "c3c8402eec0e31dc9a76851235b1c02a0bb821488b2db8e35bcc2ab60ca8fc2b"
+      }
+    },
+    {
+      "family": "Fragment Mono",
+      "license": "OFL-1.1",
+      "files": [
+        {
+          "path": "public/fonts/fragment-mono-latin-400.woff2",
+          "sha256": "44c4e39bff5e76652a24a872cbebabccbcfb20f62c4633b27c1f2745cba86b56"
+        },
+        {
+          "path": "public/fonts/fragment-mono-latin-ext-400.woff2",
+          "sha256": "54f55ef4bf2e5789b18f862e037e4eb28920048f1d8e7892c090fda9b698312d"
+        }
+      ],
+      "legalMaterial": {
+        "displayName": "public/fonts/fragment-mono-OFL.txt",
+        "sourceKind": "bundled-font-licence",
+        "sourceSha256": "d5e728d99896c101da6fe5bdffcdc8cf2618523643b99bd4e9190075f0a0c22e",
+        "contentSha256": "d5e728d99896c101da6fe5bdffcdc8cf2618523643b99bd4e9190075f0a0c22e"
+      }
+    }
   ]
 }

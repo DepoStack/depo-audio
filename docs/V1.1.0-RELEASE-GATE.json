@@ -111,7 +111,7 @@
       "status": "open",
       "version": "1.1.0",
       "reviewedDate": "2026-11-20",
-      "description": "The repository evidence now satisfies this blocker: the owner decided on 2026-11-20 to rebuild from main instead of publishing the v1.0.3 candidate, deny.toml carries no advisory exception (ignore = []), and main locks Tauri 2.12.5 with no unic-* crate. It stays open only for the owner's sign-off (closedBy) and the publication-time advisory rerun.",
+      "description": "The release plan recorded on 2026-11-20 is to rebuild from main instead of publishing the v1.0.3 candidate; deny.toml carries no advisory exception (ignore = []) and main locks Tauri 2.12.5 with no unic-* crate. The owner's formal sign-off of the supersession (closedBy) and the publication-time advisory rerun are both still required.",
       "evidenceNeeded": [
         "Release owner sign-off that the v1.0.3 candidate (source 2a9053117fc90e5b208b8e29c92646715285f8dc) is superseded and that v1.1.0 is built from main with no advisory exception.",
         "At publication time, rerun cargo deny check advisories against the exact v1.1.0 candidate source commit and retain the result; any advisory without a recorded owner acceptance blocks publication."
@@ -133,10 +133,10 @@
       "status": "open",
       "version": "1.1.0",
       "reviewedDate": "2026-11-20",
-      "description": "v1.1.0 is the first release to bundle third-party fonts: Archivo and Fragment Mono (SIL Open Font License 1.1) in public/fonts, compiled into the app. They are recorded in THIRD_PARTY_LICENSES.md but need an owner licence and distribution decision.",
+      "description": "v1.1.0 is the first release to bundle third-party fonts: Archivo and Fragment Mono (SIL Open Font License 1.1) in public/fonts, compiled into the app. They are recorded in THIRD_PARTY_LICENSES.md and listed, with their copyright lines and OFL texts, in the bundled third-party notices (THIRD-PARTY-NOTICES.html and COMPONENTS.json), but need an owner licence and distribution decision.",
       "evidenceNeeded": [
         "Confirm the exact upstream source and copyright notice of the subset Archivo and Fragment Mono woff2 files copied from depo-stack public/fonts, and that each matches its bundled OFL text.",
-        "The Tauri build embeds the frontend, fonts and licence texts included, in the application binary, so the installed app has no browsable licence file. Decide whether that meets the OFL condition that the copyright notice and licence accompany each copy, or add the fonts and their licences to the bundled third-party notices or the About screen.",
+        "The Tauri build embeds the frontend, fonts and licence texts included, in the application binary, so the installed app has no browsable licence file. The bundled third-party notices now reproduce both OFL texts; decide whether that meets the OFL condition that the copyright notice and licence accompany each copy, or whether the About screen should also link to them.",
         "Record the release owner's licence and distribution-ledger decision for bundling the fonts (OFL 1.1 permits bundling with software; the fonts are not sold on their own and keep their reserved names)."
       ]
     },
