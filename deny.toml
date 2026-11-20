@@ -19,9 +19,16 @@ all-features = true
 # own timestamps moved to the `time` crate, and no other crate in the release
 # graph builds chrono (serde_with lists it only as an optional feature that
 # nothing enables). An exception for it was approved by the release owner
-# (Andrew Mayes) the same day but was not needed, so none was added. Every
-# current or future advisory is blocking. A new exception needs a named owner, the exact advisory IDs, a
-# rationale, and a review/remove-by date, plus a matching ledger entry in
+# (Andrew Mayes) the same day, remove-by 2027-03-31, in case a Tauri release
+# makes chrono reachable again; it was not needed, so none was added. If it is
+# ever added, `npm run release:check` accepts only
+# ignore = [{ id = "RUSTSEC-2026-0543", reason = "..." }], with this comment
+# naming the owner and the remove-by date and a ledger entry in
+# THIRD_PARTY_LICENSES.md, and fails after 2027-03-31. Every other current or
+# future advisory is blocking, and this table may set nothing but `ignore`
+# (no `unmaintained`, `unsound`, `yanked` or `db-urls` overrides). A new
+# exception needs a named owner, the exact advisory IDs, a rationale, and a
+# review/remove-by date, plus a matching ledger entry in
 # THIRD_PARTY_LICENSES.md.
 ignore = []
 

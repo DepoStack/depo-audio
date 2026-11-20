@@ -106,9 +106,14 @@ The committed Rust notice report
 (`src-tauri/resources/third-party/rust/THIRD-PARTY-LICENSES.html`) was
 regenerated with cargo-about 0.9.2 and no longer lists `chrono` 0.4.45, or
 `iana-time-zone` 0.1.65 and `num-traits` 0.2.19, which only chrono used.
-`npm run release:check` fails if `depo-audio` depends on chrono directly again.
-If a future Tauri release does enable chrono, the advisory check fails again
-and needs a new owner decision.
+`npm run release:check` fails if `depo-audio` depends on chrono directly again,
+in any Cargo table form. If a future Tauri release does enable chrono, the
+advisory check fails again. The approved exception can then be added for
+`RUSTSEC-2026-0543` alone, with a reason, and with the owner and the
+2027-03-31 remove-by date both in deny.toml and in a ledger entry here.
+`npm run release:check` rejects it after 2027-03-31, rejects any other
+advisory ID, and rejects any other `[advisories]` key that would switch off a
+class of advisories.
 
 The existing private v1.0.3 candidate was built from the earlier lockfile, so
 it still contains every package named above. Whether to rebuild it or accept

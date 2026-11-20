@@ -15,15 +15,36 @@ pub(crate) fn now_utc() -> OffsetDateTime {
     OffsetDateTime::now_utc()
 }
 
-/// A file's modification time (or any `SystemTime`) in UTC.
-pub(crate) fn from_system_time(time: SystemTime) -> OffsetDateTime {
-    OffsetDateTime::from(time)
+/// A file's modification time (or any `SystemTime`) in UTC, or `None` when
+/// it falls outside the years -9999 to 9999 that `time` can hold.
+///
+/// File metadata is not trusted: a corrupt or far-future mtime (from a
+/// removable drive, a network share, or `touch -d '+10000 years'`) must not
+/// panic, because `OffsetDateTime::from(SystemTime)` does exactly that out of
+/// range and one such file would fail a whole folder scan.
+pub(crate) fn from_system_time(time: SystemTime) -> Option<OffsetDateTime> {
+    let nanos = match time.duration_since(SystemTime::UNIX_EPOCH) {
+        Ok(after) => i128::try_from(after.as_nanos()).ok()?,
+        Err(before) => i128::try_from(before.duration().as_nanos()).ok()?.checked_neg()?,
+    };
+    OffsetDateTime::from_unix_timestamp_nanos(nanos).ok()
+}
+
+/// The year as chrono's `%Y` wrote it: four zero-padded digits for 0000 to
+/// 9999, otherwise an explicit sign and at least four digits (`-0003`).
+fn year(year: i32) -> String {
+    if (0..=9999).contains(&year) {
+        format!("{year:04}")
+    } else {
+        let sign = if year < 0 { '-' } else { '+' };
+        format!("{sign}{:04}", year.unsigned_abs())
+    }
 }
 
 /// `YYYY-MM-DD` in UTC, as chrono's `format("%Y-%m-%d")` wrote it.
 pub(crate) fn date_ymd(time: &OffsetDateTime) -> String {
     let time = time.to_offset(time::UtcOffset::UTC);
-    format!("{:04}-{:02}-{:02}", time.year(), u8::from(time.month()), time.day())
+    format!("{}-{:02}-{:02}", year(time.year()), u8::from(time.month()), time.day())
 }
 
 /// `YYYY-MM-DDTHH:MM:SSZ`: whole seconds, `Z` for UTC. Any fraction of a
@@ -154,8 +175,46 @@ mod tests {
     #[test]
     fn system_time_converts_to_utc() {
         let epoch_plus = SystemTime::UNIX_EPOCH + std::time::Duration::new(1_795_198_800, 250_000_000);
-        let converted = from_system_time(epoch_plus);
+        let converted = from_system_time(epoch_plus).unwrap();
         assert_eq!(rfc3339_seconds_z(&converted), "2026-11-20T18:20:00Z");
         assert_eq!(date_ymd(&converted), "2026-11-20");
+        let before_epoch = SystemTime::UNIX_EPOCH - std::time::Duration::new(1, 250_000_000);
+        assert_eq!(
+            rfc3339_library(&from_system_time(before_epoch).unwrap()),
+            "1969-12-31T23:59:58.750+00:00"
+        );
+    }
+
+    #[test]
+    fn out_of_range_system_times_are_none_not_a_panic() {
+        // 253402300800 s is 10000-01-01T00:00:00Z, one second past what
+        // `time` holds without `large-dates`; chrono printed "+10000-01-01".
+        let year_10000 = SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(253_402_300_800);
+        assert_eq!(from_system_time(year_10000), None);
+        let last = year_10000 - std::time::Duration::from_nanos(1);
+        assert_eq!(
+            rfc3339_library(&from_system_time(last).unwrap()),
+            "9999-12-31T23:59:59.999999999+00:00"
+        );
+        let year_30000 = SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(884_524_406_400);
+        assert_eq!(from_system_time(year_30000), None);
+        if let Some(year_minus_10023) =
+            SystemTime::UNIX_EPOCH.checked_sub(std::time::Duration::from_secs(378_489_369_600))
+        {
+            assert_eq!(from_system_time(year_minus_10023), None);
+        }
+    }
+
+    #[test]
+    fn negative_years_are_signed_and_padded_like_chrono() {
+        assert_eq!(date_ymd(&datetime!(-0003-11-27 00:00:00 UTC)), "-0003-11-27");
+        assert_eq!(
+            rfc3339_seconds_z(&datetime!(-0003-11-27 01:02:03 UTC)),
+            "-0003-11-27T01:02:03Z"
+        );
+        assert_eq!(date_ymd(&datetime!(0000-01-01 00:00:00 UTC)), "0000-01-01");
+        assert_eq!(date_ymd(&datetime!(0500-06-07 00:00:00 UTC)), "0500-06-07");
+        assert_eq!(year(10_000), "+10000");
+        assert_eq!(year(-12_345), "-12345");
     }
 }
