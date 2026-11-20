@@ -34,10 +34,10 @@ describe('Completed conversion rows', () => {
       />,
     )
 
-    fireEvent.click(screen.getByRole('button', { name: 'Reveal hearing.mp3 in its folder' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Reveal in folder: hearing.mp3' }))
     await waitFor(() => expect(invoke).toHaveBeenCalledWith('show_in_folder', { path: '/out/hearing.mp3' }))
 
-    fireEvent.click(screen.getByRole('button', { name: 'Open hearing.mp3 in Player' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Open in Player: hearing.mp3' }))
     expect(onOpenInPlayer).toHaveBeenCalledWith(['/out/hearing.mp3'])
   })
 
@@ -57,9 +57,9 @@ describe('Completed conversion rows', () => {
       />,
     )
 
-    fireEvent.click(screen.getByRole('button', { name: 'Reveal the outputs of hearing.trm in their folder' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Reveal in folder: the 2 outputs of hearing.trm' }))
     await waitFor(() => expect(invoke).toHaveBeenCalledWith('show_in_folder', { path: '/out/hearing_ch1.wav' }))
-    fireEvent.click(screen.getByRole('button', { name: 'Open the 2 outputs of hearing.trm in Player' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Open in Player: the 2 outputs of hearing.trm' }))
     expect(onOpenInPlayer).toHaveBeenCalledWith(outputs.map(out => out.path))
   })
 
@@ -73,10 +73,30 @@ describe('Completed conversion rows', () => {
         converting={false}
       />,
     )
-    fireEvent.click(screen.getByRole('button', { name: 'Reveal hearing.flac in its folder' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Reveal in folder: hearing.flac' }))
     expect(await screen.findByRole('alert')).toHaveTextContent('opener unavailable')
     // Without a Player handler there is no Open in Player button
-    expect(screen.queryByRole('button', { name: /in Player/ })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /Open in Player/ })).not.toBeInTheDocument()
+  })
+
+  it('gives each action an accessible name that starts with its visible label (WCAG 2.5.3)', () => {
+    for (const outputs of [
+      [{ path: '/out/hearing.mp3', name: 'hearing.mp3', size: 1 }],
+      [
+        { path: '/out/hearing_ch1.wav', name: 'hearing_ch1.wav', size: 1 },
+        { path: '/out/hearing_ch2.wav', name: 'hearing_ch2.wav', size: 1 },
+      ],
+    ]) {
+      const { unmount } = render(
+        <FileRow file={file} job={doneJob(outputs)} onRemove={vi.fn()} converting={false} onOpenInPlayer={vi.fn()} />,
+      )
+      for (const visible of ['Reveal in folder', 'Open in Player']) {
+        const button = screen.getByText(visible).closest('button')
+        expect(button.textContent.trim()).toBe(visible)
+        expect(button.getAttribute('aria-label').startsWith(visible)).toBe(true)
+      }
+      unmount()
+    }
   })
 
   it('only sends formats the Player can open as they are', () => {

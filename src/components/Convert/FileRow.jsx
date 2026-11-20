@@ -120,10 +120,11 @@ export default function FileRow({ file, job, onRemove, converting, onOpenInPlaye
                 <button
                   type="button"
                   className={actionClass}
+                  // Accessible names start with the visible label (WCAG 2.5.3)
                   aria-label={
                     job.outputs.length > 1
-                      ? `Reveal the outputs of ${file.name} in their folder`
-                      : `Reveal ${job.outputs[0].name} in its folder`
+                      ? `Reveal in folder: the ${job.outputs.length} outputs of ${file.name}`
+                      : `Reveal in folder: ${job.outputs[0].name}`
                   }
                   onClick={async () => {
                     setFolderError('')
@@ -143,8 +144,8 @@ export default function FileRow({ file, job, onRemove, converting, onOpenInPlaye
                     className={actionClass}
                     aria-label={
                       playable.length > 1
-                        ? `Open the ${playable.length} outputs of ${file.name} in Player`
-                        : `Open ${job.outputs.find(out => out.path === playable[0])?.name} in Player`
+                        ? `Open in Player: the ${playable.length} outputs of ${file.name}`
+                        : `Open in Player: ${job.outputs.find(out => out.path === playable[0])?.name}`
                     }
                     onClick={() => onOpenInPlayer(playable)}
                   >
