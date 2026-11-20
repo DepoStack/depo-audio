@@ -20,6 +20,7 @@ import { Tabs, TabsList, TabsTrigger, TabsContent } from './components/ui/tabs'
 import { Badge } from './components/ui/badge'
 import { Button } from './components/ui/button'
 import ConvertTab from './components/Convert/ConvertTab'
+import { ConfirmDialog } from './components/ui/confirm-dialog'
 
 const LibraryTab = lazy(() => import('./components/Library/LibraryTab'))
 const PlayerTab = lazy(() => import('./components/Player/PlayerTab'))
@@ -147,13 +148,25 @@ export default function App() {
     })
   }
 
-  const handleQueueFromLibrary = async (sourcePaths, sourceCaseName) => {
-    const paths = Array.isArray(sourcePaths) ? sourcePaths : [sourcePaths]
-    const result = await addFiles(paths, { replace: true })
+  const queueFromLibrary = async (paths, sourceCaseName, replace) => {
+    const result = await addFiles(paths, { replace })
     if (result?.locked) return false
-    setCaseName(sourceCaseName || '')
+    // Adding to an existing queue keeps the case name already chosen for it
+    if (replace || !caseName) setCaseName(sourceCaseName || '')
     setTab('convert')
     return true
+  }
+
+  // Re-export from the Library replaces the Convert queue. When the queue
+  // already holds files, ask first; an empty queue is filled without a prompt.
+  const [reexportPending, setReexportPending] = useState(null)
+  const handleQueueFromLibrary = async (sourcePaths, sourceCaseName) => {
+    const paths = Array.isArray(sourcePaths) ? sourcePaths : [sourcePaths]
+    if (files.length > 0) {
+      setReexportPending({ paths, caseName: sourceCaseName, queued: files.length })
+      return false
+    }
+    return queueFromLibrary(paths, sourceCaseName, true)
   }
 
   // "Open in Player" on a converted row: the Player tab mounts on demand, so
@@ -442,6 +455,24 @@ export default function App() {
           </>
         )}
       </main>
+
+      <ConfirmDialog
+        open={!!reexportPending}
+        onOpenChange={next => {
+          if (!next) setReexportPending(null)
+        }}
+        title={
+          reexportPending
+            ? `Replace the ${reexportPending.queued} ${reexportPending.queued === 1 ? 'file' : 'files'} in the queue?`
+            : ''
+        }
+        description="The files waiting in Convert are taken out of the queue. Nothing is deleted from disk. Add to queue keeps them and adds the Library files after them."
+        confirmLabel="Replace"
+        destructive={false}
+        secondaryLabel="Add to queue"
+        onSecondary={() => queueFromLibrary(reexportPending.paths, reexportPending.caseName, false)}
+        onConfirm={() => queueFromLibrary(reexportPending.paths, reexportPending.caseName, true)}
+      />
 
       <Suspense fallback={null}>
         <SettingsPanel

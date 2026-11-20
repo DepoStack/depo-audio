@@ -13,6 +13,9 @@ export function ConfirmDialog({
   cancelLabel = 'Cancel',
   destructive = true,
   onConfirm,
+  // Optional middle choice, e.g. "Add to queue" next to "Replace"
+  secondaryLabel,
+  onSecondary,
 }) {
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -28,6 +31,18 @@ export function ConfirmDialog({
             <Button variant="ghost" size="sm" onClick={() => onOpenChange(false)}>
               {cancelLabel}
             </Button>
+            {secondaryLabel && onSecondary && (
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => {
+                  onSecondary()
+                  onOpenChange(false)
+                }}
+              >
+                {secondaryLabel}
+              </Button>
+            )}
             <Button
               variant={destructive ? 'destructive' : 'default'}
               size="sm"
