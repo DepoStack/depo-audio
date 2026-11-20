@@ -1,0 +1,89 @@
+/* DepoStack brand fonts, bundled with the app (public/fonts, OFL licences beside
+   them) so nothing is fetched from the network. Same files and faces as
+   depo-stack src/styles/site.css: Archivo variable (weight 400-800, width
+   62-100%; italic 400-700, width 88-100%) for every UI and display word, and
+   Fragment Mono for real code only (paths, hashes, diagnostics, raw output). */
+
+@font-face {
+  font-family: 'Archivo';
+  font-style: normal;
+  font-weight: 400 800;
+  font-stretch: 62% 100%;
+  font-display: swap;
+  src: url('/fonts/archivo-latin-normal.woff2') format('woff2');
+  unicode-range:
+    U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC,
+    U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: 'Archivo';
+  font-style: normal;
+  font-weight: 400 800;
+  font-stretch: 62% 100%;
+  font-display: swap;
+  src: url('/fonts/archivo-latin-ext-normal.woff2') format('woff2');
+  unicode-range:
+    U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F,
+    U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+@font-face {
+  font-family: 'Archivo';
+  font-style: italic;
+  font-weight: 400 700;
+  font-stretch: 88% 100%;
+  font-display: swap;
+  src: url('/fonts/archivo-latin-italic.woff2') format('woff2');
+  unicode-range:
+    U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC,
+    U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: 'Archivo';
+  font-style: italic;
+  font-weight: 400 700;
+  font-stretch: 88% 100%;
+  font-display: swap;
+  src: url('/fonts/archivo-latin-ext-italic.woff2') format('woff2');
+  unicode-range:
+    U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F,
+    U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+@font-face {
+  font-family: 'Fragment Mono';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url('/fonts/fragment-mono-latin-400.woff2') format('woff2');
+  unicode-range:
+    U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC,
+    U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: 'Fragment Mono';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url('/fonts/fragment-mono-latin-ext-400.woff2') format('woff2');
+  unicode-range:
+    U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F,
+    U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+/* Size-adjusted local fallbacks (measured in depo-stack scripts/fonts/build-fonts.py
+   against Liberation Sans and Liberation Mono, which share Arial's and Courier
+   New's advance widths), so the swap does not shift the layout. */
+@font-face {
+  font-family: 'Archivo Fallback';
+  src: local('Arial'), local('Liberation Sans'), local('Arimo');
+  size-adjust: 97.97%;
+  ascent-override: 89.62%;
+  descent-override: 21.43%;
+  line-gap-override: 0%;
+}
+@font-face {
+  font-family: 'Fragment Mono Fallback';
+  src: local('Courier New'), local('Liberation Mono'), local('Cousine');
+  size-adjust: 102.98%;
+  ascent-override: 92.25%;
+  descent-override: 24.28%;
+  line-gap-override: 0%;
+}

@@ -3,7 +3,7 @@ import { cn } from '../../lib/utils'
 
 const Table = React.forwardRef(({ className, ...props }, ref) => (
   <div className="relative w-full overflow-auto">
-    <table ref={ref} className={cn('w-full caption-bottom text-xs', className)} {...props} />
+    <table ref={ref} className={cn('w-full caption-bottom type-small', className)} {...props} />
   </div>
 ))
 Table.displayName = 'Table'
@@ -30,17 +30,14 @@ TableRow.displayName = 'TableRow'
 const TableHead = React.forwardRef(({ className, ...props }, ref) => (
   <th
     ref={ref}
-    className={cn(
-      'h-8 px-4 text-left align-middle font-mono text-[9.5px] font-medium tracking-wider uppercase text-[hsl(var(--sub))]',
-      className,
-    )}
+    className={cn('h-8 px-4 text-left align-middle type-label text-[hsl(var(--sub))]', className)}
     {...props}
   />
 ))
 TableHead.displayName = 'TableHead'
 
 const TableCell = React.forwardRef(({ className, ...props }, ref) => (
-  <td ref={ref} className={cn('px-4 py-2 align-middle text-[11px]', className)} {...props} />
+  <td ref={ref} className={cn('px-4 py-2 align-middle type-small', className)} {...props} />
 ))
 TableCell.displayName = 'TableCell'
 

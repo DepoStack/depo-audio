@@ -18,7 +18,7 @@ export function ConfirmDialog({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-w-[420px]">
         <div className="flex flex-col gap-2 p-5">
-          <DialogTitle className="text-[15px] font-semibold text-foreground">{title}</DialogTitle>
+          <DialogTitle className="type-h3 text-foreground">{title}</DialogTitle>
           {description && (
             <DialogDescription className="text-[12px] leading-relaxed text-[hsl(var(--text2))]">
               {description}

@@ -7,7 +7,7 @@ import { fmtSize, fmtTime, basename } from '../../utils'
 const fmtBadgeClass = {
   wav: 'bg-success/10 text-success',
   mp3: 'bg-[hsl(var(--blue)/0.1)] text-[hsl(var(--blue))]',
-  flac: 'bg-[hsl(var(--gold-dim))] text-foreground',
+  flac: 'bg-secondary text-foreground',
   opus: 'bg-warning/10 text-warning',
 }
 
@@ -43,24 +43,21 @@ export default function LibraryFile({ file }) {
       />
       <span
         className={cn(
-          'library-file-format inline-flex items-center font-mono text-[9.5px] whitespace-nowrap rounded-sm px-1.5 py-0.5',
+          'library-file-format inline-flex items-center type-label tabular-nums whitespace-nowrap rounded-sm px-1.5 py-0.5',
           fmtBadgeClass[file.format] || 'bg-secondary text-[hsl(var(--sub))]',
         )}
       >
         {file.format.toUpperCase()}
       </span>
-      <span
-        className="library-file-name text-[11px] text-[hsl(var(--text2))] flex-1 min-w-0 truncate"
-        title={file.path}
-      >
+      <span className="library-file-name type-small text-[hsl(var(--text2))] flex-1 min-w-0 truncate" title={file.path}>
         {basename(file.path)}
       </span>
-      <span className="library-file-size font-mono text-[10px] text-[hsl(var(--sub))] shrink-0">
+      <span className="library-file-size tabular-nums text-[12px] text-[hsl(var(--sub))] shrink-0">
         {fmtSize(file.size)}
       </span>
       <button
         type="button"
-        className="library-file-play w-7 h-7 rounded-full bg-[hsl(var(--gold-dim))] border border-primary/30 text-foreground flex items-center justify-center shrink-0 transition-colors hover:bg-primary/20 hover:border-primary focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1"
+        className="library-file-play w-7 h-7 bg-secondary border border-foreground/60 text-foreground flex items-center justify-center shrink-0 transition-colors hover:border-foreground"
         aria-label={playing ? `Pause ${basename(file.path)}` : `Play ${basename(file.path)}`}
         onClick={toggle}
       >
@@ -72,7 +69,7 @@ export default function LibraryFile({ file }) {
       </button>
       {duration > 0 && (
         <div
-          className="library-file-seek relative h-2 bg-border rounded-full cursor-pointer overflow-hidden focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+          className="library-file-seek relative h-2 bg-border cursor-pointer overflow-hidden"
           style={{ width: '80px' }}
           role="slider"
           aria-label={`Seek ${basename(file.path)}`}
@@ -106,13 +103,13 @@ export default function LibraryFile({ file }) {
           }}
         >
           <div
-            className="absolute inset-y-0 left-0 bg-primary rounded-full"
+            className="absolute inset-y-0 left-0 bg-foreground"
             style={{ width: `${(current / duration) * 100}%` }}
           />
         </div>
       )}
       {duration > 0 && (
-        <span className="library-file-time font-mono text-[10px] text-[hsl(var(--sub))] shrink-0">
+        <span className="library-file-time tabular-nums text-[12px] text-[hsl(var(--sub))] shrink-0">
           {fmtTime(current)}
         </span>
       )}

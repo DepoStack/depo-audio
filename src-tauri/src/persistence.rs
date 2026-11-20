@@ -2,7 +2,6 @@ use std::fs;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 
-use chrono::Utc;
 use tauri::{AppHandle, Manager};
 use uuid::Uuid;
 
@@ -281,7 +280,7 @@ pub(crate) fn save_to_library(
 
     let session = Session {
         id: Uuid::new_v4().to_string(),
-        date: Utc::now().format("%Y-%m-%d").to_string(),
+        date: crate::clock::date_ymd(&crate::clock::now_utc()),
         source_file: job.src_path.clone(),
         source_name,
         participants,
@@ -295,7 +294,7 @@ pub(crate) fn save_to_library(
             lib.cases.push(Case {
                 id: Uuid::new_v4().to_string(),
                 name: case_name,
-                created_at: Utc::now().to_rfc3339(),
+                created_at: crate::clock::rfc3339_library(&crate::clock::now_utc()),
                 archived: false,
                 sessions: vec![session],
             });

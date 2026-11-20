@@ -110,6 +110,11 @@ describe('accessible app shell and Library', () => {
 
     const link = screen.getByRole('button', { name: 'Powered by DepoStack' })
     expect(link).toHaveAttribute('title', 'DepoAudio, powered by DepoStack. Opens depostack.com')
+    // The credit carries the real DepoStack mark at 24px or larger, as decoration.
+    const mark = link.querySelector('svg[data-brand-mark="depostack"]')
+    expect(mark).toHaveAttribute('aria-hidden', 'true')
+    expect(Number(mark.getAttribute('width'))).toBeGreaterThanOrEqual(24)
+    expect(mark.querySelectorAll('polygon')).toHaveLength(3)
     expect(screen.queryByText(/DepoStack suite|DepoStack project/i)).not.toBeInTheDocument()
   })
 

@@ -83,6 +83,38 @@ lockfile now resolves `rustls` 0.23.46, `rustls-webpki` 0.103.17, `tokio`
 reports `advisories ok` and `bans ok, licenses ok, sources ok` for the three
 release targets.
 
+On 2026-11-20 the advisory check failed on one maintenance advisory with no
+safe upgrade, and it was resolved without an exception:
+
+| Advisory            | Package  | Resolution                               |
+| ------------------- | -------- | ---------------------------------------- |
+| `RUSTSEC-2026-0543` | `chrono` | DepoAudio's direct use moved to `time`   |
+
+The advisory says chrono is unmaintained; it reports no known vulnerability,
+and every chrono version is affected. cargo-deny found chrono only as a direct
+dependency of `depo-audio`, which used it for its timestamps (the export
+record's `createdAt`, the backup's `exportedAt`, a Library case's `createdAt`,
+session dates and zip entry times). Those moved to the `time` crate, already in
+the Tauri graph, with tests that pin each written string to the exact text
+chrono wrote. `Cargo.lock` still lists chrono as an optional dependency of
+`serde_with` (through `tauri-utils`), but no crate enables that feature, so
+chrono is not built for any release target and cargo-deny 0.20.2
+reports `advisories ok` with no exception. The release owner, Andrew Mayes,
+approved a time-bounded exception (remove by 2027-03-31) the same day in case
+chrono stayed reachable through Tauri; it was not needed and was not added.
+The committed Rust notice report
+(`src-tauri/resources/third-party/rust/THIRD-PARTY-LICENSES.html`) was
+regenerated with cargo-about 0.9.2 and no longer lists `chrono` 0.4.45, or
+`iana-time-zone` 0.1.65 and `num-traits` 0.2.19, which only chrono used.
+`npm run release:check` fails if `depo-audio` depends on chrono directly again,
+in any Cargo table form. If a future Tauri release does enable chrono, the
+advisory check fails again. The approved exception can then be added for
+`RUSTSEC-2026-0543` alone, with a reason, and with the owner and the
+2027-03-31 remove-by date both in deny.toml and in a ledger entry here.
+`npm run release:check` rejects it after 2027-03-31, rejects any other
+advisory ID, and rejects any other `[advisories]` key that would switch off a
+class of advisories.
+
 The existing private v1.0.3 candidate was built from the earlier lockfile, so
 it still contains every package named above. Whether to rebuild it or accept
 those advisories in writing is an open owner decision in
@@ -254,6 +286,22 @@ v1.0.3.
 bundle with the three inactive weights. The historical/public DeepFilterNet
 distribution record still requires the same reviewed source and license
 evidence; removing it from a new installer does not rewrite that history.
+
+## Bundled fonts
+
+The frontend bundles two DepoStack brand typefaces as web fonts. Vite copies
+`public/fonts/` into the app bundle unchanged, so each font ships beside its
+licence text and nothing is fetched from the network at runtime.
+
+| Font                                                              | Files                                                                                                                                       | Source                                                                                              | License                                                         |
+| ----------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------- | --------------------------------------------------------------- |
+| Archivo (variable, weight 400-800, width 62-100%; italic 400-700) | `public/fonts/archivo-latin-normal.woff2`, `archivo-latin-ext-normal.woff2`, `archivo-latin-italic.woff2`, `archivo-latin-ext-italic.woff2` | The Archivo Project Authors (Omnibus-Type), as subset for depostack.com (`depo-stack/public/fonts`) | SIL Open Font License 1.1, `public/fonts/archivo-OFL.txt`       |
+| Fragment Mono 400                                                 | `public/fonts/fragment-mono-latin-400.woff2`, `fragment-mono-latin-ext-400.woff2`                                                           | The Fragment-Mono Project Authors, as subset for depostack.com (`depo-stack/public/fonts`)          | SIL Open Font License 1.1, `public/fonts/fragment-mono-OFL.txt` |
+
+The OFL permits bundling and redistribution with software provided each copy
+keeps the copyright notice and licence; the licence files above ship in the
+same folder as the fonts. The fonts are not sold on their own and keep their
+reserved names.
 
 ## Release approval checklist
 

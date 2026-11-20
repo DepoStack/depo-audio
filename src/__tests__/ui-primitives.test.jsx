@@ -47,7 +47,8 @@ describe('updated UI primitives', () => {
     expect(panel).toBeVisible()
     panel.focus()
     expect(panel).toHaveFocus()
-    expect(panel).toHaveClass('focus-visible:ring-2')
+    // The one app-wide focus ring (globals.css :focus-visible) draws it; no per-component ring.
+    expect(panel.className).not.toMatch(/focus-visible:(ring|outline)/)
     expect(panel).not.toHaveClass('contents')
   })
 })

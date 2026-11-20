@@ -1,12 +1,12 @@
 import { CH_COLORS } from '../../constants'
 
 export function ModeIcon({ id, active }) {
-  const color = active ? 'var(--color-gold)' : 'var(--color-sub)'
+  // Icons are drawn in ink, never gold (depo-stack/BRAND.md §12); the selected state is an ink frame on the quiet fill.
+  const color = active ? 'var(--color-ink)' : 'var(--color-sub)'
   if (id === 'stereo')
     return (
       <div
-        className="w-9 h-9 rounded-lg bg-card border border-border/60 flex items-center justify-center shrink-0 transition-colors"
-        style={{ background: active ? 'var(--color-gold-dim)' : '', borderColor: active ? 'var(--color-gold)' : '' }}
+        className={`w-9 h-9 border flex items-center justify-center shrink-0 transition-colors ${active ? 'bg-secondary border-foreground' : 'bg-card border-border/60'}`}
       >
         <svg width="22" height="16" viewBox="0 0 22 16" fill="none">
           <rect x="0" y="7" width="3" height="2" rx="1" fill={color} opacity=".4" />
@@ -20,8 +20,7 @@ export function ModeIcon({ id, active }) {
   if (id === 'keep')
     return (
       <div
-        className="w-9 h-9 rounded-lg bg-card border border-border/60 flex items-center justify-center shrink-0 transition-colors"
-        style={{ background: active ? 'var(--color-gold-dim)' : '', borderColor: active ? 'var(--color-gold)' : '' }}
+        className={`w-9 h-9 border flex items-center justify-center shrink-0 transition-colors ${active ? 'bg-secondary border-foreground' : 'bg-card border-border/60'}`}
       >
         <svg width="22" height="16" viewBox="0 0 22 16" fill="none">
           <rect x="0" y="3" width="3.5" height="10" rx="1.75" fill={color} opacity=".5" />
@@ -35,8 +34,7 @@ export function ModeIcon({ id, active }) {
   const cs = active ? CH_COLORS : ['var(--color-sub)', 'var(--color-sub)', 'var(--color-sub)', 'var(--color-sub)']
   return (
     <div
-      className="w-9 h-9 rounded-lg bg-card border border-border/60 flex items-center justify-center shrink-0 transition-colors"
-      style={{ background: active ? 'var(--color-gold-dim)' : '', borderColor: active ? 'var(--color-gold)' : '' }}
+      className={`w-9 h-9 border flex items-center justify-center shrink-0 transition-colors ${active ? 'bg-secondary border-foreground' : 'bg-card border-border/60'}`}
     >
       <svg width="22" height="16" viewBox="0 0 22 16" fill="none">
         <rect x="0" y="3" width="4" height="10" rx="2" fill={cs[0]} opacity={active ? 1 : 0.5} />
@@ -70,7 +68,7 @@ export function WaveformIcon() {
           width={w}
           height={h}
           rx={w / 2}
-          fill="var(--color-gold)"
+          fill="var(--color-sub)"
           opacity={[0.2, 0.35, 0.5, 0.65, 0.8, 1, 0.8, 0.65, 0.45, 0.25][i]}
         />
       ))}

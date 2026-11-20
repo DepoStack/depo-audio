@@ -5,36 +5,34 @@
 //
 // The JSON is the source of truth for every theme CSS variable; the generated
 // file is committed so builds don't depend on this script, and CI regenerates
-// it to fail on drift. Alias tokens reference primitives as {dot.path} —
-// references may be embedded in longer strings (e.g. "{color.gold.500} / 0.14").
+// it to fail on drift. Resolution and output formats live in ./lib/tokens.mjs.
 
 import { readFileSync, writeFileSync, mkdirSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { createResolver, cssValue } from './lib/tokens.mjs'
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..')
 const tokens = JSON.parse(readFileSync(join(root, 'design', 'tokens.json'), 'utf8'))
+const resolver = createResolver(tokens)
 
-function lookup(path) {
-  let node = tokens
-  for (const key of path.split('.')) {
-    node = node?.[key]
-    if (node === undefined) throw new Error(`Unknown token reference: {${path}}`)
-  }
-  if (typeof node?.$value !== 'string') throw new Error(`Reference {${path}} does not resolve to a token with a string $value`)
-  return resolve(node.$value)
-}
-
-function resolve(value) {
-  return value.replace(/\{([^}]+)\}/g, (_, path) => lookup(path))
-}
-
-function emitBlock(selector, group) {
-  const lines = [`  ${selector} {`]
+// Flatten a group into [cssName, token] pairs: nested groups join with '-'.
+function flatten(group, prefix = '') {
+  const out = []
   for (const [name, token] of Object.entries(group)) {
     if (name.startsWith('$')) continue
+    const full = prefix ? `${prefix}-${name}` : name
+    if (token && typeof token === 'object' && '$value' in token) out.push([full, token])
+    else out.push(...flatten(token, full))
+  }
+  return out
+}
+
+function emitBlock(selector, group, prefix = '') {
+  const lines = [`  ${selector} {`]
+  for (const [name, token] of flatten(group)) {
     if (token.$description) lines.push(`    /* ${token.$description} */`)
-    lines.push(`    --${name}: ${resolve(token.$value)};`)
+    lines.push(`    --${prefix}${name}: ${cssValue(name, token, resolver)};`)
   }
   lines.push('  }')
   return lines.join('\n')
@@ -44,6 +42,8 @@ const css = `/* GENERATED FILE — do not edit by hand.
    Source: design/tokens.json · regenerate with \`npm run tokens\` */
 
 @layer base {
+${emitBlock(':root', tokens.base, 'ds-')}
+
 ${emitBlock(':root', tokens.semantic.dark)}
 
 ${emitBlock('.light', tokens.semantic.light)}

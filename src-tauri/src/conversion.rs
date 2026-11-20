@@ -643,7 +643,7 @@ async fn do_convert_inner(
     // function the synthetic court-format tests call. `output_cleanup` moves
     // in, so any failure there removes every output.
     let app_version = app.package_info().version.to_string();
-    let created_at = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+    let created_at = crate::clock::rfc3339_seconds_z(&crate::clock::now_utc());
     let record_job = job.clone();
     let probed = probes.probed;
     let record_cancel = cancel.clone();

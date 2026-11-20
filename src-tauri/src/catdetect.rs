@@ -429,11 +429,11 @@ fn make_job(name: String, path: PathBuf, mut files: Vec<DiscoveredFile>) -> CatJ
     let date_modified = files
         .iter()
         .filter_map(|file| file.modified)
+        // A time outside -9999..=9999 (corrupt or far-future metadata) is
+        // skipped instead of panicking the whole scan.
+        .filter_map(crate::clock::from_system_time)
         .max()
-        .map(|modified| {
-            let datetime: chrono::DateTime<chrono::Utc> = modified.into();
-            datetime.format("%Y-%m-%d").to_string()
-        })
+        .map(|modified| crate::clock::date_ymd(&modified))
         .unwrap_or_default();
     let files: Vec<_> = files.into_iter().map(|file| file.file).collect();
     let software = infer_software(&files);
@@ -566,6 +566,44 @@ mod tests {
 
     fn enumerated_file_count(jobs: &[CatJob]) -> usize {
         jobs.iter().map(|job| job.files.len()).sum()
+    }
+
+    fn discovered(name: &str, modified: Option<SystemTime>) -> DiscoveredFile {
+        DiscoveredFile {
+            file: CatJobFile {
+                path: format!("/court/{name}"),
+                name: name.to_string(),
+                size: 1,
+                format: "wav".to_string(),
+            },
+            modified,
+        }
+    }
+
+    #[test]
+    fn a_file_dated_past_year_9999_does_not_panic_the_scan() {
+        use std::time::Duration;
+        let year_10000 = SystemTime::UNIX_EPOCH + Duration::from_secs(253_402_300_800);
+        let job = make_job(
+            "case".to_string(),
+            PathBuf::from("/court"),
+            vec![discovered("a.wav", Some(year_10000))],
+        );
+        assert_eq!(job.date_modified, "");
+        assert_eq!(job.files.len(), 1);
+
+        let in_range = SystemTime::UNIX_EPOCH + Duration::from_secs(1_795_198_800);
+        let job = make_job(
+            "case".to_string(),
+            PathBuf::from("/court"),
+            vec![
+                discovered("a.wav", Some(in_range)),
+                discovered("b.wav", None),
+                discovered("c.wav", Some(year_10000)),
+            ],
+        );
+        assert_eq!(job.date_modified, "2026-11-20");
+        assert_eq!(job.files.len(), 3);
     }
 
     #[test]

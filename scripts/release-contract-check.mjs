@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from 'node:fs'
+import { existsSync, readFileSync, readdirSync } from 'node:fs'
 
 const read = path => readFileSync(new URL(`../${path}`, import.meta.url), 'utf8')
 const parseJson = path => JSON.parse(read(path))
@@ -68,6 +68,11 @@ const candidateIsNoGo = releaseCandidate.includes('Status: **NO-GO for publicati
 // moved tauri-utils to urlpattern 0.6, so the time-bounded exception that
 // expired on 2026-09-30 was deleted rather than renewed. Any future advisory
 // exception must be re-added deliberately with its own owner and expiry.
+// RUSTSEC-2026-0543 (chrono is unmaintained) was cleared on 2026-11-20 by
+// moving DepoAudio's own timestamps to the `time` crate. Nothing else in the
+// release graph enables chrono (serde_with keeps it as an unused optional
+// dependency), so no exception was needed; a direct chrono dependency would
+// bring the advisory straight back.
 const lockedPackageVersions = name =>
   [...cargoLock.matchAll(/^\[\[package\]\]\s*\r?\nname = "([^"]+)"\s*\r?\nversion = "([^"]+)"/gm)]
     .filter(match => match[1] === name)
@@ -80,13 +85,130 @@ const atLeast = (actual, minimum) => {
   }
   return true
 }
-const denyAdvisorySection = (denyPolicy.match(/^\[advisories\]\s*\n([\s\S]*?)(?=^\[)/m)?.[1] ?? '')
-  .split('\n')
-  .filter(line => !line.trimStart().startsWith('#'))
-  .join('\n')
+// The [advisories] table may hold nothing but `ignore` (plus comments): a key
+// such as `unmaintained = "none"`, `unsound`, `yanked` or `db-urls` would turn
+// off whole advisory classes with no ID, owner or date. `ignore` must be empty,
+// with one bounded exception: the release owner approved RUSTSEC-2026-0543
+// (chrono is unmaintained) on 2026-11-20, remove-by 2027-03-31, in case Tauri
+// makes chrono reachable again. If that entry is ever added it must carry a
+// reason, the owner and the date in deny.toml, a matching ledger entry in
+// THIRD_PARTY_LICENSES.md, and it stops passing after 2027-03-31 (UTC).
+const chronoException = { id: 'RUSTSEC-2026-0543', owner: 'Andrew Mayes', removeBy: '2027-03-31' }
+const advisoryPolicyFailures = (deny, ledger, today) => {
+  const problems = []
+  const section = deny.match(/^\[advisories\]\s*\n([\s\S]*?)(?=^\[[^\]\s]|(?![\s\S]))/m)?.[1]
+  if (section === undefined) return ['deny.toml must have an [advisories] table']
+  const comments = section.split('\n').filter(line => line.trimStart().startsWith('#')).join('\n')
+  const body = section
+    .split('\n')
+    .filter(line => !line.trimStart().startsWith('#'))
+    .join('\n')
+    .trim()
+  if (body === 'ignore = []') return problems
+  const entry = body.match(/^ignore = \[\s*\{\s*id = "([^"]+)",\s*reason = "([^"]*)"\s*\},?\s*\]$/)
+  if (!entry) {
+    const keys = [...new Set([...body.matchAll(/^\s*([A-Za-z0-9_-]+)\s*=/gm)].map(match => match[1]))]
+    const extra = keys.filter(key => key !== 'ignore')
+    problems.push(
+      extra.length > 0
+        ? `deny.toml [advisories] may only set ignore; found ${extra.join(', ')}, which would turn off advisory checks with no named exception`
+        : `deny.toml [advisories] must be ignore = [] or exactly ignore = [{ id = "${chronoException.id}", reason = "..." }]; any other exception is not approved`,
+    )
+    return problems
+  }
+  const [, id, reason] = entry
+  if (id !== chronoException.id) {
+    problems.push(`deny.toml ignores ${id}; the only approved advisory exception is ${chronoException.id} (chrono)`)
+    return problems
+  }
+  if (today > chronoException.removeBy) {
+    problems.push(`the ${id} exception expired on ${chronoException.removeBy}; remove it from deny.toml or get a new owner decision`)
+  }
+  if (reason.trim().length < 20) problems.push(`the ${id} exception in deny.toml must give its reason`)
+  if (!comments.includes(chronoException.owner) || !comments.includes(chronoException.removeBy)) {
+    problems.push(`the deny.toml comment for ${id} must name the owner (${chronoException.owner}) and the remove-by date (${chronoException.removeBy})`)
+  }
+  const ledgerEntry = ledger.split(/\n\s*\n/).find(paragraph => paragraph.includes(id) && /exception/i.test(paragraph))
+  if (!ledgerEntry || !ledgerEntry.includes(chronoException.owner) || !ledgerEntry.includes(chronoException.removeBy)) {
+    problems.push(`THIRD_PARTY_LICENSES.md must record the ${id} exception with its owner (${chronoException.owner}) and remove-by date (${chronoException.removeBy})`)
+  }
+  return problems
+}
+// Every [*dependencies*] table, in any of Cargo's forms: `chrono = ...`,
+// `chrono.version = ...`, `[dependencies.chrono]`,
+// `[target.'cfg(...)'.dependencies.chrono]`, or a rename via package = "chrono".
+const directChronoDependencies = cargo => {
+  const tables = [...cargo.matchAll(/^\[([^\]\n]+)\][^\S\n]*(?:#.*)?\n([\s\S]*?)(?=^\[|(?![\s\S]))/gm)]
+  const found = []
+  for (const [, header, rawBody] of tables) {
+    const name = header.trim()
+    const body = rawBody.replace(/#.*$/gm, '')
+    const dependencyTable = name.match(/^(.*\b(?:dev-|build-)?dependencies)(?:\.(.+))?$/)
+    if (!dependencyTable) continue
+    const [, , dependency] = dependencyTable
+    if (dependency !== undefined) {
+      if (/^"?chrono"?$/.test(dependency.trim()) || /^\s*package\s*=\s*["']chrono["']/m.test(body)) found.push(name)
+    } else if (/^\s*"?chrono"?\s*(?:=|\.)|package\s*=\s*["']chrono["']/m.test(body)) {
+      found.push(name)
+    }
+  }
+  return found
+}
+const todayUtc = new Date().toISOString().slice(0, 10)
+for (const problem of advisoryPolicyFailures(denyPolicy, thirdPartyInventory, todayUtc)) expect(false, problem)
 expect(
-  /^ignore = \[\]$/m.test(denyAdvisorySection) && !/RUSTSEC-\d{4}-\d{4}/.test(denyAdvisorySection),
-  'deny.toml must not carry advisory exceptions; the expired rust-unic exception must stay deleted',
+  /^\[[^\]]*dependencies\]/m.test(cargoToml),
+  'src-tauri/Cargo.toml must declare its dependency tables',
+)
+const directChronoTables = directChronoDependencies(cargoToml)
+expect(
+  directChronoTables.length === 0,
+  `depo-audio must not depend on chrono directly (found in [${directChronoTables.join('], [')}]); chrono is unmaintained (RUSTSEC-2026-0543) and timestamps use the time crate (src-tauri/src/clock.rs)`,
+)
+// Pin the two policy parsers above so a later edit cannot quietly widen them.
+{
+  const ledger = 'The RUSTSEC-2026-0543 exception is owned by Andrew Mayes, remove by 2027-03-31.'
+  const approved = '[advisories]\n# Owner Andrew Mayes, remove by 2027-03-31.\nignore = [{ id = "RUSTSEC-2026-0543", reason = "chrono reached only through tauri-utils -> serde_with" }]\n\n[licenses]\n'
+  const cases = [
+    ['[advisories]\n# none\nignore = []\n\n[licenses]\n', ledger, '2026-11-20', 0],
+    ['[advisories]\nignore = []\n', '', '2030-01-01', 0],
+    ['[advisories]\nunmaintained = "none"\nignore = []\n\n[licenses]\n', ledger, '2026-11-20', 1],
+    ['[advisories]\nignore = []\nyanked = "allow"\n', ledger, '2026-11-20', 1],
+    ['[advisories]\ndb-urls = ["https://example.invalid/db"]\nignore = []\n', ledger, '2026-11-20', 1],
+    ['[advisories]\nignore = ["RUSTSEC-2026-0543"]\n', ledger, '2026-11-20', 1],
+    [approved, ledger, '2026-11-20', 0],
+    [approved, ledger, '2027-03-31', 0],
+    [approved, ledger, '2027-04-01', 1],
+    [approved, 'No ledger entry.', '2026-11-20', 1],
+    [approved.replace('Andrew Mayes', 'someone'), ledger, '2026-11-20', 1],
+    [approved.replace('RUSTSEC-2026-0543', 'RUSTSEC-2025-0075'), ledger, '2026-11-20', 1],
+    [approved.replace(' }]', ' }, { id = "RUSTSEC-2025-0075", reason = "x" }]'), ledger, '2026-11-20', 1],
+    [approved.replace(/reason = "[^"]*"/, 'reason = ""'), ledger, '2026-11-20', 1],
+  ]
+  cases.forEach(([deny, ledgerText, today, wantProblems], index) => {
+    const got = advisoryPolicyFailures(deny, ledgerText, today).length
+    expect(got === wantProblems, `advisory policy self-test case ${index} expected ${wantProblems} problem(s), got ${got}`)
+  })
+  const chronoForms = [
+    ['[dependencies]\nchrono = "0.4"\n', 1],
+    ['[dependencies]\nchrono.version = "0.4"\n', 1],
+    ['[dependencies.chrono]\nversion = "0.4"\n', 1],
+    ["[target.'cfg(windows)'.dependencies.chrono]\nversion = \"0.4\"\n", 1],
+    ['[dev-dependencies]\ndt = { package = "chrono", version = "0.4" }\n', 1],
+    ['[build-dependencies.dt]\npackage = "chrono"\nversion = "0.4"\n', 1],
+    ['[dependencies]\n# chrono = "0.4"\ntime = "0.3"\n[features]\nchrono = []\n', 0],
+  ]
+  chronoForms.forEach(([cargo, want], index) => {
+    const got = directChronoDependencies(cargo).length
+    expect(got === want, `direct-chrono self-test case ${index} expected ${want} match(es), got ${got}`)
+  })
+}
+const rustSourcesUsingChrono = readdirSync(new URL('../src-tauri/src/', import.meta.url))
+  .filter(name => name.endsWith('.rs'))
+  .filter(name => /\bchrono::/.test(read(`src-tauri/src/${name}`).replace(/\/\/.*$/gm, '')))
+expect(
+  rustSourcesUsingChrono.length === 0,
+  `Rust sources must build timestamps with the time crate, not chrono: ${rustSourcesUsingChrono.join(', ')}`,
 )
 expect(
   !/^\[\[package\]\]\s*\r?\nname = "unic-/m.test(cargoLock),
