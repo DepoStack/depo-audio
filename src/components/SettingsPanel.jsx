@@ -235,7 +235,7 @@ function LegacyModelStorage() {
         {modelLoadError && (
           <div
             role="alert"
-            className="flex items-center gap-2 px-3 py-2 rounded-md bg-destructive/10 text-destructive text-[11px]"
+            className="flex items-center gap-2 px-3 py-2 rounded-md border-l-[3px] border-l-destructive text-destructive text-[11px]"
           >
             <AlertCircle size={13} className="shrink-0" />
             <span className="flex-1">{modelLoadError}</span>
@@ -248,7 +248,7 @@ function LegacyModelStorage() {
         {error && (
           <div
             role="alert"
-            className="flex items-center gap-2 px-3 py-2 rounded-md bg-destructive/10 text-destructive text-[11px]"
+            className="flex items-center gap-2 px-3 py-2 rounded-md border-l-[3px] border-l-destructive text-destructive text-[11px]"
           >
             <AlertCircle size={13} className="shrink-0" /> {error}
           </div>
@@ -745,7 +745,7 @@ export default function SettingsPanel({
                     {externalLinkError && (
                       <p
                         role="alert"
-                        className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-[11px] text-destructive"
+                        className="rounded-md border border-destructive/30 border-l-[3px] border-l-destructive px-3 py-2 text-[11px] text-destructive"
                       >
                         {externalLinkError}
                       </p>

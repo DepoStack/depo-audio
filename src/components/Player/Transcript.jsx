@@ -365,7 +365,7 @@ export default function Transcript({ trackPath, currentTime, playing, onSeek, on
       {operationError && (
         <p
           role="alert"
-          className="mx-4 mt-3 rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-[11px] text-destructive"
+          className="mx-4 mt-3 rounded-md border border-destructive/30 border-l-[3px] border-l-destructive px-3 py-2 text-[11px] text-destructive"
         >
           {operationError}
         </p>
@@ -379,7 +379,7 @@ export default function Transcript({ trackPath, currentTime, playing, onSeek, on
           </p>
           <textarea
             aria-label="Transcript text to paste"
-            className="w-full h-24 bg-secondary/40 border border-border rounded-md p-2.5 text-[12px] text-foreground resize-y focus:outline-hidden focus:border-primary"
+            className="w-full h-24 bg-secondary/40 border border-border rounded-md p-2.5 text-[12px] text-foreground resize-y focus:outline-hidden focus:border-ring"
             placeholder="Paste transcript text here…"
             value={paste}
             onChange={e => setPaste(e.target.value)}
@@ -407,7 +407,7 @@ export default function Transcript({ trackPath, currentTime, playing, onSeek, on
                   className={cn(
                     'group flex items-start gap-2 px-2 py-1.5 rounded-md transition-colors',
                     active
-                      ? 'bg-[hsl(var(--gold-dim))] border-l-2 border-l-primary'
+                      ? 'bg-[hsl(var(--gold-dim))] border-l-2 border-l-foreground'
                       : 'border-l-2 border-l-transparent hover:bg-secondary/40',
                   )}
                 >

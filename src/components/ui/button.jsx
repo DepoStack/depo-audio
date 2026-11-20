@@ -11,7 +11,8 @@ const buttonVariants = cva(
         default:
           'border border-border bg-[hsl(var(--surface))] text-[hsl(var(--text2))] hover:border-[hsl(var(--text2)/0.7)] hover:bg-secondary/70 hover:text-foreground',
         primary:
-          'border border-primary bg-primary text-primary-foreground shadow-[inset_0_1px_0_hsl(var(--gold-hi)/0.45)] hover:bg-gold-hi',
+          // Unavailable is drawn as a hidden line in ink 2 (DESIGN.md Buttons), not faded gold.
+          'border border-[hsl(var(--primary-foreground))] bg-primary text-primary-foreground hover:bg-gold-hi active:bg-[hsl(var(--gold-press))] disabled:border-dashed disabled:border-[hsl(var(--sub))] disabled:bg-transparent disabled:text-[hsl(var(--sub))] disabled:opacity-100',
         destructive: 'bg-destructive text-destructive-foreground hover:bg-destructive/90',
         outline: 'border border-border bg-transparent hover:bg-accent hover:text-accent-foreground',
         ghost: 'text-[hsl(var(--sub))] hover:text-foreground hover:bg-secondary/70',

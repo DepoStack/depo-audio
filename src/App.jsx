@@ -206,7 +206,7 @@ export default function App() {
               <Icon size={16} aria-hidden="true" className="shrink-0" />
               <span className="hidden sm:inline">{label}</span>
               {id === 'library' && libCount > 0 && (
-                <Badge variant="gold" className="hidden sm:inline-flex">
+                <Badge variant="outline" className="hidden sm:inline-flex">
                   {libCount}
                 </Badge>
               )}

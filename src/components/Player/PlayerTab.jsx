@@ -403,7 +403,7 @@ export default function PlayerTab({ dropHandlerRef, onConvertFiles }) {
             className={cn(
               'grid items-center gap-3 rounded-xl border border-dashed px-4 py-5 transition-colors sm:grid-cols-[auto_minmax(0,1fr)_auto]',
               dragOver
-                ? 'border-primary bg-[hsl(var(--gold-dim))]'
+                ? 'border-foreground bg-[hsl(var(--gold-dim))]'
                 : 'border-border bg-[hsl(var(--surface))] hover:border-[hsl(var(--text2)/0.55)]',
             )}
             onDragOver={e => {
@@ -798,7 +798,7 @@ export default function PlayerTab({ dropHandlerRef, onConvertFiles }) {
                 className="hidden lg:inline-flex"
               />
               <div className="flex items-center gap-1" title="A-B loop: repeat a passage">
-                <Repeat size={13} className={cn(loopActive ? 'text-primary' : 'text-[hsl(var(--sub))]')} />
+                <Repeat size={13} className={cn(loopActive ? 'text-foreground' : 'text-[hsl(var(--sub))]')} />
                 <button
                   onClick={() => setLoopA(currentTime)}
                   className={cn(

@@ -1,4 +1,5 @@
-import { readFileSync } from 'node:fs'
+import { readFileSync, readdirSync, statSync } from 'node:fs'
+import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { createResolver, cssValue, hexToRgb, parseChannels } from '../../scripts/lib/tokens.mjs'
 
@@ -190,4 +191,28 @@ describe('WCAG AAA text pairs', () => {
       }
     })
   }
+})
+
+describe('gold is never text', () => {
+  function sources(dir) {
+    return readdirSync(dir).flatMap(name => {
+      const path = join(dir, name)
+      if (statSync(path).isDirectory()) return name === '__tests__' ? [] : sources(path)
+      return /\.(jsx?|css)$/.test(name) && !path.endsWith('tokens.css') ? [path] : []
+    })
+  }
+
+  it('no component paints text or an icon in gold', () => {
+    const offenders = []
+    const gold =
+      /\btext-(gold|primary)(?![-\w])|text-\[hsl\(var\(--(gold|primary)[)\s/]|color:\s*(hsl\(var\(--(gold|primary)\b|var\(--color-gold\b)/
+    for (const path of sources('src')) {
+      readFileSync(path, 'utf8')
+        .split('\n')
+        .forEach((line, index) => {
+          if (gold.test(line)) offenders.push(`${path}:${index + 1}: ${line.trim()}`)
+        })
+    }
+    expect(offenders).toEqual([])
+  })
 })

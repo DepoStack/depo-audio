@@ -405,7 +405,7 @@ export default function ConvertTab({
                       done
                         ? 'bg-[hsl(var(--success))] border-[hsl(var(--success))] text-white'
                         : now
-                          ? 'bg-primary border-primary text-primary-foreground'
+                          ? 'bg-foreground border-foreground text-background'
                           : 'bg-card border-border text-[hsl(var(--sub))]'
                     }`}
                   >
@@ -434,7 +434,7 @@ export default function ConvertTab({
               queueLocked
                 ? 'border-border/60 bg-[hsl(var(--surface))] opacity-70'
                 : dragOver
-                  ? 'border-primary bg-[hsl(var(--gold-dim))]'
+                  ? 'border-foreground bg-[hsl(var(--gold-dim))]'
                   : 'border-border bg-[hsl(var(--surface))] hover:border-[hsl(var(--text2)/0.55)]'
             }`}
             onDragOver={queueLocked ? undefined : onDragOver}
@@ -501,7 +501,7 @@ export default function ConvertTab({
           {unsupportedFiles.length > 0 && (
             <p
               role="alert"
-              className="px-3 py-2 rounded-md border border-destructive/30 bg-destructive/10 text-[11px] text-destructive"
+              className="px-3 py-2 rounded-md border border-destructive/30 border-l-[3px] border-l-destructive text-[11px] text-destructive"
             >
               Remove{' '}
               {unsupportedFiles.length === 1
@@ -523,7 +523,7 @@ export default function ConvertTab({
           {conversionError && (
             <p
               role="alert"
-              className="px-3 py-2 rounded-md border border-destructive/30 bg-destructive/10 text-[11px] text-destructive"
+              className="px-3 py-2 rounded-md border border-destructive/30 border-l-[3px] border-l-destructive text-[11px] text-destructive"
             >
               {conversionError}
             </p>
@@ -559,7 +559,7 @@ export default function ConvertTab({
                   size="sm"
                   title={p.desc}
                   aria-pressed={active}
-                  className={`rounded-full ${active ? 'border-primary bg-[hsl(var(--gold-dim))] text-foreground' : ''}`}
+                  className={`rounded-full ${active ? 'border-foreground bg-[hsl(var(--gold-dim))] text-foreground' : ''}`}
                   onClick={() => {
                     handleModeChange(s.mode)
                     setFormatOut(s.format)
@@ -591,7 +591,7 @@ export default function ConvertTab({
                   <button
                     key={m.id}
                     aria-pressed={mode === m.id}
-                    className={`flex items-center gap-3 rounded-md border p-2.5 text-left transition-[color,background-color,border-color,transform] duration-150 active:translate-y-px focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring ${mode === m.id ? 'border-primary/40 bg-card' : 'border-transparent hover:border-border hover:bg-card/55'}`}
+                    className={`flex items-center gap-3 rounded-md border p-2.5 text-left transition-[color,background-color,border-color,transform] duration-150 active:translate-y-px focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring ${mode === m.id ? 'border-foreground bg-card' : 'border-transparent hover:border-border hover:bg-card/55'}`}
                     onClick={() => handleModeChange(m.id)}
                   >
                     <ModeIcon id={m.id} active={mode === m.id} />
@@ -618,7 +618,7 @@ export default function ConvertTab({
                     aria-pressed={formatOut === f.id}
                     className={`relative flex flex-col items-start gap-0.5 px-3 py-2.5 rounded-lg border text-left transition-all cursor-pointer focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring ${
                       formatOut === f.id
-                        ? 'border-primary bg-[hsl(var(--gold-dim))]'
+                        ? 'border-foreground bg-[hsl(var(--gold-dim))]'
                         : 'border-border bg-card hover:border-[hsl(var(--sub))]'
                     }`}
                     onClick={() => setFormatOut(f.id)}
@@ -640,7 +640,7 @@ export default function ConvertTab({
                   </Label>
                   <select
                     id="sample-rate"
-                    className="flex h-8 w-full rounded-lg border border-border bg-card px-2.5 py-1.5 text-xs text-foreground transition-colors focus:outline-hidden focus:border-primary cursor-pointer"
+                    className="flex h-8 w-full rounded-lg border border-border bg-card px-2.5 py-1.5 text-xs text-foreground transition-colors focus:outline-hidden focus:border-ring cursor-pointer"
                     value={formatOut === 'opus' ? '48000' : rate}
                     disabled={formatOut === 'opus'}
                     title={formatOut === 'opus' ? 'Opus is always 48 kHz' : ''}
@@ -928,7 +928,7 @@ export default function ConvertTab({
                               <span className="text-[hsl(var(--sub))]">—</span>
                               <input
                                 type="number"
-                                className="w-[42px] bg-secondary border border-border rounded px-1 py-px tabular-nums text-[12px] text-foreground text-center focus:border-primary outline-hidden"
+                                className="w-[42px] bg-secondary border border-border rounded px-1 py-px tabular-nums text-[12px] text-foreground text-center focus:border-ring outline-hidden"
                                 min="0.1"
                                 max="5"
                                 step="0.1"

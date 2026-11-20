@@ -16,7 +16,7 @@ export default function UpdateBanner({ updater }) {
       role={showError ? 'alert' : undefined}
       aria-live={showError ? 'assertive' : undefined}
       aria-atomic={showError ? 'true' : undefined}
-      className="shrink-0 flex items-center gap-3 px-5 py-2 bg-[hsl(var(--gold-dim))] border-b border-primary/30 text-[12px]"
+      className="shrink-0 flex items-center gap-3 px-5 py-2 bg-[hsl(var(--gold-dim))] border-b border-foreground/40 text-[12px]"
     >
       {showAvailable && (
         <>

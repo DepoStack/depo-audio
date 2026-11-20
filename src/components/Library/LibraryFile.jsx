@@ -60,7 +60,7 @@ export default function LibraryFile({ file }) {
       </span>
       <button
         type="button"
-        className="library-file-play w-7 h-7 rounded-full bg-[hsl(var(--gold-dim))] border border-primary/30 text-foreground flex items-center justify-center shrink-0 transition-colors hover:bg-primary/20 hover:border-primary focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1"
+        className="library-file-play w-7 h-7 rounded-full bg-[hsl(var(--gold-dim))] border border-foreground/60 text-foreground flex items-center justify-center shrink-0 transition-colors hover:bg-primary/20 hover:border-foreground focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1"
         aria-label={playing ? `Pause ${basename(file.path)}` : `Play ${basename(file.path)}`}
         onClick={toggle}
       >

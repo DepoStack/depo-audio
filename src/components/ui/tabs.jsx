@@ -26,7 +26,7 @@ const TabsTrigger = React.forwardRef(({ className, ...props }, ref) => (
       // Active = gold tint + plum ink. The DepoStack gold is a light warm
       // accent (unreadable as text on light surfaces), so the active state
       // reads through the gold-dim fill + foreground text, not gold text.
-      'data-[state=active]:border-primary/35 data-[state=active]:bg-[hsl(var(--gold-dim))] data-[state=active]:text-foreground',
+      'data-[state=active]:border-foreground data-[state=active]:bg-[hsl(var(--gold-dim))] data-[state=active]:text-foreground',
       'focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1',
       className,
     )}

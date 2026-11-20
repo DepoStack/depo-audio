@@ -141,7 +141,7 @@ export default function ComparePlayer({
           {fmtTime(currentTime)}
         </span>
         <button
-          className="w-9 h-9 rounded-full bg-[hsl(var(--gold-dim))] border border-primary/30 text-foreground flex items-center justify-center shrink-0 transition-colors hover:bg-primary/20 hover:border-primary"
+          className="w-9 h-9 rounded-full bg-[hsl(var(--gold-dim))] border border-foreground/60 text-foreground flex items-center justify-center shrink-0 transition-colors hover:bg-primary/20 hover:border-foreground"
           onClick={toggle}
         >
           {playing ? <Pause size={14} /> : <Play size={14} />}

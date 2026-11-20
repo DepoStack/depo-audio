@@ -5,7 +5,7 @@ export default function WorkspaceHeader({ eyebrow, title, description, status, a
   return (
     <header
       className={cn(
-        'workspace-header flex flex-col gap-3 border-l-2 border-primary pl-4 sm:flex-row sm:items-end sm:justify-between',
+        'workspace-header flex flex-col gap-3 border-l-2 border-foreground pl-4 sm:flex-row sm:items-end sm:justify-between',
         className,
       )}
     >

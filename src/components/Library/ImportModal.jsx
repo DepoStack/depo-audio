@@ -205,7 +205,7 @@ export default function ImportModal({ defaultLabels, existingCases, onDone, onCl
                 </Label>
                 <select
                   id="library-import-existing-case"
-                  className="flex h-8 w-full rounded-lg border border-border bg-card px-2.5 py-1.5 text-xs text-foreground transition-colors focus:outline-hidden focus:border-primary focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1"
+                  className="flex h-8 w-full rounded-lg border border-border bg-card px-2.5 py-1.5 text-xs text-foreground transition-colors focus:outline-hidden focus:border-ring focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1"
                   value={caseName}
                   onChange={e => setCaseName(e.target.value)}
                 >
@@ -247,7 +247,7 @@ export default function ImportModal({ defaultLabels, existingCases, onDone, onCl
                   size="sm"
                   className={cn(
                     'rounded-full',
-                    label === l && 'bg-[hsl(var(--gold-dim))] text-foreground border-primary/30',
+                    label === l && 'bg-[hsl(var(--gold-dim))] text-foreground border-foreground',
                   )}
                   onClick={() => {
                     setLabel(l)
@@ -264,7 +264,7 @@ export default function ImportModal({ defaultLabels, existingCases, onDone, onCl
                 size="sm"
                 className={cn(
                   'rounded-full',
-                  label === '__custom__' && 'bg-[hsl(var(--gold-dim))] text-foreground border-primary/30',
+                  label === '__custom__' && 'bg-[hsl(var(--gold-dim))] text-foreground border-foreground',
                 )}
                 onClick={() => setLabel('__custom__')}
               >
@@ -296,7 +296,7 @@ export default function ImportModal({ defaultLabels, existingCases, onDone, onCl
             ref={errorRef}
             role="alert"
             tabIndex={-1}
-            className="mx-5 mt-2.5 px-3 py-2 bg-destructive/10 border border-destructive/20 rounded-md text-xs text-destructive focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1"
+            className="mx-5 mt-2.5 px-3 py-2 border-l-[3px] border-l-destructive border border-destructive/20 rounded-md text-xs text-destructive focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1"
           >
             <p>{error}</p>
             {errorDetail && (

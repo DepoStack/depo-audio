@@ -205,7 +205,7 @@ export default function LocalDataSettings({
         </CardHeader>
         <CardContent className="p-4 flex flex-col gap-3 text-[11px]">
           {infoError && (
-            <p role="alert" className="rounded-md bg-destructive/10 px-3 py-2 text-destructive">
+            <p role="alert" className="rounded-md border-l-[3px] border-l-destructive px-3 py-2 text-destructive">
               {infoError}
             </p>
           )}
@@ -371,7 +371,7 @@ export default function LocalDataSettings({
       {error && (
         <p
           role="alert"
-          className="flex items-start gap-2 rounded-md bg-destructive/10 px-3 py-2 text-[11px] text-destructive"
+          className="flex items-start gap-2 rounded-md border-l-[3px] border-l-destructive px-3 py-2 text-[11px] text-destructive"
         >
           <AlertCircle size={13} className="mt-0.5 shrink-0" /> {error}
         </p>

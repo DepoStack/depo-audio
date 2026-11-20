@@ -19,7 +19,7 @@ export default function FileRow({ file, job, onRemove, converting }) {
       aria-busy={status === 'converting'}
       className={cn(
         'bg-card border border-border rounded-lg overflow-hidden transition-colors',
-        status === 'converting' && 'border-primary',
+        status === 'converting' && 'border-foreground',
         status === 'done' && 'border-success/40',
         status === 'error' && 'border-destructive/40',
         status === 'cancelled' && 'border-warning/40',
@@ -127,7 +127,10 @@ export default function FileRow({ file, job, onRemove, converting }) {
             </button>
           )}
           {folderError && (
-            <p role="alert" className="mt-1 rounded bg-destructive/10 px-2 py-1.5 text-[10px] text-destructive">
+            <p
+              role="alert"
+              className="mt-1 rounded border-l-[3px] border-l-destructive px-2 py-1.5 text-[10px] text-destructive"
+            >
               {folderError}
             </p>
           )}
@@ -160,7 +163,7 @@ export default function FileRow({ file, job, onRemove, converting }) {
             )}
           </button>
           {expanded && (
-            <pre className="mt-1 type-code text-destructive whitespace-pre-wrap break-all bg-destructive/5 rounded p-2">
+            <pre className="mt-1 type-code text-destructive whitespace-pre-wrap break-all border-l-[3px] border-l-destructive rounded p-2">
               {job.error}
             </pre>
           )}
