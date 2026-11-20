@@ -211,7 +211,7 @@ describe('ConvertTab scan cancellation', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Scan' }))
     const apply = await screen.findByRole('button', { name: 'Apply suggestions' })
     expect(screen.getByText(/Nothing is switched on until you apply them/)).toBeVisible()
-    expect(screen.getAllByText(/^Recommended/)).toHaveLength(2)
+    expect(screen.getAllByText(/^Recommended —/)).toHaveLength(2)
     expect(prefs.setAutoLevel).not.toHaveBeenCalled()
     expect(prefs.setDeclip).not.toHaveBeenCalled()
     expect(screen.getByRole('switch', { name: /Balance Microphone Levels/ })).not.toBeChecked()
