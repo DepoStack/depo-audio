@@ -31,7 +31,7 @@
       "status": "open",
       "version": "1.1.0",
       "reviewedDate": "2026-11-20",
-      "description": "The v1.0.3 notice evidence is void: the npm graph changed (Tauri 2.12, brand, UX). Needs fresh v1.1.0 run evidence and a named reviewer.",
+      "description": "The v1.0.3 notice evidence is void: the npm graph changed (Tauri 2.12, the DepoStack brand foundation #201, the UX fixes #202). Needs fresh v1.1.0 run evidence and a named reviewer.",
       "evidenceNeeded": [
         "From the v1.1.0 release run, retain the strict notices check (generate-javascript-notices.mjs --strict --check) on the exact source commit and the four RELEASE-INVENTORY-*.json files byte-binding COMPONENTS.json and THIRD-PARTY-NOTICES.html, with zero unresolved components.",
         "Confirm the emitted graph maps react-remove-scroll-bar imports to the DepoAudio compatibility module and distributes no bytes from react-remove-scroll-bar@2.3.8, and that the Tauri, tslib, Tailwind CSS and tailwindcss-animate notices are preserved."
@@ -86,7 +86,7 @@
       "status": "open",
       "version": "1.1.0",
       "reviewedDate": "2026-11-20",
-      "description": "Manual installs and upgrades on real hardware. Windows has never been built on Tauri 2.12, and the Your data, export record, diagnostics, brand and UX changes have never run in an installed app.",
+      "description": "Manual installs and upgrades on real hardware. Windows has never been built on Tauri 2.12, and the Your data, export record, diagnostics, brand, chrono-to-time timestamp and UX changes have never run in an installed app.",
       "evidenceNeeded": [
         "Reconcile the exact v1.1.0 MSI, NSIS EXE, DMG and app archive payloads against the binary contract, third-party ledger (including the bundled fonts), checksums and expected resource inventory.",
         "Install and start both Windows installers on clean Windows 10 and 11 x64 systems without WebView2, start both macOS deliverables on macOS 13.3+ on Apple Silicon and Intel, and upgrade an existing v1.0.2 installation through MSI, NSIS and macOS paths.",
@@ -111,7 +111,7 @@
       "status": "open",
       "version": "1.1.0",
       "reviewedDate": "2026-11-20",
-      "description": "The release plan recorded on 2026-11-20 is to rebuild from main instead of publishing the v1.0.3 candidate; deny.toml carries no advisory exception (ignore = []) and main locks Tauri 2.12.5 with no unic-* crate. The owner's formal sign-off of the supersession (closedBy) and the publication-time advisory rerun are both still required.",
+      "description": "The release plan recorded on 2026-11-20 is to rebuild from main instead of publishing the v1.0.3 candidate; deny.toml carries no advisory exception (ignore = []) and main locks Tauri 2.12.5 with no unic-* crate. RUSTSEC-2026-0543 (chrono, unmaintained) was found on 2026-11-20 and cleared by removing chrono from DepoAudio (timestamps use the time crate, #201), not by an exception; chrono is no longer built for any release target. The owner pre-approved a bounded exception for RUSTSEC-2026-0543 only (remove by 2027-03-31) as a fallback in case Tauri makes chrono reachable again; it is not in deny.toml, and release:check accepts it only with its reason, owner, date and ledger entry. The owner's formal sign-off of the supersession (closedBy) and the publication-time advisory rerun are both still required.",
       "evidenceNeeded": [
         "Release owner sign-off that the v1.0.3 candidate (source 2a9053117fc90e5b208b8e29c92646715285f8dc) is superseded and that v1.1.0 is built from main with no advisory exception.",
         "At publication time, rerun cargo deny check advisories against the exact v1.1.0 candidate source commit and retain the result; any advisory without a recorded owner acceptance blocks publication."
