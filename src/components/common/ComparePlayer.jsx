@@ -137,7 +137,7 @@ export default function ComparePlayer({
 
       {/* Controls */}
       <div className="flex items-center justify-center gap-3">
-        <span className="font-mono text-[11px] text-[hsl(var(--sub))] min-w-[40px] text-center">
+        <span className="tabular-nums text-[12px] text-[hsl(var(--sub))] min-w-[40px] text-center">
           {fmtTime(currentTime)}
         </span>
         <button
@@ -146,7 +146,7 @@ export default function ComparePlayer({
         >
           {playing ? <Pause size={14} /> : <Play size={14} />}
         </button>
-        <span className="font-mono text-[11px] text-[hsl(var(--sub))] min-w-[40px] text-center">
+        <span className="tabular-nums text-[12px] text-[hsl(var(--sub))] min-w-[40px] text-center">
           {fmtTime(duration)}
         </span>
       </div>

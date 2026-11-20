@@ -219,12 +219,12 @@ function LegacyModelStorage() {
       <CardHeader>
         <CardTitle>Legacy model files</CardTitle>
         {modelsLoading ? (
-          <span role="status" aria-live="polite" className="font-mono text-[10px] text-[hsl(var(--sub))]">
+          <span role="status" aria-live="polite" className="tabular-nums text-[12px] text-[hsl(var(--sub))]">
             Checking local storage…
           </span>
         ) : (
           !modelLoadError && (
-            <span className="font-mono text-[10px] text-[hsl(var(--sub))]">
+            <span className="tabular-nums text-[12px] text-[hsl(var(--sub))]">
               {legacyModels.length} removable {legacyModels.length === 1 ? 'file' : 'files'} · {legacySize.toFixed(1)}{' '}
               MB
             </span>
@@ -407,7 +407,7 @@ export default function SettingsPanel({
     <Dialog open={open} onOpenChange={handleOpenChange}>
       <DialogContent className="max-w-[760px] p-0 gap-0 overflow-hidden">
         <div className="flex items-center justify-between px-5 py-3.5 border-b border-border">
-          <DialogTitle className="text-[15px] font-semibold text-foreground">Settings</DialogTitle>
+          <DialogTitle className="type-h3 text-foreground">Settings</DialogTitle>
           <DialogClose />
         </div>
         <DialogDescription className="sr-only">Application settings</DialogDescription>

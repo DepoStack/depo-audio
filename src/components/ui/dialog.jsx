@@ -74,7 +74,7 @@ const DialogHeader = ({ className, ...props }) => (
 )
 
 const DialogTitle = React.forwardRef(({ className, ...props }, ref) => (
-  <DialogPrimitive.Title ref={ref} className={cn('text-[15px] font-semibold text-foreground', className)} {...props} />
+  <DialogPrimitive.Title ref={ref} className={cn('type-h3 text-foreground', className)} {...props} />
 ))
 DialogTitle.displayName = 'DialogTitle'
 

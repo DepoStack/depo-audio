@@ -214,9 +214,7 @@ export default function LocalDataSettings({
               <div className="flex items-start justify-between gap-3">
                 <div className="flex flex-col min-w-0">
                   <span className="text-[12px] font-medium text-foreground">App data folder</span>
-                  <code className="mt-0.5 break-all font-mono text-[10.5px] text-[hsl(var(--text2))]">
-                    {info.appDataDir}
-                  </code>
+                  <code className="mt-0.5 break-all type-code text-[hsl(var(--text2))]">{info.appDataDir}</code>
                 </div>
                 <Button
                   size="sm"
@@ -235,13 +233,13 @@ export default function LocalDataSettings({
                   {info.items.map(item => (
                     <li key={item.name} className="flex items-baseline justify-between gap-3">
                       <span className="min-w-0">
-                        <code className="font-mono text-[10.5px] text-foreground">{item.name}</code>
+                        <code className="type-code text-foreground">{item.name}</code>
                         <span className="text-[hsl(var(--sub))]">
                           {' '}
                           — {ITEM_DESCRIPTIONS[item.kind] ?? 'DepoAudio file'}
                         </span>
                       </span>
-                      <span className="shrink-0 font-mono text-[10px] text-[hsl(var(--sub))]">
+                      <span className="shrink-0 tabular-nums text-[12px] text-[hsl(var(--sub))]">
                         {formatBytes(item.bytes)}
                       </span>
                     </li>

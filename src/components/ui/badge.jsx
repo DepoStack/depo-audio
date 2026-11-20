@@ -3,7 +3,7 @@ import { cva } from 'class-variance-authority'
 import { cn } from '../../lib/utils'
 
 const badgeVariants = cva(
-  'inline-flex items-center font-mono text-[9.5px] whitespace-nowrap rounded-sm px-1.5 py-0.5',
+  'inline-flex items-center type-label tabular-nums whitespace-nowrap rounded-sm px-1.5 py-0.5',
   {
     variants: {
       variant: {
@@ -15,7 +15,7 @@ const badgeVariants = cva(
         warning: 'bg-[hsl(var(--warning)/0.1)] text-warning',
         tag: 'bg-[hsl(var(--blue)/0.1)] text-[hsl(var(--blue))]',
         outline: 'border border-border text-[hsl(var(--text2))]',
-        gold: 'bg-primary text-primary-foreground text-[9px] font-bold px-1.5 py-px rounded-full min-w-[16px] text-center',
+        gold: 'bg-primary text-primary-foreground px-1.5 py-px rounded-full min-w-[16px] text-center',
       },
     },
     defaultVariants: {

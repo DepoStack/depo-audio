@@ -467,7 +467,9 @@ export default function PlayerTab({ dropHandlerRef, onConvertFiles }) {
                   <div className="flex items-baseline gap-2 min-w-0">
                     <span className="w-2 h-2 rounded-full shrink-0 self-center" style={{ background: activeColor }} />
                     <span className="text-[15px] font-semibold text-foreground truncate">{activeTrack.name}</span>
-                    <span className="text-[11px] font-mono text-[hsl(var(--sub))] shrink-0">· {activeTrack.label}</span>
+                    <span className="text-[12px] tabular-nums text-[hsl(var(--sub))] shrink-0">
+                      · {activeTrack.label}
+                    </span>
                   </div>
                   <Waveform
                     audioPath={activeTrack.path}
@@ -479,7 +481,7 @@ export default function PlayerTab({ dropHandlerRef, onConvertFiles }) {
                     markers={trackBookmarks}
                     loop={loopActive ? { a: loopA, b: loopB } : null}
                   />
-                  <div className="flex items-center justify-between font-mono text-[11px] text-[hsl(var(--sub))] tabular-nums">
+                  <div className="flex items-center justify-between tabular-nums text-[12px] text-[hsl(var(--sub))]">
                     <span>{fmtTime(currentTime)}</span>
                     <span>{fmtTime(duration)}</span>
                   </div>
@@ -539,7 +541,7 @@ export default function PlayerTab({ dropHandlerRef, onConvertFiles }) {
                         </span>
                       </button>
                       <input
-                        className="text-[10px] text-[hsl(var(--text2))] bg-transparent border-none p-0 font-mono w-full focus:text-foreground focus:outline-hidden"
+                        className="text-[12px] text-[hsl(var(--text2))] bg-transparent border-none p-0 tabular-nums w-full focus:text-foreground focus:outline-hidden"
                         value={t.label}
                         aria-label={`Track label for ${t.name}`}
                         placeholder="Track or participant name"
@@ -554,7 +556,7 @@ export default function PlayerTab({ dropHandlerRef, onConvertFiles }) {
                     {activeTrack?.path === t.path && playing ? (
                       <Pause size={10} fill="currentColor" className="text-foreground shrink-0" />
                     ) : (
-                      <span className="font-mono text-[10px] text-[hsl(var(--sub))] shrink-0 group-hover:hidden">
+                      <span className="tabular-nums text-[12px] text-[hsl(var(--sub))] shrink-0 group-hover:hidden">
                         {i + 1}
                       </span>
                     )}
@@ -604,7 +606,7 @@ export default function PlayerTab({ dropHandlerRef, onConvertFiles }) {
                 <CardContent className="p-2">
                   {trackBookmarks.length === 0 ? (
                     <p className="px-1 py-1 text-[11px] text-[hsl(var(--sub))]">
-                      Press <kbd className="font-mono">B</kbd> or the bookmark button to mark the current spot.
+                      Press <kbd className="tabular-nums">B</kbd> or the bookmark button to mark the current spot.
                     </p>
                   ) : (
                     <div className="flex flex-col gap-0.5">
@@ -614,7 +616,7 @@ export default function PlayerTab({ dropHandlerRef, onConvertFiles }) {
                         .map(b => (
                           <div key={`${b.time}-${b.trackPath}`} className="flex items-center gap-2 group px-1">
                             <button
-                              className="font-mono text-[11px] text-[hsl(var(--text2))] hover:text-foreground shrink-0 w-11 text-left focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring rounded"
+                              className="tabular-nums text-[12px] text-[hsl(var(--text2))] hover:text-foreground shrink-0 w-11 text-left focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring rounded"
                               title="Jump to bookmark"
                               onClick={() => seekTo(b.time)}
                             >
@@ -731,10 +733,10 @@ export default function PlayerTab({ dropHandlerRef, onConvertFiles }) {
               <div className="flex items-center gap-2 min-w-0">
                 <span className="w-2 h-2 rounded-full shrink-0" style={{ background: activeColor }} />
                 <span className="text-[12px] font-medium text-foreground truncate">{activeTrack.name}</span>
-                <span className="text-[10px] font-mono text-[hsl(var(--sub))] shrink-0 hidden sm:inline">
+                <span className="text-[12px] tabular-nums text-[hsl(var(--sub))] shrink-0 hidden sm:inline">
                   · {activeTrack.label}
                 </span>
-                <span className="ml-auto font-mono text-[10px] text-[hsl(var(--sub))] shrink-0 tabular-nums">
+                <span className="ml-auto tabular-nums text-[12px] text-[hsl(var(--sub))] shrink-0">
                   {fmtTime(currentTime)} / {fmtTime(duration)}
                 </span>
               </div>
@@ -800,7 +802,7 @@ export default function PlayerTab({ dropHandlerRef, onConvertFiles }) {
                 <button
                   onClick={() => setLoopA(currentTime)}
                   className={cn(
-                    'px-1.5 py-0.5 rounded text-[10px] font-mono transition-colors focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring',
+                    'px-1.5 py-0.5 rounded text-[12px] tabular-nums transition-colors focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring',
                     loopA != null
                       ? 'bg-[hsl(var(--gold-dim))] text-foreground'
                       : 'text-[hsl(var(--sub))] hover:text-foreground',
@@ -812,7 +814,7 @@ export default function PlayerTab({ dropHandlerRef, onConvertFiles }) {
                 <button
                   onClick={() => setLoopB(currentTime)}
                   className={cn(
-                    'px-1.5 py-0.5 rounded text-[10px] font-mono transition-colors focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring',
+                    'px-1.5 py-0.5 rounded text-[12px] tabular-nums transition-colors focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring',
                     loopB != null
                       ? 'bg-[hsl(var(--gold-dim))] text-foreground'
                       : 'text-[hsl(var(--sub))] hover:text-foreground',

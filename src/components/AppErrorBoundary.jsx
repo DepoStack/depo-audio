@@ -41,13 +41,11 @@ export default class AppErrorBoundary extends Component {
           aria-labelledby="app-error-title"
           className="w-full max-w-lg rounded-xl border border-border bg-card p-6 shadow-lg outline-none focus-visible:ring-2 focus-visible:ring-ring"
         >
-          <p className="mb-2 font-mono text-[10px] font-semibold uppercase tracking-widest text-[hsl(var(--gold))]">
-            Interface recovery
-          </p>
-          <h1 id="app-error-title" className="text-2xl font-semibold tracking-[-0.02em]">
+          <p className="mb-2 type-label text-[hsl(var(--sub))]">Interface recovery</p>
+          <h1 id="app-error-title" className="type-h3">
             DepoAudio needs to reload
           </h1>
-          <p className="mt-1 font-mono text-[11px] text-[hsl(var(--sub))]">DepoAudio {APP_VERSION}</p>
+          <p className="mt-1 tabular-nums text-[12px] text-[hsl(var(--sub))]">DepoAudio {APP_VERSION}</p>
           <p className="mt-3 text-sm leading-6 text-[hsl(var(--text2))]">
             The current screen stopped unexpectedly. Reload the interface, then verify any output from a conversion that
             was in progress before trying it again.

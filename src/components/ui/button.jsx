@@ -15,7 +15,7 @@ const buttonVariants = cva(
         destructive: 'bg-destructive text-destructive-foreground hover:bg-destructive/90',
         outline: 'border border-border bg-transparent hover:bg-accent hover:text-accent-foreground',
         ghost: 'text-[hsl(var(--sub))] hover:text-foreground hover:bg-secondary/70',
-        scan: 'font-mono text-[10px] tracking-wider uppercase border border-[hsl(var(--blue))] text-[hsl(var(--blue))] bg-[hsl(var(--blue)/0.08)] hover:bg-[hsl(var(--blue)/0.18)] disabled:opacity-40',
+        scan: 'type-label border border-[hsl(var(--blue))] text-[hsl(var(--blue))] bg-[hsl(var(--blue)/0.08)] hover:bg-[hsl(var(--blue)/0.18)] disabled:opacity-40',
       },
       size: {
         default: 'h-8 px-3.5 py-1.5',

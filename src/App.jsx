@@ -212,7 +212,7 @@ export default function App() {
               )}
               <kbd
                 aria-hidden="true"
-                className="hidden sm:inline ml-auto font-mono text-[9.5px] px-1.5 py-px rounded border border-border/70 bg-secondary/60 text-[hsl(var(--sub))]"
+                className="hidden sm:inline ml-auto type-label tabular-nums px-1.5 py-px rounded border border-border/70 bg-secondary/60 text-[hsl(var(--sub))]"
               >
                 {i + 1}
               </kbd>

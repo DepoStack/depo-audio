@@ -30,10 +30,7 @@ TableRow.displayName = 'TableRow'
 const TableHead = React.forwardRef(({ className, ...props }, ref) => (
   <th
     ref={ref}
-    className={cn(
-      'h-8 px-4 text-left align-middle font-mono text-[9.5px] font-medium tracking-wider uppercase text-[hsl(var(--sub))]',
-      className,
-    )}
+    className={cn('h-8 px-4 text-left align-middle type-label text-[hsl(var(--sub))]', className)}
     {...props}
   />
 ))

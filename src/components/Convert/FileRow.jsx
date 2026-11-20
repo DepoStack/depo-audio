@@ -160,7 +160,7 @@ export default function FileRow({ file, job, onRemove, converting }) {
             )}
           </button>
           {expanded && (
-            <pre className="mt-1 text-[10px] text-destructive font-mono whitespace-pre-wrap break-all bg-destructive/5 rounded p-2">
+            <pre className="mt-1 type-code text-destructive whitespace-pre-wrap break-all bg-destructive/5 rounded p-2">
               {job.error}
             </pre>
           )}

@@ -10,12 +10,8 @@ export default function WorkspaceHeader({ eyebrow, title, description, status, a
       )}
     >
       <div className="min-w-0">
-        {eyebrow && (
-          <p className="mb-1 font-mono text-[9.5px] font-semibold uppercase tracking-[1.4px] text-[hsl(var(--sub))]">
-            {eyebrow}
-          </p>
-        )}
-        <h2 className="text-[22px] font-semibold leading-tight tracking-[-0.02em] text-foreground">{title}</h2>
+        {eyebrow && <p className="mb-1 type-label text-[hsl(var(--sub))]">{eyebrow}</p>}
+        <h2 className="type-h3 text-foreground">{title}</h2>
         {description && (
           <p className="mt-1 max-w-[65ch] text-[12px] leading-relaxed text-[hsl(var(--text2))]">{description}</p>
         )}

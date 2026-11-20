@@ -263,7 +263,7 @@ export default function Transcript({ trackPath, currentTime, playing, onSeek, on
   return (
     <Card>
       <CardHeader>
-        <CardTitle>TRANSCRIPT</CardTitle>
+        <CardTitle>Transcript</CardTitle>
         <div className="flex items-center gap-1.5">
           {segments.length > 0 && (
             <button
@@ -271,7 +271,7 @@ export default function Transcript({ trackPath, currentTime, playing, onSeek, on
               aria-pressed={follow}
               title="Auto-scroll to the line playing now"
               className={cn(
-                'flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-mono transition-colors',
+                'flex items-center gap-1 px-1.5 py-0.5 rounded text-[12px] tabular-nums transition-colors',
                 follow ? 'bg-[hsl(var(--gold-dim))] text-foreground' : 'text-[hsl(var(--sub))] hover:text-foreground',
               )}
             >
@@ -417,7 +417,7 @@ export default function Transcript({ trackPath, currentTime, playing, onSeek, on
                       <button
                         onClick={() => onSeek(s.start)}
                         title="Jump to this point"
-                        className="font-mono text-[10px] text-foreground hover:underline focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring rounded"
+                        className="tabular-nums text-[12px] text-foreground hover:underline focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring rounded"
                       >
                         {fmtTime(s.start)}
                       </button>
@@ -435,7 +435,7 @@ export default function Transcript({ trackPath, currentTime, playing, onSeek, on
                   {/* Speaker (optional) */}
                   <input
                     aria-label={`Speaker or role for transcript line ${index + 1}`}
-                    className="shrink-0 w-16 bg-transparent border-none p-0 pt-0.5 text-[10px] font-mono text-[hsl(var(--text2))] focus:text-foreground focus:outline-hidden placeholder:text-[hsl(var(--sub))]"
+                    className="shrink-0 w-16 bg-transparent border-none p-0 pt-0.5 text-[12px] tabular-nums text-[hsl(var(--text2))] focus:text-foreground focus:outline-hidden placeholder:text-[hsl(var(--sub))]"
                     value={s.speaker}
                     placeholder="speaker"
                     onChange={e => update(s.id, { speaker: e.target.value })}
@@ -496,7 +496,7 @@ export default function Transcript({ trackPath, currentTime, playing, onSeek, on
             <Button size="sm" variant="ghost" onClick={() => addLine()}>
               <Plus size={12} /> Add line{' '}
               {Number.isFinite(currentTime) && currentTime >= 0 && (
-                <span className="font-mono text-[10px] text-[hsl(var(--sub))] ml-1">@ {fmtTime(currentTime)}</span>
+                <span className="tabular-nums text-[12px] text-[hsl(var(--sub))] ml-1">@ {fmtTime(currentTime)}</span>
               )}
             </Button>
           </div>

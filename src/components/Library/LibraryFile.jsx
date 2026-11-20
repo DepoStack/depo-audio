@@ -43,7 +43,7 @@ export default function LibraryFile({ file }) {
       />
       <span
         className={cn(
-          'library-file-format inline-flex items-center font-mono text-[9.5px] whitespace-nowrap rounded-sm px-1.5 py-0.5',
+          'library-file-format inline-flex items-center type-label tabular-nums whitespace-nowrap rounded-sm px-1.5 py-0.5',
           fmtBadgeClass[file.format] || 'bg-secondary text-[hsl(var(--sub))]',
         )}
       >
@@ -55,7 +55,7 @@ export default function LibraryFile({ file }) {
       >
         {basename(file.path)}
       </span>
-      <span className="library-file-size font-mono text-[10px] text-[hsl(var(--sub))] shrink-0">
+      <span className="library-file-size tabular-nums text-[12px] text-[hsl(var(--sub))] shrink-0">
         {fmtSize(file.size)}
       </span>
       <button
@@ -112,7 +112,7 @@ export default function LibraryFile({ file }) {
         </div>
       )}
       {duration > 0 && (
-        <span className="library-file-time font-mono text-[10px] text-[hsl(var(--sub))] shrink-0">
+        <span className="library-file-time tabular-nums text-[12px] text-[hsl(var(--sub))] shrink-0">
           {fmtTime(current)}
         </span>
       )}

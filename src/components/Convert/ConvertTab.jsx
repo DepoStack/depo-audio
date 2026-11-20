@@ -472,7 +472,7 @@ export default function ConvertTab({
           {files.length > 0 && (
             <div className="flex flex-col gap-2">
               <div className="flex items-center justify-between">
-                <span className="font-mono text-[11px] text-[hsl(var(--sub))]">
+                <span className="tabular-nums text-[12px] text-[hsl(var(--sub))]">
                   {files.length} file{files.length !== 1 ? 's' : ''} queued
                 </span>
                 {!converting && (
@@ -583,7 +583,7 @@ export default function ConvertTab({
           {/* ── OUTPUT MODE (segmented) ──────────────────────────────────── */}
           <Card className="workflow-section">
             <CardHeader>
-              <CardTitle>OUTPUT MODE</CardTitle>
+              <CardTitle>Output mode</CardTitle>
             </CardHeader>
             <CardContent>
               <div className="output-mode-grid grid grid-cols-1 gap-1.5 bg-secondary/45 p-2 sm:grid-cols-3">
@@ -608,7 +608,7 @@ export default function ConvertTab({
           {/* ── FORMAT (tiles with plain-English trade-offs) ─────────────── */}
           <Card className="workflow-section">
             <CardHeader>
-              <CardTitle>FORMAT</CardTitle>
+              <CardTitle>Format</CardTitle>
             </CardHeader>
             <CardContent>
               <div className="format-output-grid grid grid-cols-1 gap-2 p-3 min-[420px]:grid-cols-2 sm:grid-cols-3 lg:grid-cols-5">
@@ -636,7 +636,7 @@ export default function ConvertTab({
               <div className="flex items-end gap-3 flex-wrap px-3 pb-3">
                 <div className="min-w-[130px]">
                   <Label className="mb-1 block" htmlFor="sample-rate">
-                    SAMPLE RATE
+                    Sample rate
                   </Label>
                   <select
                     id="sample-rate"
@@ -653,7 +653,7 @@ export default function ConvertTab({
                 </div>
                 {formatOut === 'mp3' && (
                   <div>
-                    <Label className="mb-1 block">MP3 BITRATE</Label>
+                    <Label className="mb-1 block">MP3 bitrate</Label>
                     <div className="flex gap-px bg-secondary rounded-md p-0.5">
                       {MP3_BITRATES.map(b => (
                         <button
@@ -679,7 +679,7 @@ export default function ConvertTab({
           {files.length > 0 && mode !== 'keep' && (
             <Card className="workflow-section">
               <CardHeader>
-                <CardTitle>CHANNELS</CardTitle>
+                <CardTitle>Channels</CardTitle>
                 <span className="text-[10px] text-[hsl(var(--sub))]">
                   {mode === 'stereo' && autoLevel && 'Name channels — volume managed by auto-level'}
                   {mode === 'stereo' && !autoLevel && 'Name channels and adjust mix volumes'}
@@ -694,7 +694,7 @@ export default function ConvertTab({
                         className="w-2 h-2 rounded-full shrink-0"
                         style={{ background: CH_COLORS[i % CH_COLORS.length] }}
                       />
-                      <span className="font-mono text-[10px] text-[hsl(var(--sub))] shrink-0 w-7">CH {i + 1}</span>
+                      <span className="tabular-nums text-[12px] text-[hsl(var(--sub))] shrink-0 w-7">CH {i + 1}</span>
                       <Input
                         className="h-7 text-[11px] w-32 shrink-0"
                         value={l}
@@ -718,7 +718,7 @@ export default function ConvertTab({
                             }
                           />
                           <span
-                            className={`font-mono text-[10px] w-8 text-right shrink-0 ${autoLevel ? 'text-foreground' : 'text-[hsl(var(--sub))]'}`}
+                            className={`tabular-nums text-[12px] w-8 text-right shrink-0 ${autoLevel ? 'text-foreground' : 'text-[hsl(var(--sub))]'}`}
                           >
                             {autoLevel ? 'auto' : chanVols[i] === 0 ? 'mute' : chanVols[i].toFixed(2)}
                           </span>
@@ -734,7 +734,7 @@ export default function ConvertTab({
           {/* ── AUDIO PROCESSING (unified panel) ─────────────────────────── */}
           <Card className="workflow-section">
             <CardHeader>
-              <CardTitle>AUDIO PROCESSING</CardTitle>
+              <CardTitle>Audio processing</CardTitle>
               <Button variant="scan" size="sm" onClick={handleScan} disabled={!files.length || scanning || converting}>
                 {scanning
                   ? `Scanning${files.length > 1 ? ` (${files.length} files)` : ''}…`
@@ -841,8 +841,8 @@ export default function ConvertTab({
                   <>
                     {(showAutoLevel || showDeclip) && (
                       <div className="px-4 py-1.5 bg-secondary/50">
-                        <span className="font-mono text-[9px] font-medium tracking-[1.2px] uppercase text-[hsl(var(--sub))]">
-                          {hasAnalysis && !showAllProcessing ? 'RECOMMENDED' : 'SIGNAL REPAIR'}
+                        <span className="type-label text-[hsl(var(--sub))]">
+                          {hasAnalysis && !showAllProcessing ? 'Recommended' : 'Signal repair'}
                         </span>
                       </div>
                     )}
@@ -881,9 +881,7 @@ export default function ConvertTab({
                     {/* ── Fine-tune ── */}
                     {(showHpf || showNormalize || showTrim || showFade) && (
                       <div className="px-4 py-1.5 bg-secondary/50">
-                        <span className="font-mono text-[9px] font-medium tracking-[1.2px] uppercase text-[hsl(var(--sub))]">
-                          FINE-TUNE
-                        </span>
+                        <span className="type-label text-[hsl(var(--sub))]">Fine-tune</span>
                       </div>
                     )}
 
@@ -930,7 +928,7 @@ export default function ConvertTab({
                               <span className="text-[hsl(var(--sub))]">—</span>
                               <input
                                 type="number"
-                                className="w-[42px] bg-secondary border border-border rounded px-1 py-px font-mono text-[11px] text-foreground text-center focus:border-primary outline-hidden"
+                                className="w-[42px] bg-secondary border border-border rounded px-1 py-px tabular-nums text-[12px] text-foreground text-center focus:border-primary outline-hidden"
                                 min="0.1"
                                 max="5"
                                 step="0.1"
@@ -967,9 +965,7 @@ export default function ConvertTab({
 
               {/* Processing chain preview */}
               <div className="flex items-center gap-2 px-4 py-2.5 border-t border-border/60 bg-secondary/30">
-                <span className="font-mono text-[9px] font-medium tracking-[1.2px] uppercase text-[hsl(var(--sub))] shrink-0">
-                  CHAIN
-                </span>
+                <span className="type-label text-[hsl(var(--sub))] shrink-0">Chain</span>
                 {anyProcessing ? (
                   <div className="flex items-center gap-1 flex-wrap">
                     {declip && (
@@ -1020,13 +1016,13 @@ export default function ConvertTab({
           {/* ── DESTINATION ──────────────────────────────────────────────── */}
           <Card className="workflow-section">
             <CardHeader>
-              <CardTitle>DESTINATION</CardTitle>
+              <CardTitle>Destination</CardTitle>
             </CardHeader>
             <CardContent>
               <div className="flex items-end gap-3 flex-wrap p-3">
                 <div className="flex-1 min-w-[200px]">
                   <Label className="mb-1 block" htmlFor="case-name">
-                    CASE NAME
+                    Case name
                   </Label>
                   <Input
                     id="case-name"
@@ -1037,7 +1033,7 @@ export default function ConvertTab({
                 </div>
                 <div className="flex-1 min-w-[200px]">
                   <Label className="mb-1 block" htmlFor="out-dir">
-                    OUTPUT FOLDER
+                    Output folder
                   </Label>
                   <div className="flex gap-1.5">
                     <Input

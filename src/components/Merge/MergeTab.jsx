@@ -130,7 +130,7 @@ export default function MergeTab() {
           {/* ── Source Files ──────────────────────────────── */}
           <Card>
             <CardHeader>
-              <CardTitle>RECORDINGS TO MERGE</CardTitle>
+              <CardTitle>Recordings to merge</CardTitle>
               <Button size="sm" onClick={browseFiles}>
                 Add Files
               </Button>
@@ -182,7 +182,7 @@ export default function MergeTab() {
                     className="group flex items-center gap-2.5 px-3 py-2 rounded-md transition-colors hover:bg-secondary/50"
                   >
                     <span className="w-2 h-2 rounded-full shrink-0" style={{ background: CH_COLORS[i % 4] }} />
-                    <span className="font-mono text-[10px] text-[hsl(var(--sub))] min-w-[65px]">
+                    <span className="tabular-nums text-[12px] text-[hsl(var(--sub))] min-w-[65px]">
                       {i === 0 ? 'Reference' : `Source ${i + 1}`}
                     </span>
                     <span className="flex-1 text-xs text-foreground truncate min-w-0" title={s.path}>
@@ -212,7 +212,7 @@ export default function MergeTab() {
           {sources.length >= 2 && (
             <Card>
               <CardHeader>
-                <CardTitle>MERGE OPTIONS</CardTitle>
+                <CardTitle>Merge options</CardTitle>
               </CardHeader>
 
               <CardContent className="p-4">
@@ -253,11 +253,11 @@ export default function MergeTab() {
 
                 <div className="flex items-end gap-3 pt-3 border-t border-border/40 mt-3">
                   <div className="flex-1">
-                    <Label className="mb-1.5 block">OUTPUT NAME</Label>
+                    <Label className="mb-1.5 block">Output name</Label>
                     <Input value={outName} placeholder="merged" onChange={e => setOutName(e.target.value)} />
                   </div>
                   <div>
-                    <Label className="mb-1.5 block">FORMAT</Label>
+                    <Label className="mb-1.5 block">Format</Label>
                     <div className="flex gap-0.5 bg-secondary rounded-md p-0.5">
                       {FORMATS_OUT.map(f => (
                         <button
@@ -286,7 +286,7 @@ export default function MergeTab() {
           {result && (
             <Card className="border-success/30">
               <CardHeader>
-                <CardTitle>MERGED OUTPUT</CardTitle>
+                <CardTitle>Merged output</CardTitle>
               </CardHeader>
               <CardContent className="px-4 py-3">
                 <span className="text-sm font-semibold text-foreground block">{result.outputName}</span>
@@ -322,19 +322,19 @@ export default function MergeTab() {
       <footer className="shrink-0 flex items-center justify-between px-6 py-3 border-t border-border bg-[hsl(var(--surface))]">
         <div className="flex items-center gap-2">
           {syncing && (
-            <span className="flex items-center gap-1.5 px-2.5 py-1 bg-[hsl(var(--blue)/0.1)] text-[hsl(var(--blue))] text-[11px] font-mono rounded-full">
+            <span className="flex items-center gap-1.5 px-2.5 py-1 bg-[hsl(var(--blue)/0.1)] text-[hsl(var(--blue))] text-[12px] tabular-nums rounded-full">
               <span className="w-1.5 h-1.5 rounded-full bg-[hsl(var(--blue))] animate-dot-pulse" />
               Detecting sync…
             </span>
           )}
           {merging && (
-            <span className="flex items-center gap-1.5 px-2.5 py-1 bg-[hsl(var(--blue)/0.1)] text-[hsl(var(--blue))] text-[11px] font-mono rounded-full">
+            <span className="flex items-center gap-1.5 px-2.5 py-1 bg-[hsl(var(--blue)/0.1)] text-[hsl(var(--blue))] text-[12px] tabular-nums rounded-full">
               <span className="w-1.5 h-1.5 rounded-full bg-[hsl(var(--blue))] animate-dot-pulse" />
               Merging…
             </span>
           )}
           {result && !merging && (
-            <span className="flex items-center gap-1.5 px-2.5 py-1 bg-success/10 text-success text-[11px] font-mono rounded-full">
+            <span className="flex items-center gap-1.5 px-2.5 py-1 bg-success/10 text-success text-[12px] tabular-nums rounded-full">
               Merge complete
             </span>
           )}

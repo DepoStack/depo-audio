@@ -27,7 +27,7 @@ export default function MiniPlayer({ out, color, multi }) {
       <span className="text-[11px] text-[hsl(var(--text2))] flex-1 min-w-0 truncate" title={out.path}>
         {out.name}
       </span>
-      <span className="font-mono text-[10px] text-[hsl(var(--sub))] shrink-0">{fmtSize(out.size)}</span>
+      <span className="tabular-nums text-[12px] text-[hsl(var(--sub))] shrink-0">{fmtSize(out.size)}</span>
       <audio
         ref={audioRef}
         src={src}
@@ -81,7 +81,7 @@ export default function MiniPlayer({ out, color, multi }) {
           />
         </div>
         {duration > 0 && (
-          <span className="font-mono text-[9px] text-[hsl(var(--sub))] shrink-0 text-right whitespace-nowrap">
+          <span className="tabular-nums text-[12px] text-[hsl(var(--sub))] shrink-0 text-right whitespace-nowrap">
             {fmtTime(current)}/{fmtTime(duration)}
           </span>
         )}

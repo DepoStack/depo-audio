@@ -33,7 +33,7 @@ export default function DiagnosticsCopy({ text, size = 'sm', className = '' }) {
         <summary className="w-fit cursor-pointer text-[11px] font-semibold text-[hsl(var(--text2))] focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1">
           What is copied
         </summary>
-        <pre className="mt-1.5 select-text whitespace-pre-wrap break-words rounded-md border border-border bg-secondary/40 px-3 py-2 font-mono text-[11px] leading-5 text-foreground">
+        <pre className="mt-1.5 select-text whitespace-pre-wrap break-words rounded-md border border-border bg-secondary/40 px-3 py-2 type-code text-foreground">
           {text}
         </pre>
       </details>

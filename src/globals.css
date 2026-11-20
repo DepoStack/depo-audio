@@ -41,9 +41,14 @@
   --color-success: hsl(var(--success));
   --color-warning: hsl(var(--warning));
 
+  /* The world is square (DESIGN.md Shapes): every radius follows the token,
+     which is the canonical radius.none. rounded-full stays for dots. */
+  --radius-xs: var(--radius);
+  --radius-sm: var(--radius);
+  --radius-md: var(--radius);
   --radius-lg: var(--radius);
-  --radius-md: calc(var(--radius) - 2px);
-  --radius-sm: calc(var(--radius) - 4px);
+  --radius-xl: var(--radius);
+  --radius-2xl: var(--radius);
 
   /* Archivo for every UI and display word; Fragment Mono for real code only.
      Both stacks come from design/tokens.json (base.font-sans / base.font-mono). */
@@ -96,6 +101,31 @@
   }
 }
 
+/* DESIGN.md type roles at workspace density (design/tokens.json base.type) */
+@utility type-h3 {
+  font-size: var(--ds-type-h3-size);
+  font-weight: var(--ds-type-h3-weight);
+  font-stretch: var(--ds-type-h3-width);
+  line-height: var(--ds-type-h3-leading);
+}
+@utility type-label {
+  font-size: var(--ds-type-label-size);
+  font-weight: var(--ds-type-label-weight);
+  font-stretch: var(--ds-type-label-width);
+  line-height: var(--ds-type-label-leading);
+}
+@utility type-wordmark {
+  font-size: var(--ds-type-wordmark-size);
+  font-weight: var(--ds-type-wordmark-weight);
+  font-stretch: var(--ds-type-wordmark-width);
+  line-height: var(--ds-type-wordmark-leading);
+}
+@utility type-code {
+  font-family: var(--font-mono);
+  font-size: var(--ds-type-code-size);
+  line-height: var(--ds-type-code-leading);
+}
+
 /*
   The default border color has changed to `currentcolor` in Tailwind CSS v4,
   so we've added these compatibility styles to make sure everything still
@@ -123,7 +153,9 @@
   }
 
   body {
-    @apply bg-background text-foreground font-sans text-[13px] leading-relaxed antialiased;
+    @apply bg-background text-foreground font-sans antialiased;
+    font-size: var(--ds-type-body-size);
+    line-height: var(--ds-type-body-leading);
   }
 
   html,

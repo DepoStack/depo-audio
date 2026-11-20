@@ -131,9 +131,7 @@ export default function ImportModal({ defaultLabels, existingCases, onDone, onCl
 
         {/* File picker */}
         <fieldset className="min-w-0 px-5 pt-3.5">
-          <legend className="font-mono text-[9px] font-medium tracking-[1.2px] uppercase text-[hsl(var(--sub))]">
-            Files
-          </legend>
+          <legend className="type-label text-[hsl(var(--sub))]">Files</legend>
           <div className="flex items-center gap-2.5 mt-1.5">
             <Button type="button" size="sm" onClick={browsePick}>
               Browse files…
@@ -168,9 +166,7 @@ export default function ImportModal({ defaultLabels, existingCases, onDone, onCl
 
         {/* Case */}
         <fieldset className="min-w-0 px-5 pt-3.5">
-          <legend className="font-mono text-[9px] font-medium tracking-[1.2px] uppercase text-[hsl(var(--sub))]">
-            Case name
-          </legend>
+          <legend className="type-label text-[hsl(var(--sub))]">Case name</legend>
           <div className="mt-1.5">
             {existingCases.length > 0 && (
               <div role="group" aria-label="Case type" className="flex gap-0.5 bg-secondary rounded-md p-0.5 mb-2">
@@ -239,9 +235,7 @@ export default function ImportModal({ defaultLabels, existingCases, onDone, onCl
 
         {/* Speaker label */}
         <fieldset className="min-w-0 px-5 pt-3.5">
-          <legend className="font-mono text-[9px] font-medium tracking-[1.2px] uppercase text-[hsl(var(--sub))]">
-            Speaker or participant
-          </legend>
+          <legend className="type-label text-[hsl(var(--sub))]">Speaker or participant</legend>
           <div className="mt-1.5">
             <div role="group" aria-label="Speaker or participant label" className="flex flex-wrap gap-1.5">
               {defaultLabels.map(l => (

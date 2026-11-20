@@ -376,10 +376,8 @@ export default function LibraryTab({
                   {catJobs.length > 0 && (
                     <div className="flex flex-col">
                       <div className="flex items-center justify-between px-1 pb-1.5">
-                        <span className="font-mono text-[9px] font-medium tracking-[1.2px] uppercase text-[hsl(var(--sub))]">
-                          Available to import
-                        </span>
-                        <span className="font-mono text-[10px] text-[hsl(var(--sub))]">
+                        <span className="type-label text-[hsl(var(--sub))]">Available to import</span>
+                        <span className="tabular-nums text-[12px] text-[hsl(var(--sub))]">
                           {visibleCatJobCount < catJobs.length
                             ? `Showing ${visibleCatJobCount} of ${catJobs.length}`
                             : `${catJobs.length} found`}
@@ -407,7 +405,7 @@ export default function LibraryTab({
                             <Badge variant="default">
                               {job.files.length} file{job.files.length !== 1 ? 's' : ''}
                             </Badge>
-                            <span className="text-[hsl(var(--sub))] shrink-0 font-mono text-[10px]">
+                            <span className="text-[hsl(var(--sub))] shrink-0 tabular-nums text-[12px]">
                               {job.dateModified}
                             </span>
                           </button>
@@ -479,7 +477,7 @@ export default function LibraryTab({
           <Card id="library-case-list" aria-label={`${visibleCaseLabel} Library cases`}>
             <CardHeader>
               <CardTitle>{showArchived ? 'Archived cases' : 'Cases'}</CardTitle>
-              <span className="font-mono text-[10px] text-[hsl(var(--sub))]">{filtered.length}</span>
+              <span className="tabular-nums text-[12px] text-[hsl(var(--sub))]">{filtered.length}</span>
             </CardHeader>
             <CardContent>
               {filtered.map((c, ci) => {
