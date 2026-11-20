@@ -541,6 +541,15 @@ if (releaseMatch) {
     unreleasedPosition < releaseMatch.index,
     'The Unreleased changelog heading must precede the current release heading',
   )
+  // release.yml refuses to build a draft whose notes lack this heading, so
+  // catch a missing one here instead of at dispatch.
+  const sectionEnd = changelog.indexOf('\n## [', releaseMatch.index + releaseMatch[0].length)
+  const releaseSection = changelog.slice(releaseMatch.index, sectionEnd < 0 ? undefined : sectionEnd)
+  expect(
+    releaseSection.includes('\n### What this release includes\n') &&
+      releaseWorkflow.includes("section.includes('### What this release includes')"),
+    `The ${version} changelog section and release.yml must both use the "### What this release includes" heading`,
+  )
 }
 expect(
   requiresPublicationReadyHeading

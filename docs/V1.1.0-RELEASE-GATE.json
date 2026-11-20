@@ -148,7 +148,8 @@
       "description": "Closes only in the approval commit, after every other blocker is closed.",
       "evidenceNeeded": [
         "Replace the v1.1.0 Unpublished changelog marker with the approved publication date (equal to candidate.publicationDate) only after every other publication blocker is closed, without changing the frozen release-notes body.",
-        "Bind the final release notes, source commit, installer inventories and downloadable asset checksums to the exact v1.1.0 publication candidate."
+        "Bind the final release notes, source commit, installer inventories and downloadable asset checksums to the exact v1.1.0 publication candidate.",
+        "Check every frozen release-notes statement against the v1.1.0 run evidence before closing: WAV outputs carry the bext start time with the bundled release sidecars (packaged-install-and-upgrade-validation), the macOS release carries DepoAudio_1.1.0_third-party-source.tar.gz for the FFmpeg, LAME and Opus build (macos-ffmpeg-rc2-evidence), and deny.toml still has no advisory exception with the publication-time cargo deny rerun clean (rust-advisory-exception-acceptance). If any statement does not hold, change the notes and build a new candidate."
       ]
     }
   ]

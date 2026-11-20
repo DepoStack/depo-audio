@@ -61,7 +61,7 @@ DepoAudio rules that still apply during an incident:
    `npm version <version> --no-git-tag-version`, and change
    `src-tauri/Cargo.toml`, the `depo-audio` entry in `src-tauri/Cargo.lock`
    and `src-tauri/tauri.conf.json`. Add a `## [<version>] - Unpublished`
-   changelog section with a `### Release scope`, create
+   changelog section with a `### What this release includes`, create
    `docs/V<version>-RELEASE-GATE.json` and `docs/V<version>-RELEASE-CANDIDATE.md`
    from the current ones, and change the concurrency group and the
    INSPECT/PUBLISH confirmations in `publish-release.yml`. Then run
