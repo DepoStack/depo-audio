@@ -3,49 +3,118 @@
 
 @layer base {
   :root {
-    --background: 267 36% 11%;
-    --foreground: 43 24% 94%;
-    --card: 268 35% 16%;
-    --card-foreground: 43 24% 94%;
-    --popover: 268 35% 16%;
-    --popover-foreground: 43 24% 94%;
-    --primary: 36 79% 57%;
-    --primary-foreground: 267 27% 13%;
-    --secondary: 267 20% 18%;
-    --secondary-foreground: 43 24% 94%;
-    --muted: 268 14% 23%;
-    /* Muted text — lilac lightened to clear WCAG AAA (7:1) on card/surface */
-    --muted-foreground: 266 18% 70%;
-    --accent: 267 20% 18%;
-    --accent-foreground: 43 24% 94%;
-    /* Light red so text-destructive clears 7:1 on dark; pairs with dark foreground as a fill */
-    --destructive: 6 70% 75%;
-    --destructive-foreground: 267 36% 11%;
-    --border: 267 16% 22%;
-    --input: 267 16% 22%;
-    --ring: 36 79% 57%;
-    --gold: 36 79% 57%;
-    /* Hover gold: the brand gold.300 (#F0B456), as color-gold-hi */
-    --gold-hi: 36.6 83.6% 63.9%;
-    --gold-dim: 36 79% 57% / 0.14;
-    --gold-glow: 36 79% 57% / 0.25;
-    --success: 166 51% 51%;
-    --warning: 36 83% 65%;
-    --surface: 267 28% 14%;
-    --panel2: 267 20% 18%;
-    /* Hint text — brand lilac lightened to clear WCAG AAA (7:1) on every surface */
-    --sub: 266 18% 70%;
-    --text2: 266 28% 80%;
-    --blue: 226 49% 77%;
-    --shadow-card: 0 22px 50px -24px rgba(0,0,0,0.6);
+    --ds-font-sans: Archivo, "Archivo Fallback", system-ui, -apple-system, "Segoe UI", sans-serif;
+    --ds-font-mono: "Fragment Mono", "Fragment Mono Fallback", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    --ds-type-h3-size: 1.375rem;
+    --ds-type-h3-weight: 700;
+    --ds-type-h3-width: 86%;
+    --ds-type-h3-leading: 1.18;
+    --ds-type-lead-size: 1.0625rem;
+    --ds-type-lead-weight: 400;
+    --ds-type-lead-width: 100%;
+    --ds-type-lead-leading: 1.45;
+    --ds-type-body-size: 0.875rem;
+    --ds-type-body-weight: 400;
+    --ds-type-body-width: 100%;
+    --ds-type-body-leading: 1.55;
+    --ds-type-small-size: 0.8125rem;
+    --ds-type-small-weight: 400;
+    --ds-type-small-width: 100%;
+    --ds-type-small-leading: 1.45;
+    --ds-type-label-size: 0.75rem;
+    --ds-type-label-weight: 600;
+    --ds-type-label-width: 96%;
+    --ds-type-label-leading: 1.25;
+    --ds-type-button-size: 0.875rem;
+    --ds-type-button-weight: 700;
+    --ds-type-button-width: 90%;
+    --ds-type-button-leading: 1;
+    --ds-type-wordmark-size: 1rem;
+    --ds-type-wordmark-weight: 700;
+    --ds-type-wordmark-width: 90%;
+    --ds-type-wordmark-leading: 1;
+    --ds-type-code-size: 0.8125rem;
+    --ds-type-code-weight: 400;
+    --ds-type-code-width: 100%;
+    --ds-type-code-leading: 1.5;
+  }
+
+  :root {
+    /* sys.surface.board: the ground. */
+    --background: 266.7 20.9% 8.4%;
+    /* sys.text.primary (ink). */
+    --foreground: 270 23.5% 93.3%;
+    /* sys.surface.sheet: panels, the sidebar, cards. */
+    --card: 265 20% 11.8%;
+    --card-foreground: 270 23.5% 93.3%;
+    /* sys.surface.paper: dialogs, menus, popovers. */
+    --popover: 265.7 18.9% 14.5%;
+    --popover-foreground: 270 23.5% 93.3%;
+    /* sys.action.primary.fill: the one primary action per view. A fill, never text. */
+    --primary: 36.2 79.1% 56.9%;
+    /* sys.action.primary.ink: plum-black on gold in both themes. */
+    --primary-foreground: 266.7 27.3% 12.9%;
+    /* Quiet control fill: sys.surface.paper-shade (light) / plate.0.top (dark). */
+    --secondary: 266.3 18.6% 16.9%;
+    --secondary-foreground: 270 23.5% 93.3%;
+    /* Quiet fill (same step as secondary): every text color, redline included, clears 7:1 on it. */
+    --muted: 266.3 18.6% 16.9%;
+    /* sys.text.secondary (ink 2). */
+    --muted-foreground: 266.7 17% 79.2%;
+    --accent: 266.3 18.6% 16.9%;
+    --accent-foreground: 270 23.5% 93.3%;
+    /* sys.status.error (redline): errors only, as text and as a fill. */
+    --destructive: 7.1 100% 78.4%;
+    --destructive-foreground: 266.7 20.9% 8.4%;
+    /* sys.line.hair (ink at 22%, 24% in dark) composited on the board: decorative rules between regions, never the only boundary of a control. */
+    --border: 266.7 6.1% 28.8%;
+    /* Control boundary: ink 2, at least 3:1 against every surface. */
+    --input: 266.7 17% 79.2%;
+    /* sys.focus.color: the focus ring is ink, never gold. */
+    --ring: 270 23.5% 93.3%;
+    /* ref.color.gold.400, constant in both themes. A fill or mark, never text. */
+    --gold: 36.2 79.1% 56.9%;
+    /* sys.action.primary.hover (gold.300). */
+    --gold-hi: 36.6 83.7% 63.9%;
+    /* sys.action.primary.press (gold.500); only under large bold button text. */
+    --gold-press: 35.9 67.7% 50.2%;
+    /* Gold tint for a selected fill; the text on it is always ink. */
+    --gold-dim: 36.2 79.1% 56.9% / 0.14;
+    --gold-glow: 36.2 79.1% 56.9% / 0.25;
+    /* App-local (not in the canonical palette): success text, AAA on every surface; always paired with a glyph or word. */
+    --success: 166 51% 68%;
+    /* App-local (not in the canonical palette): warning text, AAA on every surface; always paired with a glyph or word. */
+    --warning: 36 83% 72%;
+    /* Inset well inside a sheet (settings sections, the settings rail): the board. */
+    --surface: 266.7 20.9% 8.4%;
+    --panel2: 266.3 18.6% 16.9%;
+    /* Hint text: sys.text.secondary (ink 2). */
+    --sub: 266.7 17% 79.2%;
+    /* Secondary text: sys.text.secondary (ink 2). The brand has two text inks. */
+    --text2: 266.7 17% 79.2%;
+    /* App-local info/scan hue (not a canonical status color), AAA on every surface. */
+    --blue: 226 49% 83%;
+    /* The interface is flat (DESIGN.md Elevation & Depth). */
+    --shadow-card: none;
+    /* Full paint value of the ink, for SVG. */
+    --color-ink: #EEEAF2;
     --color-gold: #E8A33A;
     --color-gold-hi: #F0B456;
     --color-gold-dim: rgba(232,163,58,0.14);
-    --color-sub: #b1a5c1;
-    --color-green: #44C2A4;
-    --color-red: #ec9e95;
-    --color-blue: #a8b5e1;
-    --radius: 0.875rem;
+    --color-sub: #C9C1D3;
+    /* Full paint value of success. */
+    --color-green: #84D7C4;
+    --color-red: #FF9E91;
+    /* Full paint value of blue. */
+    --color-blue: #BEC8E9;
+    /* artifact.mark.top */
+    --color-mark-top: #E8A33A;
+    /* artifact.mark.mid */
+    --color-mark-mid: #F4F2ED;
+    /* artifact.mark.bottom */
+    --color-mark-bottom: #CBBFDB;
+    /* sys.radius.none: the world is square (DESIGN.md Shapes). */
+    --radius: 0px;
     --topbar-h: 50px;
     --bottom-h: 56px;
     --speaker-1: 40 66% 62%;
@@ -55,49 +124,79 @@
   }
 
   .light {
-    --background: 43 24% 94%;
-    --foreground: 273 30% 24%;
-    --card: 45 33% 98%;
-    --card-foreground: 273 30% 24%;
-    --popover: 45 33% 98%;
-    --popover-foreground: 273 30% 24%;
-    --primary: 36 79% 57%;
-    --primary-foreground: 267 27% 13%;
-    --secondary: 24 9% 90%;
-    --secondary-foreground: 273 30% 24%;
-    --muted: 348 6% 85%;
-    /* Muted text — brand plum-soft darkened to clear WCAG AAA (7:1) on every surface */
-    --muted-foreground: 272 16% 35%;
-    --accent: 24 9% 90%;
-    --accent-foreground: 273 30% 24%;
-    /* Dark red so text-destructive clears 7:1 on cream and white text clears 7:1 on the fill */
-    --destructive: 5 52% 31%;
+    /* sys.surface.board: the ground. */
+    --background: 75 13.3% 94.1%;
+    /* sys.text.primary (ink). */
+    --foreground: 266.7 27.3% 12.9%;
+    /* sys.surface.sheet: panels, the sidebar, cards. */
+    --card: 60 20% 98%;
+    --card-foreground: 266.7 27.3% 12.9%;
+    /* sys.surface.paper: dialogs, menus, popovers. */
+    --popover: 0 0% 100%;
+    --popover-foreground: 266.7 27.3% 12.9%;
+    /* sys.action.primary.fill: the one primary action per view. A fill, never text. */
+    --primary: 36.2 79.1% 56.9%;
+    /* sys.action.primary.ink: plum-black on gold in both themes. */
+    --primary-foreground: 266.7 27.3% 12.9%;
+    /* Quiet control fill: sys.surface.paper-shade (light) / plate.0.top (dark). */
+    --secondary: 72 8.8% 88.8%;
+    --secondary-foreground: 266.7 27.3% 12.9%;
+    /* Quiet fill (same step as secondary): every text color, redline included, clears 7:1 on it. */
+    --muted: 72 8.8% 88.8%;
+    /* sys.text.secondary (ink 2). */
+    --muted-foreground: 267.3 15.7% 27.5%;
+    --accent: 72 8.8% 88.8%;
+    --accent-foreground: 266.7 27.3% 12.9%;
+    /* sys.status.error (redline): errors only, as text and as a fill. */
+    --destructive: 3.5 74.2% 32%;
     --destructive-foreground: 0 0% 100%;
-    --border: 0 6% 86%;
-    --input: 0 6% 86%;
-    /* Focus ring — plum-2 (gold is invisible on cream); AAA-visible 7.8:1 */
-    --ring: 276 28% 34%;
-    --gold: 36 79% 57%;
-    /* Hover gold: the brand gold.300 (#F0B456), as color-gold-hi */
-    --gold-hi: 36.6 83.6% 63.9%;
-    --gold-dim: 36 79% 57% / 0.12;
-    --gold-glow: 36 79% 57% / 0.22;
-    --success: 166 54% 21%;
-    --warning: 34 75% 23%;
-    --surface: 34 17% 92%;
-    --panel2: 12 8% 88%;
-    /* Hint text — brand plum-soft darkened to clear WCAG AAA (7:1) on every surface */
-    --sub: 272 16% 35%;
-    --text2: 276 28% 34%;
-    --blue: 226 33% 32%;
-    --shadow-card: 0 18px 50px -24px rgba(62,42,78,0.35);
+    /* sys.line.hair (ink at 22%, 24% in dark) composited on the board: decorative rules between regions, never the only boundary of a control. */
+    --border: 300 0.8% 76.3%;
+    /* Control boundary: ink 2, at least 3:1 against every surface. */
+    --input: 267.3 15.7% 27.5%;
+    /* sys.focus.color: the focus ring is ink, never gold. */
+    --ring: 266.7 27.3% 12.9%;
+    /* ref.color.gold.400, constant in both themes. A fill or mark, never text. */
+    --gold: 36.2 79.1% 56.9%;
+    /* sys.action.primary.hover (gold.300). */
+    --gold-hi: 36.6 83.7% 63.9%;
+    /* sys.action.primary.press (gold.500); only under large bold button text. */
+    --gold-press: 35.9 67.7% 50.2%;
+    /* Gold tint for a selected fill; the text on it is always ink. */
+    --gold-dim: 36.2 79.1% 56.9% / 0.16;
+    --gold-glow: 36.2 79.1% 56.9% / 0.22;
+    /* App-local (not in the canonical palette): success text, AAA on every surface; always paired with a glyph or word. */
+    --success: 166 54% 16%;
+    /* App-local (not in the canonical palette): warning text, AAA on every surface; always paired with a glyph or word. */
+    --warning: 34 75% 18%;
+    /* Inset well inside a sheet (settings sections, the settings rail): the board. */
+    --surface: 75 13.3% 94.1%;
+    --panel2: 72 8.8% 88.8%;
+    /* Hint text: sys.text.secondary (ink 2). */
+    --sub: 267.3 15.7% 27.5%;
+    /* Secondary text: sys.text.secondary (ink 2). The brand has two text inks. */
+    --text2: 267.3 15.7% 27.5%;
+    /* App-local info/scan hue (not a canonical status color), AAA on every surface. */
+    --blue: 226 33% 26%;
+    /* The interface is flat (DESIGN.md Elevation & Depth). */
+    --shadow-card: none;
+    /* Full paint value of the ink, for SVG. */
+    --color-ink: #20182A;
     --color-gold: #E8A33A;
     --color-gold-hi: #F0B456;
-    --color-gold-dim: rgba(232,163,58,0.12);
-    --color-sub: #5b4c68;
-    --color-green: #185144;
-    --color-red: #782d26;
-    --color-blue: #37446d;
+    --color-gold-dim: rgba(232,163,58,0.16);
+    --color-sub: #453B51;
+    /* Full paint value of success. */
+    --color-green: #133F35;
+    --color-red: #8E1C15;
+    /* Full paint value of blue. */
+    --color-blue: #2C3758;
+    /* artifact.mark.top */
+    --color-mark-top: #E8A33A;
+    /* artifact.mark.mid */
+    --color-mark-mid: #3E2A4E;
+    /* artifact.mark.bottom */
+    --color-mark-bottom: #5C3F70;
     --speaker-1: 40 62% 44%;
     --speaker-2: 212 62% 48%;
     --speaker-3: 150 46% 37%;
