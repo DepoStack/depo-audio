@@ -1,10 +1,11 @@
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { invoke } from '@tauri-apps/api/core'
 import { openUrl } from '@tauri-apps/plugin-opener'
 import { open as openDialog } from '@tauri-apps/plugin-dialog'
 import SettingsPanel from '../components/SettingsPanel'
 import { DEPOAUDIO_RELEASES_URL } from '../constants'
+import { buildAppStylesheet, injectStylesheet } from './helpers/appStylesheet'
 
 vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn() }))
 vi.mock('@tauri-apps/plugin-opener', () => ({ openUrl: vi.fn() }))
@@ -191,5 +192,77 @@ describe('SettingsPanel release boundaries', () => {
     fireEvent.keyDown(document.activeElement || document.body, { key: 'Escape' })
     await waitFor(() => expect(reloadApp).toHaveBeenCalled())
     expect(onOpenChange).not.toHaveBeenCalledWith(false)
+  })
+
+  // jsdom cannot measure layout (every height is 0), so this test checks the
+  // computed-style contract that keeps cards whole, using the app's real
+  // compiled stylesheet: the content pane is the only scroll container, it may
+  // shrink inside the fixed-height body (min-height 0), and none of its direct
+  // children can be shrunk, height-capped or given a fixed height. With those
+  // in place a card's overflow-hidden clips only its own rounded corners and a
+  // tall section scrolls in the pane instead of being cut off. The browser
+  // check at 1160x820 and 720x600 is recorded in the CHANGELOG.
+  describe('with the app stylesheet', () => {
+    let removeStylesheet
+    beforeAll(async () => {
+      removeStylesheet = injectStylesheet(await buildAppStylesheet())
+    }, 30000)
+    afterAll(() => removeStylesheet?.())
+
+    it('applies the stylesheet: an unprotected card in a flex column would shrink', () => {
+      const { container } = render(
+        <div className="flex flex-col">
+          <div className="overflow-hidden rounded-xl">card</div>
+        </div>,
+      )
+      const card = container.firstChild.firstChild
+      expect(getComputedStyle(container.firstChild).display).toBe('flex')
+      expect(getComputedStyle(card).overflow).toBe('hidden')
+      expect(getComputedStyle(card).flexShrink).toBe('1')
+    })
+
+    it('scrolls only the content pane and never shrinks, caps or clips a section card', async () => {
+      invoke.mockImplementation(command =>
+        Promise.resolve(
+          command === 'local_data_info_cmd'
+            ? { appDataDir: '/synthetic/app-data', libraryReadable: true, items: [] }
+            : [],
+        ),
+      )
+      renderSettings({})
+
+      const nav = screen.getByRole('navigation', { name: 'Settings sections' })
+      const sections = [...nav.querySelectorAll('button')].map(button => button.getAttribute('aria-label'))
+      expect(sections.length).toBeGreaterThan(1)
+      for (const name of sections) {
+        fireEvent.click(screen.getByRole('button', { name }))
+        const pane = screen.getByTestId('settings-content')
+        const dialog = pane.closest('[role="dialog"]')
+        const paneStyle = getComputedStyle(pane)
+        expect(paneStyle.overflowY).toBe('auto')
+        expect(paneStyle.minHeight).toBe('0px')
+        expect(paneStyle.display).toBe('flex')
+        expect(paneStyle.flexDirection).toBe('column')
+
+        // Nothing between the pane and the dialog scrolls, and the dialog
+        // itself does not: the header and section list stay in place.
+        expect(getComputedStyle(dialog).overflow).toBe('hidden')
+        for (let el = pane.parentElement; el && el !== dialog; el = el.parentElement) {
+          expect(['auto', 'scroll']).not.toContain(getComputedStyle(el).overflowY)
+        }
+
+        expect(pane.children.length).toBeGreaterThan(0)
+        for (const card of pane.children) {
+          const style = getComputedStyle(card)
+          expect(style.flexShrink, `${name}: a section card can shrink`).toBe('0')
+          expect(['', 'none'], `${name}: a section card has a max-height`).toContain(style.maxHeight)
+          expect(['', 'auto'], `${name}: a section card has a fixed height`).toContain(style.height)
+        }
+        pane.scrollTop = 200
+      }
+      // Switching sections starts the new one at its top
+      fireEvent.click(screen.getByRole('button', { name: sections[0] }))
+      expect(screen.getByTestId('settings-content').scrollTop).toBe(0)
+    })
   })
 })

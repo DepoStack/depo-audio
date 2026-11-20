@@ -73,6 +73,7 @@ export default function ConvertTab({
   doneCount,
   failCount,
   cancelledCount = 0,
+  onOpenInPlayer,
 }) {
   const {
     mode,
@@ -124,6 +125,22 @@ export default function ConvertTab({
   useEffect(() => {
     filesRef.current = files
   }, [files])
+
+  // Suggestions from the last scan that are not switched on yet
+  const pendingSuggestions = analysis
+    ? [
+        analysis.needsLeveling &&
+          mode !== 'keep' &&
+          !autoLevel && { id: 'autoLevel', label: 'Balance Microphone Levels' },
+        analysis.hasClipping && !declip && { id: 'declip', label: 'Fix Clipped Audio' },
+      ].filter(Boolean)
+    : []
+  const applySuggestions = () => {
+    for (const suggestion of pendingSuggestions) {
+      if (suggestion.id === 'autoLevel') setAutoLevel(true)
+      if (suggestion.id === 'declip') setDeclip(true)
+    }
+  }
 
   const handleModeChange = nextMode => {
     setMode(nextMode)
@@ -321,11 +338,9 @@ export default function ConvertTab({
       if (results.length > 0) {
         // Aggregate non-learned signal measurements across all files.
         const aggregated = aggregateAnalysisResults(results)
+        // The scan only suggests: nothing is switched on until the person
+        // chooses "Apply suggestions" or turns a toggle on themselves.
         setAnalysis(aggregated)
-
-        // Only enable processing that the scan actually recommends
-        if (aggregated.needsLeveling && mode !== 'keep') setAutoLevel(true)
-        if (aggregated.hasClipping) setDeclip(true)
       }
     } catch (e) {
       console.error('Scan failed:', e)
@@ -492,6 +507,7 @@ export default function ConvertTab({
                     job={jobs[f.path]}
                     onRemove={() => removeFile(f.path, converting)}
                     converting={converting}
+                    onOpenInPlayer={onOpenInPlayer}
                   />
                 ))}
               </div>
@@ -744,9 +760,21 @@ export default function ConvertTab({
             <CardContent>
               {!analysis && !scanning && !scanError && (
                 <p className="px-4 py-2.5 type-small text-[hsl(var(--sub))]">
-                  Drop files and click <strong className="text-foreground">Scan</strong> to detect issues and
-                  auto-enable the right fixes.
+                  Drop files and click <strong className="text-foreground">Scan</strong> to check for level differences
+                  and clipping. Scan suggests fixes; nothing changes until you apply them.
                 </p>
+              )}
+
+              {analysis && !scanning && pendingSuggestions.length > 0 && (
+                <div className="flex flex-wrap items-center justify-between gap-2 px-4 py-2.5 border-b border-border/60">
+                  <p className="type-small text-[hsl(var(--text2))]">
+                    Scan suggests {pendingSuggestions.map(s => s.label).join(' and ')}. Nothing is switched on until you
+                    apply {pendingSuggestions.length === 1 ? 'it' : 'them'}.
+                  </p>
+                  <Button variant="outline" size="sm" onClick={applySuggestions} disabled={converting}>
+                    Apply suggestions
+                  </Button>
+                </div>
               )}
 
               {scanError && !scanning && (

@@ -5,6 +5,7 @@ import { Sun, Moon, Monitor, Settings, AudioLines, Play, FolderOpen, X } from 'l
 import { DEPOSTACK_URL } from './constants'
 import { rememberEngineInfo } from './lib/diagnostics'
 import { shouldIgnoreNavigationShortcut } from './lib/utils'
+import { reexportConfirmCopy } from './lib/queue'
 
 import useTheme from './hooks/useTheme'
 import { usePreferencesContext } from './hooks/PreferencesContext'
@@ -20,6 +21,7 @@ import { Tabs, TabsList, TabsTrigger, TabsContent } from './components/ui/tabs'
 import { Badge } from './components/ui/badge'
 import { Button } from './components/ui/button'
 import ConvertTab from './components/Convert/ConvertTab'
+import { ConfirmDialog } from './components/ui/confirm-dialog'
 
 const LibraryTab = lazy(() => import('./components/Library/LibraryTab'))
 const PlayerTab = lazy(() => import('./components/Player/PlayerTab'))
@@ -147,13 +149,40 @@ export default function App() {
     })
   }
 
-  const handleQueueFromLibrary = async (sourcePaths, sourceCaseName) => {
-    const paths = Array.isArray(sourcePaths) ? sourcePaths : [sourcePaths]
-    const result = await addFiles(paths, { replace: true })
+  const queueFromLibrary = async (paths, sourceCaseName, replace) => {
+    const result = await addFiles(paths, { replace })
     if (result?.locked) return false
-    setCaseName(sourceCaseName || '')
+    // Adding to an existing queue keeps the case name already chosen for it
+    if (replace || !caseName) setCaseName(sourceCaseName || '')
     setTab('convert')
     return true
+  }
+
+  // Re-export from the Library replaces the Convert queue. When the queue
+  // already holds files, ask first; an empty queue is filled without a prompt.
+  const [reexportPending, setReexportPending] = useState(null)
+  const handleQueueFromLibrary = async (sourcePaths, sourceCaseName) => {
+    const paths = Array.isArray(sourcePaths) ? sourcePaths : [sourcePaths]
+    if (files.length > 0) {
+      setReexportPending({ paths, caseName: sourceCaseName, queued: files.length })
+      return false
+    }
+    return queueFromLibrary(paths, sourceCaseName, true)
+  }
+  const reexportCopy = reexportPending
+    ? reexportConfirmCopy({
+        queued: files.length,
+        queuedAtOpen: reexportPending.queued,
+        incoming: reexportPending.paths.length,
+      })
+    : null
+
+  // "Open in Player" on a converted row: the Player tab mounts on demand, so
+  // hand it the paths as a request it consumes once.
+  const [playerOpenRequest, setPlayerOpenRequest] = useState(null)
+  const handleOpenInPlayer = paths => {
+    setPlayerOpenRequest({ paths })
+    setTab('player')
   }
 
   const ThemeIcon = themeIcons[themeLabel] || Monitor
@@ -393,6 +422,7 @@ export default function App() {
                   doneCount={doneCount}
                   failCount={failCount}
                   cancelledCount={cancelledCount}
+                  onOpenInPlayer={handleOpenInPlayer}
                 />
               )}
             </TabsContent>
@@ -401,6 +431,10 @@ export default function App() {
               <Suspense fallback={<WorkspaceLoading label="Loading Player workspace" />}>
                 <PlayerTab
                   dropHandlerRef={dropOverrideRef}
+                  openRequest={playerOpenRequest}
+                  onOpenRequestHandled={request =>
+                    setPlayerOpenRequest(current => (current === request ? null : current))
+                  }
                   onConvertFiles={async paths => {
                     const result = await addFiles(paths)
                     if (!result?.locked) setTab('convert')
@@ -429,6 +463,23 @@ export default function App() {
           </>
         )}
       </main>
+
+      {/* The copy and the actions read the queue as it is now, not as it was
+          when the dialog opened: Replace removes exactly what the title counts. */}
+      <ConfirmDialog
+        open={!!reexportPending}
+        onOpenChange={next => {
+          if (!next) setReexportPending(null)
+        }}
+        title={reexportCopy?.title ?? ''}
+        description={reexportCopy?.description}
+        confirmLabel={reexportCopy?.confirmLabel}
+        destructive={reexportCopy?.destructive ?? false}
+        secondaryLabel={reexportCopy?.secondaryLabel}
+        initialFocus={reexportCopy?.secondaryLabel ? 'secondary' : 'confirm'}
+        onSecondary={() => queueFromLibrary(reexportPending.paths, reexportPending.caseName, false)}
+        onConfirm={() => queueFromLibrary(reexportPending.paths, reexportPending.caseName, true)}
+      />
 
       <Suspense fallback={null}>
         <SettingsPanel

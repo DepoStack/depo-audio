@@ -51,7 +51,7 @@ function loadPlayerStorageState() {
   }
 }
 
-export default function PlayerTab({ dropHandlerRef, onConvertFiles }) {
+export default function PlayerTab({ dropHandlerRef, onConvertFiles, openRequest, onOpenRequestHandled }) {
   const [tracks, setTracks] = useState([]) // { path, name, colorIndex, label }
   const [activeTrack, setActiveTrack] = useState(null)
   const [playing, setPlaying] = useState(false)
@@ -204,6 +204,17 @@ export default function PlayerTab({ dropHandlerRef, onConvertFiles }) {
     activeTrackRef.current = track
     setActiveTrack(track)
   }
+
+  // Converted files sent from Convert ("Open in Player"): add any that are
+  // not in the playlist yet and select the first one.
+  useEffect(() => {
+    if (!openRequest?.paths?.length) return
+    addFiles(openRequest.paths)
+    const target = tracksRef.current.find(track => track.path === openRequest.paths[0])
+    if (target) selectTrack(target)
+    onOpenRequestHandled?.(openRequest)
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- run once per request
+  }, [openRequest])
 
   const removeTrack = path => {
     const idx = tracks.findIndex(t => t.path === path)

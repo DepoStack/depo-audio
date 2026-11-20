@@ -50,4 +50,20 @@ describe('Player transcript wiring', () => {
     expect(screen.getByRole('textbox', { name: 'Track label for hearing.wav' })).toHaveValue('Track 1')
     expect(screen.queryByDisplayValue('Speaker 1')).not.toBeInTheDocument()
   })
+
+  it('adds and selects files sent from Convert with Open in Player', async () => {
+    const request = { paths: ['/out/hearing.mp3'] }
+    const onOpenRequestHandled = vi.fn()
+    render(
+      <PlayerTab
+        dropHandlerRef={{ current: null }}
+        onConvertFiles={vi.fn()}
+        openRequest={request}
+        onOpenRequestHandled={onOpenRequestHandled}
+      />,
+    )
+
+    expect(await screen.findByTestId('synced-transcript')).toHaveAttribute('data-track-path', '/out/hearing.mp3')
+    expect(onOpenRequestHandled).toHaveBeenCalledWith(request)
+  })
 })

@@ -67,6 +67,12 @@ export function partitionPlaybackPaths(paths, tracks) {
   }
 }
 
+// True when the Player's media element can open this file as it is
+export function isPlayerPlayable(path) {
+  const ext = typeof path === 'string' ? path.split('.').pop()?.toLowerCase() : ''
+  return AUDIO_EXTS.includes(ext) && !CONVERSION_REQUIRED_EXTS.has(ext)
+}
+
 export function freshAudioPaths(paths, tracks) {
   return partitionPlaybackPaths(paths, tracks).playable
 }

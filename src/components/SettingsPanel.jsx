@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useId } from 'react'
+import { useState, useEffect, useCallback, useId, useRef } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import { openUrl } from '@tauri-apps/plugin-opener'
 import {
@@ -362,6 +362,11 @@ export default function SettingsPanel({
     setDefaultOutputMode,
   } = prefs
   const [section, setSection] = useState('models')
+  // Each section opens at its top, not at the previous section's scroll
+  const contentRef = useRef(null)
+  useEffect(() => {
+    if (contentRef.current) contentRef.current.scrollTop = 0
+  }, [section])
   const [externalLinkError, setExternalLinkError] = useState('')
   // After an import or a partial clear, closing Settings reloads the app so
   // every screen reads the changed library and storage (DA-07).
@@ -440,8 +445,16 @@ export default function SettingsPanel({
             ))}
           </nav>
 
-          {/* Content pane */}
-          <div className="flex-1 overflow-y-auto p-4 md:p-5 flex flex-col gap-3.5">
+          {/* Content pane: the only part of Settings that scrolls. Cards clip
+              their own corners (overflow-hidden), which lets a flex column
+              shrink them below their content, so every direct child keeps its
+              full height here and the pane scrolls instead. (*:shrink-0, not
+              an arbitrary [&>*] variant, so the jsdom test can match it.) */}
+          <div
+            ref={contentRef}
+            data-testid="settings-content"
+            className="flex-1 min-w-0 min-h-0 overflow-y-auto overscroll-contain p-4 md:p-5 flex flex-col gap-3.5 *:shrink-0"
+          >
             {section === 'models' && <LegacyModelStorage />}
 
             {section === 'data' && (
