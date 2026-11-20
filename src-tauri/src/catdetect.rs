@@ -430,10 +430,7 @@ fn make_job(name: String, path: PathBuf, mut files: Vec<DiscoveredFile>) -> CatJ
         .iter()
         .filter_map(|file| file.modified)
         .max()
-        .map(|modified| {
-            let datetime: chrono::DateTime<chrono::Utc> = modified.into();
-            datetime.format("%Y-%m-%d").to_string()
-        })
+        .map(|modified| crate::clock::date_ymd(&crate::clock::from_system_time(modified)))
         .unwrap_or_default();
     let files: Vec<_> = files.into_iter().map(|file| file.file).collect();
     let software = infer_software(&files);

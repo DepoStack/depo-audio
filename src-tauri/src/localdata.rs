@@ -23,8 +23,8 @@ use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
-use chrono::{DateTime, Datelike, Timelike, Utc};
 use serde::Serialize;
+use time::OffsetDateTime;
 use uuid::Uuid;
 
 use crate::types::{Case, Library};
@@ -191,10 +191,11 @@ fn crc32(bytes: &[u8]) -> u32 {
     })
 }
 
-fn dos_date_time(time: &DateTime<Utc>) -> (u16, u16) {
+fn dos_date_time(time: &OffsetDateTime) -> (u16, u16) {
+    let time = time.to_offset(time::UtcOffset::UTC);
     let year = time.year().clamp(1980, 2107) as u16;
-    let date = ((year - 1980) << 9) | ((time.month() as u16) << 5) | time.day() as u16;
-    let clock = ((time.hour() as u16) << 11) | ((time.minute() as u16) << 5) | (time.second() as u16 / 2);
+    let date = ((year - 1980) << 9) | (u16::from(u8::from(time.month())) << 5) | u16::from(time.day());
+    let clock = (u16::from(time.hour()) << 11) | (u16::from(time.minute()) << 5) | (u16::from(time.second()) / 2);
     (clock, date)
 }
 
@@ -205,7 +206,7 @@ const UTF8_NAMES: u16 = 0x0800;
 
 /// A zip of stored entries (method 0) with UTF-8 names. Any zip tool can
 /// open it; DepoAudio reads it back with `read_stored_zip`.
-pub(crate) fn write_stored_zip(entries: &[(&str, &[u8])], time: &DateTime<Utc>) -> Result<Vec<u8>, String> {
+pub(crate) fn write_stored_zip(entries: &[(&str, &[u8])], time: &OffsetDateTime) -> Result<Vec<u8>, String> {
     let (clock, date) = dos_date_time(time);
     let mut out = Vec::new();
     let mut central = Vec::new();
@@ -374,7 +375,7 @@ pub(crate) fn build_backup(
     transcripts: &serde_json::Value,
     bookmarks: &serde_json::Value,
     app_version: &str,
-    time: &DateTime<Utc>,
+    time: &OffsetDateTime,
 ) -> Result<(Vec<u8>, BackupCounts), String> {
     let transcript_map = transcripts
         .as_object()
@@ -387,7 +388,7 @@ pub(crate) fn build_backup(
         "format": BACKUP_FORMAT,
         "formatVersion": BACKUP_FORMAT_VERSION,
         "appVersion": app_version,
-        "exportedAt": time.to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+        "exportedAt": crate::clock::rfc3339_seconds_z(time),
         "contents": summary,
     });
     let pretty = |value: &serde_json::Value| {
@@ -636,10 +637,13 @@ mod tests {
         dir
     }
 
-    fn time() -> DateTime<Utc> {
-        DateTime::parse_from_rfc3339("2026-11-13T10:20:30Z")
-            .unwrap()
-            .with_timezone(&Utc)
+    fn time() -> OffsetDateTime {
+        // A fraction of a second must not reach the backup's `exportedAt`.
+        OffsetDateTime::parse(
+            "2026-11-13T10:20:30.987654321Z",
+            &time::format_description::well_known::Rfc3339,
+        )
+        .unwrap()
     }
 
     fn session(id: &str, path: &str) -> Session {
@@ -904,6 +908,20 @@ mod tests {
         assert_eq!(info["appVersion"], "1.0.3");
         assert_eq!(info["exportedAt"], "2026-11-13T10:20:30Z");
         assert!(String::from_utf8_lossy(&entries[ENTRY_README]).contains("not encrypted"));
+    }
+
+    #[test]
+    fn zip_entry_times_are_dos_encoded_utc() {
+        // 2026-11-13 10:20:30 UTC: DOS keeps two-second steps.
+        let (clock, date) = dos_date_time(&time());
+        assert_eq!(date, ((2026 - 1980) << 9) | (11 << 5) | 13);
+        assert_eq!(clock, (10 << 11) | (20 << 5) | 15);
+        let offset = OffsetDateTime::parse(
+            "2026-11-13T05:20:30-05:00",
+            &time::format_description::well_known::Rfc3339,
+        )
+        .unwrap();
+        assert_eq!(dos_date_time(&offset), (clock, date));
     }
 
     #[test]

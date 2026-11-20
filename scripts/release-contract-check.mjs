@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from 'node:fs'
+import { existsSync, readFileSync, readdirSync } from 'node:fs'
 
 const read = path => readFileSync(new URL(`../${path}`, import.meta.url), 'utf8')
 const parseJson = path => JSON.parse(read(path))
@@ -68,6 +68,11 @@ const candidateIsNoGo = releaseCandidate.includes('Status: **NO-GO for publicati
 // moved tauri-utils to urlpattern 0.6, so the time-bounded exception that
 // expired on 2026-09-30 was deleted rather than renewed. Any future advisory
 // exception must be re-added deliberately with its own owner and expiry.
+// RUSTSEC-2026-0543 (chrono is unmaintained) was cleared on 2026-11-20 by
+// moving DepoAudio's own timestamps to the `time` crate. Nothing else in the
+// release graph enables chrono (serde_with keeps it as an unused optional
+// dependency), so no exception was needed; a direct chrono dependency would
+// bring the advisory straight back.
 const lockedPackageVersions = name =>
   [...cargoLock.matchAll(/^\[\[package\]\]\s*\r?\nname = "([^"]+)"\s*\r?\nversion = "([^"]+)"/gm)]
     .filter(match => match[1] === name)
@@ -86,7 +91,23 @@ const denyAdvisorySection = (denyPolicy.match(/^\[advisories\]\s*\n([\s\S]*?)(?=
   .join('\n')
 expect(
   /^ignore = \[\]$/m.test(denyAdvisorySection) && !/RUSTSEC-\d{4}-\d{4}/.test(denyAdvisorySection),
-  'deny.toml must not carry advisory exceptions; the expired rust-unic exception must stay deleted',
+  'deny.toml must not carry advisory exceptions; the expired rust-unic exception must stay deleted, and RUSTSEC-2026-0543 (chrono) is cleared by the move to the time crate, not by an exception',
+)
+const cargoDependencyTables = [...cargoToml.matchAll(/^\[([^\]]*dependencies)\]\s*\n([\s\S]*?)(?=^\[|(?![\s\S]))/gm)]
+expect(cargoDependencyTables.length > 0, 'src-tauri/Cargo.toml must declare its dependency tables')
+const directChronoTables = cargoDependencyTables
+  .filter(([, , body]) => /^\s*chrono\s*=|package\s*=\s*"chrono"/m.test(body.replace(/#.*$/gm, '')))
+  .map(([, table]) => table)
+expect(
+  directChronoTables.length === 0,
+  `depo-audio must not depend on chrono directly (found in [${directChronoTables.join('], [')}]); chrono is unmaintained (RUSTSEC-2026-0543) and timestamps use the time crate (src-tauri/src/clock.rs)`,
+)
+const rustSourcesUsingChrono = readdirSync(new URL('../src-tauri/src/', import.meta.url))
+  .filter(name => name.endsWith('.rs'))
+  .filter(name => /\bchrono::/.test(read(`src-tauri/src/${name}`).replace(/\/\/.*$/gm, '')))
+expect(
+  rustSourcesUsingChrono.length === 0,
+  `Rust sources must build timestamps with the time crate, not chrono: ${rustSourcesUsingChrono.join(', ')}`,
 )
 expect(
   !/^\[\[package\]\]\s*\r?\nname = "unic-/m.test(cargoLock),

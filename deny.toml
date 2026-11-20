@@ -14,8 +14,13 @@ all-features = true
 # No advisory exceptions. The time-bounded rust-unic exception (RUSTSEC-2025-0075,
 # -0080, -0081, -0098, -0100) expired on 2026-09-30 and was deleted when the
 # Tauri 2.12 upgrade moved tauri-utils to urlpattern 0.6, which no longer
-# depends on the unmaintained unic-* crates. Every current or future advisory
-# is blocking. A new exception needs a named owner, the exact advisory IDs, a
+# depends on the unmaintained unic-* crates. RUSTSEC-2026-0543 (chrono is
+# unmaintained) was resolved on 2026-11-20 without an exception: DepoAudio's
+# own timestamps moved to the `time` crate, and no other crate in the release
+# graph builds chrono (serde_with lists it only as an optional feature that
+# nothing enables). An exception for it was approved by the release owner
+# (Andrew Mayes) the same day but was not needed, so none was added. Every
+# current or future advisory is blocking. A new exception needs a named owner, the exact advisory IDs, a
 # rationale, and a review/remove-by date, plus a matching ledger entry in
 # THIRD_PARTY_LICENSES.md.
 ignore = []
