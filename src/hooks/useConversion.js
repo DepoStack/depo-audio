@@ -1,6 +1,7 @@
 import { useState, useCallback, useEffect, useRef } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
+import { effectiveOutputRate } from '../constants'
 
 let jobCounter = 0
 const CANCELLED_MESSAGE = 'Conversion cancelled'
@@ -205,7 +206,7 @@ export default function useConversion() {
                   outDir: resolvedOutDir,
                   mode,
                   format: formatOut,
-                  rate: formatOut === 'opus' ? '48000' : rate,
+                  rate: effectiveOutputRate(formatOut, rate),
                   mp3Bitrate: mp3Bitrate ?? 192,
                   labels,
                   chanVols,

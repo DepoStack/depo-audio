@@ -41,7 +41,7 @@
         "fileName": { "type": "string", "description": "File name only; the manifest sits next to this file." },
         "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
         "sizeBytes": { "type": "integer", "minimum": 1 },
-        "format": { "enum": ["wav", "mp3", "flac", "opus", "m4a"] },
+        "format": { "enum": ["wav", "mp3", "flac", "opus", "m4a", "sgmca"] },
         "sampleRate": { "type": ["integer", "null"], "minimum": 8000, "maximum": 192000 }
       }
     },

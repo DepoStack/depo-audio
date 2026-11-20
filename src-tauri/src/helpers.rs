@@ -44,7 +44,8 @@ pub(crate) fn get_formats() -> Vec<FormatInfo> {
             note: Some("The audio track is extracted and converted; video is discarded.".into()) },
         // Court reporting formats — require conversion
         FormatInfo { key: "sgmca".into(), name: "Stenograph SGMCA".into(), vendor: "Case CATalyst".into(),
-            status: "supported".into(), handler: "sgmca".into(), channels: Some("4".into()), note: None },
+            status: "supported".into(), handler: "sgmca".into(), channels: Some("1–16".into()),
+            note: Some("Ogg Opus with one mono stream per channel (mapping family 255).".into()) },
         FormatInfo { key: "ftr".into(), name: "FTR Recording".into(), vendor: "For The Record".into(),
             status: "experimental".into(), handler: "ftr".into(), channels: Some("4–16".into()),
             note: Some("FTR uses its own multichannel codec (tag 0x4180) and requires FFmpeg's native FTR decoder. Drop all .trm files for a session together.".into()) },
@@ -77,9 +78,16 @@ pub(crate) fn is_standard_format(ext: &str) -> bool {
 /// `ftr` decoder unwraps and repairs those units before delegating to AAC; using
 /// the ordinary `aac` decoder directly fails on real recordings and must never
 /// be used as a fallback.
+///
+/// SGMCA streams are decoded with libopus, the reference Opus decoder.
+/// FFmpeg's built-in Opus decoder has been seen to corrupt a channel of a
+/// 16 kHz mapping-family-255 stream (one channel decoding to full-scale
+/// noise) that libopus decodes cleanly; every bundled FFmpeg build includes
+/// libopus.
 pub(crate) fn input_codec_args(path: &Path) -> Vec<String> {
     match detect_format_for_path(&path.to_string_lossy()) {
         Some(f) if f.handler == "ftr" => vec!["-c:a".into(), "ftr".into()],
+        Some(f) if f.handler == "sgmca" => vec!["-c:a".into(), "libopus".into()],
         _ => Vec::new(),
     }
 }
@@ -192,9 +200,6 @@ fn strip_sgmca_header_with_cancel(
     src: &Path,
     cancelled: Option<&(dyn Fn() -> bool + Send + Sync)>,
 ) -> Result<(PathBuf, bool), String> {
-    const MAGIC: &[u8] = b"OggS";
-    const SCAN: usize = 8192;
-
     let is_cancelled = || cancelled.is_some_and(|check| check());
     if is_cancelled() {
         return Err(AUDIO_PREPARATION_CANCELLED_MESSAGE.into());
@@ -205,18 +210,15 @@ fn strip_sgmca_header_with_cancel(
     if file_size == 0 {
         return Err("SGMCA file is empty".into());
     }
-    let read_size = SCAN.min(usize::try_from(file_size).unwrap_or(usize::MAX));
-    let mut buf = vec![0u8; read_size];
-    let bytes_read = file.read(&mut buf).map_err(|e| e.to_string())?;
+    // The stream starts at the first CRC-correct beginning-of-stream page
+    // that carries an Opus identification header, so stray "OggS" bytes in
+    // a prefix are skipped and a damaged or non-Opus file is named as such
+    // before FFmpeg sees it. Plain SGMCA files start at byte 0 and are used
+    // in place.
+    let offset = crate::sgmca::locate_stream(&mut file)?;
     if is_cancelled() {
         return Err(AUDIO_PREPARATION_CANCELLED_MESSAGE.into());
     }
-    buf.truncate(bytes_read);
-
-    let offset = buf.windows(4).position(|w| w == MAGIC).ok_or_else(|| {
-        "This SGMCA file does not contain an Ogg audio stream in its supported header region; export it to WAV in Case CATalyst first"
-            .to_string()
-    })?;
     if offset == 0 {
         return Ok((src.to_path_buf(), false));
     }
@@ -225,8 +227,13 @@ fn strip_sgmca_header_with_cancel(
     // for a single-user desktop app. The system temp dir inherits OS-level permissions
     // (typically user-only on macOS/Windows). For multi-user or server contexts, consider
     // creating a private subdirectory with restrictive permissions (0o700).
-    let tmp = std::env::temp_dir().join(format!("depoaudio_{}.ogg", Uuid::new_v4().to_string().replace('-', "")));
-    file.seek(SeekFrom::Start(offset as u64)).map_err(|e| e.to_string())?;
+    // The copy keeps the .sgmca extension so every later step treats it as
+    // SGMCA (decoder choice included); FFmpeg finds the Ogg stream by content.
+    let tmp = std::env::temp_dir().join(format!(
+        "depoaudio_{}.sgmca",
+        Uuid::new_v4().to_string().replace('-', "")
+    ));
+    file.seek(SeekFrom::Start(offset)).map_err(|e| e.to_string())?;
     let copy_result = (|| -> Result<(), String> {
         let mut out = fs::OpenOptions::new()
             .write(true)
@@ -328,6 +335,24 @@ pub(crate) fn output_args(format: &str, rate: &str, mp3_bitrate: u32) -> Vec<Str
             "-ar".into(),
             "48000".into(),
         ],
+        // Stenograph Direct Audio: Ogg Opus with one uncoupled mono stream
+        // per channel (mapping family 255) and a 16 kHz input rate tag.
+        // The bitrate depends on the channel count, so the conversion plan
+        // adds it. `-f ogg` because FFmpeg does not know the extension.
+        "sgmca" => vec![
+            "-c:a".into(),
+            "libopus".into(),
+            "-mapping_family".into(),
+            "255".into(),
+            "-frame_duration".into(),
+            "20".into(),
+            "-vbr".into(),
+            "on".into(),
+            "-ar".into(),
+            "16000".into(),
+            "-f".into(),
+            "ogg".into(),
+        ],
         "m4a" => vec![
             "-c:a".into(),
             "aac".into(),
@@ -346,6 +371,7 @@ pub(crate) fn output_ext(format: &str) -> &'static str {
         "flac" => ".flac",
         "opus" => ".opus",
         "m4a" => ".m4a",
+        "sgmca" => ".sgmca",
         _ => ".wav",
     }
 }
@@ -520,6 +546,7 @@ mod tests {
         }
 
         assert!(input_codec_args(Path::new("ordinary.wav")).is_empty());
+        assert_eq!(input_codec_args(Path::new("session.SGMCA")), ["-c:a", "libopus"]);
     }
 
     #[test]
@@ -534,15 +561,40 @@ mod tests {
     }
 
     #[test]
-    fn sgmca_header_strip_copies_from_ogg_magic() {
+    fn sgmca_header_strip_copies_from_the_opus_stream() {
         let dir = ReservationTestDir::new();
         let source = dir.path().join("recording.sgmca");
-        fs::write(&source, b"vendor-prefixOggSaudio-payload").unwrap();
+        let stream = crate::sgmca::fixtures::synthetic(5, 312, 0, |_| 30);
+        // A stray marker in the prefix must not be taken for the stream.
+        let mut bytes = b"vendor-prefix OggS stray".to_vec();
+        bytes.extend_from_slice(&stream);
+        fs::write(&source, bytes).unwrap();
 
         let (prepared, is_temp) = strip_sgmca_header(&source).unwrap();
         assert!(is_temp);
-        assert_eq!(fs::read(&prepared).unwrap(), b"OggSaudio-payload");
+        assert_eq!(fs::read(&prepared).unwrap(), stream);
         fs::remove_file(prepared).unwrap();
+    }
+
+    #[test]
+    fn plain_sgmca_is_used_in_place() {
+        let dir = ReservationTestDir::new();
+        let source = dir.path().join("plain.sgmca");
+        fs::write(&source, crate::sgmca::fixtures::synthetic(5, 312, 0, |_| 30)).unwrap();
+
+        let (prepared, is_temp) = strip_sgmca_header(&source).unwrap();
+        assert!(!is_temp);
+        assert_eq!(prepared, source);
+    }
+
+    #[test]
+    fn sgmca_header_strip_rejects_a_marker_without_an_opus_header() {
+        let dir = ReservationTestDir::new();
+        let source = dir.path().join("damaged.sgmca");
+        fs::write(&source, b"vendor-prefixOggSaudio-payload").unwrap();
+
+        let error = strip_sgmca_header(&source).unwrap_err();
+        assert!(error.contains("no readable Opus stream header"), "{error}");
     }
 
     #[test]
@@ -551,7 +603,8 @@ mod tests {
 
         let dir = ReservationTestDir::new();
         let source = dir.path().join("large-recording.sgmca");
-        let mut contents = b"vendor-prefixOggS".to_vec();
+        let mut contents = b"vendor-prefix".to_vec();
+        contents.extend_from_slice(&crate::sgmca::fixtures::synthetic(5, 312, 0, |_| 30));
         contents.resize(256 * 1024, 7);
         fs::write(&source, contents).unwrap();
         let checks = AtomicUsize::new(0);

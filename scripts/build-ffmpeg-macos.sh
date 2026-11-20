@@ -148,7 +148,7 @@ build_arch() {
   ! grep -q -- '--enable-nonfree' <<<"$version" || { echo "ERROR: $arch FFmpeg enabled nonfree code" >&2; exit 1; }
   ! grep -qi 'unredistributable' <<<"$version" || { echo "ERROR: $arch FFmpeg is unredistributable" >&2; exit 1; }
 
-  for decoder in ftr aac flac pcm_s16le; do
+  for decoder in ftr libopus aac flac pcm_s16le; do
     grep -Eq "[[:space:]]${decoder}[[:space:]]" <<<"$decoders" || {
       echo "ERROR: $arch FFmpeg lacks decoder $decoder" >&2; exit 1;
     }

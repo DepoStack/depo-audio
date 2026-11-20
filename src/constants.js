@@ -10,7 +10,16 @@ export const FORMATS_OUT = [
   { id: 'flac', label: 'FLAC', desc: 'Lossless compressed — archival' },
   { id: 'opus', label: 'Opus', desc: '64 kbps VBR — voice optimized, smallest' },
   { id: 'm4a', label: 'M4A', desc: '128 kbps AAC — Apple devices' },
+  { id: 'sgmca', label: 'SGMCA', desc: 'Case CATalyst Direct Audio — Opus, one stream per channel, 16 kHz' },
 ]
+
+// Output formats whose sample rate is fixed by the format itself.
+export const FIXED_OUTPUT_RATES = { opus: '48000', sgmca: '16000' }
+
+/// The sample rate a conversion to `format` will really use.
+export function effectiveOutputRate(format, rate) {
+  return FIXED_OUTPUT_RATES[format] ?? rate
+}
 
 // DepoStack is the umbrella brand; DepoAudio is one open-source tool in it.
 export const DEPOSTACK_URL = 'https://www.depostack.com'
@@ -48,7 +57,7 @@ export const FORMAT_ROWS = [
     group: 'standard',
   },
   // Court reporting formats — require conversion
-  { ext: '.sgmca', vendor: 'Stenograph · Case CATalyst', ch: '4 ch', status: 'supported', group: 'court' },
+  { ext: '.sgmca', vendor: 'Stenograph · Case CATalyst', ch: '1–16 ch', status: 'supported', group: 'court' },
   { ext: '.trm  .ftr', vendor: 'For The Record · FTR Gold', ch: '4–16 ch', status: 'experimental', group: 'court' },
   { ext: '.bwf', vendor: 'CourtSmart · Various', ch: 'varies', status: 'supported', group: 'court' },
   { ext: '.dm', vendor: 'Stenovations · DigitalCAT', ch: '—', status: 'experimental', group: 'court' },

@@ -259,7 +259,7 @@ export default function MergeTab() {
                   <div>
                     <Label className="mb-1.5 block">FORMAT</Label>
                     <div className="flex gap-0.5 bg-secondary rounded-md p-0.5">
-                      {FORMATS_OUT.map(f => (
+                      {FORMATS_OUT.filter(f => f.id !== 'sgmca').map(f => (
                         <button
                           key={f.id}
                           title={f.desc}

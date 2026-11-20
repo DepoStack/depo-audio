@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
-import { MODES, FORMATS_OUT, MP3_BITRATES, CH_COLORS } from '../../constants'
+import { MODES, FORMATS_OUT, MP3_BITRATES, CH_COLORS, FIXED_OUTPUT_RATES, effectiveOutputRate } from '../../constants'
 import { PRESETS, resolvePresetSettings } from '../../presets'
 import { usePreferencesContext } from '../../hooks/PreferencesContext'
 import { Check, Loader2, Play } from 'lucide-react'
@@ -536,9 +536,9 @@ export default function ConvertTab({
             <Label>Quick setup</Label>
             {PRESETS.map(p => {
               const s = resolvePresetSettings(p.settings)
-              // Opus always converts at 48 kHz, so compare the effective rate
-              const effRate = formatOut === 'opus' ? '48000' : rate
-              const sEffRate = s.format === 'opus' ? '48000' : s.rate
+              // Opus and SGMCA fix their own rate, so compare the effective rate
+              const effRate = effectiveOutputRate(formatOut, rate)
+              const sEffRate = effectiveOutputRate(s.format, s.rate)
               const active =
                 mode === s.mode &&
                 formatOut === s.format &&
@@ -641,11 +641,18 @@ export default function ConvertTab({
                   <select
                     id="sample-rate"
                     className="flex h-8 w-full rounded-lg border border-border bg-card px-2.5 py-1.5 text-xs text-foreground transition-colors focus:outline-hidden focus:border-primary cursor-pointer"
-                    value={formatOut === 'opus' ? '48000' : rate}
-                    disabled={formatOut === 'opus'}
-                    title={formatOut === 'opus' ? 'Opus is always 48 kHz' : ''}
+                    value={effectiveOutputRate(formatOut, rate)}
+                    disabled={formatOut in FIXED_OUTPUT_RATES}
+                    title={
+                      formatOut === 'opus'
+                        ? 'Opus is always 48 kHz'
+                        : formatOut === 'sgmca'
+                          ? 'SGMCA records at 16 kHz'
+                          : ''
+                    }
                     onChange={e => setRate(e.target.value)}
                   >
+                    {formatOut === 'sgmca' && <option value="16000">16,000 Hz</option>}
                     <option value="22050">22,050 Hz</option>
                     <option value="44100">44,100 Hz</option>
                     <option value="48000">48,000 Hz</option>
