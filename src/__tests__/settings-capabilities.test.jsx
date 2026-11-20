@@ -192,4 +192,31 @@ describe('SettingsPanel release boundaries', () => {
     await waitFor(() => expect(reloadApp).toHaveBeenCalled())
     expect(onOpenChange).not.toHaveBeenCalledWith(false)
   })
+
+  it('keeps every section in one scrolling pane that never shrinks its cards', async () => {
+    invoke.mockImplementation(command =>
+      Promise.resolve(
+        command === 'local_data_info_cmd'
+          ? { appDataDir: '/synthetic/app-data', libraryReadable: true, items: [] }
+          : [],
+      ),
+    )
+    renderSettings({})
+
+    const nav = screen.getByRole('navigation', { name: 'Settings sections' })
+    const sections = [...nav.querySelectorAll('button')].map(button => button.getAttribute('aria-label'))
+    expect(sections.length).toBeGreaterThan(1)
+    for (const name of sections) {
+      fireEvent.click(screen.getByRole('button', { name }))
+      const pane = screen.getByTestId('settings-content')
+      // Only the content pane scrolls; the dialog itself stays fixed.
+      expect(pane).toHaveClass('overflow-y-auto', 'min-h-0', '[&>*]:shrink-0')
+      expect(pane.closest('[role="dialog"]')).toHaveClass('overflow-hidden')
+      expect(pane.children.length).toBeGreaterThan(0)
+      pane.scrollTop = 200
+    }
+    // Switching sections starts the new one at its top
+    fireEvent.click(screen.getByRole('button', { name: sections[0] }))
+    expect(screen.getByTestId('settings-content').scrollTop).toBe(0)
+  })
 })

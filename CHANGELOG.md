@@ -16,6 +16,10 @@ These changes are on `main` but not in the existing private v1.0.3 candidate, wh
 - **Clear all DepoAudio data.** After a confirmation, removes `library.json`, `prefs.json`, interrupted-save temp files and legacy model files from the app data folder, and DepoAudio's own keys from web view storage, then reloads the app as on first launch. Only those exact names are removed: no path recorded in the Library is followed, a symlink with one of those names is skipped, a `models` folder that is a symlink is skipped as a whole (legacy model cleanup in Settings → Model files refuses it too), and recordings, converted files, export records and backups stay. It is not available while files are converting: the button is disabled, and the app refuses if a conversion is still running. A file that cannot be removed is named and the app does not reload. This also recovers from a corrupt library, which otherwise leaves the Library read-only.
 - **Delete transcript for this track.** A bin button on the Player's transcript card removes the saved transcript for that track after a confirmation. Exported SRT and TXT files are not affected, and a pending autosave cannot write the old lines back.
 
+### Fixed
+
+- **Every Settings section can be read to the end.** Cards in the Settings content pane were shrunk to fit its fixed height and cut off their lower rows (most visibly in Model files and Your data). Each card now keeps its full height and only the content pane scrolls; the section list and the Settings header stay in place, and each section opens at its top. Checked in a browser at 1160x820 and at the 720x600 minimum window.
+
 ### Removed
 
 - **The seven uncompiled learned-model sources left `main`.** `vad.rs`, `denoise.rs`, `dereverb.rs`, `enhance.rs`, `mel.rs`, `scoring.rs` and `speakers.rs` were not compiled into v1.0.3. They stay in git history; the last commit that has them is `ceafc9c`. **Owner action:** to keep them easy to find, tag that commit (suggested name `archive/learned-model-sources`); no tag was created by this change. `npm run models:check` now fails if any of these files returns.
