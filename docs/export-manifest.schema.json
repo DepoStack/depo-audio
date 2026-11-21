@@ -42,7 +42,8 @@
         "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
         "sizeBytes": { "type": "integer", "minimum": 1 },
         "format": { "enum": ["wav", "mp3", "flac", "opus", "m4a"] },
-        "sampleRate": { "type": ["integer", "null"], "minimum": 8000, "maximum": 192000 }
+        "sampleRate": { "type": ["integer", "null"], "minimum": 8000, "maximum": 192000 },
+        "wavHeader": { "enum": ["riff", "rf64", null], "description": "For a WAV output, the header read from the file's first four bytes after encoding: riff (plain RIFF) or rf64 (written once a file passes the 4 GiB RIFF limit). Null for other formats. Written by versions after 1.1.0." }
       }
     },
     "processing": {

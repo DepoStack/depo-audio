@@ -226,3 +226,28 @@ describe('ConvertTab scan cancellation', () => {
     expect(prefs.setDeclip).toHaveBeenCalledWith(true)
   })
 })
+
+describe('ConvertTab WAV size estimate', () => {
+  afterEach(cleanup)
+
+  beforeEach(() => {
+    preferencesContext.current = preferences()
+    invoke.mockReset()
+    invoke.mockResolvedValue()
+    listen.mockReset()
+    listen.mockResolvedValue(vi.fn())
+  })
+
+  const audioStreams = { [firstFile.path]: { convertedIndex: 0, streams: [{ channels: 2 }], durationSecs: 60 } }
+
+  it('shows an estimate next to the WAV choice', () => {
+    render(<ConvertTab {...props()} audioStreams={audioStreams} />)
+    expect(screen.getByText(/^Estimated WAV size: about 11\.0 MB for this file/)).toBeInTheDocument()
+  })
+
+  it('shows no estimate for other formats', () => {
+    preferencesContext.current = { ...preferences(), formatOut: 'mp3' }
+    render(<ConvertTab {...props()} audioStreams={audioStreams} />)
+    expect(screen.queryByText(/Estimated WAV size/)).toBeNull()
+  })
+})

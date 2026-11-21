@@ -515,6 +515,7 @@ fn output_facts<'a>(
     file: &OutputFile,
     sha256: String,
     size_bytes: u64,
+    wav_header: Option<&'static str>,
 ) -> OutputFacts<'a> {
     OutputFacts {
         file_name: file.name.clone(),
@@ -527,6 +528,7 @@ fn output_facts<'a>(
         encoder_args: plan.encoder_args.clone(),
         source_channel_index: output.channel_index,
         label: output.label.clone(),
+        wav_header,
     }
 }
 
@@ -549,7 +551,16 @@ fn finish_outputs(
         let hashed = manifest::sha256_file(&output.path, &|| cancel.cancelled());
         cancel.check()?;
         let (sha256, size_bytes) = hashed?;
-        let record = manifest::build_manifest(input, output_facts(job, plan, output, file, sha256, size_bytes));
+        // Which header `-rf64 auto` wrote, read from the file itself.
+        let wav_header = if job.format == "wav" {
+            Some(manifest::wav_header_kind(&output.path)?)
+        } else {
+            None
+        };
+        let record = manifest::build_manifest(
+            input,
+            output_facts(job, plan, output, file, sha256, size_bytes, wav_header),
+        );
         manifest::write_manifest(&output.manifest, &record).map_err(|error| {
             format!(
                 "The audio was converted, but its export record could not be saved, so the output was removed: {error}"
@@ -1219,6 +1230,12 @@ mod tests {
         assert_eq!(record["output"]["fileName"], output.name);
         assert_eq!(record["output"]["sha256"], sha256_of(Path::new(&output.path)));
         assert_eq!(record["output"]["sizeBytes"], output.size);
+        let header = if record["output"]["format"] == "wav" {
+            serde_json::json!(manifest::wav_header_kind(Path::new(&output.path)).unwrap())
+        } else {
+            serde_json::Value::Null
+        };
+        assert_eq!(record["output"]["wavHeader"], header);
         assert_eq!(record["channel"]["sourceChannelCount"], 4);
         // A synthetic source carries no bext start, so none is claimed.
         assert_eq!(record["startTime"]["known"], false);
@@ -1485,6 +1502,7 @@ mod tests {
         assert_eq!(record["audioStream"]["index"], 0);
         assert_eq!(record["audioStream"]["sourceAudioStreamCount"], 2);
         assert_eq!(record["channel"]["sourceChannelCount"], 1);
+        assert_eq!(record["output"]["wavHeader"], "riff");
     }
 
     #[test]
@@ -1529,6 +1547,47 @@ mod tests {
             .map(|pair| &pair[1])
             .collect();
         assert_eq!(maps, ["[op0]", "[op1]"]);
+    }
+
+    #[test]
+    fn a_wav_output_without_a_riff_or_rf64_header_is_not_delivered() {
+        let dir = ConversionTestDir::new();
+        let source = dir.0.join("session.wav");
+        fs::write(&source, b"source bytes").unwrap();
+        let mut job = valid_job();
+        job.src_path = source.to_string_lossy().to_string();
+        job.mode = "keep".into();
+        let probes = ConversionProbes {
+            channels: None,
+            channel_gains: None,
+            proc: Vec::new(),
+            probed: manifest::ProbedSource::default(),
+        };
+        let mut cleanup = OutputCleanup::default();
+        let plan = plan_conversion(&job, &source, &probes, &mut cleanup).unwrap();
+        let output = plan.planned[0].path.clone();
+        let record = plan.planned[0].manifest.clone();
+        fs::write(&output, b"not a wav header").unwrap();
+        let input = ManifestInput {
+            app_version: "1.1.0".into(),
+            created_at: "2026-11-13T09:00:00Z".into(),
+            source: FileRecord {
+                file_name: "session.wav".into(),
+                sha256: "a".repeat(64),
+                size_bytes: 12,
+            },
+            probed: &probes.probed,
+            labels: &job.labels,
+            shifted: false,
+        };
+        let cancel = ConversionCancel::new(Arc::new(AtomicU64::new(1)), 1);
+        let error = finish_outputs(&job, &plan, &input, cleanup, &cancel).unwrap_err();
+        assert!(error.contains("RIFF or RF64"), "{error}");
+        assert!(
+            !output.exists() && !record.exists(),
+            "the output and its record are removed"
+        );
+        assert!(source.exists());
     }
 
     /// FFmpeg-backed: a file whose audio streams differ in channel count is

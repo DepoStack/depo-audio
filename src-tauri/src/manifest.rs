@@ -292,6 +292,9 @@ pub(crate) struct OutputRecord {
     pub size_bytes: u64,
     pub format: String,
     pub sample_rate: Option<u32>,
+    /// "riff" or "rf64", read from a WAV output's first four bytes after
+    /// encoding; None for every other format.
+    pub wav_header: Option<&'static str>,
 }
 
 #[derive(Debug, Serialize, Clone, PartialEq)]
@@ -363,6 +366,23 @@ pub(crate) struct OutputFacts<'a> {
     pub encoder_args: Vec<String>,
     pub source_channel_index: Option<u32>,
     pub label: Option<String>,
+    /// From `wav_header_kind`, for WAV outputs only.
+    pub wav_header: Option<&'static str>,
+}
+
+/// The header a finished WAV output was written with, from its first four
+/// bytes: `RIFF` is "riff", `RF64` is "rf64". Anything else is an error, so
+/// the record never names a header that is not in the file.
+pub(crate) fn wav_header_kind(path: &Path) -> Result<&'static str, String> {
+    let mut magic = [0u8; 4];
+    fs::File::open(path)
+        .and_then(|mut file| file.read_exact(&mut magic))
+        .map_err(|error| format!("Could not read the WAV output's header: {error}"))?;
+    match &magic {
+        b"RIFF" => Ok("riff"),
+        b"RF64" => Ok("rf64"),
+        _ => Err("The WAV output does not start with a RIFF or RF64 header.".into()),
+    }
 }
 
 fn bounded_label(label: &str) -> String {
@@ -456,6 +476,7 @@ pub(crate) fn build_manifest(input: &ManifestInput<'_>, facts: OutputFacts<'_>) 
             size_bytes: facts.size_bytes,
             format: facts.format.into(),
             sample_rate,
+            wav_header: facts.wav_header,
         },
         processing: ProcessingRecord {
             mode: facts.mode.into(),
@@ -571,6 +592,7 @@ pub(crate) mod tests {
                 encoder_args: vec!["-acodec".into(), "pcm_s16le".into(), "-ar".into(), "48000".into()],
                 source_channel_index: Some(1),
                 label: Some("Witness".into()),
+                wav_header: Some("riff"),
             },
         )
     }
@@ -1035,11 +1057,33 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn wav_header_is_read_from_the_file_never_assumed() {
+        let dir = TestDir::new();
+        let riff = dir.0.join("riff.wav");
+        fs::write(&riff, b"RIFF\x24\0\0\0WAVE").unwrap();
+        assert_eq!(wav_header_kind(&riff), Ok("riff"));
+        let rf64 = dir.0.join("rf64.wav");
+        fs::write(&rf64, b"RF64\xff\xff\xff\xffWAVE").unwrap();
+        assert_eq!(wav_header_kind(&rf64), Ok("rf64"));
+        for (name, bytes) in [
+            ("other.wav", &b"OggS...."[..]),
+            ("short.wav", &b"RI"[..]),
+            ("empty.wav", &b""[..]),
+        ] {
+            let path = dir.0.join(name);
+            fs::write(&path, bytes).unwrap();
+            assert!(wav_header_kind(&path).is_err(), "{name}");
+        }
+        assert!(wav_header_kind(&dir.0.join("missing.wav")).is_err());
+    }
+
+    #[test]
     fn records_written_by_1_1_0_still_match_the_schema() {
-        // 1.1.0 wrote no audioStream object; the schema must keep accepting
-        // those records.
+        // 1.1.0 wrote no audioStream object and no output.wavHeader; the
+        // schema must keep accepting those records.
         let mut record = serde_json::to_value(sample_input(&ProbedSource::default(), &[], false)).unwrap();
         record.as_object_mut().unwrap().remove("audioStream");
+        record["output"].as_object_mut().unwrap().remove("wavHeader");
         let errors = schema_errors_for_value(&record);
         assert!(errors.is_empty(), "{errors:#?}");
     }
@@ -1213,6 +1257,7 @@ pub(crate) mod tests {
         );
 
         let mut encoder = crate::helpers::output_args("wav", "48000", 192);
+        assert!(encoder.windows(2).any(|pair| pair == ["-rf64", "auto"]));
         let rate = output_sample_rate(&encoder);
         encoder.extend(start_time_metadata_args("wav", probed.timing, rate, false));
         let output = dir.0.join("synthetic_bext_out.wav");
@@ -1225,5 +1270,18 @@ pub(crate) mod tests {
                 sample_rate: 48_000
             })
         );
+        // A small file under `-rf64 auto` stays plain RIFF.
+        assert_eq!(wav_header_kind(&output), Ok("riff"));
+
+        // The header reader and the bext path on a real RF64 file. Writing
+        // 4 GiB in a test is not practical, so `-rf64 always` stands in for
+        // what `auto` does once a file outgrows RIFF.
+        let mut forced = encoder.clone();
+        let position = forced.iter().position(|arg| arg == "auto").unwrap();
+        forced[position] = "always".into();
+        let rf64 = dir.0.join("synthetic_bext_rf64.wav");
+        encode(&source, None, &forced, &rf64);
+        assert_eq!(wav_header_kind(&rf64), Ok("rf64"));
+        assert_eq!(parse_probe(&probe_json(&rf64)).timing, carried.timing);
     }
 }

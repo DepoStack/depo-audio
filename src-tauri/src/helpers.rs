@@ -361,7 +361,18 @@ pub(crate) fn output_args(format: &str, rate: &str, mp3_bitrate: u32) -> Vec<Str
             "-ar".into(),
             rate.into(),
         ],
-        _ => vec!["-acodec".into(), "pcm_s16le".into(), "-ar".into(), rate.into()],
+        // `-rf64 auto`: plain RIFF while the file fits the 4 GiB RIFF size
+        // fields, RF64 when it outgrows them (a 16-channel 48 kHz Keep
+        // Original WAV passes 4 GiB after about 46 minutes). FFmpeg reserves
+        // room for the RF64 size chunk with a small JUNK chunk up front.
+        _ => vec![
+            "-acodec".into(),
+            "pcm_s16le".into(),
+            "-ar".into(),
+            rate.into(),
+            "-rf64".into(),
+            "auto".into(),
+        ],
     }
 }
 
@@ -678,6 +689,20 @@ mod tests {
         let wav = output_args("wav", "48000", 320);
         assert!(wav.contains(&"pcm_s16le".to_string()));
         assert!(!wav.iter().any(|a| a.ends_with('k')));
+    }
+
+    #[test]
+    fn wav_output_switches_to_rf64_only_when_needed() {
+        assert_eq!(
+            output_args("wav", "48000", 192),
+            vec!["-acodec", "pcm_s16le", "-ar", "48000", "-rf64", "auto"]
+        );
+        for format in ["mp3", "flac", "opus", "m4a"] {
+            assert!(
+                !output_args(format, "48000", 192).contains(&"-rf64".to_string()),
+                "{format}"
+            );
+        }
     }
 
     #[test]
