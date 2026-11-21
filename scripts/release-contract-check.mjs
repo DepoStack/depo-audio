@@ -923,8 +923,8 @@ expect(
 )
 expect(
   javascriptNoticeComponents.schemaVersion === 1 &&
-    javascriptNoticeComponents.componentCount === 59 &&
-    javascriptNoticeComponents.javascriptComponentCount === 57 &&
+    javascriptNoticeComponents.componentCount === 58 &&
+    javascriptNoticeComponents.javascriptComponentCount === 56 &&
     javascriptNoticeComponents.generatedCssComponentCount === 2 &&
     javascriptNoticeComponents.bundledFontCount === 2 &&
     ['Archivo', 'Fragment Mono'].every(family =>
@@ -952,7 +952,7 @@ const hasJavaScriptNoticeSourceClosure =
   thirdPartyInventory.includes('JavaScript and generated CSS notice status') &&
   thirdPartyInventory.includes('DepoAudio-owned compatibility module') &&
   thirdPartyInventory.includes('an SBOM does not replace copyright notices or license') &&
-  thirdPartyInventory.includes('57 JavaScript packages') &&
+  thirdPartyInventory.includes('56 JavaScript packages') &&
   javascriptNoticeComponents.unresolvedComponentCount === 0 &&
   javascriptNoticeComponents.unresolvedComponents?.length === 0
 expect(
