@@ -59,6 +59,24 @@ describe('FORMAT_ROWS', () => {
   })
 })
 
+describe('FORMAT_ROWS intake rows', () => {
+  it('lists the legacy deposition video containers as audio-extracted standard rows', () => {
+    const rows = ['.mpg  .mpeg  .vob', '.ts  .mts  .m2ts', '.wmv  .asf'].map(ext =>
+      FORMAT_ROWS.find(r => r.ext === ext),
+    )
+    for (const row of rows) {
+      expect(row).toMatchObject({ status: 'supported', group: 'standard' })
+      expect(row.vendor).toContain('audio track extracted')
+    }
+  })
+
+  it('keeps every closed format in the export-first group', () => {
+    const closed = FORMAT_ROWS.filter(r => r.status === 'unsupported')
+    expect(closed.map(r => r.ext)).toEqual(['.aes', '.dcr', '.ds2', '.arf  .wrf', '.msv  .dvf'])
+    expect(closed.every(r => r.group === 'export')).toBe(true)
+  })
+})
+
 describe('STANDARD_EXTS', () => {
   it('includes common audio extensions', () => {
     expect(STANDARD_EXTS.has('wav')).toBe(true)

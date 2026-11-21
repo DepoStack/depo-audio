@@ -262,6 +262,20 @@ describe('conversion cancellation', () => {
     expect(result.current.queueNotice).toContain('folder dialog unavailable')
   })
 
+  it('offers the legacy deposition video containers in the file picker', async () => {
+    const { result } = renderHook(() => useFileDrop({ current: null }))
+    open.mockResolvedValueOnce(null)
+
+    await act(async () => result.current.browseFiles())
+
+    const filters = open.mock.calls.at(-1)[0].filters
+    const video = filters.find(filter => filter.name === 'Video (audio extracted)')
+    for (const extension of ['mpg', 'mpeg', 'vob', 'ts', 'mts', 'm2ts', 'wmv', 'asf']) {
+      expect(video.extensions).toContain(extension)
+    }
+    expect(filters.flatMap(filter => filter.extensions)).not.toContain('ds2')
+  })
+
   it('counts dropped FTR files as chunks in a TRS companion notice', async () => {
     const { result } = renderHook(() => useFileDrop({ current: null }))
 

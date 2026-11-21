@@ -49,6 +49,28 @@ export const FORMAT_ROWS = [
     status: 'supported',
     group: 'standard',
   },
+  // Legacy deposition video; each container is smoke-tested at release (scripts/container-smoke-fixtures.mjs)
+  {
+    ext: '.mpg  .mpeg  .vob',
+    vendor: 'MPEG / DVD video — audio track extracted',
+    ch: 'any',
+    status: 'supported',
+    group: 'standard',
+  },
+  {
+    ext: '.ts  .mts  .m2ts',
+    vendor: 'MPEG-TS / AVCHD video — audio track extracted',
+    ch: 'any',
+    status: 'supported',
+    group: 'standard',
+  },
+  {
+    ext: '.wmv  .asf',
+    vendor: 'Windows Media video — audio track extracted',
+    ch: 'any',
+    status: 'supported',
+    group: 'standard',
+  },
   // Court reporting formats — require conversion
   { ext: '.sgmca', vendor: 'Stenograph · Case CATalyst', ch: '4 ch', status: 'supported', group: 'court' },
   { ext: '.trm  .ftr', vendor: 'For The Record · FTR Gold', ch: '4–16 ch', status: 'experimental', group: 'court' },

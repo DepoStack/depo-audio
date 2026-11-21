@@ -106,6 +106,7 @@ Scanning is a bounded, cancellable local analysis pass. FFmpeg performs the sele
 | **DigitalCAT (.dm)**                         | Stenovations               | 🧪 Experimental                    |
 | **WAV, MP3, FLAC, M4A, OGG, Opus, WMA, AIF** | Standard                   | ✅ Supported                       |
 | **Video (MP4, MOV, MKV, AVI, WebM)**         | — audio track extracted    | ✅ Supported                       |
+| **Video (MPG, VOB, TS, MTS, M2TS, WMV, ASF)** | — audio track extracted   | ✅ Supported                       |
 | **AES (Eclipse AudioSync)**                  | Eclipse CAT                | 🔒 Encrypted — export to WAV first |
 | **DCR**                                      | Liberty · BIS Digital      | Closed — export to WAV first       |
 | **DS2 (DSS Pro)**                            | OM System / Olympus        | Closed — export to WAV first       |

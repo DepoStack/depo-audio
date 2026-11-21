@@ -5,9 +5,11 @@
 ### Added
 
 - **DS2, Webex and Sony recorder files are recognized and explained.** Adding a `.ds2` (OM System / Olympus DSS Pro), `.arf` or `.wrf` (Webex network recording), or `.msv` or `.dvf` (Sony IC recorder) file no longer gives "Unrecognised file format". The file is marked as a closed format, Convert stays off while it is in the queue, and the message names the software to export it with: ODMS for DS2, the Webex Recording Converter (Windows only) for ARF, and Sony Digital Voice Editor for MSV and DVF. DepoAudio does not try to open or decrypt these files, and an encrypted DS2 cannot be opened at all.
+- **Audio from older deposition video files.** `.mpg`, `.mpeg`, `.vob`, `.ts`, `.mts`, `.m2ts`, `.wmv` and `.asf` files are handled like `.mp4`: the audio track is converted and the picture is discarded. The original file is not changed. Each release now makes a small synthetic file for each of these containers (with MP2, AC-3 or WMA audio) and checks that the bundled FFmpeg on macOS and Windows decodes its audio and writes audio-only WAV and M4A. A `.ts` file that does not start like an MPEG transport stream, such as a TypeScript file, is not recognized. So far they have been tried only with synthetic files on a standard FFmpeg build. The bundled FFmpeg has not run this check yet, and no recording from a deposition video system has been tried.
 
 ### Changed
 
+- **Converted files never carry a video stream.** Every conversion now passes `-vn -sn` to FFmpeg, and the export record lists them with the encoder settings. Before, FFmpeg could map a video file's picture into an M4A output as a video stream. Cover art in an MP3 source is no longer copied to an MP3 output either.
 - **The `.dcr` message no longer assumes Liberty.** Liberty Court Recorder and BIS Digital both write `.dcr`, so the message now says to export to WAV from the software that recorded it, for example either of those. A `.dcr` that starts with a TIFF header (a Kodak camera raw image) is called out as a camera image, not court audio.
 - **Each closed-format file in the queue shows its own guidance.** The Convert warning used to say "Export AES/DCR recordings" for any of them; it now lists each file with the message for its format. The Supported formats table has a "Closed formats — export to WAV first" section.
 

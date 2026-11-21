@@ -53,7 +53,7 @@
         "mode": { "enum": ["stereo", "keep", "split"] },
         "filterOption": { "enum": ["-af", "-filter_complex", null], "description": "The FFmpeg option that carried filterChain, or null when no filter ran." },
         "filterChain": { "type": ["string", "null"], "description": "The exact FFmpeg filter string used. In split mode it is the whole graph; channel.sourceChannelIndex names this file's branch." },
-        "encoderArgs": { "type": "array", "items": { "type": "string" }, "description": "The exact FFmpeg encoder and metadata arguments for this output, without file paths." }
+        "encoderArgs": { "type": "array", "items": { "type": "string" }, "description": "The exact FFmpeg output arguments for this output (stream selection, encoder and metadata), without file paths." }
       }
     },
     "channel": {

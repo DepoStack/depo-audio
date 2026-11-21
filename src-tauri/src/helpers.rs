@@ -46,7 +46,7 @@ pub(crate) fn get_formats() -> Vec<FormatInfo> {
             status: "supported".into(), handler: "passthrough".into(), channels: None, note: None },
         FormatInfo { key: "amr".into(), name: "AMR Phone Audio".into(), vendor: "Standard".into(),
             status: "supported".into(), handler: "passthrough".into(), channels: None, note: None },
-        FormatInfo { key: "video".into(), name: "Video Audio Track".into(), vendor: "MP4 / MOV / MKV / AVI / WebM".into(),
+        FormatInfo { key: "video".into(), name: "Video Audio Track".into(), vendor: "MP4 / MOV / MKV / AVI / WebM / MPG / VOB / TS / WMV".into(),
             status: "supported".into(), handler: "passthrough".into(), channels: None,
             note: Some("The audio track is extracted and converted; video is discarded.".into()) },
         // Court reporting formats — require conversion
@@ -147,6 +147,15 @@ pub(crate) fn detect_format_for_path(path: &str) -> Option<FormatInfo> {
         "amr" | "3ga" => fmts.into_iter().find(|f| f.key == "amr"),
         // Video containers: FFmpeg extracts the audio track
         "mp4" | "mov" | "mkv" | "avi" | "webm" | "m4v" | "3gp" => fmts.into_iter().find(|f| f.key == "video"),
+        // Legacy legal-video containers (smoke-tested at release by scripts/container-smoke-fixtures.mjs)
+        "mpg" | "mpeg" | "vob" | "ts" | "mts" | "m2ts" | "wmv" | "asf" => {
+            // .ts is also a TypeScript source extension. A readable .ts that
+            // does not start like an MPEG transport stream is left unrecognised.
+            if ext == "ts" && !could_be_transport_stream(Path::new(path)) {
+                return None;
+            }
+            fmts.into_iter().find(|f| f.key == "video")
+        }
         _ => None,
     }
 }
@@ -175,6 +184,20 @@ fn looks_like_tiff(path: &Path) -> bool {
         leading_bytes::<4>(path),
         Some((bytes, 4)) if bytes == *b"II*\0" || bytes == *b"MM\0*"
     )
+}
+
+/// MPEG-TS packets start with the sync byte 0x47 every 188 bytes; M2TS/MTS
+/// packets carry a 4-byte timestamp first, so the sync byte is at 4 and every
+/// 192 bytes. An unreadable file passes, so the extension decides.
+fn could_be_transport_stream(path: &Path) -> bool {
+    const SYNC: u8 = 0x47;
+    let Some((bytes, filled)) = leading_bytes::<{ 192 + 5 }>(path) else {
+        return true;
+    };
+    let synced = |first: usize, stride: usize| {
+        filled > first && bytes[first] == SYNC && (filled <= first + stride || bytes[first + stride] == SYNC)
+    };
+    synced(0, 188) || synced(4, 192)
 }
 
 // ── Case name detection ───────────────────────────────────────────────────────
@@ -366,7 +389,7 @@ pub(crate) fn mp3_bitrate_kbps(requested: u32) -> u32 {
 }
 
 pub(crate) fn output_args(format: &str, rate: &str, mp3_bitrate: u32) -> Vec<String> {
-    match format {
+    let codec: Vec<String> = match format {
         "mp3" => {
             let br = format!("{}k", mp3_bitrate_kbps(mp3_bitrate));
             vec![
@@ -398,7 +421,13 @@ pub(crate) fn output_args(format: &str, rate: &str, mp3_bitrate: u32) -> Vec<Str
             rate.into(),
         ],
         _ => vec!["-acodec".into(), "pcm_s16le".into(), "-ar".into(), rate.into()],
-    }
+    };
+    // Outputs are audio only. Without -vn, FFmpeg maps a video input's picture
+    // into an M4A output (the ipod muxer accepts H.264), and the LGPL sidecars
+    // have no H.264 encoder, so the conversion would fail or carry video.
+    let mut args: Vec<String> = vec!["-vn".into(), "-sn".into()];
+    args.extend(codec);
+    args
 }
 
 pub(crate) fn output_ext(format: &str) -> &'static str {
@@ -705,6 +734,63 @@ mod tests {
                 "{}",
                 format.key
             );
+        }
+    }
+
+    #[test]
+    fn legacy_legal_video_containers_extract_audio_like_mp4() {
+        for path in [
+            "depo.mpg",
+            "DEPO.MPEG",
+            "VTS_01_1.VOB",
+            "hearing.ts",
+            "00001.MTS",
+            "00001.m2ts",
+            "depo.wmv",
+            "depo.asf",
+        ] {
+            let format = detect_format_for_path(path).unwrap_or_else(|| panic!("{path} was not recognised"));
+            assert_eq!(format.key, "video", "{path}");
+            assert_eq!(format.handler, "passthrough", "{path}");
+            assert_eq!(format.status, "supported", "{path}");
+            assert!(input_codec_args(Path::new(path)).is_empty(), "{path}");
+        }
+    }
+
+    #[test]
+    fn ts_files_must_look_like_a_transport_stream_when_readable() {
+        let dir = ReservationTestDir::new();
+        let mut ts = vec![0u8; 188 * 2];
+        ts[0] = 0x47;
+        ts[188] = 0x47;
+        let mut m2ts = vec![0u8; 192 * 2];
+        m2ts[4] = 0x47;
+        m2ts[196] = 0x47;
+        let mut broken_stride = vec![0u8; 188 * 2];
+        broken_stride[0] = 0x47;
+        let cases: [(&str, &[u8], bool); 6] = [
+            ("broadcast.ts", &ts, true),
+            ("avchd.ts", &m2ts, true),
+            ("tiny.ts", &[0x47], true),
+            ("component.ts", b"export const value = 1\n", false),
+            ("Greeting.ts", &broken_stride, false),
+            ("empty.ts", b"", false),
+        ];
+        for (name, bytes, video) in cases {
+            let path = dir.path().join(name);
+            fs::write(&path, bytes).unwrap();
+            let detected = detect_format_for_path(&path.to_string_lossy());
+            assert_eq!(detected.map(|f| f.key), video.then(|| "video".to_string()), "{name}");
+        }
+        // The extension decides when the file cannot be read.
+        assert_eq!(detect_format_for_path("missing/hearing.ts").unwrap().key, "video");
+    }
+
+    #[test]
+    fn every_output_drops_video_and_subtitle_streams() {
+        for format in ["wav", "mp3", "flac", "opus", "m4a"] {
+            let args = output_args(format, "48000", 192);
+            assert_eq!(&args[..2], ["-vn", "-sn"], "{format}");
         }
     }
 
