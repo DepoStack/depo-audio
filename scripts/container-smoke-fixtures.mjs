@@ -305,7 +305,7 @@ async function clean() {
 // The list here, the Rust detection arm and the file picker must agree, so a
 // container cannot be listed in the app without a smoke fixture.
 export function listedLegacyContainers(helpersSource) {
-  const arm = helpersSource.match(/\/\/ Legacy legal-video containers[^\n]*\n\s*((?:"[a-z0-9]+"\s*\|?\s*)+)=>/u)
+  const arm = helpersSource.match(/\/\/ Legacy legal-video containers[^\n]*\n\s*((?:"[a-z0-9]+"(?:\s*\|\s*)?)+)\s*=>/u)
   if (!arm) throw new Error('helpers.rs has no legacy legal-video container arm')
   return [...arm[1].matchAll(/"([a-z0-9]+)"/gu)].map(match => match[1])
 }
