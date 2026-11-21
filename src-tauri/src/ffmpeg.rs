@@ -252,7 +252,8 @@ pub(crate) async fn probe_channels_cancellable(
     parse_channel_probe(&out.stdout)
 }
 
-/// ffprobe arguments for the channel count of the first audio stream.
+/// ffprobe arguments for the channel count of the converted audio stream
+/// (`SOURCE_AUDIO_STREAM`, the same stream every FFmpeg pass maps).
 pub(crate) fn channel_probe_args(feed: &Path) -> Vec<String> {
     vec![
         "-v".into(),
@@ -263,7 +264,7 @@ pub(crate) fn channel_probe_args(feed: &Path) -> Vec<String> {
         "json".into(),
         "-show_streams".into(),
         "-select_streams".into(),
-        "a:0".into(),
+        crate::helpers::source_audio_stream_specifier(),
         feed.to_string_lossy().to_string(),
     ]
 }
@@ -297,8 +298,10 @@ pub(crate) async fn probe_manifest_source_cancellable(
         .unwrap_or_default()
 }
 
-/// ffprobe arguments for the export record's source facts (format tags and
-/// the first audio stream).
+/// ffprobe arguments for the export record's source facts: format tags and
+/// EVERY audio stream, in file order, so `streams[SOURCE_AUDIO_STREAM]` is the
+/// converted stream and the array length is the input's audio stream count.
+/// The Convert queue's multi-track notice reads the same document.
 pub(crate) fn manifest_probe_args(feed: &Path) -> Vec<String> {
     vec![
         "-v".into(),
@@ -310,9 +313,20 @@ pub(crate) fn manifest_probe_args(feed: &Path) -> Vec<String> {
         "-show_format".into(),
         "-show_streams".into(),
         "-select_streams".into(),
-        "a:0".into(),
+        "a".into(),
         feed.to_string_lossy().to_string(),
     ]
+}
+
+/// Audio streams of a queued file for the Convert queue's notice (the same
+/// ffprobe document the export record reads). None when ffprobe fails.
+pub(crate) async fn probe_audio_streams(app: &AppHandle, feed: &Path) -> Option<crate::manifest::AudioStreamsInfo> {
+    let out = sidecar_output_opt(app, ffprobe_bin_name(), manifest_probe_args(feed), 30).await?;
+    if !out.success {
+        return None;
+    }
+    let probe = serde_json::from_slice::<serde_json::Value>(&out.stdout).ok()?;
+    Some(crate::manifest::parse_audio_streams(&probe))
 }
 
 // ── Filter chain builder ─────────────────────────────────────────────────────

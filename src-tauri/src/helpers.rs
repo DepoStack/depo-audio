@@ -184,6 +184,31 @@ pub(crate) fn safe_ffmpeg_input_prelude() -> Vec<String> {
     ]
 }
 
+// ── Audio stream selection ────────────────────────────────────────────────────
+
+/// Zero-based index, among the input's audio streams, of the one stream that
+/// every probe, Scan pass, waveform, auto-level pass and conversion reads.
+/// Without an explicit `-map`, FFmpeg's automatic stream selection picks the
+/// "best" audio stream (most channels), which in a file with several audio
+/// tracks can differ from the `a:0` the probes and the export record describe.
+pub(crate) const SOURCE_AUDIO_STREAM: u32 = 0;
+
+/// ffprobe `-select_streams` value for the converted stream (`a:0`).
+pub(crate) fn source_audio_stream_specifier() -> String {
+    format!("a:{SOURCE_AUDIO_STREAM}")
+}
+
+/// FFmpeg output option that maps exactly the converted stream (`-map 0:a:0`).
+/// Place it after `-i` and before the output it applies to.
+pub(crate) fn source_audio_map_args() -> Vec<String> {
+    vec!["-map".into(), format!("0:{}", source_audio_stream_specifier())]
+}
+
+/// Filtergraph input label for the converted stream (`[0:a:0]`).
+pub(crate) fn source_audio_filter_input() -> String {
+    format!("[0:{}]", source_audio_stream_specifier())
+}
+
 // ── SGMCA header stripping ────────────────────────────────────────────────────
 
 pub(crate) const AUDIO_PREPARATION_CANCELLED_MESSAGE: &str = "Audio preparation cancelled";
@@ -336,7 +361,18 @@ pub(crate) fn output_args(format: &str, rate: &str, mp3_bitrate: u32) -> Vec<Str
             "-ar".into(),
             rate.into(),
         ],
-        _ => vec!["-acodec".into(), "pcm_s16le".into(), "-ar".into(), rate.into()],
+        // `-rf64 auto`: plain RIFF while the file fits the 4 GiB RIFF size
+        // fields, RF64 when it outgrows them (a 16-channel 48 kHz Keep
+        // Original WAV passes 4 GiB after about 46 minutes). FFmpeg reserves
+        // room for the RF64 size chunk with a small JUNK chunk up front.
+        _ => vec![
+            "-acodec".into(),
+            "pcm_s16le".into(),
+            "-ar".into(),
+            rate.into(),
+            "-rf64".into(),
+            "auto".into(),
+        ],
     }
 }
 
@@ -653,6 +689,28 @@ mod tests {
         let wav = output_args("wav", "48000", 320);
         assert!(wav.contains(&"pcm_s16le".to_string()));
         assert!(!wav.iter().any(|a| a.ends_with('k')));
+    }
+
+    #[test]
+    fn wav_output_switches_to_rf64_only_when_needed() {
+        assert_eq!(
+            output_args("wav", "48000", 192),
+            vec!["-acodec", "pcm_s16le", "-ar", "48000", "-rf64", "auto"]
+        );
+        for format in ["mp3", "flac", "opus", "m4a"] {
+            assert!(
+                !output_args(format, "48000", 192).contains(&"-rf64".to_string()),
+                "{format}"
+            );
+        }
+    }
+
+    #[test]
+    fn every_sidecar_reads_the_same_audio_stream() {
+        assert_eq!(SOURCE_AUDIO_STREAM, 0);
+        assert_eq!(source_audio_stream_specifier(), "a:0");
+        assert_eq!(source_audio_map_args(), vec!["-map", "0:a:0"]);
+        assert_eq!(source_audio_filter_input(), "[0:a:0]");
     }
 
     #[test]

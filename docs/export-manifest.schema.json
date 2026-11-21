@@ -42,7 +42,8 @@
         "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
         "sizeBytes": { "type": "integer", "minimum": 1 },
         "format": { "enum": ["wav", "mp3", "flac", "opus", "m4a"] },
-        "sampleRate": { "type": ["integer", "null"], "minimum": 8000, "maximum": 192000 }
+        "sampleRate": { "type": ["integer", "null"], "minimum": 8000, "maximum": 192000 },
+        "wavHeader": { "enum": ["riff", "rf64", null], "description": "For a WAV output, the header read from the file's first four bytes after encoding: riff (plain RIFF) or rf64 (written once a file passes the 4 GiB RIFF limit). Null for other formats. Written by versions after 1.1.0." }
       }
     },
     "processing": {
@@ -66,6 +67,16 @@
         "sourceChannelIndex": { "type": ["integer", "null"], "minimum": 0, "maximum": 15, "description": "Zero-based source channel for a split file (FFmpeg c0 is 0); null otherwise." },
         "label": { "type": ["string", "null"], "description": "The channel or microphone label the person entered for this split file." },
         "labels": { "type": "array", "items": { "type": "string" }, "description": "Labels entered for each source channel, in channel order." }
+      }
+    },
+    "audioStream": {
+      "type": "object",
+      "description": "Which audio stream of the source was converted. Written by versions after 1.1.0; records written by 1.1.0 do not have it. Every probe and FFmpeg pass maps this one stream explicitly (-map 0:a:<index>), so the channel facts above describe it.",
+      "additionalProperties": false,
+      "required": ["index", "sourceAudioStreamCount"],
+      "properties": {
+        "index": { "type": "integer", "minimum": 0, "description": "Zero-based index among the source's audio streams (FFmpeg a:0 is 0)." },
+        "sourceAudioStreamCount": { "type": ["integer", "null"], "minimum": 1, "description": "How many audio streams the source has, or null when the probe could not read them." }
       }
     },
     "startTime": {

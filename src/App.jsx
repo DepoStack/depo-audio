@@ -65,6 +65,7 @@ export default function App() {
   const fileDrop = useFileDrop(dropOverrideRef, queueLocked)
   const {
     files,
+    audioStreams,
     dragOver,
     caseName,
     setCaseName,
@@ -401,6 +402,7 @@ export default function App() {
               {tab === 'convert' && (
                 <ConvertTab
                   files={files}
+                  audioStreams={audioStreams}
                   dragOver={dragOver}
                   caseName={caseName}
                   setCaseName={setCaseName}

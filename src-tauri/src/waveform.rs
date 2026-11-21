@@ -397,11 +397,11 @@ async fn decode_waveform(app: &AppHandle, key: &FileKey, cancelled: Arc<AtomicBo
         "file,pipe".into(),
     ];
     args.extend(input_codec_args(&feed));
+    args.extend(["-i".into(), feed.to_string_lossy().to_string()]);
+    // The converted stream (`-map 0:a:0`), so the waveform shows the audio
+    // the probes describe and the conversion encodes.
+    args.extend(crate::helpers::source_audio_map_args());
     args.extend([
-        "-i".into(),
-        feed.to_string_lossy().to_string(),
-        "-map".into(),
-        "0:a:0".into(),
         "-vn".into(),
         "-sn".into(),
         "-dn".into(),

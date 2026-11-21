@@ -15,6 +15,7 @@ import WorkspaceHeader from '../common/WorkspaceHeader'
 import ProcessingToggle from './ProcessingToggle'
 import FormatTable from './FormatTable'
 import FileRow from './FileRow'
+import { wavSizeEstimateText } from '../../lib/outputSize'
 import { aggregateAnalysisResults } from '../../lib/analysis'
 
 // The backend emits scan:progress events throughout each file's analysis
@@ -51,6 +52,7 @@ export function countHiddenProcessingOptions({
 export default function ConvertTab({
   // Files
   files,
+  audioStreams = {},
   dragOver,
   caseName,
   setCaseName,
@@ -367,6 +369,7 @@ export default function ConvertTab({
   const stepDone = n => n < step || (n === 3 && queueSettled)
   const procCount = [autoLevelEffective, declip, hpf, normalize, trimEffective, fade].filter(Boolean).length
   const formatLabel = FORMATS_OUT.find(f => f.id === formatOut)?.label || formatOut
+  const wavEstimate = formatOut === 'wav' ? wavSizeEstimateText(files, audioStreams, { mode, rate }) : ''
   const modeLabel = MODES.find(m => m.id === mode)?.label || mode
   const unsupportedFiles = files.filter(file => file.fmt?.status === 'unsupported')
   const resultParts = [
@@ -504,6 +507,7 @@ export default function ConvertTab({
                   <FileRow
                     key={f.path}
                     file={f}
+                    streams={audioStreams[f.path]}
                     job={jobs[f.path]}
                     onRemove={() => removeFile(f.path, converting)}
                     converting={converting}
@@ -686,6 +690,7 @@ export default function ConvertTab({
                   </div>
                 )}
               </div>
+              {wavEstimate && <p className="px-3 pb-3 type-small text-[hsl(var(--text2))]">{wavEstimate}</p>}
             </CardContent>
           </Card>
 
