@@ -226,3 +226,71 @@ describe('ConvertTab scan cancellation', () => {
     expect(prefs.setDeclip).toHaveBeenCalledWith(true)
   })
 })
+
+describe('ConvertTab preset picker', () => {
+  afterEach(cleanup)
+
+  beforeEach(() => {
+    invoke.mockReset()
+    invoke.mockResolvedValue()
+    listen.mockReset()
+    listen.mockResolvedValue(vi.fn())
+  })
+
+  it('shows each preset with its basis and that it is not tested in CAT software', () => {
+    preferencesContext.current = preferences()
+    render(<ConvertTab {...props()} />)
+
+    const picker = screen.getByTestId('preset-picker')
+    const catalyst = screen.getByRole('button', { name: /For CATalyst audio sync \(WAV\)/ })
+    expect(catalyst).toHaveAccessibleDescription(/Stenograph lists WAV for audio association/)
+    expect(picker.textContent.match(/Not tested in CAT software/g)).toHaveLength(7)
+  })
+
+  it('applies a preset only when pressed', () => {
+    const prefs = preferences()
+    preferencesContext.current = prefs
+    render(<ConvertTab {...props()} />)
+
+    expect(prefs.setFormatOut).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByRole('button', { name: /Send to scopist/ }))
+    expect(prefs.setFormatOut).toHaveBeenCalledWith('mp3')
+    expect(prefs.setMp3Bitrate).toHaveBeenCalledWith(192)
+    expect(prefs.setTrim).toHaveBeenCalledWith(false)
+    expect(prefs.setFadeDur).not.toHaveBeenCalled()
+  })
+
+  it('shows Custom and the closest new preset for saved Quick Share settings, without changing them', () => {
+    const prefs = {
+      ...preferences(),
+      formatOut: 'opus',
+      normalize: true,
+      trim: true,
+      fade: true,
+      fadeDur: 0.3,
+      hpf: true,
+    }
+    preferencesContext.current = prefs
+    render(<ConvertTab {...props()} />)
+
+    expect(screen.getByTestId('preset-status')).toHaveTextContent(
+      'Custom: the earlier “Quick Share” preset. Closest new preset: Smallest file (Opus) — CATalyst 20 or newer',
+    )
+    expect(screen.getByTestId('preset-picker').querySelectorAll('[aria-pressed="true"]')).toHaveLength(0)
+    expect(screen.getByTestId('opus-catalyst-note')).toHaveTextContent(
+      'Stenograph says Opus plays only in CATalyst 20 or newer',
+    )
+    for (const setter of ['setFormatOut', 'setTrim', 'setFade', 'setFadeDur', 'setMode', 'setNormalize']) {
+      expect(prefs[setter]).not.toHaveBeenCalled()
+    }
+  })
+
+  it('marks the matching preset as in use', () => {
+    preferencesContext.current = { ...preferences(), normalize: true, hpf: true, autoLevel: true }
+    render(<ConvertTab {...props()} />)
+
+    expect(screen.getByRole('button', { name: /For CATalyst audio sync/ })).toHaveAttribute('aria-pressed', 'true')
+    expect(screen.getByTestId('preset-status')).toHaveTextContent('Using: For CATalyst audio sync (WAV)')
+    expect(screen.queryByTestId('opus-catalyst-note')).not.toBeInTheDocument()
+  })
+})

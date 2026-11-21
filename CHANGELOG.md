@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+### Changed
+
+- **Quick setup presets are named for where the file is going.** The presets are now For CATalyst audio sync (WAV), For other or older CAT software (WAV), Send to scopist — small (MP3 192k), Phone recording cleanup (WAV + high-pass), One file per microphone (WAV), Archive — lossless (FLAC) and Smallest file (Opus) — CATalyst 20 or newer. Each one shows a line saying why it uses its format, taken from Stenograph's Solution Center articles on associating audio and on single-channel audio, and says "Not tested in CAT software", because we have not tested them there. We found no vendor source for other CAT programs, and that preset says so. No preset trims leading silence or adds fades, so each output starts where the recording starts.
+- **Your saved settings stay as they are.** Presets were never saved, only the settings. If your settings match a new preset, it is shown as in use. If they match an earlier preset that changed, Quick setup says "Custom", names the earlier preset and the closest new one, and changes nothing until you choose a preset.
+
+### Fixed
+
+- **Opus output now says that older CATalyst cannot play it.** The earlier Quick Share preset made Opus files without saying so. Choosing Opus, by preset or by hand, now shows that Stenograph says Opus plays only in CATalyst 20 or newer.
+- **The phone preset describes what it does.** It said "focused speech-band filtering", but it only turns on the high-pass filter (80 Hz unless changed in Settings) and loudness normalization. It now says exactly that.
+
 ## [1.1.0] - Unpublished
 
 DepoAudio 1.1.0 is the first release since 1.0.2. It includes everything that was prepared for 1.0.3. That version was never published, so there is no 1.0.3 download.
