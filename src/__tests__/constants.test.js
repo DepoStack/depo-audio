@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { MODES, FORMATS_OUT, CH_COLORS, FORMAT_ROWS, STANDARD_EXTS } from '../constants'
+import { MODES, FORMATS_OUT, CH_COLORS, FORMAT_ROWS, STANDARD_EXTS, effectiveOutputRate } from '../constants'
 
 describe('MODES', () => {
   it('has three modes with required fields', () => {
@@ -26,13 +26,19 @@ describe('MODES', () => {
 })
 
 describe('FORMATS_OUT', () => {
-  it('has five output formats', () => {
-    expect(FORMATS_OUT).toHaveLength(5)
+  it('has six output formats', () => {
+    expect(FORMATS_OUT).toHaveLength(6)
   })
 
-  it('includes wav, mp3, flac, opus, m4a', () => {
+  it('includes wav, mp3, flac, opus, m4a, sgmca', () => {
     const ids = FORMATS_OUT.map(f => f.id)
-    expect(ids).toEqual(['wav', 'mp3', 'flac', 'opus', 'm4a'])
+    expect(ids).toEqual(['wav', 'mp3', 'flac', 'opus', 'm4a', 'sgmca'])
+  })
+
+  it('fixes the rate only for formats that set their own', () => {
+    expect(effectiveOutputRate('opus', '44100')).toBe('48000')
+    expect(effectiveOutputRate('sgmca', '44100')).toBe('16000')
+    expect(effectiveOutputRate('wav', '44100')).toBe('44100')
   })
 })
 

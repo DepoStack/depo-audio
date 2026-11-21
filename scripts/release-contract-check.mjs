@@ -1012,7 +1012,7 @@ expect(
     macFfmpegBuild.includes('--enable-parser=ftr') &&
     macFfmpegBuild.includes("grep -q -- '--enable-gpl'") &&
     macFfmpegBuild.includes("grep -q -- '--enable-nonfree'") &&
-    macFfmpegBuild.includes('for decoder in ftr aac flac pcm_s16le') &&
+    macFfmpegBuild.includes('for decoder in ftr libopus aac flac pcm_s16le') &&
     macFfmpegBuild.includes('for encoder in libmp3lame libopus aac flac pcm_s16le') &&
     macFfmpegBuild.includes('FFmpeg-COPYING.LGPLv2.1') &&
     macFfmpegBuild.includes('Opus-COPYING') &&

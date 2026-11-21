@@ -15,6 +15,7 @@ mod merge;
 mod models;
 mod persistence;
 mod safety;
+mod sgmca;
 pub mod types;
 mod waveform;
 
@@ -114,6 +115,7 @@ pub fn run() {
             commands::health_check,
             commands::get_formats_list,
             commands::detect_format,
+            commands::sgmca_inspect_cmd,
             commands::probe_audio_streams_cmd,
             commands::infer_case_name_cmd,
             commands::analyze_audio_cmd,

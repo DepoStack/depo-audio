@@ -154,7 +154,7 @@ build_arch() {
   # VOB) and pcm_bluray (LPCM in AVCHD/M2TS) are present only because this
   # configure keeps FFmpeg's default decoders; this gate keeps them there.
   # FFmpeg cannot encode wmapro or wmavoice, so they have no smoke fixture.
-  for decoder in ftr aac flac pcm_s16le mp2 ac3 wmav2 wmapro wmavoice pcm_dvd pcm_bluray; do
+  for decoder in ftr libopus aac flac pcm_s16le mp2 ac3 wmav2 wmapro wmavoice pcm_dvd pcm_bluray; do
     grep -Eq "[[:space:]]${decoder}[[:space:]]" <<<"$decoders" || {
       echo "ERROR: $arch FFmpeg lacks decoder $decoder" >&2; exit 1;
     }

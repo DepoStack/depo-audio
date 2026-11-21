@@ -65,6 +65,19 @@ pub async fn health_check(app: AppHandle) -> Result<serde_json::Value, String> {
 
 // ── Format commands ───────────────────────────────────────────────────────────
 
+/// Read an SGMCA (or any Ogg Opus) recording's layout without decoding it:
+/// channel count, mapping family, pre-skip, tags and exact duration. Every
+/// page's checksum is verified, so a damaged file is named with the page
+/// where the damage is.
+#[tauri::command]
+pub async fn sgmca_inspect_cmd(path: String) -> Result<crate::sgmca::SgmcaInfo, String> {
+    let src = std::path::PathBuf::from(&path);
+    crate::safety::check_file_safe(&src)?;
+    tauri::async_runtime::spawn_blocking(move || crate::sgmca::inspect(&src, None))
+        .await
+        .map_err(|error| format!("SGMCA inspection task failed: {error}"))?
+}
+
 #[tauri::command]
 pub fn get_formats_list() -> Vec<FormatInfo> {
     get_formats()

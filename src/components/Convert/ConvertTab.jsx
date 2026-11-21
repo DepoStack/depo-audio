@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
-import { MODES, FORMATS_OUT, MP3_BITRATES, CH_COLORS } from '../../constants'
+import { MODES, FORMATS_OUT, MP3_BITRATES, CH_COLORS, FIXED_OUTPUT_RATES, effectiveOutputRate } from '../../constants'
 import { openUrl } from '@tauri-apps/plugin-opener'
 import {
   PRESETS,
@@ -762,11 +762,18 @@ export default function ConvertTab({
                   <select
                     id="sample-rate"
                     className="flex h-8 w-full rounded-lg border border-border bg-card px-2.5 py-1.5 type-small text-foreground transition-colors focus:border-ring cursor-pointer"
-                    value={formatOut === 'opus' ? '48000' : rate}
-                    disabled={formatOut === 'opus'}
-                    title={formatOut === 'opus' ? 'Opus is always 48 kHz' : ''}
+                    value={effectiveOutputRate(formatOut, rate)}
+                    disabled={formatOut in FIXED_OUTPUT_RATES}
+                    title={
+                      formatOut === 'opus'
+                        ? 'Opus is always 48 kHz'
+                        : formatOut === 'sgmca'
+                          ? 'SGMCA records at 16 kHz'
+                          : ''
+                    }
                     onChange={e => setRate(e.target.value)}
                   >
+                    {formatOut === 'sgmca' && <option value="16000">16,000 Hz</option>}
                     <option value="22050">22,050 Hz</option>
                     <option value="44100">44,100 Hz</option>
                     <option value="48000">48,000 Hz</option>

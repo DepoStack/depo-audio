@@ -87,6 +87,10 @@ fn track_planned(cleanup: &mut OutputCleanup, planned: &[PlannedOutput]) {
 // These produce the exact FFmpeg filter strings for each output mode. Their
 // output format is a contract: golden-master tests below pin it down.
 
+/// Opus bitrate per mono stream of an SGMCA output: wideband speech at
+/// 16 kHz is clear well below this.
+const SGMCA_KBPS_PER_CHANNEL: u32 = 32;
+
 /// Stereo downmix: a unity-gain SUM of all channels on both L and R.
 /// `vols` are per-channel volumes already multiplied by 1/num_ch; missing
 /// entries fall back to an equal-weight mix.
@@ -218,7 +222,7 @@ fn validate_convert_request(job: &ConvertJob) -> Result<(), String> {
     if !matches!(job.mode.as_str(), "stereo" | "keep" | "split") {
         return Err(format!("Unsupported conversion mode: {}", job.mode));
     }
-    if !matches!(job.format.as_str(), "wav" | "mp3" | "flac" | "opus" | "m4a") {
+    if !matches!(job.format.as_str(), "wav" | "mp3" | "flac" | "opus" | "m4a" | "sgmca") {
         return Err(format!("Unsupported output format: {}", job.format));
     }
     validate_finite_range("Maximum input size", job.max_file_size_gb, f64::MIN_POSITIVE, 20.0)?;
@@ -386,6 +390,17 @@ fn plan_conversion(
     let start_shifted = manifest::filters_shift_start(&proc);
     let output_rate = manifest::output_sample_rate(&out_codec);
     let mut encoder_args = out_codec;
+    if job.format == "sgmca" {
+        // One mono Opus stream per output channel, each at the same rate.
+        let output_channels = match job.mode.as_str() {
+            "stereo" => Some(2),
+            "split" => Some(1),
+            _ => probes.channels,
+        };
+        if let Some(channels) = output_channels {
+            encoder_args.extend(["-b:a".into(), format!("{}k", SGMCA_KBPS_PER_CHANNEL * channels)]);
+        }
+    }
     encoder_args.extend(manifest::start_time_metadata_args(
         &job.format,
         probes.probed.timing,
@@ -578,6 +593,19 @@ fn finish_outputs(
 ) -> Result<Vec<OutputFile>, String> {
     cancel.check()?;
     let files = collect_outputs(&plan.planned)?;
+    if job.format == "sgmca" {
+        // Every SGMCA output must really be Direct Audio: a sound Ogg Opus
+        // stream with one uncoupled mono stream per channel.
+        for file in &files {
+            let cancelled = || cancel.cancelled();
+            crate::sgmca::verify_written(Path::new(&file.path), Some(&cancelled)).map_err(|error| {
+                format!(
+                    "{} failed the SGMCA format check, so the output was removed: {error}",
+                    file.name
+                )
+            })?;
+        }
+    }
     for (index, (output, file)) in plan.planned.iter().zip(&files).enumerate() {
         let hashed = manifest::sha256_file(&output.path, &|| cancel.cancelled());
         cancel.check()?;
@@ -661,8 +689,9 @@ async fn do_convert_inner(
     let probed = probe_manifest_source_cancellable(app, effective_feed, Some(&is_cancelled)).await;
     cancel.check()?;
 
-    // Mix to Stereo and Split need the channel count; Keep Original does not.
-    let channels = if matches!(job.mode.as_str(), "stereo" | "split") {
+    // Mix to Stereo and Split need the channel count; Keep Original does not,
+    // except for an SGMCA output, whose bitrate is set per channel.
+    let channels = if matches!(job.mode.as_str(), "stereo" | "split") || job.format == "sgmca" {
         let channels = probe_channels_cancellable(app, effective_feed, Some(&is_cancelled)).await;
         cancel.check()?;
         channels
@@ -1096,14 +1125,33 @@ mod tests {
         run_ffmpeg(&args);
     }
 
-    /// A synthetic SGMCA: the made-up prefix followed by a 4-channel Ogg Opus
-    /// stream. Returns the .sgmca path and the bare Ogg bytes.
+    /// A synthetic 4-channel Ogg Opus stream in the SGMCA layout: mapping
+    /// family 255, one uncoupled mono stream per channel, 16 kHz input tag.
+    fn synthetic_direct_audio(path: &Path) {
+        synthetic_four_channel(
+            path,
+            &[
+                "-c:a",
+                "libopus",
+                "-mapping_family",
+                "255",
+                "-frame_duration",
+                "20",
+                "-b:a",
+                "128k",
+                "-ar",
+                "16000",
+                "-f",
+                "ogg",
+            ],
+        );
+    }
+
+    /// A synthetic SGMCA with the made-up prefix in front of its stream (some
+    /// exports carry one). Returns the .sgmca path and the bare Ogg bytes.
     fn synthetic_sgmca(dir: &Path) -> (PathBuf, Vec<u8>) {
         let ogg = dir.join("synthetic_stream.ogg");
-        synthetic_four_channel(
-            &ogg,
-            &["-c:a", "libopus", "-mapping_family", "1", "-b:a", "128k", "-f", "ogg"],
-        );
+        synthetic_direct_audio(&ogg);
         let stream = fs::read(&ogg).unwrap();
         assert_eq!(&stream[..4], b"OggS");
         fs::remove_file(&ogg).unwrap();
@@ -1112,6 +1160,43 @@ mod tests {
         bytes.extend_from_slice(&stream);
         fs::write(&sgmca, bytes).unwrap();
         (sgmca, stream)
+    }
+
+    /// A synthetic SGMCA as the format describes it: the Ogg stream from byte
+    /// 0, no prefix.
+    fn synthetic_plain_sgmca(dir: &Path) -> PathBuf {
+        let sgmca = dir.join("synthetic_session.sgmca");
+        synthetic_direct_audio(&sgmca);
+        sgmca
+    }
+
+    /// Interleaved 32-bit float PCM at 48 kHz, decoded by FFmpeg.
+    fn decode_f32(path: &Path, channels: usize) -> Vec<Vec<f32>> {
+        let output = std::process::Command::new("ffmpeg")
+            .args([
+                "-nostdin",
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-c:a",
+                "libopus",
+                "-i",
+            ])
+            .arg(path)
+            .args(["-f", "f32le", "-ar", "48000", "-"])
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+        let samples: Vec<f32> = output
+            .stdout
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|bytes| f32::from_le_bytes(*bytes))
+            .collect();
+        (0..channels)
+            .map(|channel| samples.iter().skip(channel).step_by(channels).copied().collect())
+            .collect()
     }
 
     /// A synthetic DigitalCAT `.dm`: DepoAudio hands `.dm` files to FFmpeg
@@ -2012,5 +2097,139 @@ mod tests {
             spread < 6.0,
             "normalized channels still {spread:.1} dB apart: {peaks:?}"
         );
+    }
+
+    // ── SGMCA layout, writer and slicing (FFmpeg on PATH) ───────────────────
+
+    /// The granule-based duration must match what libopus actually decodes,
+    /// sample for sample, and stay within one 20 ms frame of the source.
+    /// FFmpeg versions differ in how many trailing samples they keep when
+    /// they resample to 16 kHz (FFmpeg 8 drops 768 samples at 48 kHz from a
+    /// 2 s tone; 6.1 keeps them all), so an exact 2 s check would test FFmpeg.
+    fn assert_sgmca_duration(path: &Path, info: &crate::sgmca::SgmcaInfo) {
+        let channels = usize::from(info.head.channels);
+        let decoded = decode_f32(path, channels);
+        assert!(
+            decoded.iter().all(|channel| channel.len() as u64 == info.samples),
+            "libopus decoded {:?} samples per channel, the granules say {}",
+            decoded.iter().map(Vec::len).collect::<Vec<_>>(),
+            info.samples
+        );
+        assert!((info.duration_seconds - SYNTHETIC_SECONDS).abs() <= 0.02, "{info:?}");
+    }
+
+    #[test]
+    fn plain_family_255_sgmca_is_read_in_place_and_split() {
+        if !court_fixture_tools_available() {
+            return;
+        }
+        let dir = ConversionTestDir::new();
+        let sgmca = synthetic_plain_sgmca(&dir.0);
+        let info = crate::sgmca::inspect(&sgmca, None).unwrap();
+        assert!(info.sgmca_layout, "{info:?}");
+        assert_eq!(
+            (info.head.channels, info.head.stream_count, info.head.coupled_count),
+            (4, 4, 0)
+        );
+        assert_eq!(info.head.input_sample_rate, 16_000);
+        assert_sgmca_duration(&sgmca, &info);
+        let out = dir.0.join("out");
+        fs::create_dir(&out).unwrap();
+
+        let conversion = convert_with_system_ffmpeg(&court_job(&sgmca, &out, "split", "wav"), None).unwrap();
+        assert_split_outputs(&conversion, &sgmca, ".wav");
+        assert_eq!(conversion.feed, sgmca, "a plain SGMCA needs no temporary copy");
+    }
+
+    #[test]
+    fn wav_to_sgmca_writes_one_mono_opus_stream_per_channel_with_a_record() {
+        if !court_fixture_tools_available() {
+            return;
+        }
+        let dir = ConversionTestDir::new();
+        let wav = dir.0.join("synthetic_session.wav");
+        synthetic_four_channel(&wav, &["-c:a", "pcm_s16le", "-f", "wav"]);
+        let out = dir.0.join("out");
+        fs::create_dir(&out).unwrap();
+
+        let conversion = convert_with_system_ffmpeg(&court_job(&wav, &out, "keep", "sgmca"), None).unwrap();
+        assert_eq!(conversion.files.len(), 1);
+        let file = &conversion.files[0];
+        assert_eq!(file.name, "synthetic_session_orig.sgmca");
+        let written = Path::new(&file.path);
+        let info = crate::sgmca::verify_written(written, None).unwrap();
+        assert_eq!(info.head.channels, 4);
+        assert_eq!(info.head.mapping, [0, 1, 2, 3]);
+        assert_eq!(info.head.input_sample_rate, 16_000);
+        assert_sgmca_duration(written, &info);
+        assert_audio(written, 4, "48000");
+        let record = checked_export_record(file, &wav);
+        assert_eq!(record["output"]["format"], "sgmca");
+        assert_eq!(record["output"]["sampleRate"], 16_000);
+        // 32 kbps for each of the four mono streams.
+        let encoder: Vec<String> = serde_json::from_value(record["processing"]["encoderArgs"].clone()).unwrap();
+        assert!(encoder.windows(2).any(|pair| pair == ["-b:a", "128k"]), "{encoder:?}");
+
+        // What DepoAudio writes, DepoAudio reads back: split it to WAV and
+        // every channel comes out where it went in, at its own level.
+        let round = dir.0.join("round");
+        fs::create_dir(&round).unwrap();
+        let source = round.join("synthetic_session.sgmca");
+        fs::copy(written, &source).unwrap();
+        let out_wav = round.join("out");
+        fs::create_dir(&out_wav).unwrap();
+        let split = convert_with_system_ffmpeg(&court_job(&source, &out_wav, "split", "wav"), None).unwrap();
+        assert_split_outputs(&split, &source, ".wav");
+    }
+
+    #[test]
+    fn split_to_sgmca_gives_each_channel_its_own_direct_audio_file() {
+        if !court_fixture_tools_available() {
+            return;
+        }
+        let dir = ConversionTestDir::new();
+        let sgmca = synthetic_plain_sgmca(&dir.0);
+        let out = dir.0.join("out");
+        fs::create_dir(&out).unwrap();
+
+        let conversion = convert_with_system_ffmpeg(&court_job(&sgmca, &out, "split", "sgmca"), None).unwrap();
+        assert_split_outputs(&conversion, &sgmca, ".sgmca");
+        for file in &conversion.files {
+            let info = crate::sgmca::verify_written(Path::new(&file.path), None).unwrap();
+            assert_eq!((info.head.channels, info.head.stream_count), (1, 1));
+        }
+    }
+
+    #[test]
+    fn sgmca_slice_is_sample_exact_and_matches_the_original_audio() {
+        if !court_fixture_tools_available() {
+            return;
+        }
+        let dir = ConversionTestDir::new();
+        let sgmca = synthetic_plain_sgmca(&dir.0);
+        let cut = dir.0.join("cut.sgmca");
+        let report = crate::sgmca::slice(&sgmca, &cut, 0.5, Some(1.5), None).unwrap();
+        assert_eq!(report.samples, 48_000);
+        assert_eq!(report.channels, 4);
+
+        // FFmpeg honours the new pre-skip and end trim: exactly one second.
+        let sliced = decode_f32(&cut, 4);
+        let whole = decode_f32(&sgmca, 4);
+        assert!(
+            sliced.iter().all(|channel| channel.len() == 48_000),
+            "{}",
+            sliced[0].len()
+        );
+        // The copied packets decode to the same audio as the same second of
+        // the full recording; the pre-roll lets the decoder converge first.
+        for (channel, (cut, full)) in sliced.iter().zip(&whole).enumerate() {
+            let window = &full[24_000..72_000];
+            let signal: f64 = window.iter().map(|&s| (s as f64).powi(2)).sum();
+            let error: f64 = cut.iter().zip(window).map(|(&a, &b)| ((a - b) as f64).powi(2)).sum();
+            let ratio_db = 10.0 * (error / signal).log10();
+            assert!(ratio_db < -30.0, "channel {channel}: slice differs by {ratio_db:.1} dB");
+        }
+        // And the slice is a valid Direct Audio file in its own right.
+        assert!(crate::sgmca::verify_written(&cut, None).is_ok());
     }
 }
