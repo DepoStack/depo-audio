@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+### Added
+
+- **DS2, Webex and Sony recorder files are recognized and explained.** Adding a `.ds2` (OM System / Olympus DSS Pro), `.arf` or `.wrf` (Webex network recording), or `.msv` or `.dvf` (Sony IC recorder) file no longer gives "Unrecognised file format". The file is marked as a closed format, Convert stays off while it is in the queue, and the message names the software to export it with: ODMS for DS2, the Webex Recording Converter (Windows only) for ARF, and Sony Digital Voice Editor for MSV and DVF. DepoAudio does not try to open or decrypt these files, and an encrypted DS2 cannot be opened at all.
+
+### Changed
+
+- **The `.dcr` message no longer assumes Liberty.** Liberty Court Recorder and BIS Digital both write `.dcr`, so the message now says to export to WAV from the software that recorded it, for example either of those. A `.dcr` that starts with a TIFF header (a Kodak camera raw image) is called out as a camera image, not court audio.
+- **Each closed-format file in the queue shows its own guidance.** The Convert warning used to say "Export AES/DCR recordings" for any of them; it now lists each file with the message for its format. The Supported formats table has a "Closed formats — export to WAV first" section.
+
 ## [1.1.0] - Unpublished
 
 DepoAudio 1.1.0 is the first release since 1.0.2. It includes everything that was prepared for 1.0.3. That version was never published, so there is no 1.0.3 download.

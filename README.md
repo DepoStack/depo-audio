@@ -107,6 +107,10 @@ Scanning is a bounded, cancellable local analysis pass. FFmpeg performs the sele
 | **WAV, MP3, FLAC, M4A, OGG, Opus, WMA, AIF** | Standard                   | ✅ Supported                       |
 | **Video (MP4, MOV, MKV, AVI, WebM)**         | — audio track extracted    | ✅ Supported                       |
 | **AES (Eclipse AudioSync)**                  | Eclipse CAT                | 🔒 Encrypted — export to WAV first |
+| **DCR**                                      | Liberty · BIS Digital      | Closed — export to WAV first       |
+| **DS2 (DSS Pro)**                            | OM System / Olympus        | Closed — export to WAV first       |
+| **ARF / WRF**                                | Cisco Webex                | Closed — convert first             |
+| **MSV / DVF**                                | Sony IC recorder           | Closed — export to WAV first       |
 
 ---
 

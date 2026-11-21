@@ -12,7 +12,8 @@ const SEMVER = /^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]{1,32})?$/
 const PLATFORM_WORD = /^[a-z0-9_]{1,32}$/
 // FFmpeg reports "7.1.1", "n7.1.1-20250301" or "N-118000-g1234abcd".
 const FFMPEG_VERSION = /^[nN]?-?\d[0-9A-Za-z.+~_-]{0,63}$/
-const MEDIA_SUFFIX = /\.(?:wav|mp3|flac|opus|m4a|ogg|trm|ftr|sgmca|dm|aes|dcr|mp4|mov|json|txt|exe|app)$/i
+const MEDIA_SUFFIX =
+  /\.(?:wav|mp3|flac|opus|m4a|ogg|trm|ftr|sgmca|dm|aes|dcr|ds2|arf|wrf|msv|dvf|mp4|mov|json|txt|exe|app)$/i
 const ERROR_CLASS = /^[A-Za-z_$][A-Za-z0-9_$]{0,63}$/
 
 function allowed(value, pattern) {

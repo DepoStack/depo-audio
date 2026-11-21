@@ -18,6 +18,13 @@ fn date_regex() -> &'static Regex {
 
 // ── Format registry ───────────────────────────────────────────────────────────
 
+const DCR_NOTE: &str = "DCR recordings use a closed format. Export to WAV from the software that recorded it (for example Liberty Court Recorder or BIS Digital), then add the WAV.";
+const DCR_IMAGE_NOTE: &str =
+    "This .dcr looks like a camera image, not court audio. Check that you picked the right file.";
+const DS2_NOTE: &str = "DS2 (DSS Pro) dictation files cannot be opened here. Export to WAV with OM System / Olympus dictation software (for example ODMS), then add the WAV. An encrypted DS2 file cannot be opened by DepoAudio at all.";
+const WEBEX_NOTE: &str = "Webex network recordings (.arf, .wrf) cannot be opened here. Convert an .arf with the Webex Recording Converter (Windows only), or a .wrf with Webex's own recording software, then add the converted file.";
+const SONY_VOICE_NOTE: &str = "Sony IC recorder files (.msv, .dvf) cannot be opened here. Convert to WAV with Sony Digital Voice Editor, then add the WAV.";
+
 pub(crate) fn get_formats() -> Vec<FormatInfo> {
     vec![
         // Standard formats — play and import natively, convert optionally
@@ -56,9 +63,27 @@ pub(crate) fn get_formats() -> Vec<FormatInfo> {
         FormatInfo { key: "aes".into(), name: "Eclipse AudioSync".into(), vendor: "Eclipse CAT".into(),
             status: "unsupported".into(), handler: "rejected".into(), channels: None,
             note: Some("AES-128 encrypted. Open in Eclipse → File → Export Audio → WAV first.".into()) },
-        FormatInfo { key: "dcr".into(), name: "Liberty Court Recorder".into(), vendor: "High Criteria".into(),
+        // Liberty Court Recorder and BIS Digital both write .dcr, and their
+        // files do not open in each other's software, so the guidance names
+        // neither as the only source.
+        FormatInfo { key: "dcr".into(), name: "Digital Court Recording (DCR)".into(), vendor: "Liberty / BIS Digital".into(),
             status: "unsupported".into(), handler: "rejected".into(), channels: None,
-            note: Some("DCR files are proprietary. Open in Liberty → File → Export Audio → WAV first.".into()) },
+            note: Some(DCR_NOTE.into()) },
+        // A Kodak camera raw image shares the .dcr extension (TIFF-based).
+        FormatInfo { key: "dcr-image".into(), name: "Camera Raw Image (DCR)".into(), vendor: "Kodak camera raw".into(),
+            status: "unsupported".into(), handler: "rejected".into(), channels: None,
+            note: Some(DCR_IMAGE_NOTE.into()) },
+        // Recognized so the user gets guidance instead of "Unrecognised file
+        // format". DepoAudio never attempts to decode or decrypt these.
+        FormatInfo { key: "ds2".into(), name: "DSS Pro Dictation (DS2)".into(), vendor: "OM System / Olympus".into(),
+            status: "unsupported".into(), handler: "rejected".into(), channels: None,
+            note: Some(DS2_NOTE.into()) },
+        FormatInfo { key: "webex".into(), name: "Webex Recording (ARF / WRF)".into(), vendor: "Cisco Webex".into(),
+            status: "unsupported".into(), handler: "rejected".into(), channels: None,
+            note: Some(WEBEX_NOTE.into()) },
+        FormatInfo { key: "sony-voice".into(), name: "Sony IC Recorder (MSV / DVF)".into(), vendor: "Sony".into(),
+            status: "unsupported".into(), handler: "rejected".into(), channels: None,
+            note: Some(SONY_VOICE_NOTE.into()) },
     ]
 }
 
@@ -98,7 +123,17 @@ pub(crate) fn detect_format_for_path(path: &str) -> Option<FormatInfo> {
         "trm" | "ftr" => fmts.into_iter().find(|f| f.key == "ftr"),
         "aes" => fmts.into_iter().find(|f| f.key == "aes"),
         "dm" => fmts.into_iter().find(|f| f.key == "digitalcat"),
-        "dcr" => fmts.into_iter().find(|f| f.key == "dcr"),
+        "dcr" => {
+            let key = if looks_like_tiff(Path::new(path)) {
+                "dcr-image"
+            } else {
+                "dcr"
+            };
+            fmts.into_iter().find(|f| f.key == key)
+        }
+        "ds2" => fmts.into_iter().find(|f| f.key == "ds2"),
+        "arf" | "wrf" => fmts.into_iter().find(|f| f.key == "webex"),
+        "msv" | "dvf" => fmts.into_iter().find(|f| f.key == "sony-voice"),
         "bwf" => fmts.into_iter().find(|f| f.key == "bwf"),
         // Standard formats
         "wav" => fmts.into_iter().find(|f| f.key == "wav"),
@@ -114,6 +149,32 @@ pub(crate) fn detect_format_for_path(path: &str) -> Option<FormatInfo> {
         "mp4" | "mov" | "mkv" | "avi" | "webm" | "m4v" | "3gp" => fmts.into_iter().find(|f| f.key == "video"),
         _ => None,
     }
+}
+
+/// Read up to `N` leading bytes. Detection stays extension-first; this is only
+/// used for cheap content checks, so an unreadable file returns `None` and the
+/// extension decides.
+fn leading_bytes<const N: usize>(path: &Path) -> Option<([u8; N], usize)> {
+    let mut file = fs::File::open(path).ok()?;
+    let mut buffer = [0u8; N];
+    let mut filled = 0;
+    while filled < N {
+        match file.read(&mut buffer[filled..]) {
+            Ok(0) => break,
+            Ok(read) => filled += read,
+            Err(_) => return None,
+        }
+    }
+    Some((buffer, filled))
+}
+
+/// True when the file starts with a TIFF header (`II*\0` or `MM\0*`), which is
+/// what a Kodak DCR camera raw image is. Court-recorder DCR files are not TIFF.
+fn looks_like_tiff(path: &Path) -> bool {
+    matches!(
+        leading_bytes::<4>(path),
+        Some((bytes, 4)) if bytes == *b"II*\0" || bytes == *b"MM\0*"
+    )
 }
 
 // ── Case name detection ───────────────────────────────────────────────────────
@@ -561,6 +622,90 @@ mod tests {
 
         assert_eq!(error, AUDIO_PREPARATION_CANCELLED_MESSAGE);
         assert!(checks.load(Ordering::Relaxed) >= 5);
+    }
+
+    #[test]
+    fn closed_vendor_formats_are_rejected_with_guidance() {
+        for (path, key, guidance) in [
+            ("dictation.ds2", "ds2", "ODMS"),
+            ("DICTATION.DS2", "ds2", "encrypted DS2"),
+            ("meeting.arf", "webex", "Webex Recording Converter"),
+            ("meeting.wrf", "webex", ".wrf"),
+            ("memo.msv", "sony-voice", "Sony Digital Voice Editor"),
+            ("memo.DVF", "sony-voice", "Sony Digital Voice Editor"),
+        ] {
+            let format = detect_format_for_path(path).unwrap_or_else(|| panic!("{path} was not recognised"));
+            assert_eq!(format.key, key, "{path}");
+            assert_eq!(format.status, "unsupported", "{path}");
+            assert_eq!(format.handler, "rejected", "{path}");
+            let note = format.note.unwrap();
+            assert!(note.contains(guidance), "{path}: {note}");
+            assert!(note.contains("cannot be opened here"), "{path}: {note}");
+        }
+    }
+
+    #[test]
+    fn dcr_guidance_names_both_recorders_without_assuming_one() {
+        let dcr = detect_format_for_path("hearing.dcr").unwrap();
+        assert_eq!(dcr.key, "dcr");
+        assert_eq!(dcr.handler, "rejected");
+        let note = dcr.note.unwrap();
+        assert!(note.contains("software that recorded it"), "{note}");
+        assert!(
+            note.contains("Liberty Court Recorder") && note.contains("BIS Digital"),
+            "{note}"
+        );
+        assert!(!dcr.vendor.contains("High Criteria"));
+    }
+
+    #[test]
+    fn dcr_that_is_a_tiff_camera_image_is_called_out() {
+        let dir = ReservationTestDir::new();
+        for (name, bytes) in [
+            ("little.dcr", &b"II*\0rest-of-tiff"[..]),
+            ("big.DCR", &b"MM\0*rest-of-tiff"[..]),
+        ] {
+            let path = dir.path().join(name);
+            fs::write(&path, bytes).unwrap();
+            let format = detect_format_for_path(&path.to_string_lossy()).unwrap();
+            assert_eq!(format.key, "dcr-image", "{name}");
+            assert_eq!(format.handler, "rejected");
+            assert!(format
+                .note
+                .unwrap()
+                .contains("looks like a camera image, not court audio"));
+        }
+
+        // A court-recorder DCR (not TIFF), a short file and an empty file keep
+        // the court guidance.
+        for (name, bytes) in [
+            ("court.dcr", &b"\x00\x01court-audio"[..]),
+            ("short.dcr", &b"II"[..]),
+            ("empty.dcr", &b""[..]),
+        ] {
+            let path = dir.path().join(name);
+            fs::write(&path, bytes).unwrap();
+            assert_eq!(
+                detect_format_for_path(&path.to_string_lossy()).unwrap().key,
+                "dcr",
+                "{name}"
+            );
+        }
+    }
+
+    #[test]
+    fn rejected_formats_never_reach_conversion_handlers() {
+        for format in get_formats()
+            .into_iter()
+            .filter(|format| format.status == "unsupported")
+        {
+            assert_eq!(format.handler, "rejected", "{}", format.key);
+            assert!(
+                format.note.as_deref().is_some_and(|note| !note.is_empty()),
+                "{}",
+                format.key
+            );
+        }
     }
 
     #[test]
