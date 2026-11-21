@@ -68,6 +68,16 @@
         "labels": { "type": "array", "items": { "type": "string" }, "description": "Labels entered for each source channel, in channel order." }
       }
     },
+    "audioStream": {
+      "type": "object",
+      "description": "Which audio stream of the source was converted. Written by versions after 1.1.0; records written by 1.1.0 do not have it. Every probe and FFmpeg pass maps this one stream explicitly (-map 0:a:<index>), so the channel facts above describe it.",
+      "additionalProperties": false,
+      "required": ["index", "sourceAudioStreamCount"],
+      "properties": {
+        "index": { "type": "integer", "minimum": 0, "description": "Zero-based index among the source's audio streams (FFmpeg a:0 is 0)." },
+        "sourceAudioStreamCount": { "type": ["integer", "null"], "minimum": 1, "description": "How many audio streams the source has, or null when the probe could not read them." }
+      }
+    },
     "startTime": {
       "type": "object",
       "additionalProperties": false,

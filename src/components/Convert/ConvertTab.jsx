@@ -51,6 +51,7 @@ export function countHiddenProcessingOptions({
 export default function ConvertTab({
   // Files
   files,
+  audioStreams = {},
   dragOver,
   caseName,
   setCaseName,
@@ -504,6 +505,7 @@ export default function ConvertTab({
                   <FileRow
                     key={f.path}
                     file={f}
+                    streams={audioStreams[f.path]}
                     job={jobs[f.path]}
                     onRemove={() => removeFile(f.path, converting)}
                     converting={converting}

@@ -7,13 +7,15 @@ import { cn } from '../../lib/utils'
 import StatusChip from '../common/StatusChip'
 import MiniPlayer from './MiniPlayer'
 import { isPlayerPlayable } from '../../lib/player'
+import { audioTrackNotice } from '../../lib/queue'
 
-export default function FileRow({ file, job, onRemove, converting, onOpenInPlayer }) {
+export default function FileRow({ file, streams, job, onRemove, converting, onOpenInPlayer }) {
   const [expanded, setExpanded] = useState(false)
   const [folderError, setFolderError] = useState('')
   const status = job?.status || 'waiting'
   const isExp = file.fmt?.status === 'experimental'
   const isRej = file.fmt?.status === 'unsupported'
+  const trackNotice = isRej ? '' : audioTrackNotice(streams)
 
   return (
     <div
@@ -50,6 +52,7 @@ export default function FileRow({ file, job, onRemove, converting, onOpenInPlaye
             )}
           </div>
           <span className="type-small text-[hsl(var(--sub))] truncate block">{file.path}</span>
+          {trackNotice && <span className="type-small text-[hsl(var(--text2))] block mt-0.5">{trackNotice}</span>}
         </div>
         <div className="flex items-center gap-2 shrink-0">
           <StatusChip status={status} />

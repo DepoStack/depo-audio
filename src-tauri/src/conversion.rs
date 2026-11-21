@@ -11,7 +11,7 @@ use crate::ffmpeg::{
 };
 use crate::helpers::{
     basename, detect_format_for_path, input_codec_args, output_args, output_ext, prepare_audio_feed_with_cancel,
-    safe_ffmpeg_input_prelude, safe_label,
+    safe_ffmpeg_input_prelude, safe_label, source_audio_map_args,
 };
 use crate::manifest::{self, FileRecord, ManifestInput, OutputFacts};
 use crate::safety::TempFile;
@@ -125,7 +125,13 @@ fn split_labels(num_ch: u32, labels: &[String]) -> Vec<String> {
 /// channel is isolated — a single averaged gain would leave imbalance in place.
 fn split_filter_complex(num_ch: u32, auto_level: bool, channel_gains: Option<&Vec<f64>>, proc: &[String]) -> String {
     let sp_tags: Vec<String> = (0..num_ch as usize).map(|i| format!("sp{}", i)).collect();
-    let split_str = format!("[0:a]asplit={}[{}]", num_ch, sp_tags.join("]["));
+    // `[0:a:0]`: the converted stream, never FFmpeg's choice among tracks.
+    let split_str = format!(
+        "{}asplit={}[{}]",
+        crate::helpers::source_audio_filter_input(),
+        num_ch,
+        sp_tags.join("][")
+    );
     let per_ch_proc = if proc.is_empty() {
         String::new()
     } else {
@@ -409,6 +415,7 @@ fn plan_conversion(
             track_planned(cleanup, &planned);
             let dst = planned[0].path.clone();
             let chain = all.join(",");
+            args.extend(source_audio_map_args());
             args.extend(["-af".into(), chain.clone()]);
             args.extend(encoder_args.clone());
             args.extend(["-y".into(), dst.to_string_lossy().to_string()]);
@@ -420,6 +427,7 @@ fn plan_conversion(
             planned = reserve_output_paths([(out_dir.join(format!("{}_orig{}", base, ext)), None, None)])?;
             track_planned(cleanup, &planned);
             let dst = planned[0].path.clone();
+            args.extend(source_audio_map_args());
             if proc.is_empty() {
                 filter_option = None;
                 filter_chain = None;
@@ -748,7 +756,7 @@ mod tests {
         // channel count — the fix that made 4-channel court files split right
         assert_eq!(
             split_filter_complex(2, false, None, &[]),
-            "[0:a]asplit=2[sp0][sp1];[sp0]pan=mono|c0=c0[op0];[sp1]pan=mono|c0=c1[op1]"
+            "[0:a:0]asplit=2[sp0][sp1];[sp0]pan=mono|c0=c0[op0];[sp1]pan=mono|c0=c1[op1]"
         );
     }
 
@@ -757,7 +765,7 @@ mod tests {
         let proc = vec!["highpass=f=80".to_string(), "loudnorm=I=-16:TP=-1.5:LRA=11".to_string()];
         assert_eq!(
             split_filter_complex(2, false, None, &proc),
-            "[0:a]asplit=2[sp0][sp1];[sp0]pan=mono|c0=c0,highpass=f=80,loudnorm=I=-16:TP=-1.5:LRA=11[op0];[sp1]pan=mono|c0=c1,highpass=f=80,loudnorm=I=-16:TP=-1.5:LRA=11[op1]"
+            "[0:a:0]asplit=2[sp0][sp1];[sp0]pan=mono|c0=c0,highpass=f=80,loudnorm=I=-16:TP=-1.5:LRA=11[op0];[sp1]pan=mono|c0=c1,highpass=f=80,loudnorm=I=-16:TP=-1.5:LRA=11[op1]"
         );
     }
 
@@ -766,7 +774,7 @@ mod tests {
         let gains = vec![2.0, 1.0, 0.5];
         assert_eq!(
             split_filter_complex(3, true, Some(&gains), &[]),
-            "[0:a]asplit=3[sp0][sp1][sp2];[sp0]pan=mono|c0=c0,volume=2.0000[op0];[sp1]pan=mono|c0=c1[op1];[sp2]pan=mono|c0=c2,volume=0.5000[op2]"
+            "[0:a:0]asplit=3[sp0][sp1][sp2];[sp0]pan=mono|c0=c0,volume=2.0000[op0];[sp1]pan=mono|c0=c1[op1];[sp2]pan=mono|c0=c2,volume=0.5000[op2]"
         );
     }
 
@@ -775,7 +783,7 @@ mod tests {
         let gains = vec![2.0, 0.5];
         assert_eq!(
             split_filter_complex(2, false, Some(&gains), &[]),
-            "[0:a]asplit=2[sp0][sp1];[sp0]pan=mono|c0=c0[op0];[sp1]pan=mono|c0=c1[op1]"
+            "[0:a:0]asplit=2[sp0][sp1];[sp0]pan=mono|c0=c0[op0];[sp1]pan=mono|c0=c1[op1]"
         );
     }
 
@@ -1407,6 +1415,179 @@ mod tests {
         let mix = convert_with_system_ffmpeg(&court_job(&dm, &mix_out, "stereo", "mp3"), None).unwrap();
         assert_mix_output(&mix, &dm, "synthetic_session.mp3");
         assert!(dm.exists());
+    }
+
+    /// A synthetic `.mkv` with two audio streams that differ in channel
+    /// count: stream 0 is a mono 440 Hz tone at 0.5 (tagged eng, "Floor"),
+    /// stream 1 a much quieter 4-channel stream (tagged spa, "Interpreter").
+    /// Neither stream is marked default, so FFmpeg's automatic selection
+    /// prefers the one with more channels: without an explicit map a
+    /// conversion would encode stream 1. (FFmpeg 6.1 checked; a stream marked
+    /// default wins over channel count, which is the same risk when the
+    /// default track is not the first.)
+    fn synthetic_two_stream_mkv(dir: &Path) -> PathBuf {
+        let path = dir.join("synthetic_two_tracks.mkv");
+        let mut args: Vec<String> = Vec::new();
+        for frequency in [440, 220, 330, 550, 660] {
+            args.extend([
+                "-f".into(),
+                "lavfi".into(),
+                "-i".into(),
+                format!("sine=frequency={frequency}:duration={SYNTHETIC_SECONDS}:sample_rate=48000"),
+            ]);
+        }
+        let graph = "[0:a]volume=0.5[floor];[1:a]volume=0.0625[q0];[2:a]volume=0.0625[q1];\
+                     [3:a]volume=0.0625[q2];[4:a]volume=0.0625[q3];\
+                     [q0][q1][q2][q3]join=inputs=4:channel_layout=quad[interp]";
+        args.extend(["-filter_complex".into(), graph.into()]);
+        for (label, extra) in [
+            (
+                "[floor]",
+                ["-metadata:s:a:0", "language=eng", "-metadata:s:a:0", "title=Floor"],
+            ),
+            (
+                "[interp]",
+                [
+                    "-metadata:s:a:1",
+                    "language=spa",
+                    "-metadata:s:a:1",
+                    "title=Interpreter",
+                ],
+            ),
+        ] {
+            args.extend(["-map".into(), label.into()]);
+            args.extend(extra.iter().map(|arg| arg.to_string()));
+        }
+        args.extend(
+            [
+                "-c:a",
+                "pcm_s16le",
+                "-disposition:a:0",
+                "0",
+                "-disposition:a:1",
+                "0",
+                "-y",
+            ]
+            .map(String::from),
+        );
+        args.push(path.to_string_lossy().to_string());
+        run_ffmpeg(&args);
+        path
+    }
+
+    fn assert_records_stream_zero_of_two(file: &OutputFile, source: &Path) {
+        let path = manifest::manifest_path_for(Path::new(&file.path));
+        let record: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        let errors = manifest::tests::schema_errors_for_value(&record);
+        assert!(errors.is_empty(), "{}: {errors:#?}", path.display());
+        assert_eq!(record["source"]["sha256"], sha256_of(source));
+        assert_eq!(record["output"]["sha256"], sha256_of(Path::new(&file.path)));
+        assert_eq!(record["audioStream"]["index"], 0);
+        assert_eq!(record["audioStream"]["sourceAudioStreamCount"], 2);
+        assert_eq!(record["channel"]["sourceChannelCount"], 1);
+    }
+
+    #[test]
+    fn plans_map_the_converted_audio_stream_in_every_mode() {
+        let dir = ConversionTestDir::new();
+        let feed = dir.0.join("tracks.mkv");
+        let probes = ConversionProbes {
+            channels: Some(2),
+            channel_gains: None,
+            proc: Vec::new(),
+            probed: manifest::ProbedSource::default(),
+        };
+        let feed_arg = feed.to_string_lossy().to_string();
+        for mode in ["stereo", "keep"] {
+            let mut job = valid_job();
+            job.src_path = feed_arg.clone();
+            job.out_dir = dir.0.to_string_lossy().to_string();
+            job.mode = mode.into();
+            let mut cleanup = OutputCleanup::default();
+            let plan = plan_conversion(&job, &feed, &probes, &mut cleanup).unwrap();
+            let input = plan.args.iter().position(|arg| arg == &feed_arg).unwrap();
+            assert_eq!(plan.args[input - 1], "-i");
+            assert_eq!(
+                plan.args[input + 1..input + 3],
+                ["-map", "0:a:0"],
+                "{mode}: {:?}",
+                plan.args
+            );
+            assert_eq!(plan.args.iter().filter(|arg| *arg == "-map").count(), 1, "{mode}");
+        }
+        let mut job = valid_job();
+        job.src_path = feed_arg.clone();
+        job.out_dir = dir.0.to_string_lossy().to_string();
+        job.mode = "split".into();
+        let mut cleanup = OutputCleanup::default();
+        let plan = plan_conversion(&job, &feed, &probes, &mut cleanup).unwrap();
+        assert!(plan.filter_chain.as_deref().unwrap().starts_with("[0:a:0]asplit=2"));
+        let maps: Vec<&String> = plan
+            .args
+            .windows(2)
+            .filter(|pair| pair[0] == "-map")
+            .map(|pair| &pair[1])
+            .collect();
+        assert_eq!(maps, ["[op0]", "[op1]"]);
+    }
+
+    /// FFmpeg-backed: a file whose audio streams differ in channel count is
+    /// converted from stream 0 in every mode, the export record says so, and
+    /// the queue probe reads both tracks with their tags.
+    #[test]
+    fn synthetic_two_stream_file_converts_stream_zero_and_records_it() {
+        if !court_fixture_tools_available() {
+            return;
+        }
+        let dir = ConversionTestDir::new();
+        let source = synthetic_two_stream_mkv(&dir.0);
+
+        // Control: FFmpeg's own choice, with no map, is the 4-channel stream.
+        let control = dir.0.join("control_auto.wav");
+        run_ffmpeg(&[
+            "-i".into(),
+            source.to_string_lossy().to_string(),
+            "-c:a".into(),
+            "pcm_s16le".into(),
+            control.to_string_lossy().to_string(),
+        ]);
+        assert_audio(&control, 4, "48000");
+
+        let streams = {
+            let output = std::process::Command::new("ffprobe")
+                .args(crate::ffmpeg::manifest_probe_args(&source))
+                .output()
+                .unwrap();
+            manifest::parse_audio_streams(&serde_json::from_slice(&output.stdout).unwrap())
+        };
+        assert_eq!(streams.converted_index, 0);
+        assert_eq!(streams.streams.len(), 2);
+        assert_eq!(streams.streams[0].channels, Some(1));
+        assert_eq!(streams.streams[0].language.as_deref(), Some("eng"));
+        assert_eq!(streams.streams[0].title.as_deref(), Some("Floor"));
+        assert_eq!(streams.streams[1].channels, Some(4));
+        assert_eq!(streams.streams[1].title.as_deref(), Some("Interpreter"));
+
+        // Stream 0 peaks at 0.5 x 1/8 of full scale; stream 1 is 18 dB lower.
+        let floor_peak = 20.0 * (0.5_f64 / 8.0).log10();
+        for (mode, outputs) in [("keep", 1), ("stereo", 1), ("split", 1)] {
+            let out = dir.0.join(mode);
+            fs::create_dir(&out).unwrap();
+            let mut job = court_job(&source, &out, mode, "wav");
+            job.labels = vec!["Floor".into()];
+            job.chan_vols = vec![1.0];
+            let conversion = convert_with_system_ffmpeg(&job, None).unwrap();
+            assert_eq!(conversion.files.len(), outputs, "{mode}");
+            let file = &conversion.files[0];
+            let path = Path::new(&file.path);
+            assert_audio(path, if mode == "stereo" { 2 } else { 1 }, "48000");
+            let peak = max_volume_db(path);
+            assert!(
+                (peak - floor_peak).abs() < 1.5,
+                "{mode}: peak {peak} dB, expected stream 0 at {floor_peak:.1} dB"
+            );
+            assert_records_stream_zero_of_two(file, &source);
+        }
     }
 
     #[test]

@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- **A file with more than one audio track is converted from the track its export record describes.** The probes, the waveform and the export record always read the first audio track, but conversion, Scan and auto-leveling let FFmpeg choose a track. FFmpeg prefers a track marked default and otherwise the one with the most channels, so a video with a mono floor track and a 4-channel interpreter track could be converted from the interpreter track while its record described the floor track. Every FFmpeg and ffprobe call now names the first audio track (`-map 0:a:0`). A queued file with more than one audio track says so in its row, for example: This file has 2 audio tracks; converting track 1 (eng, "Floor"). The other track is not converted. The export record has a new `audioStream` object with the converted track's index and the number of audio tracks in the source. Choosing another track is not available yet. SGMCA files are not checked in the queue, because their audio is read from a temporary copy only when converting.
+
 ## [1.1.0] - Unpublished
 
 DepoAudio 1.1.0 is the first release since 1.0.2. It includes everything that was prepared for 1.0.3. That version was never published, so there is no 1.0.3 download.

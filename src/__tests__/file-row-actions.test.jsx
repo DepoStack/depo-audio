@@ -104,3 +104,38 @@ describe('Completed conversion rows', () => {
     for (const ext of ['trm', 'sgmca', 'ftr', 'txt']) expect(isPlayerPlayable(`/out/a.${ext}`)).toBe(false)
   })
 })
+
+describe('Queued rows with several audio tracks', () => {
+  afterEach(cleanup)
+
+  const streams = {
+    convertedIndex: 0,
+    streams: [
+      { channels: 1, sampleRate: 48000, language: 'eng', title: 'Floor' },
+      { channels: 4, sampleRate: 48000, language: 'spa', title: 'Interpreter' },
+    ],
+  }
+
+  it('says which track is converted', () => {
+    const recording = { path: '/case/hearing.mkv', name: 'hearing.mkv', fmt: null }
+    render(<FileRow file={recording} streams={streams} onRemove={vi.fn()} converting={false} />)
+    expect(
+      screen.getByText(
+        'This file has 2 audio tracks; converting track 1 (eng, "Floor"). The other track is not converted.',
+      ),
+    ).toBeTruthy()
+  })
+
+  it('shows no notice for a single track', () => {
+    const recording = { path: '/case/hearing.wav', name: 'hearing.wav', fmt: null }
+    render(
+      <FileRow
+        file={recording}
+        streams={{ convertedIndex: 0, streams: [streams.streams[0]] }}
+        onRemove={vi.fn()}
+        converting={false}
+      />,
+    )
+    expect(screen.queryByText(/audio tracks/)).toBeNull()
+  })
+})

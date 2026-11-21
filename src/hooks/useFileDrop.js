@@ -11,6 +11,9 @@ export default function useFileDrop(dropOverrideRef, queueLocked = false) {
   const [dragOver, setDragOver] = useState(false)
   const [caseName, setCaseName] = useState('')
   const [queueNotice, setQueueNotice] = useState('')
+  // Audio streams per queued path (probe_audio_streams_cmd), kept apart from
+  // `files` so a late probe never looks like a queue change.
+  const [audioStreams, setAudioStreams] = useState({})
 
   const filesRef = useRef(files)
   const caseNameRef = useRef(caseName)
@@ -62,6 +65,20 @@ export default function useFileDrop(dropOverrideRef, queueLocked = false) {
       filesRef.current = merged
       setFiles(merged)
       if (queueChanged) notifyConversionQueueChanged()
+
+      // Read-only probe of each new file's audio tracks, for the multi-track
+      // notice and the WAV size estimate. Best effort: no answer, no notice.
+      const previousPaths = new Set(previous.map(file => file.path))
+      for (const file of merged) {
+        if (previousPaths.has(file.path) && !options.replace) continue
+        Promise.resolve()
+          .then(() => invoke('probe_audio_streams_cmd', { path: file.path }))
+          .then(info => {
+            if (!Array.isArray(info?.streams) || !filesRef.current.some(queued => queued.path === file.path)) return
+            setAudioStreams(current => ({ ...current, [file.path]: info }))
+          })
+          .catch(() => {})
+      }
 
       const notices = []
       if (trsCompanions.length > 0) {
@@ -116,6 +133,7 @@ export default function useFileDrop(dropOverrideRef, queueLocked = false) {
       filesRef.current = []
       caseNameRef.current = ''
       setFiles([])
+      setAudioStreams({})
       setCaseName('')
       setQueueNotice('')
       if (hadFiles) notifyConversionQueueChanged()
@@ -205,6 +223,7 @@ export default function useFileDrop(dropOverrideRef, queueLocked = false) {
   return {
     files,
     setFiles,
+    audioStreams,
     dragOver,
     caseName,
     setCaseName,

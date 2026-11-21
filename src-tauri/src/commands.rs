@@ -75,6 +75,25 @@ pub fn detect_format(path: String) -> Option<FormatInfo> {
     detect_format_for_path(&path)
 }
 
+/// The audio streams of a queued file, for the Convert queue's multi-track
+/// notice and the WAV size estimate. Read-only: one ffprobe of the original
+/// file. Returns None when the file is not probed here: a rejected format, or
+/// an SGMCA, whose Ogg stream sits behind a vendor prefix and is only read
+/// from a temporary copy at conversion time.
+#[tauri::command]
+pub async fn probe_audio_streams_cmd(
+    app: AppHandle,
+    path: String,
+) -> Result<Option<crate::manifest::AudioStreamsInfo>, String> {
+    let source = Path::new(&path);
+    crate::safety::check_file_safe(source)?;
+    match detect_format_for_path(&path) {
+        Some(format) if format.handler == "rejected" || format.key == "sgmca" => Ok(None),
+        Some(_) => Ok(crate::ffmpeg::probe_audio_streams(&app, source).await),
+        None => Ok(None),
+    }
+}
+
 #[tauri::command]
 pub fn infer_case_name_cmd(filename: String) -> String {
     infer_case_name(&filename)

@@ -225,6 +225,31 @@ describe('conversion cancellation', () => {
     expect(result.current.conversion.doneCount).toBe(0)
   })
 
+  it('probes each newly queued file for its audio tracks without changing the queue', async () => {
+    const info = { convertedIndex: 0, streams: [{ channels: 1 }, { channels: 4 }], durationSecs: 60 }
+    invoke.mockImplementation(command => {
+      if (command === 'detect_format') return Promise.resolve(null)
+      if (command === 'infer_case_name_cmd') return Promise.resolve('')
+      if (command === 'probe_audio_streams_cmd') return Promise.resolve(info)
+      return Promise.resolve(null)
+    })
+    const { result } = renderHook(() => useFileDrop({ current: null }))
+
+    await act(async () => result.current.addFiles(['/case/hearing.mkv']))
+    const queued = result.current.files
+    await waitFor(() => expect(result.current.audioStreams['/case/hearing.mkv']).toEqual(info))
+    expect(result.current.files).toBe(queued)
+    expect(invoke).toHaveBeenCalledWith('probe_audio_streams_cmd', { path: '/case/hearing.mkv' })
+
+    // Adding the same file again does not probe it again.
+    const probes = () => invoke.mock.calls.filter(([command]) => command === 'probe_audio_streams_cmd').length
+    await act(async () => result.current.addFiles(['/case/hearing.mkv']))
+    expect(probes()).toBe(1)
+
+    act(() => result.current.clearAll(false))
+    expect(result.current.audioStreams).toEqual({})
+  })
+
   it('queues files with a visible warning when format detection fails', async () => {
     invoke.mockImplementation(command => {
       if (command === 'detect_format') return Promise.reject(new Error('probe unavailable'))
