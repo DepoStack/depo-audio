@@ -15,7 +15,7 @@ import WorkspaceHeader from '../common/WorkspaceHeader'
 import ProcessingToggle from './ProcessingToggle'
 import FormatTable from './FormatTable'
 import FileRow from './FileRow'
-import { aggregateAnalysisResults } from '../../lib/analysis'
+import { SCAN_SAMPLE_NOTE, aggregateAnalysisResults } from '../../lib/analysis'
 
 // The backend emits scan:progress events throughout each file's analysis
 // (including ~10s heartbeats while a wedged ffmpeg drains its timeout), so
@@ -761,7 +761,13 @@ export default function ConvertTab({
               {!analysis && !scanning && !scanError && (
                 <p className="px-4 py-2.5 type-small text-[hsl(var(--sub))]">
                   Drop files and click <strong className="text-foreground">Scan</strong> to check for level differences
-                  and clipping. Scan suggests fixes; nothing changes until you apply them.
+                  and clipping. {SCAN_SAMPLE_NOTE} Scan suggests fixes; nothing changes until you apply them.
+                </p>
+              )}
+
+              {analysis && !scanning && (
+                <p className="px-4 pt-2.5 pb-1 type-small text-[hsl(var(--sub))]">
+                  {SCAN_SAMPLE_NOTE} Anything after that is not measured.
                 </p>
               )}
 

@@ -7,6 +7,10 @@
 - **The Player rewinds a little when you resume.** After a pause, pressing Play, Space or K first goes back 2 seconds so the last words are heard again. The Backstep menu next to the transport shows the current value and offers Off, 1, 2, 3 and 5 seconds; the choice is saved like playback speed. Seeking, changing tracks and the A-B loop wrapping do not rewind, the rewind never goes before the start of the track, and inside an active A-B loop it never goes before the loop start.
 - **Compare a converted file with its original.** "Compare with original" on a converted row opens a small player with Original and Output buttons that switch between the two at the same position. It needs a source the app's web view can play: for .sgmca, .trm and .ftr sources the button is disabled and says "Original can't be played here; open the output in Player". For split conversions it compares the first output, names it, and notes that the original plays all of its channels together. If the original cannot be opened when you play it, the player says so.
 
+### Changed
+
+- **Scan says how much it checks.** Scan measures loudness, peaks and clipping in the first 3 minutes of each file. The Audio processing panel now says so before a scan and next to its results, and that anything later in a long recording is not measured. The number comes from one frontend constant that a test keeps equal to the backend's sample length.
+
 ## [1.1.0] - Unpublished
 
 DepoAudio 1.1.0 is the first release since 1.0.2. It includes everything that was prepared for 1.0.3. That version was never published, so there is no 1.0.3 download.

@@ -211,6 +211,9 @@ describe('ConvertTab scan cancellation', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Scan' }))
     const apply = await screen.findByRole('button', { name: 'Apply suggestions' })
     expect(screen.getByText(/Nothing is switched on until you apply them/)).toBeVisible()
+    expect(
+      screen.getByText('Scan checks the first 3 minutes of each file. Anything after that is not measured.'),
+    ).toBeVisible()
     expect(screen.getAllByText(/^Recommended —/)).toHaveLength(2)
     expect(prefs.setAutoLevel).not.toHaveBeenCalled()
     expect(prefs.setDeclip).not.toHaveBeenCalled()
@@ -224,5 +227,10 @@ describe('ConvertTab scan cancellation', () => {
     fireEvent.click(apply)
     expect(prefs.setAutoLevel).toHaveBeenCalledWith(true)
     expect(prefs.setDeclip).toHaveBeenCalledWith(true)
+  })
+
+  it('says before a scan that it checks only the first 3 minutes', () => {
+    render(<ConvertTab {...props()} />)
+    expect(screen.getByText(/Scan checks the first 3 minutes of each file\./)).toBeVisible()
   })
 })
