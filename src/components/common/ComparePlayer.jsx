@@ -17,7 +17,11 @@ export default function ComparePlayer({
   originalLabel = 'Original',
   processedLabel = 'Processed',
   unavailableMessage = "This file can't be played here.",
+  processedUnavailableMessage = '',
   note = '',
+  // False when the two files' timelines differ (leading-silence trim), so the
+  // hint does not promise the same position.
+  aligned = true,
 }) {
   const [activeSource, setActiveSource] = useState('processed') // 'original' | 'processed'
   const [playing, setPlaying] = useState(false)
@@ -170,12 +174,16 @@ export default function ComparePlayer({
         {activeSource === 'original'
           ? `Listening to the ${originalLabel.toLowerCase()}`
           : `Listening to the ${processedLabel.toLowerCase()}`}
-        {' — '}choose the other button to compare at the same position
+        {aligned
+          ? ' — choose the other button to compare at the same position'
+          : ' — choose the other button to switch'}
       </p>
       {note && <p className="type-small text-[hsl(var(--text2))] text-center">{note}</p>}
       {failed[activeSource] && (
         <p role="alert" className="rounded border-l-[3px] border-l-destructive px-2 py-1.5 type-small text-destructive">
-          {activeSource === 'original' ? unavailableMessage : `${processedLabel} can't be played here.`}
+          {activeSource === 'original'
+            ? unavailableMessage
+            : processedUnavailableMessage || `${processedLabel} can't be played here.`}
         </p>
       )}
     </div>

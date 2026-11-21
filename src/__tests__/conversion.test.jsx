@@ -4,7 +4,7 @@ import { invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
 import { open } from '@tauri-apps/plugin-dialog'
 import useConversion, { cancelQueuedJobs } from '../hooks/useConversion'
-import useFileDrop from '../hooks/useFileDrop'
+import useFileDrop, { AUDIO_PROBE_CONCURRENCY } from '../hooks/useFileDrop'
 import { countHiddenProcessingOptions } from '../components/Convert/ConvertTab'
 
 vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn() }))
@@ -250,6 +250,55 @@ describe('conversion cancellation', () => {
     expect(result.current.audioStreams).toEqual({})
   })
 
+  it('probes a large drop a few files at a time and forgets removed files', async () => {
+    const pending = []
+    let inFlight = 0
+    let peak = 0
+    invoke.mockImplementation((command, args) => {
+      if (command === 'detect_format') return Promise.resolve(null)
+      if (command === 'infer_case_name_cmd') return Promise.resolve('')
+      if (command === 'probe_audio_streams_cmd') {
+        inFlight += 1
+        peak = Math.max(peak, inFlight)
+        return new Promise(resolve =>
+          pending.push(() => {
+            inFlight -= 1
+            resolve({ convertedIndex: 0, streams: [{ channels: 4 }], durationSecs: 600, path: args.path })
+          }),
+        )
+      }
+      return Promise.resolve(null)
+    })
+    const { result } = renderHook(() => useFileDrop({ current: null }))
+    const chunks = Array.from({ length: 40 }, (_, index) => `/session/chunk-${String(index).padStart(3, '0')}.trm`)
+
+    await act(async () => result.current.addFiles(chunks))
+    expect(result.current.files).toHaveLength(40)
+    const probes = () => invoke.mock.calls.filter(([command]) => command === 'probe_audio_streams_cmd')
+    await waitFor(() => expect(probes()).toHaveLength(AUDIO_PROBE_CONCURRENCY))
+    expect(peak).toBe(AUDIO_PROBE_CONCURRENCY)
+
+    // A file removed while its probe waits is never probed, and a file removed
+    // while its probe runs never gets a result.
+    const running = probes()[0][1].path
+    const waiting = chunks[chunks.length - 1]
+    act(() => result.current.removeFile(running, false))
+    act(() => result.current.removeFile(waiting, false))
+    while (pending.length > 0) {
+      await act(async () => pending.shift()())
+    }
+    await waitFor(() => expect(Object.keys(result.current.audioStreams)).toHaveLength(38))
+    expect(peak).toBe(AUDIO_PROBE_CONCURRENCY)
+    expect(result.current.audioStreams[running]).toBeUndefined()
+    expect(probes().map(([, args]) => args.path)).not.toContain(waiting)
+
+    // Removing a probed file drops its stale result.
+    const probed = chunks[1]
+    expect(result.current.audioStreams[probed]).toBeDefined()
+    act(() => result.current.removeFile(probed, false))
+    expect(result.current.audioStreams[probed]).toBeUndefined()
+  })
+
   it('queues files with a visible warning when format detection fails', async () => {
     invoke.mockImplementation(command => {
       if (command === 'detect_format') return Promise.reject(new Error('probe unavailable'))
@@ -339,6 +388,44 @@ describe('conversion cancellation', () => {
       warning: 'The audio was converted, but the library could not be updated.',
     })
     expect(onLibraryError).toHaveBeenCalledWith('The audio was converted, but the library could not be updated.')
+  })
+})
+
+describe('conversion results', () => {
+  beforeEach(() => {
+    listeners.clear()
+    invoke.mockReset()
+    listen.mockReset()
+    listen.mockImplementation(async (event, callback) => {
+      if (!listeners.has(event)) listeners.set(event, new Set())
+      listeners.get(event).add(callback)
+      return () => listeners.get(event)?.delete(callback)
+    })
+    invoke.mockImplementation(command => {
+      if (command === 'begin_conversion_batch_cmd') return Promise.resolve(42)
+      if (command === 'convert') return new Promise(() => {})
+      if (command === 'library_get') return Promise.resolve([])
+      return Promise.resolve(43)
+    })
+  })
+
+  it.each([
+    ['stereo', true, true],
+    ['keep', true, true],
+    ['split', true, false],
+    ['stereo', false, false],
+  ])('records whether leading-silence trim ran (%s, trim %s)', async (mode, trim, trimmed) => {
+    const file = { path: '/case/source.wav', name: 'source.wav' }
+    const { result } = renderHook(() => useConversion())
+    let batch
+    act(() => {
+      batch = result.current.startConversion(conversionOptions([file], { mode, trim }))
+    })
+    await waitFor(() => expect(invoke.mock.calls.some(([command]) => command === 'convert')).toBe(true))
+    const activeJob = invoke.mock.calls.find(([command]) => command === 'convert')[1].job
+    act(() => emit('convert:done', { id: activeJob.id, files: [{ path: '/case/out.wav', name: 'out.wav', size: 1 }] }))
+    await act(async () => batch)
+    expect(result.current.jobs[file.path]).toMatchObject({ status: 'done', trimmed })
   })
 })
 

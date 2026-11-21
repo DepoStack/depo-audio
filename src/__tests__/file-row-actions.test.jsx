@@ -222,9 +222,51 @@ describe('Compare with original', () => {
       />,
     )
     const button = screen.getByRole('button', { name: 'Compare with original: hearing.mp3' })
-    expect(button).toBeDisabled()
-    expect(button).toHaveAccessibleDescription("Original can't be played here; open the output in Player.")
-    expect(screen.getByText("Original can't be played here; open the output in Player.")).toBeVisible()
+    // Focusable, so keyboard users reach the reason, but marked unavailable.
+    expect(button).toHaveAttribute('aria-disabled', 'true')
+    expect(button).not.toHaveAttribute('disabled')
+    expect(button).toHaveClass('line-through')
+    expect(button).toHaveAccessibleDescription(
+      "(unavailable: Original can't be played here; open the output in Player.)",
+    )
+    expect(screen.getByText("(unavailable: Original can't be played here; open the output in Player.)")).toBeVisible()
+    button.focus()
+    expect(button).toHaveFocus()
+    fireEvent.click(button)
+    expect(screen.queryByRole('button', { name: 'Original' })).not.toBeInTheDocument()
+    expect(button).not.toHaveAttribute('aria-expanded')
+  })
+
+  it('says positions do not line up after leading-silence trim', () => {
+    render(
+      <FileRow
+        file={wavSource}
+        job={{ ...doneJob([{ path: '/out/hearing.mp3', name: 'hearing.mp3', size: 1 }]), trimmed: true }}
+        onRemove={vi.fn()}
+        converting={false}
+      />,
+    )
+    fireEvent.click(screen.getByRole('button', { name: /Compare with original/ }))
+    expect(screen.getByText(/Trim silence removed audio from the start of the output/)).toBeVisible()
+    expect(screen.getByText(/Listening to the output/)).toHaveTextContent('choose the other button to switch')
+    expect(screen.queryByText(/at the same position/)).not.toBeInTheDocument()
+  })
+
+  it('gives a next step when the output fails to load', () => {
+    render(
+      <FileRow
+        file={wavSource}
+        job={doneJob([{ path: '/out/hearing.opus', name: 'hearing.opus', size: 1 }])}
+        onRemove={vi.fn()}
+        converting={false}
+      />,
+    )
+    fireEvent.click(screen.getByRole('button', { name: /Compare with original/ }))
+    const [, outputAudio] = compareAudio()
+    fireEvent.error(outputAudio)
+    expect(screen.getByRole('alert')).toHaveTextContent(
+      "Output can't be played here. Use Reveal in folder to open it in another player.",
+    )
   })
 
   it('compares the first output of a split conversion and says which', () => {

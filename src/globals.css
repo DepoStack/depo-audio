@@ -477,6 +477,20 @@
   }
 }
 
+/* The transport row holds the buttons, the track and scrubber, and the
+   speed, Backstep, loop and bookmark controls. Below this width the track
+   gets its own line, so its name is not squeezed to a letter or two. */
+@media (max-width: 760px) {
+  .player-transport {
+    flex-wrap: wrap;
+  }
+
+  .player-transport-track {
+    order: 3;
+    flex-basis: 100%;
+  }
+}
+
 /* At 150-200% scaling the minimum native window becomes a compact CSS
    viewport. Preserve the vertical Tauri navigation contract while returning
    width to the active workspace and letting Library controls form clear rows. */
@@ -562,15 +576,6 @@
 
   .conversion-footer-status {
     min-height: 1.25rem;
-  }
-
-  .player-transport {
-    flex-wrap: wrap;
-  }
-
-  .player-transport-track {
-    order: 3;
-    flex-basis: 100%;
   }
 
   .library-toolbar {

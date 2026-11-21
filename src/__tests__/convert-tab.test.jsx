@@ -2,13 +2,16 @@ import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/re
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
+import { openUrl } from '@tauri-apps/plugin-opener'
 import ConvertTab from '../components/Convert/ConvertTab'
+import { STENOGRAPH_ASSOCIATE_AUDIO, STENOGRAPH_SINGLE_CHANNEL } from '../presets'
 import FormatTable from '../components/Convert/FormatTable'
 
 const preferencesContext = vi.hoisted(() => ({ current: null }))
 
 vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn() }))
 vi.mock('@tauri-apps/api/event', () => ({ listen: vi.fn() }))
+vi.mock('@tauri-apps/plugin-opener', () => ({ openUrl: vi.fn(() => Promise.resolve()) }))
 vi.mock('../hooks/PreferencesContext', () => ({
   usePreferencesContext: () => preferencesContext.current,
 }))
@@ -305,6 +308,18 @@ describe('Closed-format guidance', () => {
     expect(alert).toHaveTextContent('photo.dcr: This .dcr looks like a camera image, not court audio.')
     expect(alert).not.toHaveTextContent('AES/DCR')
     expect(screen.getByRole('button', { name: 'Convert 2 Files' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Convert 2 Files' })).toHaveAttribute(
+      'title',
+      'Remove unsupported files first. The note for each one says how to export it.',
+    )
+    cleanup()
+
+    // A camera image is not a recording, so there is nothing to export.
+    render(<ConvertTab {...props([rejected[1]])} />)
+    const convert = screen.getByRole('button', { name: 'Convert' })
+    expect(convert).toHaveAttribute('title', 'Remove the files that are not recordings first.')
+    expect(screen.getByText('Remove the files that are not recordings first.')).toBeVisible()
+    expect(screen.queryByText(/export them to WAV/)).not.toBeInTheDocument()
   })
 
   it('falls back to neutral guidance when a rejected file has no note', () => {
@@ -348,9 +363,50 @@ describe('ConvertTab preset picker', () => {
     render(<ConvertTab {...props()} />)
 
     const picker = screen.getByTestId('preset-picker')
-    const catalyst = screen.getByRole('button', { name: /For CATalyst audio sync \(WAV\)/ })
-    expect(catalyst).toHaveAccessibleDescription(/Stenograph lists WAV for audio association/)
+    // The name is only the preset's name; the basis and the not-tested line
+    // are read once, as the description.
+    const catalyst = screen.getByRole('button', { name: 'For CATalyst audio sync (WAV)' })
+    expect(catalyst).toHaveAccessibleDescription(
+      'Stenograph lists WAV for audio association and says to convert MP3 to WAV for CATalyst 21 or older. Not tested in CAT software',
+    )
+    expect(screen.getByRole('button', { name: 'Smallest file (Opus)' })).toHaveAccessibleDescription(
+      /Opus plays only in CATalyst 20 or newer.*Not tested in CAT software$/,
+    )
     expect(picker.textContent.match(/Not tested in CAT software/g)).toHaveLength(7)
+  })
+
+  it('links the Stenograph articles the format notes come from', async () => {
+    preferencesContext.current = preferences()
+    openUrl.mockClear()
+    render(<ConvertTab {...props()} />)
+
+    fireEvent.click(screen.getByRole('button', { name: /^Associate Audio File \(Stenograph Solution Center/ }))
+    fireEvent.click(screen.getByRole('button', { name: /^Single Channel Audio \(Stenograph Solution Center/ }))
+    expect(openUrl.mock.calls).toEqual([[STENOGRAPH_ASSOCIATE_AUDIO], [STENOGRAPH_SINGLE_CHANNEL]])
+
+    openUrl.mockRejectedValueOnce(new Error('no browser'))
+    fireEvent.click(screen.getByRole('button', { name: /^Associate Audio File/ }))
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      "Couldn't open Stenograph's “Associate Audio File” article: Error: no browser",
+    )
+  })
+
+  it('does not call default settings a chosen preset', () => {
+    preferencesContext.current = preferences()
+    render(<ConvertTab {...props()} />)
+
+    expect(screen.getByTestId('preset-status')).toHaveTextContent(
+      'No preset chosen. The current settings are the same as “For other or older CAT software (WAV)”.',
+    )
+    expect(screen.getByTestId('preset-status')).not.toHaveTextContent('Using:')
+    expect(screen.getByTestId('preset-picker').querySelectorAll('[aria-pressed="true"]')).toHaveLength(0)
+
+    fireEvent.click(screen.getByRole('button', { name: 'For other or older CAT software (WAV)' }))
+    expect(screen.getByTestId('preset-status')).toHaveTextContent('Using: For other or older CAT software (WAV)')
+    expect(screen.getByRole('button', { name: 'For other or older CAT software (WAV)' })).toHaveAttribute(
+      'aria-pressed',
+      'true',
+    )
   })
 
   it('applies a preset only when pressed', () => {
@@ -380,7 +436,7 @@ describe('ConvertTab preset picker', () => {
     render(<ConvertTab {...props()} />)
 
     expect(screen.getByTestId('preset-status')).toHaveTextContent(
-      'Custom: the earlier “Quick Share” preset. Closest new preset: Smallest file (Opus) — CATalyst 20 or newer',
+      'Custom: the earlier “Quick Share” preset. Closest new preset: Smallest file (Opus)',
     )
     expect(screen.getByTestId('preset-picker').querySelectorAll('[aria-pressed="true"]')).toHaveLength(0)
     expect(screen.getByTestId('opus-catalyst-note')).toHaveTextContent(
@@ -391,12 +447,20 @@ describe('ConvertTab preset picker', () => {
     }
   })
 
-  it('marks the matching preset as in use', () => {
+  it('marks a chosen preset as in use while the settings still match it', () => {
     preferencesContext.current = { ...preferences(), normalize: true, hpf: true, autoLevel: true }
-    render(<ConvertTab {...props()} />)
+    const view = render(<ConvertTab {...props()} />)
 
+    expect(screen.getByRole('button', { name: /For CATalyst audio sync/ })).toHaveAttribute('aria-pressed', 'false')
+    fireEvent.click(screen.getByRole('button', { name: /For CATalyst audio sync/ }))
     expect(screen.getByRole('button', { name: /For CATalyst audio sync/ })).toHaveAttribute('aria-pressed', 'true')
     expect(screen.getByTestId('preset-status')).toHaveTextContent('Using: For CATalyst audio sync (WAV)')
     expect(screen.queryByTestId('opus-catalyst-note')).not.toBeInTheDocument()
+
+    // Changing a setting by hand ends the match, so the preset is no longer in use.
+    preferencesContext.current = { ...preferencesContext.current, trim: true }
+    view.rerender(<ConvertTab {...props()} />)
+    expect(screen.getByTestId('preset-status')).toHaveTextContent('Custom settings')
+    expect(screen.getByTestId('preset-picker').querySelectorAll('[aria-pressed="true"]')).toHaveLength(0)
   })
 })

@@ -2,8 +2,10 @@ import { fmtSize } from '../utils'
 
 // WAV outputs are 16-bit PCM (pcm_s16le in the backend's output_args).
 const WAV_BYTES_PER_SAMPLE = 2
-// Past this size a RIFF header's 32-bit size fields overflow, so FFmpeg's
-// `-rf64 auto` switches the file to an RF64 header.
+// Past this size a RIFF header's 32-bit size fields overflow. The backend adds
+// `-rf64 auto` to a WAV whose own estimate reaches 3.5 GiB (helpers.rs
+// wav_rf64_args), so FFmpeg switches such a file to an RF64 header once it
+// passes this size. Smaller WAVs keep the plain RIFF header.
 export const RIFF_LIMIT_BYTES = 4 * 1024 ** 3
 
 // Approximate WAV output size for one queued file, from the probed duration

@@ -2,7 +2,15 @@ import { useState, useEffect, useRef } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
 import { MODES, FORMATS_OUT, MP3_BITRATES, CH_COLORS } from '../../constants'
-import { PRESETS, NOT_TESTED_NOTE, OPUS_CATALYST_NOTE, describeSettings, resolvePresetSettings } from '../../presets'
+import { openUrl } from '@tauri-apps/plugin-opener'
+import {
+  PRESETS,
+  NOT_TESTED_NOTE,
+  OPUS_CATALYST_NOTE,
+  STENOGRAPH_SOURCES,
+  describeSettings,
+  resolvePresetSettings,
+} from '../../presets'
 import { usePreferencesContext } from '../../hooks/PreferencesContext'
 import { Check, Loader2, Play } from 'lucide-react'
 import { Button } from '../ui/button'
@@ -123,7 +131,24 @@ export default function ConvertTab({
     autoLevel,
     declip,
   })
+  // The preset the person chose in this session. A preset is "in use" only
+  // when they chose it and the settings still match it; settings that merely
+  // happen to match one (the defaults match "For other or older CAT
+  // software") are described as a match, not as a choice.
+  const [chosenPresetId, setChosenPresetId] = useState(null)
+  const presetInUse =
+    presetState.kind === 'preset' && presetState.preset.id === chosenPresetId ? presetState.preset : null
+  const [sourceLinkError, setSourceLinkError] = useState('')
+  const openSource = async source => {
+    setSourceLinkError('')
+    try {
+      await openUrl(source.url)
+    } catch (error) {
+      setSourceLinkError(`Couldn't open Stenograph's \u201c${source.title}\u201d article: ${String(error)}`)
+    }
+  }
   const applyPreset = preset => {
+    setChosenPresetId(preset.id)
     const s = resolvePresetSettings(preset.settings)
     handleModeChange(s.mode)
     setFormatOut(s.format)
@@ -420,7 +445,9 @@ export default function ConvertTab({
     : files.length === 0
       ? 'Add at least one recording to continue.'
       : unsupportedFiles.length > 0
-        ? 'Remove unsupported recordings or export them to WAV first.'
+        ? unsupportedFiles.every(file => file.fmt?.key === 'dcr-image')
+          ? 'Remove the files that are not recordings first.'
+          : 'Remove unsupported files first. The note for each one says how to export it.'
         : ''
 
   return (
@@ -592,24 +619,27 @@ export default function ConvertTab({
             <CardHeader>
               <CardTitle>Quick setup</CardTitle>
               <span className="type-small text-[hsl(var(--sub))]" data-testid="preset-status" role="status">
-                {presetState.kind === 'preset'
-                  ? `Using: ${presetState.preset.name}`
-                  : presetState.legacy
-                    ? `Custom: the earlier \u201c${presetState.legacy.name}\u201d preset. Closest new preset: ${presetState.closest?.name}`
-                    : 'Custom settings'}
+                {presetInUse
+                  ? `Using: ${presetInUse.name}`
+                  : presetState.kind === 'preset'
+                    ? `No preset chosen. The current settings are the same as \u201c${presetState.preset.name}\u201d.`
+                    : presetState.legacy
+                      ? `Custom: the earlier \u201c${presetState.legacy.name}\u201d preset. Closest new preset: ${presetState.closest?.name}`
+                      : 'Custom settings'}
               </span>
             </CardHeader>
             <CardContent>
               <div className="grid grid-cols-1 gap-2 p-3 sm:grid-cols-2 lg:grid-cols-3">
                 {PRESETS.map(p => {
-                  const active = presetState.kind === 'preset' && presetState.preset.id === p.id
+                  const active = presetInUse?.id === p.id
                   return (
                     <button
                       key={p.id}
                       type="button"
                       title={p.desc}
                       aria-pressed={active}
-                      aria-describedby={`preset-basis-${p.id}`}
+                      aria-labelledby={`preset-name-${p.id}`}
+                      aria-describedby={`preset-basis-${p.id} preset-tested-${p.id}`}
                       className={`relative flex flex-col items-start gap-0.5 px-3 py-2.5 rounded-lg border text-left transition-all cursor-pointer focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring ${
                         active
                           ? 'border-foreground bg-secondary'
@@ -617,11 +647,15 @@ export default function ConvertTab({
                       }`}
                       onClick={() => applyPreset(p)}
                     >
-                      <span className="text-[12.5px] font-semibold text-foreground pr-5">{p.name}</span>
+                      <span id={`preset-name-${p.id}`} className="text-[12.5px] font-semibold text-foreground pr-5">
+                        {p.name}
+                      </span>
                       <span id={`preset-basis-${p.id}`} className="type-small text-[hsl(var(--text2))] leading-snug">
                         {p.basis}
                       </span>
-                      <span className="type-small text-[hsl(var(--sub))]">{NOT_TESTED_NOTE}</span>
+                      <span id={`preset-tested-${p.id}`} className="type-small text-[hsl(var(--sub))]">
+                        {NOT_TESTED_NOTE}
+                      </span>
                       {active && (
                         <span aria-hidden="true" className="absolute top-2 right-2 text-foreground">
                           <Check aria-hidden="true" className="h-3.5 w-3.5" strokeWidth={2.2} />
@@ -632,9 +666,30 @@ export default function ConvertTab({
                 })}
               </div>
               <p className="px-3 pb-3 type-small text-[hsl(var(--sub))]">
-                Format notes come from Stenograph&rsquo;s Solution Center articles on associating audio and on
-                single-channel audio. Choosing a preset changes the settings below; you can still change any of them.
+                Format notes come from Stenograph&rsquo;s Solution Center articles{' '}
+                {STENOGRAPH_SOURCES.map((source, index) => (
+                  <span key={source.url}>
+                    {index > 0 && ' and '}
+                    <button
+                      type="button"
+                      className="underline underline-offset-2 text-[hsl(var(--text2))] hover:text-foreground focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring rounded-sm cursor-pointer"
+                      aria-label={`${source.title} (Stenograph Solution Center, opens in your browser)`}
+                      onClick={() => openSource(source)}
+                    >
+                      &ldquo;{source.title}&rdquo;
+                    </button>
+                  </span>
+                ))}
+                . Choosing a preset changes the settings below; you can still change any of them.
               </p>
+              {sourceLinkError && (
+                <p
+                  role="alert"
+                  className="mx-3 mb-3 px-3 py-2 rounded-md border border-destructive/30 border-l-[3px] border-l-destructive type-small text-destructive"
+                >
+                  {sourceLinkError}
+                </p>
+              )}
             </CardContent>
           </Card>
 
@@ -1163,7 +1218,7 @@ export default function ConvertTab({
             <p className="type-small text-[hsl(var(--sub))]">Add a recording to choose an output and convert.</p>
           )}
           {!converting && resultCount === 0 && unsupportedFiles.length > 0 && (
-            <p className="type-small text-warning">Export or remove the unsupported recording before converting.</p>
+            <p className="type-small text-warning">{convertDisabledReason}</p>
           )}
           {!converting && resultCount === 0 && files.length > 0 && unsupportedFiles.length === 0 && (
             <p className="text-[12px] text-[hsl(var(--sub))] truncate">

@@ -3,8 +3,8 @@
 // WMV/ASF). The bundled FFmpeg sidecars make one tiny synthetic fixture per
 // container from a generated tone and generated video frames, then each
 // sidecar must (1) see the expected audio codec, (2) decode the audio track
-// with -xerror, and (3) extract audio-only WAV and M4A outputs with the same
-// -vn -sn output options the app uses. A container is listed in the app only
+// with -xerror, and (3) extract audio-only WAV (plain RIFF and `-rf64 auto`)
+// and M4A outputs with the same -map 0:a:0 and output options the app uses. A container is listed in the app only
 // when its row here passes on macOS and Windows.
 //
 // Nothing is downloaded and no recording is used: every byte of input is made
@@ -75,11 +75,41 @@ export const CONTAINERS = [
 ]
 
 // The output options the app adds for every conversion (helpers.rs
-// output_args): drop video and subtitle streams, then encode audio.
-const APP_OUTPUTS = [
+// output_args at 48 kHz): drop video and subtitle streams, then encode audio.
+// A WAV that may pass 4 GiB also gets `-rf64 auto` (helpers.rs
+// wav_rf64_args), so both WAV forms are run. The self-test checks this list
+// against helpers.rs, so the smoke cannot drift from the app's arguments.
+export const APP_OUTPUTS = [
   { extension: 'wav', args: ['-vn', '-sn', '-acodec', 'pcm_s16le', '-ar', '48000'] },
+  { extension: 'wav', variant: 'rf64', args: ['-vn', '-sn', '-acodec', 'pcm_s16le', '-ar', '48000', '-rf64', 'auto'] },
   { extension: 'm4a', args: ['-vn', '-sn', '-c:a', 'aac', '-b:a', '128k', '-ar', '48000'] },
 ]
+
+// The WAV and M4A arguments helpers.rs builds, read from its source: the
+// `-vn -sn` prefix, the arm's string literals (`rate` as 48000), and the
+// `-rf64 auto` pair from wav_rf64_args.
+export function appOutputsFromHelpers(helpersSource) {
+  const body = helpersSource.match(/pub\(crate\) fn output_args\([^)]*\)[^{]*\{([\s\S]*?)\n\}\n/u)?.[1]
+  if (!body) throw new Error('helpers.rs has no output_args function')
+  const literals = text =>
+    [...text.matchAll(/"([^"]*)"\.into\(\)|\b(rate)\.into\(\)/gu)].map(match => (match[2] ? '48000' : match[1]))
+  const arm = pattern => {
+    const found = body.match(pattern)?.[1]
+    if (!found) throw new Error(`helpers.rs output_args has no arm matching ${pattern}`)
+    return literals(found)
+  }
+  const prefix = literals(body.match(/let mut args: Vec<String> = vec!\[([^\]]*)\]/u)?.[1] ?? '')
+  const wav = arm(/\n\s*_ => vec!\[([^\]]*)\]/u)
+  const m4a = arm(/"m4a" => vec!\[([^\]]*)\]/u)
+  const rf64Body = helpersSource.match(/pub\(crate\) fn wav_rf64_args\([^)]*\)[^{]*\{([\s\S]*?)\n\}\n/u)?.[1]
+  if (!rf64Body) throw new Error('helpers.rs has no wav_rf64_args function')
+  const rf64 = literals(rf64Body.match(/_ => vec!\[([^\]]*)\]/u)?.[1] ?? '')
+  return [
+    { extension: 'wav', args: [...prefix, ...wav] },
+    { extension: 'wav', variant: 'rf64', args: [...prefix, ...wav, ...rf64] },
+    { extension: 'm4a', args: [...prefix, ...m4a] },
+  ]
+}
 
 function requireRunnerTemp() {
   if (!runnerTemp) throw new Error('RUNNER_TEMP is required for container smoke fixtures')
@@ -231,13 +261,15 @@ async function check(ffmpegArgument, ffprobeArgument) {
     for (const output of APP_OUTPUTS) {
       const target = path.join(
         FIXTURE_DIRECTORY,
-        `${tag}-${path.parse(container.fixture).ext.slice(1)}.${output.extension}`,
+        `${tag}-${path.parse(container.fixture).ext.slice(1)}${output.variant ? `-${output.variant}` : ''}.${output.extension}`,
       )
       try {
         run(
           ffmpeg,
-          ['-hide_banner', '-v', 'error', '-xerror', '-i', fixture, ...output.args, '-y', target],
-          `${container.label} to ${output.extension}`,
+          // The app maps the converted stream explicitly (helpers.rs
+          // source_audio_map_args) instead of FFmpeg's automatic selection.
+          ['-hide_banner', '-v', 'error', '-xerror', '-i', fixture, '-map', '0:a:0', ...output.args, '-y', target],
+          `${container.label} to ${output.variant ?? output.extension}`,
         )
         const written = streams(ffprobe, target, `${container.label} ${output.extension} output`)
         if (written.length !== 1 || written[0].codec_type !== 'audio') {
@@ -289,6 +321,8 @@ async function selfTest() {
   const helpers = await readFile(path.join(repository, 'src-tauri/src/helpers.rs'), 'utf8')
   const fileDrop = await readFile(path.join(repository, 'src/hooks/useFileDrop.js'), 'utf8')
   const constants = await readFile(path.join(repository, 'src/constants.js'), 'utf8')
+  assert.deepEqual(APP_OUTPUTS, appOutputsFromHelpers(helpers), 'smoke output arguments must match helpers.rs')
+  assert.ok(helpers.includes('pub(crate) fn source_audio_map_args()'), 'the app must still map 0:a:0 explicitly')
   const smoked = CONTAINERS.flatMap(container => container.extensions).sort()
   assert.deepEqual(listedLegacyContainers(helpers).sort(), smoked, 'helpers.rs containers must match the smoke list')
   for (const extension of smoked) {

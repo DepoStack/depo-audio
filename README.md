@@ -113,6 +113,10 @@ Scanning is a bounded, cancellable local analysis pass. FFmpeg performs the sele
 | **ARF / WRF**                                | Cisco Webex                | Closed — convert first             |
 | **MSV / DVF**                                | Sony IC recorder           | Closed — export to WAV first       |
 
+The MPG, VOB, TS, MTS, M2TS, WMV and ASF rows are smoke-tested at each
+release with synthetic files carrying MP2, AC-3 or WMAv2 audio. No real
+deposition recording in these containers has been tried yet.
+
 ---
 
 ## Learned-model boundary

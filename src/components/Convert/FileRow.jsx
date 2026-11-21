@@ -1,13 +1,18 @@
 import { useId, useState } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import { CH_COLORS } from '../../constants'
-import { FileAudio, X, FolderOpen, ChevronDown, ChevronUp, Play, ArrowLeftRight } from 'lucide-react'
+import { FileAudio, X, FolderOpen, ChevronDown, ChevronUp, Play, ArrowLeftRight, CircleSlash } from 'lucide-react'
 import { Badge } from '../ui/badge'
 import { cn } from '../../lib/utils'
 import StatusChip from '../common/StatusChip'
 import MiniPlayer from './MiniPlayer'
 import ComparePlayer from '../common/ComparePlayer'
-import { COMPARE_UNAVAILABLE_REASON, compareTarget, isPlayerPlayable } from '../../lib/player'
+import {
+  COMPARE_OUTPUT_UNAVAILABLE,
+  COMPARE_UNAVAILABLE_REASON,
+  compareTarget,
+  isPlayerPlayable,
+} from '../../lib/player'
 import { audioTrackNotice } from '../../lib/queue'
 
 export default function FileRow({ file, streams, job, onRemove, converting, onOpenInPlayer }) {
@@ -119,7 +124,7 @@ export default function FileRow({ file, streams, job, onRemove, converting, onOp
           ))}
           {(() => {
             const playable = job.outputs.map(out => out.path).filter(isPlayerPlayable)
-            const compare = compareTarget(file.path, job.outputs)
+            const compare = compareTarget(file.path, job.outputs, { trimmed: job.trimmed })
             const actionClass =
               'flex items-center gap-1 rounded px-1 py-0.5 type-small text-[hsl(var(--text2))] hover:text-foreground hover:bg-secondary/60 transition-colors focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring'
             return (
@@ -160,32 +165,46 @@ export default function FileRow({ file, streams, job, onRemove, converting, onOp
                     Open in Player
                   </button>
                 )}
-                <button
-                  type="button"
-                  className={cn(
-                    actionClass,
-                    'disabled:cursor-not-allowed disabled:text-[hsl(var(--sub))] disabled:hover:bg-transparent disabled:hover:text-[hsl(var(--sub))]',
+                {/* Unavailable Compare stays focusable (aria-disabled) so
+                    keyboard and screen-reader users reach its reason; it is
+                    struck through with a slashed-circle icon, and its reason
+                    sits after it in parentheses, so it does not read as
+                    another action. */}
+                <span className="flex flex-wrap items-center gap-1">
+                  <button
+                    type="button"
+                    className={cn(
+                      actionClass,
+                      !compare.enabled &&
+                        'cursor-not-allowed line-through hover:bg-transparent hover:text-[hsl(var(--text2))]',
+                    )}
+                    aria-label={`Compare with original: ${compare.output?.name ?? file.name}`}
+                    aria-expanded={compare.enabled ? comparing : undefined}
+                    aria-disabled={compare.enabled ? undefined : 'true'}
+                    aria-describedby={compare.enabled ? undefined : compareReasonId}
+                    onClick={() => {
+                      if (compare.enabled) setComparing(open => !open)
+                    }}
+                  >
+                    {compare.enabled ? (
+                      <ArrowLeftRight size={11} aria-hidden="true" />
+                    ) : (
+                      <CircleSlash size={11} aria-hidden="true" />
+                    )}
+                    Compare with original
+                  </button>
+                  {!compare.enabled && (
+                    <span id={compareReasonId} className="type-small text-[hsl(var(--sub))]">
+                      (unavailable: {compare.reason})
+                    </span>
                   )}
-                  aria-label={`Compare with original: ${compare.output?.name ?? file.name}`}
-                  aria-expanded={compare.enabled ? comparing : undefined}
-                  aria-describedby={compare.enabled ? undefined : compareReasonId}
-                  disabled={!compare.enabled}
-                  onClick={() => setComparing(open => !open)}
-                >
-                  <ArrowLeftRight size={11} aria-hidden="true" />
-                  Compare with original
-                </button>
-                {!compare.enabled && (
-                  <span id={compareReasonId} className="type-small text-[hsl(var(--sub))]">
-                    {compare.reason}
-                  </span>
-                )}
+                </span>
               </div>
             )
           })()}
           {comparing &&
             (() => {
-              const compare = compareTarget(file.path, job.outputs)
+              const compare = compareTarget(file.path, job.outputs, { trimmed: job.trimmed })
               if (!compare.enabled) return null
               return (
                 <ComparePlayer
@@ -194,7 +213,9 @@ export default function FileRow({ file, streams, job, onRemove, converting, onOp
                   originalLabel="Original"
                   processedLabel="Output"
                   unavailableMessage={COMPARE_UNAVAILABLE_REASON}
+                  processedUnavailableMessage={COMPARE_OUTPUT_UNAVAILABLE}
                   note={compare.note}
+                  aligned={compare.aligned}
                 />
               )
             })()}

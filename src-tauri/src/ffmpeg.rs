@@ -222,7 +222,10 @@ pub(crate) async fn probe_duration_cancellable(
     parse_duration_probe(&output.stdout)
 }
 
-/// ffprobe arguments for the container duration.
+/// ffprobe arguments for the duration of the converted stream (`a:0`, the
+/// stream every FFmpeg pass maps), with the container duration as fallback.
+/// A video with a shorter first audio track, or a file with a longer second
+/// track, reports a container duration past the end of the converted stream.
 pub(crate) fn duration_probe_args(feed: &Path) -> Vec<String> {
     vec![
         "-v".into(),
@@ -231,16 +234,20 @@ pub(crate) fn duration_probe_args(feed: &Path) -> Vec<String> {
         "file".into(),
         "-print_format".into(),
         "json".into(),
-        "-show_format".into(),
+        "-select_streams".into(),
+        crate::helpers::source_audio_stream_specifier(),
+        "-show_entries".into(),
+        "stream=duration:stream_tags=DURATION:format=duration".into(),
         feed.to_string_lossy().to_string(),
     ]
 }
 
-/// Duration in seconds from `duration_probe_args` output, if readable.
+/// Duration in seconds from `duration_probe_args` output, if readable: the
+/// converted stream's own duration, else the container's.
 pub(crate) fn parse_duration_probe(stdout: &[u8]) -> Option<f64> {
     let text = String::from_utf8_lossy(stdout);
     let v: serde_json::Value = serde_json::from_str(&text).ok()?;
-    v["format"]["duration"].as_str()?.parse::<f64>().ok()
+    crate::manifest::converted_stream_duration(&v)
 }
 
 pub(crate) async fn probe_channels_cancellable(

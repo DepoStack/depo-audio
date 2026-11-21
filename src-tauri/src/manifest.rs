@@ -175,6 +175,45 @@ fn bounded_tag(tags: &serde_json::Value, key: &str) -> Option<String> {
     (!value.is_empty()).then(|| value.to_string())
 }
 
+fn positive_seconds(text: &str) -> Option<f64> {
+    text.trim()
+        .parse::<f64>()
+        .ok()
+        .filter(|duration| duration.is_finite() && *duration > 0.0)
+}
+
+/// Matroska keeps a stream's length only in its `DURATION` tag, written as
+/// `HH:MM:SS.fraction`.
+fn clock_seconds(text: &str) -> Option<f64> {
+    let mut parts = text.trim().split(':');
+    let (hours, minutes, seconds) = (parts.next()?, parts.next()?, parts.next()?);
+    if parts.next().is_some() {
+        return None;
+    }
+    let hours: u32 = hours.parse().ok()?;
+    let minutes: u32 = minutes.parse().ok()?;
+    let seconds: f64 = seconds.parse().ok()?;
+    if minutes >= 60 || !(0.0..60.0).contains(&seconds) {
+        return None;
+    }
+    Some(f64::from(hours) * 3600.0 + f64::from(minutes) * 60.0 + seconds).filter(|total| *total > 0.0)
+}
+
+/// Duration in seconds of the converted stream (`streams[SOURCE_AUDIO_STREAM]`
+/// of a `-select_streams a` or `a:0` document): its own `duration`, else its
+/// Matroska `DURATION` tag, else the container's `format.duration`. The fade-out
+/// and the WAV size estimate are placed on this stream, which can be shorter
+/// than the container (a video longer than its first audio track, or a
+/// second, longer audio track).
+pub(crate) fn converted_stream_duration(probe: &serde_json::Value) -> Option<f64> {
+    let stream = &probe["streams"][crate::helpers::SOURCE_AUDIO_STREAM as usize];
+    stream["duration"]
+        .as_str()
+        .and_then(positive_seconds)
+        .or_else(|| tag(&stream["tags"], "DURATION").and_then(clock_seconds))
+        .or_else(|| probe["format"]["duration"].as_str().and_then(positive_seconds))
+}
+
 /// Read `crate::ffmpeg::manifest_probe_args` output for the queue notice.
 pub(crate) fn parse_audio_streams(probe: &serde_json::Value) -> AudioStreamsInfo {
     let streams = probe["streams"]
@@ -192,10 +231,7 @@ pub(crate) fn parse_audio_streams(probe: &serde_json::Value) -> AudioStreamsInfo
                 .collect()
         })
         .unwrap_or_default();
-    let duration_secs = probe["format"]["duration"]
-        .as_str()
-        .and_then(|duration| duration.trim().parse::<f64>().ok())
-        .filter(|duration| duration.is_finite() && *duration > 0.0);
+    let duration_secs = converted_stream_duration(probe);
     AudioStreamsInfo {
         converted_index: crate::helpers::SOURCE_AUDIO_STREAM,
         streams,
@@ -304,6 +340,10 @@ pub(crate) struct ProcessingRecord {
     pub filter_option: Option<&'static str>,
     pub filter_chain: Option<String>,
     pub encoder_args: Vec<String>,
+    /// The `-map` arguments of this output: `-map 0:a:0` (the source
+    /// stream) for Mix to Stereo and Keep Original, `-map [opN]` (this
+    /// channel's filter branch) for Split.
+    pub map_args: Vec<String>,
 }
 
 #[derive(Debug, Serialize, Clone, PartialEq)]
@@ -364,6 +404,8 @@ pub(crate) struct OutputFacts<'a> {
     pub filter_chain: Option<String>,
     /// Encoder plus metadata arguments for this output, without its path.
     pub encoder_args: Vec<String>,
+    /// This output's `-map` arguments.
+    pub map_args: Vec<String>,
     pub source_channel_index: Option<u32>,
     pub label: Option<String>,
     /// From `wav_header_kind`, for WAV outputs only.
@@ -483,6 +525,7 @@ pub(crate) fn build_manifest(input: &ManifestInput<'_>, facts: OutputFacts<'_>) 
             filter_option: facts.filter_option,
             filter_chain: facts.filter_chain,
             encoder_args: facts.encoder_args,
+            map_args: facts.map_args,
         },
         channel: ChannelRecord {
             output: output_kind,
@@ -590,6 +633,7 @@ pub(crate) mod tests {
                     "[0:a:0]asplit=2[sp0][sp1];[sp0]pan=mono|c0=c0[op0];[sp1]pan=mono|c0=c1[op1]".into(),
                 ),
                 encoder_args: vec!["-acodec".into(), "pcm_s16le".into(), "-ar".into(), "48000".into()],
+                map_args: vec!["-map".into(), "[op1]".into()],
                 source_channel_index: Some(1),
                 label: Some("Witness".into()),
                 wav_header: Some("riff"),
@@ -845,7 +889,7 @@ pub(crate) mod tests {
     // ── Schema conformance ──────────────────────────────────────────────────
     // A small validator for the JSON Schema keywords the published schema
     // uses (type, const, enum, required, properties, additionalProperties,
-    // items, minimum, maximum, pattern). It fails on any other keyword so the
+    // items, minimum, maximum, pattern, if/then/else). It fails on any other keyword so the
     // schema cannot grow a rule this test silently ignores.
 
     const SCHEMA: &str = include_str!("../../docs/export-manifest.schema.json");
@@ -867,7 +911,15 @@ pub(crate) mod tests {
         let rules = schema.as_object().expect("schema node is an object");
         for (keyword, rule) in rules {
             match keyword.as_str() {
-                "$schema" | "$id" | "title" | "description" => {}
+                "$schema" | "$id" | "title" | "description" | "then" | "else" => {}
+                "if" => {
+                    let mut condition = Vec::new();
+                    validate(rule, value, at, &mut condition);
+                    let branch = if condition.is_empty() { "then" } else { "else" };
+                    if let Some(next) = rules.get(branch) {
+                        validate(next, value, at, errors);
+                    }
+                }
                 "type" => {
                     let ok = match rule {
                         serde_json::Value::String(kind) => type_matches(kind, value),
@@ -1031,6 +1083,43 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn duration_is_the_converted_streams_not_the_containers() {
+        // An MKV whose a:0 runs 4 s and a:1 10 s: format.duration is 10 s.
+        let mkv = serde_json::json!({
+            "streams": [
+                { "channels": 1, "tags": { "DURATION": "00:00:04.000000000" } },
+                { "channels": 1, "tags": { "DURATION": "00:00:10.000000000" } }
+            ],
+            "format": { "duration": "10.000000" }
+        });
+        assert_eq!(converted_stream_duration(&mkv), Some(4.0));
+        assert_eq!(parse_audio_streams(&mkv).duration_secs, Some(4.0));
+        // A transport stream whose video outlasts its audio.
+        let ts = serde_json::json!({
+            "streams": [{ "duration": "3.996733" }],
+            "format": { "duration": "10.004900" }
+        });
+        assert_eq!(converted_stream_duration(&ts), Some(3.996733));
+        assert_eq!(
+            converted_stream_duration(&serde_json::json!({
+                "streams": [{ "tags": { "DURATION": "01:02:03.500" } }]
+            })),
+            Some(3723.5)
+        );
+        // No stream duration: the container's, as before.
+        let only_format = serde_json::json!({ "streams": [{}], "format": { "duration": "2.5" } });
+        assert_eq!(converted_stream_duration(&only_format), Some(2.5));
+        for broken in ["N/A", "0", "-1", "00:61:00", "1:2", "aa:bb:cc"] {
+            let probe = serde_json::json!({
+                "streams": [{ "duration": broken, "tags": { "DURATION": broken } }],
+                "format": { "duration": "7" }
+            });
+            assert_eq!(converted_stream_duration(&probe), Some(7.0), "{broken}");
+        }
+        assert_eq!(converted_stream_duration(&serde_json::json!({})), None);
+    }
+
+    #[test]
     fn stream_tags_are_bounded_and_stripped_of_control_characters() {
         let probe = serde_json::json!({
             "streams": [{ "channels": 2, "tags": { "TITLE": format!("Room\u{7}{}", "x".repeat(200)), "language": "  " } }]
@@ -1079,13 +1168,43 @@ pub(crate) mod tests {
 
     #[test]
     fn records_written_by_1_1_0_still_match_the_schema() {
-        // 1.1.0 wrote no audioStream object and no output.wavHeader; the
+        // 1.1.0 wrote no audioStream object, no output.wavHeader and no
+        // processing.mapArgs; the
         // schema must keep accepting those records.
         let mut record = serde_json::to_value(sample_input(&ProbedSource::default(), &[], false)).unwrap();
         record.as_object_mut().unwrap().remove("audioStream");
         record["output"].as_object_mut().unwrap().remove("wavHeader");
+        record["processing"].as_object_mut().unwrap().remove("mapArgs");
         let errors = schema_errors_for_value(&record);
         assert!(errors.is_empty(), "{errors:#?}");
+    }
+
+    #[test]
+    fn schema_ties_the_wav_header_to_the_output_format() {
+        let base = serde_json::to_value(sample_input(&ProbedSource::default(), &[], false)).unwrap();
+        assert_eq!(base["processing"]["mapArgs"], serde_json::json!(["-map", "[op1]"]));
+        let with = |format: &str, header: serde_json::Value| {
+            let mut record = base.clone();
+            record["output"]["format"] = format.into();
+            record["output"]["wavHeader"] = header;
+            schema_errors_for_value(&record)
+        };
+        assert!(with("wav", "riff".into()).is_empty());
+        assert!(with("wav", "rf64".into()).is_empty());
+        assert!(with("mp3", serde_json::Value::Null).is_empty());
+        for (format, header) in [
+            ("wav", serde_json::Value::Null),
+            ("mp3", "riff".into()),
+            ("flac", "rf64".into()),
+            ("opus", "riff".into()),
+            ("m4a", "rf64".into()),
+        ] {
+            let errors = with(format, header.clone());
+            assert!(
+                errors.iter().any(|error| error.contains("$.output.wavHeader")),
+                "{format} {header}: {errors:#?}"
+            );
+        }
     }
 
     #[test]
@@ -1257,7 +1376,7 @@ pub(crate) mod tests {
         );
 
         let mut encoder = crate::helpers::output_args("wav", "48000", 192);
-        assert!(encoder.windows(2).any(|pair| pair == ["-rf64", "auto"]));
+        assert!(!encoder.iter().any(|arg| arg == "-rf64"));
         let rate = output_sample_rate(&encoder);
         encoder.extend(start_time_metadata_args("wav", probed.timing, rate, false));
         let output = dir.0.join("synthetic_bext_out.wav");
@@ -1270,15 +1389,26 @@ pub(crate) mod tests {
                 sample_rate: 48_000
             })
         );
-        // A small file under `-rf64 auto` stays plain RIFF.
+        // Without an RF64 option the file is plain RIFF with no JUNK chunk.
         assert_eq!(wav_header_kind(&output), Ok("riff"));
+        assert!(!fs::read(&output).unwrap()[..64].windows(4).any(|w| w == b"JUNK"));
+
+        // `-rf64 auto` on a small file: still RIFF, but FFmpeg reserves a
+        // JUNK chunk before `fmt `, which is why the app adds it only to a
+        // WAV that may pass 4 GiB.
+        let mut auto = encoder.clone();
+        auto.extend(crate::helpers::wav_rf64_args(None));
+        let reserved = dir.0.join("synthetic_bext_auto.wav");
+        encode(&source, None, &auto, &reserved);
+        assert_eq!(wav_header_kind(&reserved), Ok("riff"));
+        assert_eq!(&fs::read(&reserved).unwrap()[12..16], b"JUNK");
+        assert_eq!(parse_probe(&probe_json(&reserved)).timing, carried.timing);
 
         // The header reader and the bext path on a real RF64 file. Writing
         // 4 GiB in a test is not practical, so `-rf64 always` stands in for
         // what `auto` does once a file outgrows RIFF.
         let mut forced = encoder.clone();
-        let position = forced.iter().position(|arg| arg == "auto").unwrap();
-        forced[position] = "always".into();
+        forced.extend(["-rf64".to_string(), "always".to_string()]);
         let rf64 = dir.0.join("synthetic_bext_rf64.wav");
         encode(&source, None, &forced, &rf64);
         assert_eq!(wav_header_kind(&rf64), Ok("rf64"));

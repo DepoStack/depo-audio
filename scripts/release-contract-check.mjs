@@ -869,7 +869,8 @@ expect(
     releaseWorkflow.includes('--ffprobe src-tauri/binaries/ffprobe-x86_64-pc-windows-msvc.exe') &&
     releaseWorkflow.includes('node scripts/container-smoke-fixtures.mjs --clean') &&
     containerSmokeFixtures.includes("'-xerror', '-i', fixture, '-map', '0:a:0', '-f', 'null'") &&
-    containerSmokeFixtures.includes("args: ['-vn', '-sn', '-acodec', 'pcm_s16le'") &&
+    containerSmokeFixtures.includes("'-xerror', '-i', fixture, '-map', '0:a:0', ...output.args") &&
+    containerSmokeFixtures.includes('assert.deepEqual(APP_OUTPUTS, appOutputsFromHelpers(helpers)') &&
     !containerSmokeFixtures.includes('fetch(') &&
     helpersSource.includes(
       '// Legacy legal-video containers (smoke-tested at release by scripts/container-smoke-fixtures.mjs)',
@@ -877,7 +878,7 @@ expect(
     helpersSource.includes('let mut args: Vec<String> = vec!["-vn".into(), "-sn".into()];') &&
     packageJson.scripts['containers:self-test'] === 'node scripts/container-smoke-fixtures.mjs --self-test' &&
     packageJson.scripts['release:check'].includes('npm run containers:self-test') &&
-    macFfmpegBuild.includes('pcm_s16le mp2 ac3 wmav2') &&
+    macFfmpegBuild.includes('pcm_s16le mp2 ac3 wmav2 wmapro wmavoice pcm_dvd pcm_bluray') &&
     macFfmpegBuild.includes('avi mpeg mpegts asf'),
   'release.yml must generate and decode a synthetic fixture for every listed legacy video container on macOS and Windows, and outputs must drop video',
 )

@@ -2,9 +2,9 @@
 //
 // Each built-in preset is named for where the file is going and carries a
 // one-line `basis`: the reason for its format, with the source it comes from.
-// Compatibility statements come only from Stenograph's own pages (linked in
-// `source`). None of these presets has been tested in CAT software, and the
-// picker says so.
+// Compatibility statements come only from Stenograph's own pages (`source`;
+// the picker links each article by its title from STENOGRAPH_SOURCES). None
+// of these presets has been tested in CAT software, and the picker says so.
 //
 // Presets are not stored anywhere. The picker compares the current settings
 // with each preset; when nothing matches, it shows "Custom" and changes
@@ -13,11 +13,20 @@
 export const STENOGRAPH_ASSOCIATE_AUDIO = 'https://solutioncenter.stenograph.com/associateaudio'
 export const STENOGRAPH_SINGLE_CHANNEL = 'https://solutioncenter.stenograph.com/singlechannelaudio'
 
+// The article titles as Stenograph's Solution Center shows them (checked
+// 2026-11-21), in the order the picker lists them.
+export const STENOGRAPH_SOURCES = [
+  { url: STENOGRAPH_ASSOCIATE_AUDIO, title: 'Associate Audio File' },
+  { url: STENOGRAPH_SINGLE_CHANNEL, title: 'Single Channel Audio' },
+]
+
 export const NOT_TESTED_NOTE = 'Not tested in CAT software'
 
-// Shown wherever Opus output is chosen, by preset or by hand.
+// Shown wherever Opus output is chosen, by preset or by hand. "Single
+// Channel Audio" gives the version for playback; "Associate Audio File"
+// lists .opus among the files CATalyst can associate but names no version.
 export const OPUS_CATALYST_NOTE =
-  'Stenograph says Opus plays only in CATalyst 20 or newer. Older versions cannot play it; send WAV instead.'
+  'Stenograph says Opus plays only in CATalyst 20 or newer, and lists .opus among the files CATalyst can associate. Older versions cannot play it; send WAV instead.'
 
 // Resolve release- and mode-dependent settings before a preset is compared or
 // applied. Retired learned-model flags always fail closed.
@@ -157,7 +166,7 @@ export const PRESETS = [
   },
   {
     id: 'small-opus',
-    name: 'Smallest file (Opus) — CATalyst 20 or newer',
+    name: 'Smallest file (Opus)',
     desc: 'One mixed Opus file at 64 kbps with normalized loudness and the high-pass filter. No trim or fades.',
     basis: OPUS_CATALYST_NOTE,
     source: STENOGRAPH_SINGLE_CHANNEL,

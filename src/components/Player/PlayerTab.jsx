@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect } from 'react'
+import { useState, useRef, useEffect, useId } from 'react'
 import { convertFileSrc } from '@tauri-apps/api/core'
 import { open } from '@tauri-apps/plugin-dialog'
 import { Play, Pause, SkipBack, SkipForward, Bookmark, X, Plus, Repeat, Copy, Check } from 'lucide-react'
@@ -13,6 +13,7 @@ import {
   loadBookmarks,
   partitionPlaybackPaths,
   bookmarksToText,
+  BACKSTEP_RULE,
   BACKSTEP_STEPS,
   loadBackstep,
   backstepLabel,
@@ -70,6 +71,7 @@ export default function PlayerTab({ dropHandlerRef, onConvertFiles, openRequest,
   const [initialStorage] = useState(loadPlayerStorageState)
   const [speed, setSpeedState] = useState(initialStorage.speed)
   const [backstep, setBackstepState] = useState(initialStorage.backstep)
+  const backstepRuleId = useId()
   // Position where the person last paused this track. Any seek (including our
   // own backstep and the A-B loop wrap) clears it, so only a plain resume rewinds.
   const pausedAtRef = useRef(null)
@@ -845,13 +847,14 @@ export default function PlayerTab({ dropHandlerRef, onConvertFiles, openRequest,
                 onChange={applySpeed}
                 className="hidden lg:inline-flex"
               />
-              <label
-                className="flex items-center gap-1 type-small text-[hsl(var(--text2))]"
-                title="When you resume after a pause, rewind this far first. Seeks and track changes do not rewind."
-              >
+              <label className="flex items-center gap-1 type-small text-[hsl(var(--text2))]" title={BACKSTEP_RULE}>
                 Backstep
+                <span id={backstepRuleId} className="sr-only">
+                  {BACKSTEP_RULE}
+                </span>
                 <select
                   aria-label="Backstep on resume"
+                  aria-describedby={backstepRuleId}
                   className="h-7 rounded-md border border-border bg-card px-1.5 type-small text-foreground tabular-nums transition-colors focus:border-ring cursor-pointer"
                   value={backstep}
                   onChange={e => applyBackstep(loadBackstep(e.target.value))}

@@ -18,12 +18,26 @@ fn date_regex() -> &'static Regex {
 
 // ── Format registry ───────────────────────────────────────────────────────────
 
+// Closed-format guidance. Each note names the program the format's maker
+// documents for exporting it, and says nothing about what DepoAudio could open
+// if the file were different (it opens none of these). Sources, checked
+// 2026-11-21:
+// - DS2: OM System ODMS decrypts (with the password) and converts DS2 files.
+//   https://audiosupport.omsystem.com/en/?p=1648 (Encrypt and Decrypt a file
+//   on ODMS R7)
+// - .arf: Webex Recording Converter, Windows only, "Convert To MP4".
+//   https://help.webex.com/en-us/article/p62zmq/Convert-an-ARF-recording-to-MP4-format
+// - .wrf: Webex WRF2WMV Converter, Windows, writes WMV (which DepoAudio opens).
+//   https://help.webex.com/en-us/article/WBX000026388/WRF2WMV-converter
+// - .msv/.dvf: Sony Digital Voice Editor; Sony ended its downloads on
+//   2017-03-31. https://sony.jp/products/overseas/contents/support/info/info_dve3_20170403.html
+// - .dcr: a closed court-recorder format with no public documentation; the
+//   recorder software is named only as an example.
 const DCR_NOTE: &str = "DCR recordings use a closed format. Export to WAV from the software that recorded it (for example Liberty Court Recorder or BIS Digital), then add the WAV.";
-const DCR_IMAGE_NOTE: &str =
-    "This .dcr looks like a camera image, not court audio. Check that you picked the right file.";
-const DS2_NOTE: &str = "DS2 (DSS Pro) dictation files cannot be opened here. Export to WAV with OM System / Olympus dictation software (for example ODMS), then add the WAV. An encrypted DS2 file cannot be opened by DepoAudio at all.";
-const WEBEX_NOTE: &str = "Webex network recordings (.arf, .wrf) cannot be opened here. Convert an .arf with the Webex Recording Converter (Windows only), or a .wrf with Webex's own recording software, then add the converted file.";
-const SONY_VOICE_NOTE: &str = "Sony IC recorder files (.msv, .dvf) cannot be opened here. Convert to WAV with Sony Digital Voice Editor, then add the WAV.";
+const DCR_IMAGE_NOTE: &str = "This .dcr starts like a camera raw image (TIFF), not like court audio. Check that you picked the right file. If it is a court recording, export it to WAV from the software that recorded it.";
+const DS2_NOTE: &str = "DS2 (DSS Pro) dictation files cannot be opened here. Export to WAV with OM System / Olympus dictation software (for example ODMS), then add the WAV. An encrypted DS2 also needs its password in that software.";
+const WEBEX_NOTE: &str = "Webex network recordings (.arf, .wrf) cannot be opened here. Convert an .arf to MP4 with the Webex Recording Converter, or a .wrf to WMV with the Webex WRF2WMV Converter (both Windows only), then add the converted file.";
+const SONY_VOICE_NOTE: &str = "Sony IC recorder files (.msv, .dvf) cannot be opened here. Convert to WAV with Sony Digital Voice Editor, then add the WAV. Sony no longer offers it for download, so an existing copy is needed.";
 
 pub(crate) fn get_formats() -> Vec<FormatInfo> {
     vec![
@@ -103,13 +117,18 @@ pub(crate) fn is_standard_format(ext: &str) -> bool {
 /// the ordinary `aac` decoder directly fails on real recordings and must never
 /// be used as a fallback.
 pub(crate) fn input_codec_args(path: &Path) -> Vec<String> {
-    match detect_format_for_path(&path.to_string_lossy()) {
+    // Extension only: the FTR handler does not depend on file content, and
+    // this runs inside async conversion and probe paths.
+    match detect_format_by_extension(&path.to_string_lossy()) {
         Some(f) if f.handler == "ftr" => vec!["-c:a".into(), "ftr".into()],
         _ => Vec::new(),
     }
 }
 
-pub(crate) fn detect_format_for_path(path: &str) -> Option<FormatInfo> {
+/// The format the extension names, before any content check. Never touches
+/// the file. `.dcr` is the court format and `.ts` is a transport stream here;
+/// `detect_format_for_path` refines both from the file's first bytes.
+pub(crate) fn detect_format_by_extension(path: &str) -> Option<FormatInfo> {
     let ext = Path::new(path)
         .extension()
         .and_then(|e| e.to_str())
@@ -117,55 +136,78 @@ pub(crate) fn detect_format_for_path(path: &str) -> Option<FormatInfo> {
         .unwrap_or_default();
 
     let fmts = get_formats();
-    match ext.as_str() {
+    let key = match ext.as_str() {
         // Court formats
-        "sgmca" => fmts.into_iter().find(|f| f.key == "sgmca"),
-        "trm" | "ftr" => fmts.into_iter().find(|f| f.key == "ftr"),
-        "aes" => fmts.into_iter().find(|f| f.key == "aes"),
-        "dm" => fmts.into_iter().find(|f| f.key == "digitalcat"),
-        "dcr" => {
-            let key = if looks_like_tiff(Path::new(path)) {
-                "dcr-image"
-            } else {
-                "dcr"
-            };
-            fmts.into_iter().find(|f| f.key == key)
-        }
-        "ds2" => fmts.into_iter().find(|f| f.key == "ds2"),
-        "arf" | "wrf" => fmts.into_iter().find(|f| f.key == "webex"),
-        "msv" | "dvf" => fmts.into_iter().find(|f| f.key == "sony-voice"),
-        "bwf" => fmts.into_iter().find(|f| f.key == "bwf"),
+        "sgmca" => "sgmca",
+        "trm" | "ftr" => "ftr",
+        "aes" => "aes",
+        "dm" => "digitalcat",
+        "dcr" => "dcr",
+        "ds2" => "ds2",
+        "arf" | "wrf" => "webex",
+        "msv" | "dvf" => "sony-voice",
+        "bwf" => "bwf",
         // Standard formats
-        "wav" => fmts.into_iter().find(|f| f.key == "wav"),
-        "mp3" => fmts.into_iter().find(|f| f.key == "mp3"),
-        "flac" => fmts.into_iter().find(|f| f.key == "flac"),
-        "m4a" | "aac" => fmts.into_iter().find(|f| f.key == "m4a"),
-        "ogg" | "opus" => fmts.into_iter().find(|f| f.key == "ogg"),
-        "wma" => fmts.into_iter().find(|f| f.key == "wma"),
-        "aif" | "aiff" => fmts.into_iter().find(|f| f.key == "aiff"),
-        "caf" => fmts.into_iter().find(|f| f.key == "caf"),
-        "amr" | "3ga" => fmts.into_iter().find(|f| f.key == "amr"),
+        "wav" => "wav",
+        "mp3" => "mp3",
+        "flac" => "flac",
+        "m4a" | "aac" => "m4a",
+        "ogg" | "opus" => "ogg",
+        "wma" => "wma",
+        "aif" | "aiff" => "aiff",
+        "caf" => "caf",
+        "amr" | "3ga" => "amr",
         // Video containers: FFmpeg extracts the audio track
-        "mp4" | "mov" | "mkv" | "avi" | "webm" | "m4v" | "3gp" => fmts.into_iter().find(|f| f.key == "video"),
+        "mp4" | "mov" | "mkv" | "avi" | "webm" | "m4v" | "3gp" => "video",
         // Legacy legal-video containers (smoke-tested at release by scripts/container-smoke-fixtures.mjs)
-        "mpg" | "mpeg" | "vob" | "ts" | "mts" | "m2ts" | "wmv" | "asf" => {
-            // .ts is also a TypeScript source extension. A readable .ts that
-            // does not start like an MPEG transport stream is left unrecognised.
-            if ext == "ts" && !could_be_transport_stream(Path::new(path)) {
-                return None;
-            }
-            fmts.into_iter().find(|f| f.key == "video")
-        }
-        _ => None,
+        "mpg" | "mpeg" | "vob" | "ts" | "mts" | "m2ts" | "wmv" | "asf" => "video",
+        _ => return None,
+    };
+    fmts.into_iter().find(|f| f.key == key)
+}
+
+/// The format of a file: the extension decides, then two cheap content
+/// checks. A `.dcr` that starts like a TIFF is a camera raw image, and a
+/// readable `.ts` with no transport-stream sync pattern (most often a
+/// TypeScript source file) is left unrecognised. Both checks read only a
+/// regular file; a FIFO, device or unreadable path keeps the extension's
+/// answer, so detection never waits on a pipe. Blocking file I/O: async
+/// callers use `detect_format_blocking`.
+pub(crate) fn detect_format_for_path(path: &str) -> Option<FormatInfo> {
+    let format = detect_format_by_extension(path)?;
+    let ext = Path::new(path)
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.to_lowercase())
+        .unwrap_or_default();
+    match ext.as_str() {
+        "dcr" if looks_like_tiff(Path::new(path)) => get_formats().into_iter().find(|f| f.key == "dcr-image"),
+        // .ts is also a TypeScript source extension.
+        "ts" if !could_be_transport_stream(Path::new(path)) => None,
+        _ => Some(format),
     }
 }
 
-/// Read up to `N` leading bytes. Detection stays extension-first; this is only
-/// used for cheap content checks, so an unreadable file returns `None` and the
-/// extension decides.
-fn leading_bytes<const N: usize>(path: &Path) -> Option<([u8; N], usize)> {
+/// `detect_format_for_path` on a blocking thread, so a slow network share
+/// never stalls the async runtime or the window.
+pub(crate) async fn detect_format_blocking(path: String) -> Option<FormatInfo> {
+    tauri::async_runtime::spawn_blocking(move || detect_format_for_path(&path))
+        .await
+        .ok()
+        .flatten()
+}
+
+/// Read up to `N` leading bytes of a regular file. Detection stays
+/// extension-first; this is only used for cheap content checks, so a file
+/// that is not a regular file, or cannot be read, returns `None` and the
+/// extension decides. The `is_file` check comes before `open`, because
+/// opening a FIFO for reading blocks until something writes to it.
+fn leading_bytes<const N: usize>(path: &Path) -> Option<(Box<[u8; N]>, usize)> {
+    if !fs::metadata(path).ok()?.is_file() {
+        return None;
+    }
     let mut file = fs::File::open(path).ok()?;
-    let mut buffer = [0u8; N];
+    let mut buffer = Box::new([0u8; N]);
     let mut filled = 0;
     while filled < N {
         match file.read(&mut buffer[filled..]) {
@@ -178,26 +220,48 @@ fn leading_bytes<const N: usize>(path: &Path) -> Option<([u8; N], usize)> {
 }
 
 /// True when the file starts with a TIFF header (`II*\0` or `MM\0*`), which is
-/// what a Kodak DCR camera raw image is. Court-recorder DCR files are not TIFF.
+/// what a Kodak DCR camera raw image is. Liberty and BIS do not publish their
+/// DCR layout, so this is not checked against a real court DCR file; a court
+/// DCR that did start with these bytes would get the camera-image note, which
+/// still says how to export a court recording.
 fn looks_like_tiff(path: &Path) -> bool {
     matches!(
         leading_bytes::<4>(path),
-        Some((bytes, 4)) if bytes == *b"II*\0" || bytes == *b"MM\0*"
+        Some((bytes, 4)) if *bytes == *b"II*\0" || *bytes == *b"MM\0*"
     )
 }
 
+/// How many bytes of a `.ts` file the transport-stream check reads.
+const TS_SCAN_BYTES: usize = 16 * 1024;
+/// Sync bytes in a row, at the packet stride, that count as a transport
+/// stream when the file does not start on a packet boundary.
+const TS_RESYNC_PACKETS: usize = 5;
+
 /// MPEG-TS packets start with the sync byte 0x47 every 188 bytes; M2TS/MTS
 /// packets carry a 4-byte timestamp first, so the sync byte is at 4 and every
-/// 192 bytes. An unreadable file passes, so the extension decides.
+/// 192 bytes. A file that starts on a packet boundary needs the sync byte at
+/// its first (and, if long enough, second) packet. A capture that was cut
+/// mid-packet, or has a short leading header, passes when the first 16 KiB
+/// hold `TS_RESYNC_PACKETS` sync bytes in a row at either stride from any
+/// offset, which is how FFmpeg's own MPEG-TS probe resyncs. An unreadable
+/// file passes, so the extension decides.
 fn could_be_transport_stream(path: &Path) -> bool {
     const SYNC: u8 = 0x47;
-    let Some((bytes, filled)) = leading_bytes::<{ 192 + 5 }>(path) else {
+    let Some((bytes, filled)) = leading_bytes::<TS_SCAN_BYTES>(path) else {
         return true;
     };
-    let synced = |first: usize, stride: usize| {
-        filled > first && bytes[first] == SYNC && (filled <= first + stride || bytes[first + stride] == SYNC)
+    let bytes = &bytes[..filled];
+    let aligned = |first: usize, stride: usize| {
+        bytes.len() > first && bytes[first] == SYNC && (bytes.len() <= first + stride || bytes[first + stride] == SYNC)
     };
-    synced(0, 188) || synced(4, 192)
+    if aligned(0, 188) || aligned(4, 192) {
+        return true;
+    }
+    [188usize, 192].iter().any(|&stride| {
+        let span = stride * (TS_RESYNC_PACKETS - 1);
+        (0..stride.min(bytes.len().saturating_sub(span)))
+            .any(|start| (0..TS_RESYNC_PACKETS).all(|packet| bytes[start + packet * stride] == SYNC))
+    })
 }
 
 // ── Case name detection ───────────────────────────────────────────────────────
@@ -445,18 +509,8 @@ pub(crate) fn output_args(format: &str, rate: &str, mp3_bitrate: u32) -> Vec<Str
             "-ar".into(),
             rate.into(),
         ],
-        // `-rf64 auto`: plain RIFF while the file fits the 4 GiB RIFF size
-        // fields, RF64 when it outgrows them (a 16-channel 48 kHz Keep
-        // Original WAV passes 4 GiB after about 46 minutes). FFmpeg reserves
-        // room for the RF64 size chunk with a small JUNK chunk up front.
-        _ => vec![
-            "-acodec".into(),
-            "pcm_s16le".into(),
-            "-ar".into(),
-            rate.into(),
-            "-rf64".into(),
-            "auto".into(),
-        ],
+        // Plain RIFF. A WAV that may pass 4 GiB also gets `wav_rf64_args`.
+        _ => vec!["-acodec".into(), "pcm_s16le".into(), "-ar".into(), rate.into()],
     };
     // Outputs are audio only. Without -vn, FFmpeg maps a video input's picture
     // into an M4A output (the ipod muxer accepts H.264), and the LGPL sidecars
@@ -464,6 +518,31 @@ pub(crate) fn output_args(format: &str, rate: &str, mp3_bitrate: u32) -> Vec<Str
     let mut args: Vec<String> = vec!["-vn".into(), "-sn".into()];
     args.extend(codec);
     args
+}
+
+/// Estimated WAV outputs at or above this size are written with `-rf64 auto`
+/// (3.5 GiB, so the estimate has room below the 4 GiB RIFF size limit).
+pub(crate) const RF64_ESTIMATE_BYTES: u64 = 3_758_096_384;
+
+/// Estimated size of a 16-bit PCM WAV output: duration × channels × rate × 2.
+/// None when any input is unknown.
+pub(crate) fn wav_estimated_bytes(duration_secs: Option<f64>, channels: Option<u32>, rate: Option<u32>) -> Option<u64> {
+    let duration = duration_secs.filter(|duration| duration.is_finite() && *duration > 0.0)?;
+    let bytes = duration * f64::from(channels?) * f64::from(rate?) * 2.0;
+    Some(bytes.ceil() as u64)
+}
+
+/// `-rf64 auto` for a WAV output that may pass the 4 GiB RIFF size fields (a
+/// 16-channel 48 kHz Keep Original WAV does after about 46 minutes), or whose
+/// size cannot be estimated. FFmpeg then writes plain RIFF while the file fits
+/// and RF64 once it outgrows them, but it also reserves room for the RF64
+/// size chunk with a JUNK chunk before `fmt `. Every other WAV gets no RF64
+/// option, so its header stays the plain RIFF layout earlier versions wrote.
+pub(crate) fn wav_rf64_args(estimated_bytes: Option<u64>) -> Vec<String> {
+    match estimated_bytes {
+        Some(bytes) if bytes < RF64_ESTIMATE_BYTES => Vec::new(),
+        _ => vec!["-rf64".into(), "auto".into()],
+    }
 }
 
 pub(crate) fn output_ext(format: &str) -> &'static str {
@@ -693,9 +772,9 @@ mod tests {
     fn closed_vendor_formats_are_rejected_with_guidance() {
         for (path, key, guidance) in [
             ("dictation.ds2", "ds2", "ODMS"),
-            ("DICTATION.DS2", "ds2", "encrypted DS2"),
+            ("DICTATION.DS2", "ds2", "needs its password"),
             ("meeting.arf", "webex", "Webex Recording Converter"),
-            ("meeting.wrf", "webex", ".wrf"),
+            ("meeting.wrf", "webex", "WRF2WMV"),
             ("memo.msv", "sony-voice", "Sony Digital Voice Editor"),
             ("memo.DVF", "sony-voice", "Sony Digital Voice Editor"),
         ] {
@@ -738,7 +817,7 @@ mod tests {
             assert!(format
                 .note
                 .unwrap()
-                .contains("looks like a camera image, not court audio"));
+                .contains("starts like a camera raw image (TIFF), not like court audio"));
         }
 
         // A court-recorder DCR (not TIFF), a short file and an empty file keep
@@ -820,6 +899,79 @@ mod tests {
         }
         // The extension decides when the file cannot be read.
         assert_eq!(detect_format_for_path("missing/hearing.ts").unwrap().key, "video");
+    }
+
+    /// Packets of `stride` bytes whose sync byte sits at `sync_at` within each
+    /// packet, with the first `skip` bytes cut off (a capture cut mid-packet).
+    fn transport_stream_bytes(stride: usize, sync_at: usize, packets: usize, skip: usize) -> Vec<u8> {
+        let mut bytes = vec![0u8; stride * packets];
+        for packet in 0..packets {
+            bytes[packet * stride + sync_at] = 0x47;
+        }
+        bytes.split_off(skip)
+    }
+
+    #[test]
+    fn ts_files_cut_mid_packet_or_with_a_short_header_are_still_transport_streams() {
+        let dir = ReservationTestDir::new();
+        let mut padded = vec![0x20u8; 32];
+        padded.extend(transport_stream_bytes(188, 0, 8, 0));
+        let mut too_few = vec![0u8; 100];
+        too_few.extend(transport_stream_bytes(188, 0, TS_RESYNC_PACKETS - 1, 0));
+        let mut prose = Vec::new();
+        while prose.len() < TS_SCAN_BYTES {
+            prose.extend_from_slice(b"import { Greeting } from './Greeting'\nexport const GREETING = 'Good morning'\n");
+        }
+        let cases: Vec<(&str, Vec<u8>, bool)> = vec![
+            ("cut.ts", transport_stream_bytes(188, 0, 40, 100), true),
+            ("cut-m2ts.ts", transport_stream_bytes(192, 4, 40, 1), true),
+            ("padded.ts", padded, true),
+            // Too few packets in a row after a misaligned start.
+            ("too-few.ts", too_few, false),
+            // Source text with a capital G here and there.
+            ("greeting.ts", prose, false),
+        ];
+        for (name, bytes, video) in cases {
+            let path = dir.path().join(name);
+            fs::write(&path, &bytes).unwrap();
+            let detected = detect_format_for_path(&path.to_string_lossy());
+            assert_eq!(detected.map(|f| f.key), video.then(|| "video".to_string()), "{name}");
+        }
+    }
+
+    /// Opening a FIFO for reading blocks until a writer appears; detection
+    /// must not open one, so a pipe named *.ts or *.dcr returns at once with
+    /// the extension's answer.
+    #[cfg(unix)]
+    #[test]
+    fn content_checks_never_open_a_fifo() {
+        let dir = ReservationTestDir::new();
+        for (name, key) in [("pipe.ts", "video"), ("pipe.dcr", "dcr")] {
+            let path = dir.path().join(name);
+            let status = std::process::Command::new("mkfifo").arg(&path).status();
+            if !status.is_ok_and(|status| status.success()) {
+                eprintln!("skipping: mkfifo is not available");
+                return;
+            }
+            let (sender, receiver) = std::sync::mpsc::channel();
+            let probe = path.to_string_lossy().to_string();
+            std::thread::spawn(move || {
+                let _ = sender.send(detect_format_for_path(&probe).map(|f| f.key));
+            });
+            let detected = receiver
+                .recv_timeout(std::time::Duration::from_secs(5))
+                .unwrap_or_else(|_| panic!("{name}: detection blocked on a FIFO"));
+            assert_eq!(detected.as_deref(), Some(key), "{name}");
+        }
+    }
+
+    #[test]
+    fn ftr_codec_hint_comes_from_the_extension_alone() {
+        assert_eq!(input_codec_args(Path::new("session.trm")), vec!["-c:a", "ftr"]);
+        assert_eq!(input_codec_args(Path::new("missing/SESSION.FTR")), vec!["-c:a", "ftr"]);
+        assert_eq!(detect_format_by_extension("hearing.ts").unwrap().key, "video");
+        assert_eq!(detect_format_by_extension("hearing.dcr").unwrap().key, "dcr");
+        assert!(detect_format_by_extension("notes.txt").is_none());
     }
 
     #[test]
@@ -926,13 +1078,34 @@ mod tests {
     fn wav_output_switches_to_rf64_only_when_needed() {
         assert_eq!(
             output_args("wav", "48000", 192),
-            vec!["-vn", "-sn", "-acodec", "pcm_s16le", "-ar", "48000", "-rf64", "auto"]
+            vec!["-vn", "-sn", "-acodec", "pcm_s16le", "-ar", "48000"]
         );
-        for format in ["mp3", "flac", "opus", "m4a"] {
+        for format in ["wav", "mp3", "flac", "opus", "m4a"] {
             assert!(
                 !output_args(format, "48000", 192).contains(&"-rf64".to_string()),
                 "{format}"
             );
+        }
+        // A one-hour stereo 48 kHz WAV is about 0.6 GiB: plain RIFF.
+        let hour_stereo = wav_estimated_bytes(Some(3600.0), Some(2), Some(48_000));
+        assert_eq!(hour_stereo, Some(691_200_000));
+        assert!(wav_rf64_args(hour_stereo).is_empty());
+        // 16 channels at 48 kHz pass 3.5 GiB after about 41 minutes.
+        assert!(wav_rf64_args(wav_estimated_bytes(Some(40.0 * 60.0), Some(16), Some(48_000))).is_empty());
+        assert_eq!(
+            wav_rf64_args(wav_estimated_bytes(Some(46.0 * 60.0), Some(16), Some(48_000))),
+            vec!["-rf64", "auto"]
+        );
+        assert_eq!(wav_rf64_args(Some(RF64_ESTIMATE_BYTES - 1)), Vec::<String>::new());
+        assert_eq!(wav_rf64_args(Some(RF64_ESTIMATE_BYTES)), vec!["-rf64", "auto"]);
+        // A size that cannot be estimated keeps the 4 GiB safety.
+        for unknown in [
+            wav_estimated_bytes(None, Some(2), Some(48_000)),
+            wav_estimated_bytes(Some(60.0), None, Some(48_000)),
+            wav_estimated_bytes(Some(f64::NAN), Some(2), Some(48_000)),
+        ] {
+            assert_eq!(unknown, None);
+            assert_eq!(wav_rf64_args(unknown), vec!["-rf64", "auto"]);
         }
     }
 

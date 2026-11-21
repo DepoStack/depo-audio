@@ -35,9 +35,11 @@ function fakeAudio(audio, { duration = 120 } = {}) {
   Object.defineProperty(audio, 'currentTime', {
     configurable: true,
     get: () => time,
+    // A real media element queues 'seeking' as a task after currentTime is
+    // set, so code that sets the time and then plays sees it afterwards.
     set: value => {
       time = value
-      audio.dispatchEvent(new Event('seeking'))
+      setTimeout(() => audio.dispatchEvent(new Event('seeking')), 0)
     },
   })
   audio.play = vi.fn(() => {
@@ -74,6 +76,10 @@ async function renderWithTrack() {
 }
 
 const playPause = () => fireEvent.click(screen.getByRole('button', { name: /^(Play|Pause)$/ }))
+// Let queued media events (seeking) run.
+const settle = () => act(() => new Promise(resolve => setTimeout(resolve, 0)))
+const chooseBackstep = value =>
+  fireEvent.change(screen.getByRole('combobox', { name: 'Backstep on resume' }), { target: { value } })
 
 describe('Player auto-backstep', () => {
   beforeEach(() => {
@@ -86,37 +92,70 @@ describe('Player auto-backstep', () => {
     vi.restoreAllMocks()
   })
 
-  it('shows the current backstep next to the transport, 2 s by default', async () => {
-    await renderWithTrack()
+  it('is Off by default, next to the transport, with its rule as the description', async () => {
+    const clock = await renderWithTrack()
     const select = screen.getByRole('combobox', { name: 'Backstep on resume' })
-    expect(select).toHaveValue('2')
+    expect(select).toHaveValue('0')
+    expect(select).toHaveAccessibleDescription(
+      'When you resume after a pause, the Player first rewinds this far. Seeks and track changes do not rewind.',
+    )
     expect(screen.getByRole('option', { name: 'Off' })).toBeInTheDocument()
     expect(screen.getByText('Backstep')).toBeInTheDocument()
+    // Off: an existing install's playback does not change after the update.
+    playPause()
+    clock.advanceTo(30)
+    playPause()
+    await settle()
+    playPause()
+    expect(clock.time).toBe(30)
   })
 
   it('rewinds 2 s when resuming after a pause', async () => {
     const clock = await renderWithTrack()
+    chooseBackstep('2')
+    playPause()
+    clock.advanceTo(30)
+    playPause()
+    await settle()
+    playPause()
+    expect(clock.time).toBe(28)
+  })
+
+  it('keeps rewinding on later pauses after its own seek event arrives', async () => {
+    const clock = await renderWithTrack()
+    chooseBackstep('2')
     playPause()
     clock.advanceTo(30)
     playPause()
     playPause()
     expect(clock.time).toBe(28)
+    // The 'seeking' from that rewind arrives after play(); it must not eat
+    // the next pause.
+    await settle()
+    clock.advanceTo(40)
+    playPause()
+    await settle()
+    playPause()
+    expect(clock.time).toBe(38)
   })
 
   it('does not rewind on the first play or after an explicit seek', async () => {
     const clock = await renderWithTrack()
+    chooseBackstep('2')
     playPause()
     expect(clock.time).toBe(0)
     clock.advanceTo(30)
     playPause()
     fireEvent.keyDown(window, { key: 'ArrowRight' })
     expect(clock.time).toBe(35)
+    await settle()
     playPause()
     expect(clock.time).toBe(35)
   })
 
   it('uses Space to resume with the same rule', async () => {
     const clock = await renderWithTrack()
+    chooseBackstep('2')
     fireEvent.keyDown(window, { key: ' ' })
     clock.advanceTo(10)
     fireEvent.keyDown(window, { key: 'k' })
@@ -126,7 +165,9 @@ describe('Player auto-backstep', () => {
 
   it('persists the chosen backstep and honours Off', async () => {
     const clock = await renderWithTrack()
-    fireEvent.change(screen.getByRole('combobox', { name: 'Backstep on resume' }), { target: { value: '0' } })
+    chooseBackstep('3')
+    expect(window.localStorage.getItem('player-backstep')).toBe('3')
+    chooseBackstep('0')
     expect(window.localStorage.getItem('player-backstep')).toBe('0')
     playPause()
     clock.advanceTo(30)

@@ -171,6 +171,9 @@ export default function useConversion() {
                   outputs: payload.files,
                   warning: payload.warning || null,
                   error: null,
+                  // Leading-silence trim runs in Mix to Stereo and Keep
+                  // Original only; Compare uses it to say positions differ.
+                  trimmed: Boolean(trim) && mode !== 'split',
                 })
               }),
               listen('convert:error', ({ payload }) => {

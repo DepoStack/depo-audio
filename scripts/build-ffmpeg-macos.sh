@@ -150,7 +150,11 @@ build_arch() {
 
   # mp2, ac3 and wmav2 are the usual audio in the MPEG-PS/VOB, TS and WMV
   # containers DepoAudio lists; scripts/container-smoke-fixtures.mjs decodes them.
-  for decoder in ftr aac flac pcm_s16le mp2 ac3 wmav2; do
+  # wmapro and wmavoice (WMA 9 Pro and WMA Voice in WMV), pcm_dvd (LPCM in
+  # VOB) and pcm_bluray (LPCM in AVCHD/M2TS) are present only because this
+  # configure keeps FFmpeg's default decoders; this gate keeps them there.
+  # FFmpeg cannot encode wmapro or wmavoice, so they have no smoke fixture.
+  for decoder in ftr aac flac pcm_s16le mp2 ac3 wmav2 wmapro wmavoice pcm_dvd pcm_bluray; do
     grep -Eq "[[:space:]]${decoder}[[:space:]]" <<<"$decoders" || {
       echo "ERROR: $arch FFmpeg lacks decoder $decoder" >&2; exit 1;
     }

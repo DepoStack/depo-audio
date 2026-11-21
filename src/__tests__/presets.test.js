@@ -6,6 +6,7 @@ import {
   PRESETS,
   STENOGRAPH_ASSOCIATE_AUDIO,
   STENOGRAPH_SINGLE_CHANNEL,
+  STENOGRAPH_SOURCES,
   describeSettings,
   settingsMatchPreset,
 } from '../presets'
@@ -25,13 +26,19 @@ describe('destination-named presets', () => {
       'Phone recording cleanup (WAV + high-pass)',
       'One file per microphone (WAV)',
       'Archive — lossless (FLAC)',
-      'Smallest file (Opus) — CATalyst 20 or newer',
+      'Smallest file (Opus)',
     ])
     for (const p of PRESETS) {
       expect(p.basis, p.id).toMatch(/\S/)
       expect(p.desc, p.id).toMatch(/\S/)
       expect([STENOGRAPH_ASSOCIATE_AUDIO, STENOGRAPH_SINGLE_CHANNEL, null]).toContain(p.source)
+      // No version or destination claim in a name: those live in the basis.
+      expect(p.name, p.id).not.toMatch(/\d{2} or (?:newer|older)/)
     }
+    // Every source the presets cite is linked under the picker by its title.
+    const cited = new Set(PRESETS.map(p => p.source).filter(Boolean))
+    expect(STENOGRAPH_SOURCES.map(source => source.url).sort()).toEqual([...cited].sort())
+    expect(STENOGRAPH_SOURCES.map(source => source.title)).toEqual(['Associate Audio File', 'Single Channel Audio'])
     expect(new Set(PRESETS.map(p => p.id)).size).toBe(PRESETS.length)
   })
 
@@ -50,10 +57,12 @@ describe('destination-named presets', () => {
   it('says older CATalyst cannot play Opus wherever Opus is produced', () => {
     const opus = PRESETS.filter(p => p.settings.format === 'opus')
     expect(opus.map(p => p.id)).toEqual(['small-opus'])
-    expect(opus[0].name).toMatch(/CATalyst 20 or newer/)
+    expect(opus[0].name).toBe('Smallest file (Opus)')
     expect(opus[0].basis).toBe(OPUS_CATALYST_NOTE)
     expect(opus[0].source).toBe(STENOGRAPH_SINGLE_CHANNEL)
     expect(OPUS_CATALYST_NOTE).toMatch(/Opus plays only in CATalyst 20 or newer.*Older versions cannot play it/)
+    // The playback version is not stretched to cover audio association.
+    expect(OPUS_CATALYST_NOTE).not.toMatch(/associat\w* (?:needs|requires) CATalyst 20/)
   })
 
   it('describes the phone preset as the high-pass and normalization it really turns on', () => {

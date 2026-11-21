@@ -14,7 +14,12 @@
     "fs:allow-write-text-file",
     {
       "identifier": "opener:allow-open-url",
-      "allow": [{ "url": "https://www.depostack.com" }, { "url": "https://github.com/DepoStack/depo-audio/releases" }]
+      "allow": [
+        { "url": "https://www.depostack.com" },
+        { "url": "https://github.com/DepoStack/depo-audio/releases" },
+        { "url": "https://solutioncenter.stenograph.com/associateaudio" },
+        { "url": "https://solutioncenter.stenograph.com/singlechannelaudio" }
+      ]
     },
     "updater:default",
     "process:default"

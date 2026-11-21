@@ -44,7 +44,10 @@
         "format": { "enum": ["wav", "mp3", "flac", "opus", "m4a"] },
         "sampleRate": { "type": ["integer", "null"], "minimum": 8000, "maximum": 192000 },
         "wavHeader": { "enum": ["riff", "rf64", null], "description": "For a WAV output, the header read from the file's first four bytes after encoding: riff (plain RIFF) or rf64 (written once a file passes the 4 GiB RIFF limit). Null for other formats. Written by versions after 1.1.0." }
-      }
+      },
+      "if": { "required": ["format"], "properties": { "format": { "const": "wav" } } },
+      "then": { "properties": { "wavHeader": { "enum": ["riff", "rf64"] } } },
+      "else": { "properties": { "wavHeader": { "const": null } } }
     },
     "processing": {
       "type": "object",
@@ -54,7 +57,8 @@
         "mode": { "enum": ["stereo", "keep", "split"] },
         "filterOption": { "enum": ["-af", "-filter_complex", null], "description": "The FFmpeg option that carried filterChain, or null when no filter ran." },
         "filterChain": { "type": ["string", "null"], "description": "The exact FFmpeg filter string used. In split mode it is the whole graph; channel.sourceChannelIndex names this file's branch." },
-        "encoderArgs": { "type": "array", "items": { "type": "string" }, "description": "The exact FFmpeg output arguments for this output (stream selection, encoder and metadata), without file paths." }
+        "encoderArgs": { "type": "array", "items": { "type": "string" }, "description": "The exact FFmpeg encoder and metadata arguments for this output, without file paths. Stream selection is in mapArgs." },
+        "mapArgs": { "type": "array", "items": { "type": "string" }, "description": "The exact FFmpeg -map arguments for this output: -map 0:a:0 (the converted source stream) for stereo and keep, -map [opN] (this channel's branch of filterChain) for split. The command is: ffmpeg -i <source> [filterOption filterChain] mapArgs encoderArgs <output>. Written by versions after 1.1.0." }
       }
     },
     "channel": {
