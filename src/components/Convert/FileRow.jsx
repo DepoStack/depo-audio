@@ -1,17 +1,20 @@
-import { useState } from 'react'
+import { useId, useState } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import { CH_COLORS } from '../../constants'
-import { FileAudio, X, FolderOpen, ChevronDown, ChevronUp, Play } from 'lucide-react'
+import { FileAudio, X, FolderOpen, ChevronDown, ChevronUp, Play, ArrowLeftRight } from 'lucide-react'
 import { Badge } from '../ui/badge'
 import { cn } from '../../lib/utils'
 import StatusChip from '../common/StatusChip'
 import MiniPlayer from './MiniPlayer'
-import { isPlayerPlayable } from '../../lib/player'
+import ComparePlayer from '../common/ComparePlayer'
+import { COMPARE_UNAVAILABLE_REASON, compareTarget, isPlayerPlayable } from '../../lib/player'
 import { audioTrackNotice } from '../../lib/queue'
 
 export default function FileRow({ file, streams, job, onRemove, converting, onOpenInPlayer }) {
   const [expanded, setExpanded] = useState(false)
   const [folderError, setFolderError] = useState('')
+  const [comparing, setComparing] = useState(false)
+  const compareReasonId = useId()
   const status = job?.status || 'waiting'
   const isExp = file.fmt?.status === 'experimental'
   const isRej = file.fmt?.status === 'unsupported'
@@ -116,6 +119,7 @@ export default function FileRow({ file, streams, job, onRemove, converting, onOp
           ))}
           {(() => {
             const playable = job.outputs.map(out => out.path).filter(isPlayerPlayable)
+            const compare = compareTarget(file.path, job.outputs)
             const actionClass =
               'flex items-center gap-1 rounded px-1 py-0.5 type-small text-[hsl(var(--text2))] hover:text-foreground hover:bg-secondary/60 transition-colors focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring'
             return (
@@ -156,9 +160,44 @@ export default function FileRow({ file, streams, job, onRemove, converting, onOp
                     Open in Player
                   </button>
                 )}
+                <button
+                  type="button"
+                  className={cn(
+                    actionClass,
+                    'disabled:cursor-not-allowed disabled:text-[hsl(var(--sub))] disabled:hover:bg-transparent disabled:hover:text-[hsl(var(--sub))]',
+                  )}
+                  aria-label={`Compare with original: ${compare.output?.name ?? file.name}`}
+                  aria-expanded={compare.enabled ? comparing : undefined}
+                  aria-describedby={compare.enabled ? undefined : compareReasonId}
+                  disabled={!compare.enabled}
+                  onClick={() => setComparing(open => !open)}
+                >
+                  <ArrowLeftRight size={11} aria-hidden="true" />
+                  Compare with original
+                </button>
+                {!compare.enabled && (
+                  <span id={compareReasonId} className="type-small text-[hsl(var(--sub))]">
+                    {compare.reason}
+                  </span>
+                )}
               </div>
             )
           })()}
+          {comparing &&
+            (() => {
+              const compare = compareTarget(file.path, job.outputs)
+              if (!compare.enabled) return null
+              return (
+                <ComparePlayer
+                  originalPath={file.path}
+                  processedPath={compare.output.path}
+                  originalLabel="Original"
+                  processedLabel="Output"
+                  unavailableMessage={COMPARE_UNAVAILABLE_REASON}
+                  note={compare.note}
+                />
+              )
+            })()}
           {folderError && (
             <p
               role="alert"

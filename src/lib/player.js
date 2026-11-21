@@ -43,6 +43,34 @@ export function cycleSpeedStep(speed, dir) {
 
 // Validate persisted bookmarks — corrupt storage must not crash the tab on
 // every launch, so anything that isn't a well-shaped array is discarded.
+// Auto-backstep: when playback resumes after a pause, rewind this many
+// seconds first so the last words are heard again. 0 means Off.
+export const BACKSTEP_STEPS = [0, 1, 2, 3, 5]
+export const DEFAULT_BACKSTEP = 2
+
+// Parse the persisted backstep; missing or off-menu values fall back to 2 s
+export function loadBackstep(raw) {
+  if (raw == null || raw === '') return DEFAULT_BACKSTEP
+  const v = Number(raw)
+  return BACKSTEP_STEPS.includes(v) ? v : DEFAULT_BACKSTEP
+}
+
+export function backstepLabel(seconds) {
+  return seconds > 0 ? `${seconds}s` : 'Off'
+}
+
+// Where playback should start when the person presses play.
+// Backstep applies only when resuming from a pause at the same spot: an
+// explicit seek, a track change or a loop wrap since the pause clears
+// pausedAt (null), and nothing rewinds. The result never goes below 0, and
+// never below the A-B loop start when the pause was inside an active loop.
+export function resumePosition({ currentTime, pausedAt, backstep, loopStart = null }) {
+  const t = Number.isFinite(currentTime) ? currentTime : 0
+  if (!(backstep > 0) || pausedAt == null || Math.abs(t - pausedAt) > 0.05) return t
+  const floor = loopStart != null && t >= loopStart ? loopStart : 0
+  return Math.max(floor, t - backstep)
+}
+
 export function loadBookmarks(raw) {
   try {
     const v = JSON.parse(raw || '[]')
@@ -71,6 +99,24 @@ export function partitionPlaybackPaths(paths, tracks) {
 export function isPlayerPlayable(path) {
   const ext = typeof path === 'string' ? path.split('.').pop()?.toLowerCase() : ''
   return AUDIO_EXTS.includes(ext) && !CONVERSION_REQUIRED_EXTS.has(ext)
+}
+
+export const COMPARE_UNAVAILABLE_REASON = "Original can't be played here; open the output in Player."
+
+// What "Compare with original" on a converted row can do. The original must
+// open in the web view as it is (court containers such as .sgmca/.trm/.ftr
+// cannot), and so must the output. Split conversions compare the first
+// playable output, and the note names it.
+export function compareTarget(sourcePath, outputs) {
+  const output = (outputs || []).find(out => isPlayerPlayable(out?.path)) ?? null
+  if (!isPlayerPlayable(sourcePath) || !output) {
+    return { enabled: false, output, reason: COMPARE_UNAVAILABLE_REASON, note: '' }
+  }
+  const note =
+    outputs.length > 1
+      ? `Comparing ${output.name} with the original. The original plays all of its channels together.`
+      : ''
+  return { enabled: true, output, reason: '', note }
 }
 
 export function freshAudioPaths(paths, tracks) {

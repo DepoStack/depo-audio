@@ -1,3 +1,18 @@
+// Scan reads a bounded sample from the start of each file. Must match
+// ANALYSIS_SAMPLE_SECS in src-tauri/src/ffmpeg.rs (a test checks the source).
+export const SCAN_SAMPLE_SECS = 180
+
+// "the first 3 minutes" / "the first 90 seconds"
+export function scanSampleSpan(secs = SCAN_SAMPLE_SECS) {
+  if (secs % 60 === 0) {
+    const minutes = secs / 60
+    return `the first ${minutes === 1 ? 'minute' : `${minutes} minutes`}`
+  }
+  return `the first ${secs} seconds`
+}
+
+export const SCAN_SAMPLE_NOTE = `Scan checks ${scanSampleSpan()} of each file.`
+
 export function aggregateAnalysisResults(results) {
   if (!results.length) return null
 

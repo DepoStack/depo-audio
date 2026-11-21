@@ -72,7 +72,7 @@ Scanning is a bounded, cancellable local analysis pass. FFmpeg performs the sele
 
 ### Signal cleanup (local, non-learned)
 
-- **Scan** measures channel loudness, peaks, clipping, balance, and sample rate
+- **Scan** measures channel loudness, peaks, clipping, balance, and sample rate; loudness, peaks and clipping come from the first 3 minutes of each file
 - **Auto-level** — balances per-channel loudness from a bounded representative sample
 - **De-clip** distorted peaks, apply a high-pass filter, normalize, trim leading silence, or add fades
 - Learned denoise, clarity reconstruction, room-echo reduction, turn detection, speaker estimation, and neural quality scoring are not included in v1.1.0
@@ -80,7 +80,7 @@ Scanning is a bounded, cancellable local analysis pass. FFmpeg performs the sele
 
 ### ▶️ Built-in player
 
-- Color-coded tracks, **0.5×–2× speed**, **A-B loop**, editable **bookmarks**
+- Color-coded tracks, **0.5×–2× speed**, **auto-backstep** on resume, **A-B loop**, editable **bookmarks**
 - Full keyboard transport
 - **Synced transcript editor** — import SRT, VTT, or TXT, follow the playhead, stamp and edit cues, then export SRT or TXT
 
