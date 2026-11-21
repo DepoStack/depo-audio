@@ -7,6 +7,7 @@ export default function FormatTable() {
   const [open, setOpen] = useState(false)
   const standard = FORMAT_ROWS.filter(row => row.group === 'standard')
   const court = FORMAT_ROWS.filter(row => row.group === 'court')
+  const exportFirst = FORMAT_ROWS.filter(row => row.group === 'export')
 
   return (
     <Card className="workflow-section">
@@ -44,12 +45,17 @@ export default function FormatTable() {
           {court.map(row => (
             <FormatRow key={`${row.ext}-${row.vendor}`} row={row} />
           ))}
+          <div className="border-t border-border/60 bg-secondary/50 px-4 py-1.5">
+            <span className="type-label text-[hsl(var(--sub))]">Closed formats — export to WAV first</span>
+          </div>
+          {exportFirst.map(row => (
+            <FormatRow key={`${row.ext}-${row.vendor}`} row={row} />
+          ))}
           <div className="flex items-start gap-2 border-t border-border/60 bg-secondary px-4 py-2 type-small text-[hsl(var(--sub))]">
             <CircleX aria-hidden="true" className="mt-0.5 h-3.5 w-3.5 shrink-0 text-destructive" strokeWidth={1.8} />
             <span>
-              Eclipse <code className="font-mono text-[0.86em] text-[hsl(var(--text2))]">.aes</code> and Liberty{' '}
-              <code className="font-mono text-[0.86em] text-[hsl(var(--text2))]">.dcr</code> files must be exported to
-              WAV from their native software first.
+              DepoAudio recognizes these files but cannot open them. Export or convert them to WAV in the software that
+              recorded them, then add the WAV. When you add one, DepoAudio names the software to use.
             </span>
           </div>
         </div>

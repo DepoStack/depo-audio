@@ -41,6 +41,38 @@ export function cycleSpeedStep(speed, dir) {
   return SPEED_STEPS[next]
 }
 
+// Auto-backstep: when playback resumes after a pause, rewind this many
+// seconds first so the last words are heard again. 0 means Off. Off is the
+// default, so nobody's playback starts jumping back after an update; the
+// person turns it on in the Backstep menu.
+export const BACKSTEP_STEPS = [0, 1, 2, 3, 5]
+export const DEFAULT_BACKSTEP = 0
+export const BACKSTEP_RULE =
+  'When you resume after a pause, the Player first rewinds this far. Seeks and track changes do not rewind.'
+
+// Parse the persisted backstep; missing or off-menu values fall back to Off
+export function loadBackstep(raw) {
+  if (raw == null || raw === '') return DEFAULT_BACKSTEP
+  const v = Number(raw)
+  return BACKSTEP_STEPS.includes(v) ? v : DEFAULT_BACKSTEP
+}
+
+export function backstepLabel(seconds) {
+  return seconds > 0 ? `${seconds}s` : 'Off'
+}
+
+// Where playback should start when the person presses play.
+// Backstep applies only when resuming from a pause at the same spot: an
+// explicit seek, a track change or a loop wrap since the pause clears
+// pausedAt (null), and nothing rewinds. The result never goes below 0, and
+// never below the A-B loop start when the pause was inside an active loop.
+export function resumePosition({ currentTime, pausedAt, backstep, loopStart = null }) {
+  const t = Number.isFinite(currentTime) ? currentTime : 0
+  if (!(backstep > 0) || pausedAt == null || Math.abs(t - pausedAt) > 0.05) return t
+  const floor = loopStart != null && t >= loopStart ? loopStart : 0
+  return Math.max(floor, t - backstep)
+}
+
 // Validate persisted bookmarks — corrupt storage must not crash the tab on
 // every launch, so anything that isn't a well-shaped array is discarded.
 export function loadBookmarks(raw) {
@@ -71,6 +103,36 @@ export function partitionPlaybackPaths(paths, tracks) {
 export function isPlayerPlayable(path) {
   const ext = typeof path === 'string' ? path.split('.').pop()?.toLowerCase() : ''
   return AUDIO_EXTS.includes(ext) && !CONVERSION_REQUIRED_EXTS.has(ext)
+}
+
+export const COMPARE_UNAVAILABLE_REASON = "Original can't be played here; open the output in Player."
+// When the output fails to load in Compare (for example Opus or M4A in an
+// older system web view).
+export const COMPARE_OUTPUT_UNAVAILABLE =
+  "Output can't be played here. Use Reveal in folder to open it in another player."
+
+// What "Compare with original" on a converted row can do. The original must
+// open in the web view as it is (court containers such as .sgmca/.trm/.ftr
+// cannot), and so must the output. Split conversions compare the first
+// playable output, and the note names it. When leading-silence trim ran, the
+// output starts later in the recording than the original by an amount FFmpeg
+// does not report, so the same position is not the same moment; `aligned` is
+// false and the note says so.
+export const COMPARE_TRIMMED_NOTE =
+  'Trim silence removed audio from the start of the output, so the same position in the original is earlier in the recording. Positions do not line up.'
+
+export function compareTarget(sourcePath, outputs, { trimmed = false } = {}) {
+  const output = (outputs || []).find(out => isPlayerPlayable(out?.path)) ?? null
+  if (!isPlayerPlayable(sourcePath) || !output) {
+    return { enabled: false, output, reason: COMPARE_UNAVAILABLE_REASON, note: '', aligned: true }
+  }
+  const notes = [
+    outputs.length > 1
+      ? `Comparing ${output.name} with the original. The original plays all of its channels together.`
+      : '',
+    trimmed ? COMPARE_TRIMMED_NOTE : '',
+  ].filter(Boolean)
+  return { enabled: true, output, reason: '', note: notes.join(' '), aligned: !trimmed }
 }
 
 export function freshAudioPaths(paths, tracks) {

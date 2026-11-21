@@ -253,8 +253,8 @@ export default function LocalDataSettings({
             <span className="text-[12px] font-medium text-foreground">App web storage</span>
             <span className="mt-0.5 text-[hsl(var(--sub))]">
               {plural(web.transcripts, 'track transcript')} you edited in the Player,{' '}
-              {plural(web.bookmarks, 'bookmark')}, playback speed and theme. The system web view keeps them for
-              DepoAudio on this computer.
+              {plural(web.bookmarks, 'bookmark')}, playback speed, backstep and theme. The system web view keeps them
+              for DepoAudio on this computer.
             </span>
           </div>
 

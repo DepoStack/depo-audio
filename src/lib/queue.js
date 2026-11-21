@@ -60,3 +60,19 @@ export function reexportConfirmCopy({ queued, queuedAtOpen, incoming }) {
     secondaryLabel: 'Add to queue',
   }
 }
+
+// Plain notice for a queued file with more than one audio track. `info` is
+// probe_audio_streams_cmd's answer: every audio stream in file order and the
+// index of the one DepoAudio converts (the same stream the export record
+// names). One track, or no answer, means no notice.
+export function audioTrackNotice(info) {
+  const streams = Array.isArray(info?.streams) ? info.streams : []
+  if (streams.length < 2) return ''
+  const index = Number.isInteger(info.convertedIndex) ? info.convertedIndex : 0
+  const chosen = streams[index] || {}
+  const tags = [chosen.language, chosen.title ? `"${chosen.title}"` : null].filter(Boolean)
+  const others = streams.length - 1
+  return `This file has ${streams.length} audio tracks; converting track ${index + 1}${
+    tags.length ? ` (${tags.join(', ')})` : ''
+  }. The other ${others === 1 ? 'track is' : `${others} tracks are`} not converted.`
+}

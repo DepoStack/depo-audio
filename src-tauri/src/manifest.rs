@@ -70,11 +70,15 @@ pub(crate) struct SourceTiming {
 }
 
 /// Facts about the conversion input that the manifest needs, read from one
-/// ffprobe `-show_format -show_streams -select_streams a:0` JSON document.
+/// ffprobe `-show_format -show_streams -select_streams a` JSON document
+/// (`crate::ffmpeg::manifest_probe_args`): every audio stream in file order.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct ProbedSource {
+    /// Channels of the converted stream (`SOURCE_AUDIO_STREAM`).
     pub channels: Option<u32>,
     pub timing: Option<SourceTiming>,
+    /// How many audio streams the input has; None when the probe failed.
+    pub audio_stream_count: Option<u32>,
 }
 
 fn tag<'a>(tags: &'a serde_json::Value, key: &str) -> Option<&'a str> {
@@ -84,16 +88,33 @@ fn tag<'a>(tags: &'a serde_json::Value, key: &str) -> Option<&'a str> {
         .and_then(|(_, value)| value.as_str())
 }
 
-pub(crate) fn parse_probe(probe: &serde_json::Value) -> ProbedSource {
-    let stream = &probe["streams"][0];
-    let channels = stream["channels"]
+fn positive_u32(value: &serde_json::Value) -> Option<u32> {
+    value
         .as_u64()
         .and_then(|count| u32::try_from(count).ok())
-        .filter(|count| *count > 0);
-    let sample_rate = stream["sample_rate"]
+        .filter(|count| *count > 0)
+}
+
+fn stream_sample_rate(stream: &serde_json::Value) -> Option<u32> {
+    stream["sample_rate"]
         .as_str()
         .and_then(|rate| rate.trim().parse::<u32>().ok())
-        .filter(|rate| *rate > 0);
+        .filter(|rate| *rate > 0)
+}
+
+/// Number of audio streams in a `-select_streams a` document. An empty or
+/// missing list is None: nothing was read, so nothing is claimed.
+fn audio_stream_count(probe: &serde_json::Value) -> Option<u32> {
+    probe["streams"]
+        .as_array()
+        .and_then(|streams| u32::try_from(streams.len()).ok())
+        .filter(|count| *count > 0)
+}
+
+pub(crate) fn parse_probe(probe: &serde_json::Value) -> ProbedSource {
+    let stream = &probe["streams"][crate::helpers::SOURCE_AUDIO_STREAM as usize];
+    let channels = positive_u32(&stream["channels"]);
+    let sample_rate = stream_sample_rate(stream);
     // A `time_reference` tag in any other container (FLAC, MP3, Ogg, MP4) is
     // a plain tag, not a bext chunk: FFmpeg copies the tag from a WAV input
     // into those outputs without rescaling it, so it is not a trusted start.
@@ -110,7 +131,112 @@ pub(crate) fn parse_probe(probe: &serde_json::Value) -> ProbedSource {
         }),
         _ => None,
     };
-    ProbedSource { channels, timing }
+    ProbedSource {
+        channels,
+        timing,
+        audio_stream_count: audio_stream_count(probe),
+    }
+}
+
+// ── Audio streams (Convert queue notice) ────────────────────────────────────
+
+const MAX_STREAM_TAG_CHARS: usize = 80;
+
+/// One audio stream of a queued file, as ffprobe lists it.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct AudioStreamSummary {
+    pub channels: Option<u32>,
+    pub sample_rate: Option<u32>,
+    /// The stream's `language` tag; FFmpeg's "und" (undetermined) is None.
+    pub language: Option<String>,
+    /// The stream's `title` tag (often a track or room name).
+    pub title: Option<String>,
+}
+
+/// The audio streams of a queued file and which one is converted, for the
+/// Convert queue's multi-track notice and the WAV size estimate.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct AudioStreamsInfo {
+    /// Zero-based index among `streams` of the stream DepoAudio converts.
+    pub converted_index: u32,
+    pub streams: Vec<AudioStreamSummary>,
+    pub duration_secs: Option<f64>,
+}
+
+fn bounded_tag(tags: &serde_json::Value, key: &str) -> Option<String> {
+    let value: String = tag(tags, key)?
+        .chars()
+        .filter(|character| !character.is_control())
+        .take(MAX_STREAM_TAG_CHARS)
+        .collect();
+    let value = value.trim();
+    (!value.is_empty()).then(|| value.to_string())
+}
+
+fn positive_seconds(text: &str) -> Option<f64> {
+    text.trim()
+        .parse::<f64>()
+        .ok()
+        .filter(|duration| duration.is_finite() && *duration > 0.0)
+}
+
+/// Matroska keeps a stream's length only in its `DURATION` tag, written as
+/// `HH:MM:SS.fraction`.
+fn clock_seconds(text: &str) -> Option<f64> {
+    let mut parts = text.trim().split(':');
+    let (hours, minutes, seconds) = (parts.next()?, parts.next()?, parts.next()?);
+    if parts.next().is_some() {
+        return None;
+    }
+    let hours: u32 = hours.parse().ok()?;
+    let minutes: u32 = minutes.parse().ok()?;
+    let seconds: f64 = seconds.parse().ok()?;
+    if minutes >= 60 || !(0.0..60.0).contains(&seconds) {
+        return None;
+    }
+    Some(f64::from(hours) * 3600.0 + f64::from(minutes) * 60.0 + seconds).filter(|total| *total > 0.0)
+}
+
+/// Duration in seconds of the converted stream (`streams[SOURCE_AUDIO_STREAM]`
+/// of a `-select_streams a` or `a:0` document): its own `duration`, else its
+/// Matroska `DURATION` tag, else the container's `format.duration`. The fade-out
+/// and the WAV size estimate are placed on this stream, which can be shorter
+/// than the container (a video longer than its first audio track, or a
+/// second, longer audio track).
+pub(crate) fn converted_stream_duration(probe: &serde_json::Value) -> Option<f64> {
+    let stream = &probe["streams"][crate::helpers::SOURCE_AUDIO_STREAM as usize];
+    stream["duration"]
+        .as_str()
+        .and_then(positive_seconds)
+        .or_else(|| tag(&stream["tags"], "DURATION").and_then(clock_seconds))
+        .or_else(|| probe["format"]["duration"].as_str().and_then(positive_seconds))
+}
+
+/// Read `crate::ffmpeg::manifest_probe_args` output for the queue notice.
+pub(crate) fn parse_audio_streams(probe: &serde_json::Value) -> AudioStreamsInfo {
+    let streams = probe["streams"]
+        .as_array()
+        .map(|streams| {
+            streams
+                .iter()
+                .map(|stream| AudioStreamSummary {
+                    channels: positive_u32(&stream["channels"]),
+                    sample_rate: stream_sample_rate(stream),
+                    language: bounded_tag(&stream["tags"], "language")
+                        .filter(|language| !language.eq_ignore_ascii_case("und")),
+                    title: bounded_tag(&stream["tags"], "title"),
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    let duration_secs = converted_stream_duration(probe);
+    AudioStreamsInfo {
+        converted_index: crate::helpers::SOURCE_AUDIO_STREAM,
+        streams,
+        duration_secs,
+    }
 }
 
 /// Rescale a TimeReference to another sample rate, rounding to the nearest
@@ -202,6 +328,9 @@ pub(crate) struct OutputRecord {
     pub size_bytes: u64,
     pub format: String,
     pub sample_rate: Option<u32>,
+    /// "riff" or "rf64", read from a WAV output's first four bytes after
+    /// encoding; None for every other format.
+    pub wav_header: Option<&'static str>,
 }
 
 #[derive(Debug, Serialize, Clone, PartialEq)]
@@ -211,6 +340,10 @@ pub(crate) struct ProcessingRecord {
     pub filter_option: Option<&'static str>,
     pub filter_chain: Option<String>,
     pub encoder_args: Vec<String>,
+    /// The `-map` arguments of this output: `-map 0:a:0` (the source
+    /// stream) for Mix to Stereo and Keep Original, `-map [opN]` (this
+    /// channel's filter branch) for Split.
+    pub map_args: Vec<String>,
 }
 
 #[derive(Debug, Serialize, Clone, PartialEq)]
@@ -221,6 +354,15 @@ pub(crate) struct ChannelRecord {
     pub source_channel_index: Option<u32>,
     pub label: Option<String>,
     pub labels: Vec<String>,
+}
+
+/// Which audio stream of the source was converted. Every probe and FFmpeg
+/// pass maps this one stream explicitly (`-map 0:a:<index>`).
+#[derive(Debug, Serialize, Clone, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct AudioStreamRecord {
+    pub index: u32,
+    pub source_audio_stream_count: Option<u32>,
 }
 
 #[derive(Debug, Serialize, Clone, PartialEq)]
@@ -247,6 +389,7 @@ pub(crate) struct ExportManifest {
     pub output: OutputRecord,
     pub processing: ProcessingRecord,
     pub channel: ChannelRecord,
+    pub audio_stream: AudioStreamRecord,
     pub start_time: StartTimeRecord,
 }
 
@@ -261,8 +404,27 @@ pub(crate) struct OutputFacts<'a> {
     pub filter_chain: Option<String>,
     /// Encoder plus metadata arguments for this output, without its path.
     pub encoder_args: Vec<String>,
+    /// This output's `-map` arguments.
+    pub map_args: Vec<String>,
     pub source_channel_index: Option<u32>,
     pub label: Option<String>,
+    /// From `wav_header_kind`, for WAV outputs only.
+    pub wav_header: Option<&'static str>,
+}
+
+/// The header a finished WAV output was written with, from its first four
+/// bytes: `RIFF` is "riff", `RF64` is "rf64". Anything else is an error, so
+/// the record never names a header that is not in the file.
+pub(crate) fn wav_header_kind(path: &Path) -> Result<&'static str, String> {
+    let mut magic = [0u8; 4];
+    fs::File::open(path)
+        .and_then(|mut file| file.read_exact(&mut magic))
+        .map_err(|error| format!("Could not read the WAV output's header: {error}"))?;
+    match &magic {
+        b"RIFF" => Ok("riff"),
+        b"RF64" => Ok("rf64"),
+        _ => Err("The WAV output does not start with a RIFF or RF64 header.".into()),
+    }
 }
 
 fn bounded_label(label: &str) -> String {
@@ -356,12 +518,14 @@ pub(crate) fn build_manifest(input: &ManifestInput<'_>, facts: OutputFacts<'_>) 
             size_bytes: facts.size_bytes,
             format: facts.format.into(),
             sample_rate,
+            wav_header: facts.wav_header,
         },
         processing: ProcessingRecord {
             mode: facts.mode.into(),
             filter_option: facts.filter_option,
             filter_chain: facts.filter_chain,
             encoder_args: facts.encoder_args,
+            map_args: facts.map_args,
         },
         channel: ChannelRecord {
             output: output_kind,
@@ -372,6 +536,10 @@ pub(crate) fn build_manifest(input: &ManifestInput<'_>, facts: OutputFacts<'_>) 
                 .map(|label| bounded_label(&label))
                 .filter(|label| !label.is_empty()),
             labels,
+        },
+        audio_stream: AudioStreamRecord {
+            index: crate::helpers::SOURCE_AUDIO_STREAM,
+            source_audio_stream_count: input.probed.audio_stream_count,
         },
         start_time: start_time_record(input.probed.timing, sample_rate, input.shifted, facts.format),
     }
@@ -461,10 +629,14 @@ pub(crate) mod tests {
                 format: "wav",
                 mode: "split",
                 filter_option: Some("-filter_complex"),
-                filter_chain: Some("[0:a]asplit=2[sp0][sp1];[sp0]pan=mono|c0=c0[op0];[sp1]pan=mono|c0=c1[op1]".into()),
+                filter_chain: Some(
+                    "[0:a:0]asplit=2[sp0][sp1];[sp0]pan=mono|c0=c0[op0];[sp1]pan=mono|c0=c1[op1]".into(),
+                ),
                 encoder_args: vec!["-acodec".into(), "pcm_s16le".into(), "-ar".into(), "48000".into()],
+                map_args: vec!["-map".into(), "[op1]".into()],
                 source_channel_index: Some(1),
                 label: Some("Witness".into()),
+                wav_header: Some("riff"),
             },
         )
     }
@@ -717,7 +889,7 @@ pub(crate) mod tests {
     // ── Schema conformance ──────────────────────────────────────────────────
     // A small validator for the JSON Schema keywords the published schema
     // uses (type, const, enum, required, properties, additionalProperties,
-    // items, minimum, maximum, pattern). It fails on any other keyword so the
+    // items, minimum, maximum, pattern, if/then/else). It fails on any other keyword so the
     // schema cannot grow a rule this test silently ignores.
 
     const SCHEMA: &str = include_str!("../../docs/export-manifest.schema.json");
@@ -739,7 +911,15 @@ pub(crate) mod tests {
         let rules = schema.as_object().expect("schema node is an object");
         for (keyword, rule) in rules {
             match keyword.as_str() {
-                "$schema" | "$id" | "title" | "description" => {}
+                "$schema" | "$id" | "title" | "description" | "then" | "else" => {}
+                "if" => {
+                    let mut condition = Vec::new();
+                    validate(rule, value, at, &mut condition);
+                    let branch = if condition.is_empty() { "then" } else { "else" };
+                    if let Some(next) = rules.get(branch) {
+                        validate(next, value, at, errors);
+                    }
+                }
                 "type" => {
                     let ok = match rule {
                         serde_json::Value::String(kind) => type_matches(kind, value),
@@ -850,6 +1030,180 @@ pub(crate) mod tests {
         ] {
             let errors = schema_errors(&manifest);
             assert!(errors.is_empty(), "{errors:#?}");
+        }
+    }
+
+    #[test]
+    fn probe_describes_stream_zero_and_counts_every_audio_stream() {
+        let two = serde_json::json!({
+            "streams": [
+                { "sample_rate": "48000", "channels": 1, "tags": { "language": "eng", "title": "Floor" } },
+                { "sample_rate": "44100", "channels": 4, "tags": { "language": "und" } }
+            ],
+            "format": { "format_name": "matroska,webm", "duration": "2.000000" }
+        });
+        let probed = parse_probe(&two);
+        assert_eq!(
+            probed.channels,
+            Some(1),
+            "channels come from stream 0, not the widest stream"
+        );
+        assert_eq!(probed.audio_stream_count, Some(2));
+
+        let streams = parse_audio_streams(&two);
+        assert_eq!(streams.converted_index, 0);
+        assert_eq!(streams.duration_secs, Some(2.0));
+        assert_eq!(
+            streams.streams,
+            vec![
+                AudioStreamSummary {
+                    channels: Some(1),
+                    sample_rate: Some(48_000),
+                    language: Some("eng".into()),
+                    title: Some("Floor".into()),
+                },
+                AudioStreamSummary {
+                    channels: Some(4),
+                    sample_rate: Some(44_100),
+                    language: None,
+                    title: None,
+                },
+            ]
+        );
+
+        // Nothing read, nothing claimed.
+        assert_eq!(parse_probe(&serde_json::json!({})).audio_stream_count, None);
+        assert_eq!(
+            parse_probe(&serde_json::json!({ "streams": [] })).audio_stream_count,
+            None
+        );
+        let empty = parse_audio_streams(&serde_json::json!({}));
+        assert!(empty.streams.is_empty());
+        assert_eq!(empty.duration_secs, None);
+    }
+
+    #[test]
+    fn duration_is_the_converted_streams_not_the_containers() {
+        // An MKV whose a:0 runs 4 s and a:1 10 s: format.duration is 10 s.
+        let mkv = serde_json::json!({
+            "streams": [
+                { "channels": 1, "tags": { "DURATION": "00:00:04.000000000" } },
+                { "channels": 1, "tags": { "DURATION": "00:00:10.000000000" } }
+            ],
+            "format": { "duration": "10.000000" }
+        });
+        assert_eq!(converted_stream_duration(&mkv), Some(4.0));
+        assert_eq!(parse_audio_streams(&mkv).duration_secs, Some(4.0));
+        // A transport stream whose video outlasts its audio.
+        let ts = serde_json::json!({
+            "streams": [{ "duration": "3.996733" }],
+            "format": { "duration": "10.004900" }
+        });
+        assert_eq!(converted_stream_duration(&ts), Some(3.996733));
+        assert_eq!(
+            converted_stream_duration(&serde_json::json!({
+                "streams": [{ "tags": { "DURATION": "01:02:03.500" } }]
+            })),
+            Some(3723.5)
+        );
+        // No stream duration: the container's, as before.
+        let only_format = serde_json::json!({ "streams": [{}], "format": { "duration": "2.5" } });
+        assert_eq!(converted_stream_duration(&only_format), Some(2.5));
+        for broken in ["N/A", "0", "-1", "00:61:00", "1:2", "aa:bb:cc"] {
+            let probe = serde_json::json!({
+                "streams": [{ "duration": broken, "tags": { "DURATION": broken } }],
+                "format": { "duration": "7" }
+            });
+            assert_eq!(converted_stream_duration(&probe), Some(7.0), "{broken}");
+        }
+        assert_eq!(converted_stream_duration(&serde_json::json!({})), None);
+    }
+
+    #[test]
+    fn stream_tags_are_bounded_and_stripped_of_control_characters() {
+        let probe = serde_json::json!({
+            "streams": [{ "channels": 2, "tags": { "TITLE": format!("Room\u{7}{}", "x".repeat(200)), "language": "  " } }]
+        });
+        let stream = &parse_audio_streams(&probe).streams[0];
+        let title = stream.title.as_deref().unwrap();
+        assert!(title.starts_with("Roomx"));
+        assert_eq!(title.chars().count(), MAX_STREAM_TAG_CHARS);
+        assert_eq!(stream.language, None);
+    }
+
+    #[test]
+    fn manifest_records_the_converted_stream_and_the_stream_count() {
+        let probed = ProbedSource {
+            audio_stream_count: Some(3),
+            ..ProbedSource::default()
+        };
+        let manifest = sample_input(&probed, &[], false);
+        assert_eq!(manifest.audio_stream.index, 0);
+        assert_eq!(manifest.audio_stream.source_audio_stream_count, Some(3));
+        let json = serde_json::to_value(&manifest).unwrap();
+        assert_eq!(json["audioStream"]["sourceAudioStreamCount"], 3);
+        assert!(schema_errors(&manifest).is_empty());
+    }
+
+    #[test]
+    fn wav_header_is_read_from_the_file_never_assumed() {
+        let dir = TestDir::new();
+        let riff = dir.0.join("riff.wav");
+        fs::write(&riff, b"RIFF\x24\0\0\0WAVE").unwrap();
+        assert_eq!(wav_header_kind(&riff), Ok("riff"));
+        let rf64 = dir.0.join("rf64.wav");
+        fs::write(&rf64, b"RF64\xff\xff\xff\xffWAVE").unwrap();
+        assert_eq!(wav_header_kind(&rf64), Ok("rf64"));
+        for (name, bytes) in [
+            ("other.wav", &b"OggS...."[..]),
+            ("short.wav", &b"RI"[..]),
+            ("empty.wav", &b""[..]),
+        ] {
+            let path = dir.0.join(name);
+            fs::write(&path, bytes).unwrap();
+            assert!(wav_header_kind(&path).is_err(), "{name}");
+        }
+        assert!(wav_header_kind(&dir.0.join("missing.wav")).is_err());
+    }
+
+    #[test]
+    fn records_written_by_1_1_0_still_match_the_schema() {
+        // 1.1.0 wrote no audioStream object, no output.wavHeader and no
+        // processing.mapArgs; the
+        // schema must keep accepting those records.
+        let mut record = serde_json::to_value(sample_input(&ProbedSource::default(), &[], false)).unwrap();
+        record.as_object_mut().unwrap().remove("audioStream");
+        record["output"].as_object_mut().unwrap().remove("wavHeader");
+        record["processing"].as_object_mut().unwrap().remove("mapArgs");
+        let errors = schema_errors_for_value(&record);
+        assert!(errors.is_empty(), "{errors:#?}");
+    }
+
+    #[test]
+    fn schema_ties_the_wav_header_to_the_output_format() {
+        let base = serde_json::to_value(sample_input(&ProbedSource::default(), &[], false)).unwrap();
+        assert_eq!(base["processing"]["mapArgs"], serde_json::json!(["-map", "[op1]"]));
+        let with = |format: &str, header: serde_json::Value| {
+            let mut record = base.clone();
+            record["output"]["format"] = format.into();
+            record["output"]["wavHeader"] = header;
+            schema_errors_for_value(&record)
+        };
+        assert!(with("wav", "riff".into()).is_empty());
+        assert!(with("wav", "rf64".into()).is_empty());
+        assert!(with("mp3", serde_json::Value::Null).is_empty());
+        for (format, header) in [
+            ("wav", serde_json::Value::Null),
+            ("mp3", "riff".into()),
+            ("flac", "rf64".into()),
+            ("opus", "riff".into()),
+            ("m4a", "rf64".into()),
+        ] {
+            let errors = with(format, header.clone());
+            assert!(
+                errors.iter().any(|error| error.contains("$.output.wavHeader")),
+                "{format} {header}: {errors:#?}"
+            );
         }
     }
 
@@ -1022,6 +1376,7 @@ pub(crate) mod tests {
         );
 
         let mut encoder = crate::helpers::output_args("wav", "48000", 192);
+        assert!(!encoder.iter().any(|arg| arg == "-rf64"));
         let rate = output_sample_rate(&encoder);
         encoder.extend(start_time_metadata_args("wav", probed.timing, rate, false));
         let output = dir.0.join("synthetic_bext_out.wav");
@@ -1034,5 +1389,29 @@ pub(crate) mod tests {
                 sample_rate: 48_000
             })
         );
+        // Without an RF64 option the file is plain RIFF with no JUNK chunk.
+        assert_eq!(wav_header_kind(&output), Ok("riff"));
+        assert!(!fs::read(&output).unwrap()[..64].windows(4).any(|w| w == b"JUNK"));
+
+        // `-rf64 auto` on a small file: still RIFF, but FFmpeg reserves a
+        // JUNK chunk before `fmt `, which is why the app adds it only to a
+        // WAV that may pass 4 GiB.
+        let mut auto = encoder.clone();
+        auto.extend(crate::helpers::wav_rf64_args(None));
+        let reserved = dir.0.join("synthetic_bext_auto.wav");
+        encode(&source, None, &auto, &reserved);
+        assert_eq!(wav_header_kind(&reserved), Ok("riff"));
+        assert_eq!(&fs::read(&reserved).unwrap()[12..16], b"JUNK");
+        assert_eq!(parse_probe(&probe_json(&reserved)).timing, carried.timing);
+
+        // The header reader and the bext path on a real RF64 file. Writing
+        // 4 GiB in a test is not practical, so `-rf64 always` stands in for
+        // what `auto` does once a file outgrows RIFF.
+        let mut forced = encoder.clone();
+        forced.extend(["-rf64".to_string(), "always".to_string()]);
+        let rf64 = dir.0.join("synthetic_bext_rf64.wav");
+        encode(&source, None, &forced, &rf64);
+        assert_eq!(wav_header_kind(&rf64), Ok("rf64"));
+        assert_eq!(parse_probe(&probe_json(&rf64)).timing, carried.timing);
     }
 }

@@ -10,7 +10,7 @@ use uuid::Uuid;
 use crate::analysis;
 use crate::catdetect;
 use crate::conversion::{do_convert, ConversionCancel};
-use crate::helpers::{detect_format_for_path, get_formats, infer_case_name};
+use crate::helpers::{detect_format_blocking, get_formats, infer_case_name};
 use crate::models;
 use crate::persistence::{library_ready, mutate_library, prefs_path, prefs_ready, save_to_library};
 use crate::types::*;
@@ -70,9 +70,31 @@ pub fn get_formats_list() -> Vec<FormatInfo> {
     get_formats()
 }
 
+/// Async so the content checks in `detect_format_for_path` (a few bytes of a
+/// .dcr or .ts) run on a blocking thread, not the main thread: a file on a
+/// stalled network share must not freeze the window while files are added.
 #[tauri::command]
-pub fn detect_format(path: String) -> Option<FormatInfo> {
-    detect_format_for_path(&path)
+pub async fn detect_format(path: String) -> Option<FormatInfo> {
+    detect_format_blocking(path).await
+}
+
+/// The audio streams of a queued file, for the Convert queue's multi-track
+/// notice and the WAV size estimate. Read-only: one ffprobe of the original
+/// file. Returns None when the file is not probed here: a rejected format, or
+/// an SGMCA, whose Ogg stream sits behind a vendor prefix and is only read
+/// from a temporary copy at conversion time.
+#[tauri::command]
+pub async fn probe_audio_streams_cmd(
+    app: AppHandle,
+    path: String,
+) -> Result<Option<crate::manifest::AudioStreamsInfo>, String> {
+    let source = Path::new(&path);
+    crate::safety::check_file_safe(source)?;
+    match detect_format_blocking(path.clone()).await {
+        Some(format) if format.handler == "rejected" || format.key == "sgmca" => Ok(None),
+        Some(_) => Ok(crate::ffmpeg::probe_audio_streams(&app, source).await),
+        None => Ok(None),
+    }
 }
 
 #[tauri::command]

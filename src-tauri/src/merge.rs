@@ -645,9 +645,10 @@ async fn decode_to_mono(app: &AppHandle, path: &Path, rate: u32, max_secs: u32) 
         crate::ffmpeg::ensure_ftr_decoder(app).await?;
         args.extend(input_codec);
     }
+    args.extend(["-i".into(), path.to_string_lossy().to_string()]);
+    // The same audio stream every other pass reads, not FFmpeg's pick.
+    args.extend(crate::helpers::source_audio_map_args());
     args.extend([
-        "-i".into(),
-        path.to_string_lossy().to_string(),
         "-t".into(),
         max_secs.to_string(),
         "-vn".into(),

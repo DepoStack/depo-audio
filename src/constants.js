@@ -49,13 +49,39 @@ export const FORMAT_ROWS = [
     status: 'supported',
     group: 'standard',
   },
+  // Legacy deposition video; each container is smoke-tested at release (scripts/container-smoke-fixtures.mjs)
+  {
+    ext: '.mpg  .mpeg  .vob',
+    vendor: 'MPEG / DVD video — audio track extracted',
+    ch: 'any',
+    status: 'supported',
+    group: 'standard',
+  },
+  {
+    ext: '.ts  .mts  .m2ts',
+    vendor: 'MPEG-TS / AVCHD video — audio track extracted',
+    ch: 'any',
+    status: 'supported',
+    group: 'standard',
+  },
+  {
+    ext: '.wmv  .asf',
+    vendor: 'Windows Media video — audio track extracted',
+    ch: 'any',
+    status: 'supported',
+    group: 'standard',
+  },
   // Court reporting formats — require conversion
   { ext: '.sgmca', vendor: 'Stenograph · Case CATalyst', ch: '4 ch', status: 'supported', group: 'court' },
   { ext: '.trm  .ftr', vendor: 'For The Record · FTR Gold', ch: '4–16 ch', status: 'experimental', group: 'court' },
   { ext: '.bwf', vendor: 'CourtSmart · Various', ch: 'varies', status: 'supported', group: 'court' },
   { ext: '.dm', vendor: 'Stenovations · DigitalCAT', ch: '—', status: 'experimental', group: 'court' },
-  { ext: '.aes', vendor: 'Eclipse CAT · AudioSync', ch: '—', status: 'unsupported', group: 'court' },
-  { ext: '.dcr', vendor: 'High Criteria · Liberty', ch: '—', status: 'unsupported', group: 'court' },
+  // Closed formats — recognized, never decoded; export to WAV in the recording software first
+  { ext: '.aes', vendor: 'Eclipse CAT · AudioSync', ch: '—', status: 'unsupported', group: 'export' },
+  { ext: '.dcr', vendor: 'Liberty Court Recorder · BIS Digital', ch: '—', status: 'unsupported', group: 'export' },
+  { ext: '.ds2', vendor: 'OM System / Olympus · DSS Pro dictation', ch: '—', status: 'unsupported', group: 'export' },
+  { ext: '.arf  .wrf', vendor: 'Cisco Webex · network recordings', ch: '—', status: 'unsupported', group: 'export' },
+  { ext: '.msv  .dvf', vendor: 'Sony · IC recorder', ch: '—', status: 'unsupported', group: 'export' },
 ]
 
 /// Standard formats that can be played/imported without conversion

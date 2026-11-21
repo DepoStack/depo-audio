@@ -72,7 +72,7 @@ Scanning is a bounded, cancellable local analysis pass. FFmpeg performs the sele
 
 ### Signal cleanup (local, non-learned)
 
-- **Scan** measures channel loudness, peaks, clipping, balance, and sample rate
+- **Scan** measures channel loudness, peaks, clipping, balance, and sample rate; loudness, peaks and clipping come from the first 3 minutes of each file
 - **Auto-level** — balances per-channel loudness from a bounded representative sample
 - **De-clip** distorted peaks, apply a high-pass filter, normalize, trim leading silence, or add fades
 - Learned denoise, clarity reconstruction, room-echo reduction, turn detection, speaker estimation, and neural quality scoring are not included in v1.1.0
@@ -80,7 +80,7 @@ Scanning is a bounded, cancellable local analysis pass. FFmpeg performs the sele
 
 ### ▶️ Built-in player
 
-- Color-coded tracks, **0.5×–2× speed**, **A-B loop**, editable **bookmarks**
+- Color-coded tracks, **0.5×–2× speed**, **auto-backstep** on resume, **A-B loop**, editable **bookmarks**
 - Full keyboard transport
 - **Synced transcript editor** — import SRT, VTT, or TXT, follow the playhead, stamp and edit cues, then export SRT or TXT
 
@@ -106,7 +106,16 @@ Scanning is a bounded, cancellable local analysis pass. FFmpeg performs the sele
 | **DigitalCAT (.dm)**                         | Stenovations               | 🧪 Experimental                    |
 | **WAV, MP3, FLAC, M4A, OGG, Opus, WMA, AIF** | Standard                   | ✅ Supported                       |
 | **Video (MP4, MOV, MKV, AVI, WebM)**         | — audio track extracted    | ✅ Supported                       |
+| **Video (MPG, VOB, TS, MTS, M2TS, WMV, ASF)** | — audio track extracted   | ✅ Supported                       |
 | **AES (Eclipse AudioSync)**                  | Eclipse CAT                | 🔒 Encrypted — export to WAV first |
+| **DCR**                                      | Liberty · BIS Digital      | Closed — export to WAV first       |
+| **DS2 (DSS Pro)**                            | OM System / Olympus        | Closed — export to WAV first       |
+| **ARF / WRF**                                | Cisco Webex                | Closed — convert first             |
+| **MSV / DVF**                                | Sony IC recorder           | Closed — export to WAV first       |
+
+The MPG, VOB, TS, MTS, M2TS, WMV and ASF rows are smoke-tested at each
+release with synthetic files carrying MP2, AC-3 or WMAv2 audio. No real
+deposition recording in these containers has been tried yet.
 
 ---
 

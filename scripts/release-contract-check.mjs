@@ -36,6 +36,8 @@ const javascriptNoticeGenerator = read('scripts/generate-javascript-notices.mjs'
 const javascriptNoticeComponents = parseJson('src-tauri/resources/third-party/javascript/COMPONENTS.json')
 const javascriptNoticeHtml = read('src-tauri/resources/third-party/javascript/THIRD-PARTY-NOTICES.html')
 const ftrSmokeFixture = read('scripts/ftr-smoke-fixture.mjs')
+const containerSmokeFixtures = read('scripts/container-smoke-fixtures.mjs')
+const helpersSource = read('src-tauri/src/helpers.rs')
 const webviewEvidence = read('scripts/windows-webview2-evidence.ps1')
 const macFfmpegBuild = read('scripts/build-ffmpeg-macos.sh')
 const macPackagedSmoke = read('scripts/macos-packaged-smoke.sh')
@@ -855,6 +857,30 @@ expect(
     artifactInventory.includes("endsWith('.trm')") &&
     artifactInventory.includes('packaged-(?:dmg|archive|msi|nsis)'),
   'synthetic FTR fixture handling must generate a tone-only FTR-tagged AVI, use restrictive temporary files, clean up, and exclude fixtures from artifacts',
+)
+// A legacy legal-video container is listed only while both platforms
+// generate and decode its synthetic fixture at release time.
+expect(
+  releaseWorkflow.includes('Smoke-test legacy video container audio extraction (macOS)') &&
+    releaseWorkflow.includes('Smoke-test legacy video container audio extraction (Windows)') &&
+    releaseWorkflow.includes('--ffmpeg src-tauri/binaries/ffmpeg-universal-apple-darwin') &&
+    releaseWorkflow.includes('--ffmpeg "src-tauri/binaries/ffmpeg-$arch-apple-darwin"') &&
+    releaseWorkflow.includes('--ffprobe "src-tauri/binaries/ffprobe-$arch-apple-darwin"') &&
+    releaseWorkflow.includes('--ffprobe src-tauri/binaries/ffprobe-x86_64-pc-windows-msvc.exe') &&
+    releaseWorkflow.includes('node scripts/container-smoke-fixtures.mjs --clean') &&
+    containerSmokeFixtures.includes("'-xerror', '-i', fixture, '-map', '0:a:0', '-f', 'null'") &&
+    containerSmokeFixtures.includes("'-xerror', '-i', fixture, '-map', '0:a:0', ...output.args") &&
+    containerSmokeFixtures.includes('assert.deepEqual(APP_OUTPUTS, appOutputsFromHelpers(helpers)') &&
+    !containerSmokeFixtures.includes('fetch(') &&
+    helpersSource.includes(
+      '// Legacy legal-video containers (smoke-tested at release by scripts/container-smoke-fixtures.mjs)',
+    ) &&
+    helpersSource.includes('let mut args: Vec<String> = vec!["-vn".into(), "-sn".into()];') &&
+    packageJson.scripts['containers:self-test'] === 'node scripts/container-smoke-fixtures.mjs --self-test' &&
+    packageJson.scripts['release:check'].includes('npm run containers:self-test') &&
+    macFfmpegBuild.includes('pcm_s16le mp2 ac3 wmav2 wmapro wmavoice pcm_dvd pcm_bluray') &&
+    macFfmpegBuild.includes('avi mpeg mpegts asf'),
+  'release.yml must generate and decode a synthetic fixture for every listed legacy video container on macOS and Windows, and outputs must drop video',
 )
 expect(
   releaseWorkflow.includes('scripts/windows-webview2-evidence.ps1') &&
