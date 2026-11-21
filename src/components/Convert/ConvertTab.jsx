@@ -527,7 +527,13 @@ export default function ConvertTab({
               {unsupportedFiles.length === 1
                 ? unsupportedFiles[0].name
                 : `${unsupportedFiles.length} unsupported files`}{' '}
-              before converting. Export AES/DCR recordings to WAV from their native software first.
+              before converting.
+              {unsupportedFiles.map(file => (
+                <span key={file.path} className="mt-1 block text-foreground">
+                  <span className="font-semibold">{file.name}:</span>{' '}
+                  {file.fmt?.note || 'Export it to WAV from the software that recorded it first.'}
+                </span>
+              ))}
             </p>
           )}
 

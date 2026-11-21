@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
 import ConvertTab from '../components/Convert/ConvertTab'
+import FormatTable from '../components/Convert/FormatTable'
 
 const preferencesContext = vi.hoisted(() => ({ current: null }))
 
@@ -249,5 +250,77 @@ describe('ConvertTab WAV size estimate', () => {
     preferencesContext.current = { ...preferences(), formatOut: 'mp3' }
     render(<ConvertTab {...props()} audioStreams={audioStreams} />)
     expect(screen.queryByText(/Estimated WAV size/)).toBeNull()
+  })
+})
+
+describe('Closed-format guidance', () => {
+  afterEach(cleanup)
+
+  beforeEach(() => {
+    preferencesContext.current = preferences()
+    invoke.mockReset()
+    invoke.mockResolvedValue()
+    listen.mockReset()
+    listen.mockResolvedValue(vi.fn())
+  })
+
+  it('shows each rejected file with the guidance the backend gave for it', () => {
+    const rejected = [
+      {
+        path: 'C:\\case\\memo.ds2',
+        name: 'memo.ds2',
+        fmt: {
+          key: 'ds2',
+          name: 'DSS Pro Dictation (DS2)',
+          status: 'unsupported',
+          handler: 'rejected',
+          note: 'Export to WAV with ODMS.',
+        },
+      },
+      {
+        path: 'C:\\case\\photo.dcr',
+        name: 'photo.dcr',
+        fmt: {
+          key: 'dcr-image',
+          name: 'Camera Raw Image (DCR)',
+          status: 'unsupported',
+          handler: 'rejected',
+          note: 'This .dcr looks like a camera image, not court audio.',
+        },
+      },
+    ]
+    render(<ConvertTab {...props(rejected)} />)
+
+    const alert = screen.getByRole('alert')
+    expect(alert).toHaveTextContent('Remove 2 unsupported files before converting.')
+    expect(alert).toHaveTextContent('memo.ds2: Export to WAV with ODMS.')
+    expect(alert).toHaveTextContent('photo.dcr: This .dcr looks like a camera image, not court audio.')
+    expect(alert).not.toHaveTextContent('AES/DCR')
+    expect(screen.getByRole('button', { name: 'Convert 2 Files' })).toBeDisabled()
+  })
+
+  it('falls back to neutral guidance when a rejected file has no note', () => {
+    render(
+      <ConvertTab
+        {...props([
+          { path: '/case/a.aes', name: 'a.aes', fmt: { name: 'Eclipse', status: 'unsupported', note: null } },
+        ])}
+      />,
+    )
+    expect(screen.getByRole('alert')).toHaveTextContent(
+      'a.aes: Export it to WAV from the software that recorded it first.',
+    )
+  })
+
+  it('lists the closed formats in their own section without naming one vendor for .dcr', () => {
+    render(<FormatTable />)
+    fireEvent.click(screen.getByRole('button', { name: /Supported formats/ }))
+
+    expect(screen.getByText('Closed formats — export to WAV first')).toBeVisible()
+    for (const ext of ['.aes', '.dcr', '.ds2', '.arf  .wrf', '.msv  .dvf']) {
+      expect(screen.getByText(ext, { normalizer: text => text })).toBeVisible()
+    }
+    expect(screen.getByText('Liberty Court Recorder · BIS Digital')).toBeVisible()
+    expect(screen.queryByText(/High Criteria/)).not.toBeInTheDocument()
   })
 })

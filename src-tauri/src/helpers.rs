@@ -18,6 +18,13 @@ fn date_regex() -> &'static Regex {
 
 // ── Format registry ───────────────────────────────────────────────────────────
 
+const DCR_NOTE: &str = "DCR recordings use a closed format. Export to WAV from the software that recorded it (for example Liberty Court Recorder or BIS Digital), then add the WAV.";
+const DCR_IMAGE_NOTE: &str =
+    "This .dcr looks like a camera image, not court audio. Check that you picked the right file.";
+const DS2_NOTE: &str = "DS2 (DSS Pro) dictation files cannot be opened here. Export to WAV with OM System / Olympus dictation software (for example ODMS), then add the WAV. An encrypted DS2 file cannot be opened by DepoAudio at all.";
+const WEBEX_NOTE: &str = "Webex network recordings (.arf, .wrf) cannot be opened here. Convert an .arf with the Webex Recording Converter (Windows only), or a .wrf with Webex's own recording software, then add the converted file.";
+const SONY_VOICE_NOTE: &str = "Sony IC recorder files (.msv, .dvf) cannot be opened here. Convert to WAV with Sony Digital Voice Editor, then add the WAV.";
+
 pub(crate) fn get_formats() -> Vec<FormatInfo> {
     vec![
         // Standard formats — play and import natively, convert optionally
@@ -39,7 +46,7 @@ pub(crate) fn get_formats() -> Vec<FormatInfo> {
             status: "supported".into(), handler: "passthrough".into(), channels: None, note: None },
         FormatInfo { key: "amr".into(), name: "AMR Phone Audio".into(), vendor: "Standard".into(),
             status: "supported".into(), handler: "passthrough".into(), channels: None, note: None },
-        FormatInfo { key: "video".into(), name: "Video Audio Track".into(), vendor: "MP4 / MOV / MKV / AVI / WebM".into(),
+        FormatInfo { key: "video".into(), name: "Video Audio Track".into(), vendor: "MP4 / MOV / MKV / AVI / WebM / MPG / VOB / TS / WMV".into(),
             status: "supported".into(), handler: "passthrough".into(), channels: None,
             note: Some("The audio track is extracted and converted; video is discarded.".into()) },
         // Court reporting formats — require conversion
@@ -56,9 +63,27 @@ pub(crate) fn get_formats() -> Vec<FormatInfo> {
         FormatInfo { key: "aes".into(), name: "Eclipse AudioSync".into(), vendor: "Eclipse CAT".into(),
             status: "unsupported".into(), handler: "rejected".into(), channels: None,
             note: Some("AES-128 encrypted. Open in Eclipse → File → Export Audio → WAV first.".into()) },
-        FormatInfo { key: "dcr".into(), name: "Liberty Court Recorder".into(), vendor: "High Criteria".into(),
+        // Liberty Court Recorder and BIS Digital both write .dcr, and their
+        // files do not open in each other's software, so the guidance names
+        // neither as the only source.
+        FormatInfo { key: "dcr".into(), name: "Digital Court Recording (DCR)".into(), vendor: "Liberty / BIS Digital".into(),
             status: "unsupported".into(), handler: "rejected".into(), channels: None,
-            note: Some("DCR files are proprietary. Open in Liberty → File → Export Audio → WAV first.".into()) },
+            note: Some(DCR_NOTE.into()) },
+        // A Kodak camera raw image shares the .dcr extension (TIFF-based).
+        FormatInfo { key: "dcr-image".into(), name: "Camera Raw Image (DCR)".into(), vendor: "Kodak camera raw".into(),
+            status: "unsupported".into(), handler: "rejected".into(), channels: None,
+            note: Some(DCR_IMAGE_NOTE.into()) },
+        // Recognized so the user gets guidance instead of "Unrecognised file
+        // format". DepoAudio never attempts to decode or decrypt these.
+        FormatInfo { key: "ds2".into(), name: "DSS Pro Dictation (DS2)".into(), vendor: "OM System / Olympus".into(),
+            status: "unsupported".into(), handler: "rejected".into(), channels: None,
+            note: Some(DS2_NOTE.into()) },
+        FormatInfo { key: "webex".into(), name: "Webex Recording (ARF / WRF)".into(), vendor: "Cisco Webex".into(),
+            status: "unsupported".into(), handler: "rejected".into(), channels: None,
+            note: Some(WEBEX_NOTE.into()) },
+        FormatInfo { key: "sony-voice".into(), name: "Sony IC Recorder (MSV / DVF)".into(), vendor: "Sony".into(),
+            status: "unsupported".into(), handler: "rejected".into(), channels: None,
+            note: Some(SONY_VOICE_NOTE.into()) },
     ]
 }
 
@@ -98,7 +123,17 @@ pub(crate) fn detect_format_for_path(path: &str) -> Option<FormatInfo> {
         "trm" | "ftr" => fmts.into_iter().find(|f| f.key == "ftr"),
         "aes" => fmts.into_iter().find(|f| f.key == "aes"),
         "dm" => fmts.into_iter().find(|f| f.key == "digitalcat"),
-        "dcr" => fmts.into_iter().find(|f| f.key == "dcr"),
+        "dcr" => {
+            let key = if looks_like_tiff(Path::new(path)) {
+                "dcr-image"
+            } else {
+                "dcr"
+            };
+            fmts.into_iter().find(|f| f.key == key)
+        }
+        "ds2" => fmts.into_iter().find(|f| f.key == "ds2"),
+        "arf" | "wrf" => fmts.into_iter().find(|f| f.key == "webex"),
+        "msv" | "dvf" => fmts.into_iter().find(|f| f.key == "sony-voice"),
         "bwf" => fmts.into_iter().find(|f| f.key == "bwf"),
         // Standard formats
         "wav" => fmts.into_iter().find(|f| f.key == "wav"),
@@ -112,8 +147,57 @@ pub(crate) fn detect_format_for_path(path: &str) -> Option<FormatInfo> {
         "amr" | "3ga" => fmts.into_iter().find(|f| f.key == "amr"),
         // Video containers: FFmpeg extracts the audio track
         "mp4" | "mov" | "mkv" | "avi" | "webm" | "m4v" | "3gp" => fmts.into_iter().find(|f| f.key == "video"),
+        // Legacy legal-video containers (smoke-tested at release by scripts/container-smoke-fixtures.mjs)
+        "mpg" | "mpeg" | "vob" | "ts" | "mts" | "m2ts" | "wmv" | "asf" => {
+            // .ts is also a TypeScript source extension. A readable .ts that
+            // does not start like an MPEG transport stream is left unrecognised.
+            if ext == "ts" && !could_be_transport_stream(Path::new(path)) {
+                return None;
+            }
+            fmts.into_iter().find(|f| f.key == "video")
+        }
         _ => None,
     }
+}
+
+/// Read up to `N` leading bytes. Detection stays extension-first; this is only
+/// used for cheap content checks, so an unreadable file returns `None` and the
+/// extension decides.
+fn leading_bytes<const N: usize>(path: &Path) -> Option<([u8; N], usize)> {
+    let mut file = fs::File::open(path).ok()?;
+    let mut buffer = [0u8; N];
+    let mut filled = 0;
+    while filled < N {
+        match file.read(&mut buffer[filled..]) {
+            Ok(0) => break,
+            Ok(read) => filled += read,
+            Err(_) => return None,
+        }
+    }
+    Some((buffer, filled))
+}
+
+/// True when the file starts with a TIFF header (`II*\0` or `MM\0*`), which is
+/// what a Kodak DCR camera raw image is. Court-recorder DCR files are not TIFF.
+fn looks_like_tiff(path: &Path) -> bool {
+    matches!(
+        leading_bytes::<4>(path),
+        Some((bytes, 4)) if bytes == *b"II*\0" || bytes == *b"MM\0*"
+    )
+}
+
+/// MPEG-TS packets start with the sync byte 0x47 every 188 bytes; M2TS/MTS
+/// packets carry a 4-byte timestamp first, so the sync byte is at 4 and every
+/// 192 bytes. An unreadable file passes, so the extension decides.
+fn could_be_transport_stream(path: &Path) -> bool {
+    const SYNC: u8 = 0x47;
+    let Some((bytes, filled)) = leading_bytes::<{ 192 + 5 }>(path) else {
+        return true;
+    };
+    let synced = |first: usize, stride: usize| {
+        filled > first && bytes[first] == SYNC && (filled <= first + stride || bytes[first + stride] == SYNC)
+    };
+    synced(0, 188) || synced(4, 192)
 }
 
 // ── Case name detection ───────────────────────────────────────────────────────
@@ -330,7 +414,7 @@ pub(crate) fn mp3_bitrate_kbps(requested: u32) -> u32 {
 }
 
 pub(crate) fn output_args(format: &str, rate: &str, mp3_bitrate: u32) -> Vec<String> {
-    match format {
+    let codec: Vec<String> = match format {
         "mp3" => {
             let br = format!("{}k", mp3_bitrate_kbps(mp3_bitrate));
             vec![
@@ -373,7 +457,13 @@ pub(crate) fn output_args(format: &str, rate: &str, mp3_bitrate: u32) -> Vec<Str
             "-rf64".into(),
             "auto".into(),
         ],
-    }
+    };
+    // Outputs are audio only. Without -vn, FFmpeg maps a video input's picture
+    // into an M4A output (the ipod muxer accepts H.264), and the LGPL sidecars
+    // have no H.264 encoder, so the conversion would fail or carry video.
+    let mut args: Vec<String> = vec!["-vn".into(), "-sn".into()];
+    args.extend(codec);
+    args
 }
 
 pub(crate) fn output_ext(format: &str) -> &'static str {
@@ -600,6 +690,147 @@ mod tests {
     }
 
     #[test]
+    fn closed_vendor_formats_are_rejected_with_guidance() {
+        for (path, key, guidance) in [
+            ("dictation.ds2", "ds2", "ODMS"),
+            ("DICTATION.DS2", "ds2", "encrypted DS2"),
+            ("meeting.arf", "webex", "Webex Recording Converter"),
+            ("meeting.wrf", "webex", ".wrf"),
+            ("memo.msv", "sony-voice", "Sony Digital Voice Editor"),
+            ("memo.DVF", "sony-voice", "Sony Digital Voice Editor"),
+        ] {
+            let format = detect_format_for_path(path).unwrap_or_else(|| panic!("{path} was not recognised"));
+            assert_eq!(format.key, key, "{path}");
+            assert_eq!(format.status, "unsupported", "{path}");
+            assert_eq!(format.handler, "rejected", "{path}");
+            let note = format.note.unwrap();
+            assert!(note.contains(guidance), "{path}: {note}");
+            assert!(note.contains("cannot be opened here"), "{path}: {note}");
+        }
+    }
+
+    #[test]
+    fn dcr_guidance_names_both_recorders_without_assuming_one() {
+        let dcr = detect_format_for_path("hearing.dcr").unwrap();
+        assert_eq!(dcr.key, "dcr");
+        assert_eq!(dcr.handler, "rejected");
+        let note = dcr.note.unwrap();
+        assert!(note.contains("software that recorded it"), "{note}");
+        assert!(
+            note.contains("Liberty Court Recorder") && note.contains("BIS Digital"),
+            "{note}"
+        );
+        assert!(!dcr.vendor.contains("High Criteria"));
+    }
+
+    #[test]
+    fn dcr_that_is_a_tiff_camera_image_is_called_out() {
+        let dir = ReservationTestDir::new();
+        for (name, bytes) in [
+            ("little.dcr", &b"II*\0rest-of-tiff"[..]),
+            ("big.DCR", &b"MM\0*rest-of-tiff"[..]),
+        ] {
+            let path = dir.path().join(name);
+            fs::write(&path, bytes).unwrap();
+            let format = detect_format_for_path(&path.to_string_lossy()).unwrap();
+            assert_eq!(format.key, "dcr-image", "{name}");
+            assert_eq!(format.handler, "rejected");
+            assert!(format
+                .note
+                .unwrap()
+                .contains("looks like a camera image, not court audio"));
+        }
+
+        // A court-recorder DCR (not TIFF), a short file and an empty file keep
+        // the court guidance.
+        for (name, bytes) in [
+            ("court.dcr", &b"\x00\x01court-audio"[..]),
+            ("short.dcr", &b"II"[..]),
+            ("empty.dcr", &b""[..]),
+        ] {
+            let path = dir.path().join(name);
+            fs::write(&path, bytes).unwrap();
+            assert_eq!(
+                detect_format_for_path(&path.to_string_lossy()).unwrap().key,
+                "dcr",
+                "{name}"
+            );
+        }
+    }
+
+    #[test]
+    fn rejected_formats_never_reach_conversion_handlers() {
+        for format in get_formats()
+            .into_iter()
+            .filter(|format| format.status == "unsupported")
+        {
+            assert_eq!(format.handler, "rejected", "{}", format.key);
+            assert!(
+                format.note.as_deref().is_some_and(|note| !note.is_empty()),
+                "{}",
+                format.key
+            );
+        }
+    }
+
+    #[test]
+    fn legacy_legal_video_containers_extract_audio_like_mp4() {
+        for path in [
+            "depo.mpg",
+            "DEPO.MPEG",
+            "VTS_01_1.VOB",
+            "hearing.ts",
+            "00001.MTS",
+            "00001.m2ts",
+            "depo.wmv",
+            "depo.asf",
+        ] {
+            let format = detect_format_for_path(path).unwrap_or_else(|| panic!("{path} was not recognised"));
+            assert_eq!(format.key, "video", "{path}");
+            assert_eq!(format.handler, "passthrough", "{path}");
+            assert_eq!(format.status, "supported", "{path}");
+            assert!(input_codec_args(Path::new(path)).is_empty(), "{path}");
+        }
+    }
+
+    #[test]
+    fn ts_files_must_look_like_a_transport_stream_when_readable() {
+        let dir = ReservationTestDir::new();
+        let mut ts = vec![0u8; 188 * 2];
+        ts[0] = 0x47;
+        ts[188] = 0x47;
+        let mut m2ts = vec![0u8; 192 * 2];
+        m2ts[4] = 0x47;
+        m2ts[196] = 0x47;
+        let mut broken_stride = vec![0u8; 188 * 2];
+        broken_stride[0] = 0x47;
+        let cases: [(&str, &[u8], bool); 6] = [
+            ("broadcast.ts", &ts, true),
+            ("avchd.ts", &m2ts, true),
+            ("tiny.ts", &[0x47], true),
+            ("component.ts", b"export const value = 1\n", false),
+            ("Greeting.ts", &broken_stride, false),
+            ("empty.ts", b"", false),
+        ];
+        for (name, bytes, video) in cases {
+            let path = dir.path().join(name);
+            fs::write(&path, bytes).unwrap();
+            let detected = detect_format_for_path(&path.to_string_lossy());
+            assert_eq!(detected.map(|f| f.key), video.then(|| "video".to_string()), "{name}");
+        }
+        // The extension decides when the file cannot be read.
+        assert_eq!(detect_format_for_path("missing/hearing.ts").unwrap().key, "video");
+    }
+
+    #[test]
+    fn every_output_drops_video_and_subtitle_streams() {
+        for format in ["wav", "mp3", "flac", "opus", "m4a"] {
+            let args = output_args(format, "48000", 192);
+            assert_eq!(&args[..2], ["-vn", "-sn"], "{format}");
+        }
+    }
+
+    #[test]
     fn detect_format_for_path_unknown() {
         assert!(detect_format_for_path("test.xyz").is_none());
     }
@@ -695,7 +926,7 @@ mod tests {
     fn wav_output_switches_to_rf64_only_when_needed() {
         assert_eq!(
             output_args("wav", "48000", 192),
-            vec!["-acodec", "pcm_s16le", "-ar", "48000", "-rf64", "auto"]
+            vec!["-vn", "-sn", "-acodec", "pcm_s16le", "-ar", "48000", "-rf64", "auto"]
         );
         for format in ["mp3", "flac", "opus", "m4a"] {
             assert!(

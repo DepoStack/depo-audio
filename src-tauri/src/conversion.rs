@@ -1413,6 +1413,89 @@ mod tests {
         assert_eq!(fs::read_dir(&out).unwrap().count(), 0);
     }
 
+    /// A synthetic legal-video container: generated test-pattern video and a
+    /// stereo sine tone, muxed with the container's usual codecs.
+    fn synthetic_video_container(path: &Path, video_codec: &str, audio_codec: &str, muxer: &[&str]) {
+        let mut args: Vec<String> = [
+            "-f",
+            "lavfi",
+            "-i",
+            "testsrc=size=64x48:rate=25:duration=2",
+            "-f",
+            "lavfi",
+            "-i",
+            "sine=frequency=440:duration=2:sample_rate=48000",
+            "-map",
+            "0:v:0",
+            "-map",
+            "1:a:0",
+            "-ac",
+            "2",
+            "-c:v",
+            video_codec,
+            "-c:a",
+            audio_codec,
+        ]
+        .map(String::from)
+        .to_vec();
+        args.extend(muxer.iter().map(|arg| arg.to_string()));
+        args.extend(["-y".into(), path.to_string_lossy().to_string()]);
+        run_ffmpeg(&args);
+    }
+
+    #[test]
+    fn synthetic_legacy_video_containers_convert_to_audio_only_outputs() {
+        if !court_fixture_tools_available() {
+            return;
+        }
+        let dir = ConversionTestDir::new();
+        let cases: [(&str, &str, &str, &[&str]); 4] = [
+            ("deposition.mpg", "mpeg1video", "mp2", &["-f", "mpeg"]),
+            ("VTS_01_1.vob", "mpeg2video", "ac3", &["-f", "vob"]),
+            (
+                "00001.m2ts",
+                "mpeg2video",
+                "ac3",
+                &["-f", "mpegts", "-mpegts_m2ts_mode", "1"],
+            ),
+            ("deposition.wmv", "wmv2", "wmav2", &["-f", "asf"]),
+        ];
+        for (name, video_codec, audio_codec, muxer) in cases {
+            let source = dir.0.join(name);
+            synthetic_video_container(&source, video_codec, audio_codec, muxer);
+            let before = sha256_of(&source);
+            for (mode, format) in [("keep", "m4a"), ("stereo", "wav")] {
+                let out = dir.0.join(format!("{name}-{mode}"));
+                fs::create_dir(&out).unwrap();
+                let mut job = court_job(&source, &out, mode, format);
+                job.labels.truncate(2);
+                job.chan_vols.truncate(2);
+                let conversion =
+                    convert_with_system_ffmpeg(&job, None).unwrap_or_else(|error| panic!("{name} {mode}: {error}"));
+                assert_eq!(
+                    conversion.feed, source,
+                    "{name}: the container is passed to FFmpeg unchanged"
+                );
+                assert_eq!(conversion.files.len(), 1, "{name} {mode}");
+                let output = &conversion.files[0];
+                let streams = ffprobe_json(Path::new(&output.path), &["-show_streams"]);
+                let streams = streams["streams"].as_array().unwrap();
+                assert_eq!(streams.len(), 1, "{name} {mode}: {streams:?}");
+                assert_eq!(streams[0]["codec_type"], "audio", "{name} {mode}");
+                assert_eq!(streams[0]["channels"], 2, "{name} {mode}");
+
+                let record_path = manifest::manifest_path_for(Path::new(&output.path));
+                let record: serde_json::Value = serde_json::from_slice(&fs::read(&record_path).unwrap()).unwrap();
+                let errors = manifest::tests::schema_errors_for_value(&record);
+                assert!(errors.is_empty(), "{name} {mode}: {errors:#?}");
+                assert_eq!(record["source"]["fileName"], name);
+                let encoder = record["processing"]["encoderArgs"].as_array().unwrap();
+                assert_eq!(encoder[..2], ["-vn", "-sn"], "{name} {mode}");
+            }
+            assert_eq!(sha256_of(&source), before, "{name}: the original is never modified");
+        }
+    }
+
     #[test]
     fn synthetic_digitalcat_dm_converts_as_a_plain_container() {
         if !court_fixture_tools_available() {
