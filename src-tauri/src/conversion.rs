@@ -10,8 +10,8 @@ use crate::ffmpeg::{
     probe_manifest_source_cancellable, run_ffmpeg_with_timeout,
 };
 use crate::helpers::{
-    basename, detect_format_for_path, input_codec_args, output_args, output_ext, prepare_audio_feed_with_cancel,
-    safe_ffmpeg_input_prelude, safe_label,
+    basename, input_codec_args, output_args, output_ext, prepare_audio_feed_with_cancel, safe_ffmpeg_input_prelude,
+    safe_label, source_audio_map_args, wav_estimated_bytes, wav_rf64_args,
 };
 use crate::manifest::{self, FileRecord, ManifestInput, OutputFacts};
 use crate::safety::TempFile;
@@ -129,7 +129,13 @@ fn split_labels(num_ch: u32, labels: &[String]) -> Vec<String> {
 /// channel is isolated — a single averaged gain would leave imbalance in place.
 fn split_filter_complex(num_ch: u32, auto_level: bool, channel_gains: Option<&Vec<f64>>, proc: &[String]) -> String {
     let sp_tags: Vec<String> = (0..num_ch as usize).map(|i| format!("sp{}", i)).collect();
-    let split_str = format!("[0:a]asplit={}[{}]", num_ch, sp_tags.join("]["));
+    // `[0:a:0]`: the converted stream, never FFmpeg's choice among tracks.
+    let split_str = format!(
+        "{}asplit={}[{}]",
+        crate::helpers::source_audio_filter_input(),
+        num_ch,
+        sp_tags.join("][")
+    );
     let per_ch_proc = if proc.is_empty() {
         String::new()
     } else {
@@ -259,7 +265,9 @@ pub(crate) async fn do_convert(
     crate::safety::validate_rate(&job.rate)?;
     cancel.check()?;
 
-    let fmt = detect_format_for_path(&job.src_path).ok_or("Unrecognised file format")?;
+    let fmt = crate::helpers::detect_format_blocking(job.src_path.clone())
+        .await
+        .ok_or("Unrecognised file format")?;
 
     if fmt.handler == "rejected" {
         return Err(fmt.note.unwrap_or_else(|| "This format cannot be converted.".into()));
@@ -310,6 +318,9 @@ struct ConversionProbes {
     proc: Vec<String>,
     /// Channel count, rate and start time for the export record.
     probed: manifest::ProbedSource,
+    /// Duration of the converted stream, for the WAV size estimate that
+    /// decides on `-rf64 auto`.
+    duration_secs: Option<f64>,
 }
 
 /// The exact FFmpeg command for one conversion and the outputs it writes.
@@ -321,6 +332,10 @@ struct ConversionPlan {
     filter_chain: Option<String>,
     /// Encoder plus start-time metadata arguments, shared by every output.
     encoder_args: Vec<String>,
+    /// The `-map` arguments of each output, in `planned` order: the source
+    /// stream (`-map 0:a:0`) for Mix to Stereo and Keep Original, the
+    /// channel's filter branch (`-map [opN]`) for Split.
+    map_args: Vec<Vec<String>>,
     start_shifted: bool,
 }
 
@@ -351,7 +366,21 @@ fn plan_conversion(
     };
 
     let ext = output_ext(&job.format);
-    let out_codec = output_args(&job.format, &job.rate, job.mp3_bitrate);
+    let mut out_codec = output_args(&job.format, &job.rate, job.mp3_bitrate);
+    if job.format == "wav" {
+        // RF64 only for a WAV that may pass 4 GiB (see `wav_rf64_args`).
+        let channels_per_output = match job.mode.as_str() {
+            "stereo" => Some(2),
+            "split" => Some(1),
+            _ => probes.probed.channels,
+        };
+        let estimate = wav_estimated_bytes(
+            probes.duration_secs,
+            channels_per_output,
+            manifest::output_sample_rate(&out_codec),
+        );
+        out_codec.extend(wav_rf64_args(estimate));
+    }
 
     // Start time (DA-08): read the source's BWF bext TimeReference and carry
     // it into WAV outputs, rescaled to the output rate, unless leading-silence
@@ -384,6 +413,7 @@ fn plan_conversion(
     ffmpeg_args.extend(["-i".into(), feed.to_string_lossy().to_string()]);
 
     let planned: Vec<PlannedOutput>;
+    let map_args: Vec<Vec<String>>;
     let filter_option: Option<&'static str>;
     let filter_chain: Option<String>;
     let mut args = ffmpeg_args;
@@ -424,6 +454,8 @@ fn plan_conversion(
             track_planned(cleanup, &planned);
             let dst = planned[0].path.clone();
             let chain = all.join(",");
+            map_args = vec![source_audio_map_args()];
+            args.extend(map_args[0].clone());
             args.extend(["-af".into(), chain.clone()]);
             args.extend(encoder_args.clone());
             args.extend(["-y".into(), dst.to_string_lossy().to_string()]);
@@ -435,6 +467,8 @@ fn plan_conversion(
             planned = reserve_output_paths([(out_dir.join(format!("{}_orig{}", base, ext)), None, None)])?;
             track_planned(cleanup, &planned);
             let dst = planned[0].path.clone();
+            map_args = vec![source_audio_map_args()];
+            args.extend(map_args[0].clone());
             if proc.is_empty() {
                 filter_option = None;
                 filter_chain = None;
@@ -471,8 +505,11 @@ fn plan_conversion(
             let valid_gains = probes.channel_gains.as_ref().filter(|g| g.len() == num_ch as usize);
             let fc = split_filter_complex(num_ch, job.auto_level, valid_gains, &proc);
             args.extend(["-filter_complex".into(), fc.clone(), "-y".into()]);
-            for (i, output) in planned.iter().enumerate() {
-                args.extend(["-map".into(), format!("[op{}]", i)]);
+            map_args = (0..planned.len())
+                .map(|i| vec!["-map".into(), format!("[op{}]", i)])
+                .collect();
+            for (output, map) in planned.iter().zip(&map_args) {
+                args.extend(map.clone());
                 args.extend(encoder_args.clone());
                 args.push(output.path.to_string_lossy().to_string());
             }
@@ -489,6 +526,7 @@ fn plan_conversion(
         filter_option,
         filter_chain,
         encoder_args,
+        map_args,
         start_shifted,
     })
 }
@@ -518,10 +556,11 @@ fn collect_outputs(planned: &[PlannedOutput]) -> Result<Vec<OutputFile>, String>
 fn output_facts<'a>(
     job: &'a ConvertJob,
     plan: &ConversionPlan,
-    output: &PlannedOutput,
+    index: usize,
     file: &OutputFile,
     sha256: String,
     size_bytes: u64,
+    wav_header: Option<&'static str>,
 ) -> OutputFacts<'a> {
     OutputFacts {
         file_name: file.name.clone(),
@@ -532,8 +571,10 @@ fn output_facts<'a>(
         filter_option: plan.filter_option,
         filter_chain: plan.filter_chain.clone(),
         encoder_args: plan.encoder_args.clone(),
-        source_channel_index: output.channel_index,
-        label: output.label.clone(),
+        map_args: plan.map_args[index].clone(),
+        source_channel_index: plan.planned[index].channel_index,
+        label: plan.planned[index].label.clone(),
+        wav_header,
     }
 }
 
@@ -565,11 +606,20 @@ fn finish_outputs(
             })?;
         }
     }
-    for (output, file) in plan.planned.iter().zip(&files) {
+    for (index, (output, file)) in plan.planned.iter().zip(&files).enumerate() {
         let hashed = manifest::sha256_file(&output.path, &|| cancel.cancelled());
         cancel.check()?;
         let (sha256, size_bytes) = hashed?;
-        let record = manifest::build_manifest(input, output_facts(job, plan, output, file, sha256, size_bytes));
+        // Which header the WAV muxer wrote, read from the file itself.
+        let wav_header = if job.format == "wav" {
+            Some(manifest::wav_header_kind(&output.path)?)
+        } else {
+            None
+        };
+        let record = manifest::build_manifest(
+            input,
+            output_facts(job, plan, index, file, sha256, size_bytes, wav_header),
+        );
         manifest::write_manifest(&output.manifest, &record).map_err(|error| {
             format!(
                 "The audio was converted, but its export record could not be saved, so the output was removed: {error}"
@@ -654,6 +704,7 @@ async fn do_convert_inner(
         channel_gains,
         proc,
         probed,
+        duration_secs: total_secs,
     };
     let mut output_cleanup = OutputCleanup::default();
     let plan = plan_conversion(job, effective_feed, &probes, &mut output_cleanup)?;
@@ -777,7 +828,7 @@ mod tests {
         // channel count — the fix that made 4-channel court files split right
         assert_eq!(
             split_filter_complex(2, false, None, &[]),
-            "[0:a]asplit=2[sp0][sp1];[sp0]pan=mono|c0=c0[op0];[sp1]pan=mono|c0=c1[op1]"
+            "[0:a:0]asplit=2[sp0][sp1];[sp0]pan=mono|c0=c0[op0];[sp1]pan=mono|c0=c1[op1]"
         );
     }
 
@@ -786,7 +837,7 @@ mod tests {
         let proc = vec!["highpass=f=80".to_string(), "loudnorm=I=-16:TP=-1.5:LRA=11".to_string()];
         assert_eq!(
             split_filter_complex(2, false, None, &proc),
-            "[0:a]asplit=2[sp0][sp1];[sp0]pan=mono|c0=c0,highpass=f=80,loudnorm=I=-16:TP=-1.5:LRA=11[op0];[sp1]pan=mono|c0=c1,highpass=f=80,loudnorm=I=-16:TP=-1.5:LRA=11[op1]"
+            "[0:a:0]asplit=2[sp0][sp1];[sp0]pan=mono|c0=c0,highpass=f=80,loudnorm=I=-16:TP=-1.5:LRA=11[op0];[sp1]pan=mono|c0=c1,highpass=f=80,loudnorm=I=-16:TP=-1.5:LRA=11[op1]"
         );
     }
 
@@ -795,7 +846,7 @@ mod tests {
         let gains = vec![2.0, 1.0, 0.5];
         assert_eq!(
             split_filter_complex(3, true, Some(&gains), &[]),
-            "[0:a]asplit=3[sp0][sp1][sp2];[sp0]pan=mono|c0=c0,volume=2.0000[op0];[sp1]pan=mono|c0=c1[op1];[sp2]pan=mono|c0=c2,volume=0.5000[op2]"
+            "[0:a:0]asplit=3[sp0][sp1][sp2];[sp0]pan=mono|c0=c0,volume=2.0000[op0];[sp1]pan=mono|c0=c1[op1];[sp2]pan=mono|c0=c2,volume=0.5000[op2]"
         );
     }
 
@@ -804,7 +855,7 @@ mod tests {
         let gains = vec![2.0, 0.5];
         assert_eq!(
             split_filter_complex(2, false, Some(&gains), &[]),
-            "[0:a]asplit=2[sp0][sp1];[sp0]pan=mono|c0=c0[op0];[sp1]pan=mono|c0=c1[op1]"
+            "[0:a:0]asplit=2[sp0][sp1];[sp0]pan=mono|c0=c0[op0];[sp1]pan=mono|c0=c1[op1]"
         );
     }
 
@@ -1234,7 +1285,7 @@ mod tests {
         channel_gains: Option<Vec<f64>>,
     ) -> Result<CourtConversion, String> {
         validate_convert_request(job)?;
-        let format = detect_format_for_path(&job.src_path).ok_or("Unrecognised file format")?;
+        let format = crate::helpers::detect_format_for_path(&job.src_path).ok_or("Unrecognised file format")?;
         assert!(
             !matches!(format.handler.as_str(), "rejected" | "ftr"),
             "this harness covers container formats only"
@@ -1246,12 +1297,11 @@ mod tests {
             assert!(output.status.success(), "ffprobe failed");
             output.stdout
         };
-        // As build_proc_filters_with_gain: the duration only places the fade-out.
-        let duration = if job.fade {
-            crate::ffmpeg::parse_duration_probe(&probe(crate::ffmpeg::duration_probe_args(&feed)))
-        } else {
-            None
-        };
+        // As do_convert_inner: the duration is always probed (progress and the
+        // WAV size estimate); build_proc_filters_with_gain uses it only to
+        // place the fade-out.
+        let total_secs = crate::ffmpeg::parse_duration_probe(&probe(crate::ffmpeg::duration_probe_args(&feed)));
+        let duration = if job.fade { total_secs } else { None };
         let probes = ConversionProbes {
             channels: crate::ffmpeg::parse_channel_probe(&probe(crate::ffmpeg::channel_probe_args(&feed))),
             channel_gains,
@@ -1259,6 +1309,7 @@ mod tests {
             probed: serde_json::from_slice::<serde_json::Value>(&probe(crate::ffmpeg::manifest_probe_args(&feed)))
                 .map(|value| manifest::parse_probe(&value))
                 .unwrap_or_default(),
+            duration_secs: total_secs,
         };
 
         let mut output_cleanup = OutputCleanup::default();
@@ -1296,6 +1347,20 @@ mod tests {
         assert_eq!(record["output"]["fileName"], output.name);
         assert_eq!(record["output"]["sha256"], sha256_of(Path::new(&output.path)));
         assert_eq!(record["output"]["sizeBytes"], output.size);
+        let header = if record["output"]["format"] == "wav" {
+            serde_json::json!(manifest::wav_header_kind(Path::new(&output.path)).unwrap())
+        } else {
+            serde_json::Value::Null
+        };
+        assert_eq!(record["output"]["wavHeader"], header);
+        if record["output"]["format"] == "wav" {
+            // A small WAV keeps the plain RIFF layout: `fmt ` right after
+            // `WAVE`, no JUNK chunk reserved for RF64.
+            let bytes = fs::read(&output.path).unwrap();
+            assert_eq!(&bytes[8..16], b"WAVEfmt ", "{}", output.name);
+            let encoder = record["processing"]["encoderArgs"].as_array().unwrap();
+            assert!(!encoder.iter().any(|arg| arg == "-rf64"), "{}", output.name);
+        }
         assert_eq!(record["channel"]["sourceChannelCount"], 4);
         // A synthetic source carries no bext start, so none is claimed.
         assert_eq!(record["startTime"]["known"], false);
@@ -1473,6 +1538,89 @@ mod tests {
         assert_eq!(fs::read_dir(&out).unwrap().count(), 0);
     }
 
+    /// A synthetic legal-video container: generated test-pattern video and a
+    /// stereo sine tone, muxed with the container's usual codecs.
+    fn synthetic_video_container(path: &Path, video_codec: &str, audio_codec: &str, muxer: &[&str]) {
+        let mut args: Vec<String> = [
+            "-f",
+            "lavfi",
+            "-i",
+            "testsrc=size=64x48:rate=25:duration=2",
+            "-f",
+            "lavfi",
+            "-i",
+            "sine=frequency=440:duration=2:sample_rate=48000",
+            "-map",
+            "0:v:0",
+            "-map",
+            "1:a:0",
+            "-ac",
+            "2",
+            "-c:v",
+            video_codec,
+            "-c:a",
+            audio_codec,
+        ]
+        .map(String::from)
+        .to_vec();
+        args.extend(muxer.iter().map(|arg| arg.to_string()));
+        args.extend(["-y".into(), path.to_string_lossy().to_string()]);
+        run_ffmpeg(&args);
+    }
+
+    #[test]
+    fn synthetic_legacy_video_containers_convert_to_audio_only_outputs() {
+        if !court_fixture_tools_available() {
+            return;
+        }
+        let dir = ConversionTestDir::new();
+        let cases: [(&str, &str, &str, &[&str]); 4] = [
+            ("deposition.mpg", "mpeg1video", "mp2", &["-f", "mpeg"]),
+            ("VTS_01_1.vob", "mpeg2video", "ac3", &["-f", "vob"]),
+            (
+                "00001.m2ts",
+                "mpeg2video",
+                "ac3",
+                &["-f", "mpegts", "-mpegts_m2ts_mode", "1"],
+            ),
+            ("deposition.wmv", "wmv2", "wmav2", &["-f", "asf"]),
+        ];
+        for (name, video_codec, audio_codec, muxer) in cases {
+            let source = dir.0.join(name);
+            synthetic_video_container(&source, video_codec, audio_codec, muxer);
+            let before = sha256_of(&source);
+            for (mode, format) in [("keep", "m4a"), ("stereo", "wav")] {
+                let out = dir.0.join(format!("{name}-{mode}"));
+                fs::create_dir(&out).unwrap();
+                let mut job = court_job(&source, &out, mode, format);
+                job.labels.truncate(2);
+                job.chan_vols.truncate(2);
+                let conversion =
+                    convert_with_system_ffmpeg(&job, None).unwrap_or_else(|error| panic!("{name} {mode}: {error}"));
+                assert_eq!(
+                    conversion.feed, source,
+                    "{name}: the container is passed to FFmpeg unchanged"
+                );
+                assert_eq!(conversion.files.len(), 1, "{name} {mode}");
+                let output = &conversion.files[0];
+                let streams = ffprobe_json(Path::new(&output.path), &["-show_streams"]);
+                let streams = streams["streams"].as_array().unwrap();
+                assert_eq!(streams.len(), 1, "{name} {mode}: {streams:?}");
+                assert_eq!(streams[0]["codec_type"], "audio", "{name} {mode}");
+                assert_eq!(streams[0]["channels"], 2, "{name} {mode}");
+
+                let record_path = manifest::manifest_path_for(Path::new(&output.path));
+                let record: serde_json::Value = serde_json::from_slice(&fs::read(&record_path).unwrap()).unwrap();
+                let errors = manifest::tests::schema_errors_for_value(&record);
+                assert!(errors.is_empty(), "{name} {mode}: {errors:#?}");
+                assert_eq!(record["source"]["fileName"], name);
+                let encoder = record["processing"]["encoderArgs"].as_array().unwrap();
+                assert_eq!(encoder[..2], ["-vn", "-sn"], "{name} {mode}");
+            }
+            assert_eq!(sha256_of(&source), before, "{name}: the original is never modified");
+        }
+    }
+
     #[test]
     fn synthetic_digitalcat_dm_converts_as_a_plain_container() {
         if !court_fixture_tools_available() {
@@ -1492,6 +1640,330 @@ mod tests {
         let mix = convert_with_system_ffmpeg(&court_job(&dm, &mix_out, "stereo", "mp3"), None).unwrap();
         assert_mix_output(&mix, &dm, "synthetic_session.mp3");
         assert!(dm.exists());
+    }
+
+    /// A synthetic `.mkv` with two audio streams that differ in channel
+    /// count: stream 0 is a mono 440 Hz tone at 0.5 (tagged eng, "Floor"),
+    /// stream 1 a much quieter 4-channel stream (tagged spa, "Interpreter").
+    /// Neither stream is marked default, so FFmpeg's automatic selection
+    /// prefers the one with more channels: without an explicit map a
+    /// conversion would encode stream 1. (FFmpeg 6.1 checked; a stream marked
+    /// default wins over channel count, which is the same risk when the
+    /// default track is not the first.)
+    fn synthetic_two_stream_mkv(dir: &Path) -> PathBuf {
+        let path = dir.join("synthetic_two_tracks.mkv");
+        let mut args: Vec<String> = Vec::new();
+        for frequency in [440, 220, 330, 550, 660] {
+            args.extend([
+                "-f".into(),
+                "lavfi".into(),
+                "-i".into(),
+                format!("sine=frequency={frequency}:duration={SYNTHETIC_SECONDS}:sample_rate=48000"),
+            ]);
+        }
+        let graph = "[0:a]volume=0.5[floor];[1:a]volume=0.0625[q0];[2:a]volume=0.0625[q1];\
+                     [3:a]volume=0.0625[q2];[4:a]volume=0.0625[q3];\
+                     [q0][q1][q2][q3]join=inputs=4:channel_layout=quad[interp]";
+        args.extend(["-filter_complex".into(), graph.into()]);
+        for (label, extra) in [
+            (
+                "[floor]",
+                ["-metadata:s:a:0", "language=eng", "-metadata:s:a:0", "title=Floor"],
+            ),
+            (
+                "[interp]",
+                [
+                    "-metadata:s:a:1",
+                    "language=spa",
+                    "-metadata:s:a:1",
+                    "title=Interpreter",
+                ],
+            ),
+        ] {
+            args.extend(["-map".into(), label.into()]);
+            args.extend(extra.iter().map(|arg| arg.to_string()));
+        }
+        args.extend(
+            [
+                "-c:a",
+                "pcm_s16le",
+                "-disposition:a:0",
+                "0",
+                "-disposition:a:1",
+                "0",
+                "-y",
+            ]
+            .map(String::from),
+        );
+        args.push(path.to_string_lossy().to_string());
+        run_ffmpeg(&args);
+        path
+    }
+
+    fn assert_records_stream_zero_of_two(file: &OutputFile, source: &Path) {
+        let path = manifest::manifest_path_for(Path::new(&file.path));
+        let record: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        let errors = manifest::tests::schema_errors_for_value(&record);
+        assert!(errors.is_empty(), "{}: {errors:#?}", path.display());
+        assert_eq!(record["source"]["sha256"], sha256_of(source));
+        assert_eq!(record["output"]["sha256"], sha256_of(Path::new(&file.path)));
+        assert_eq!(record["audioStream"]["index"], 0);
+        assert_eq!(record["audioStream"]["sourceAudioStreamCount"], 2);
+        assert_eq!(record["channel"]["sourceChannelCount"], 1);
+        assert_eq!(record["output"]["wavHeader"], "riff");
+    }
+
+    #[test]
+    fn plans_map_the_converted_audio_stream_in_every_mode() {
+        let dir = ConversionTestDir::new();
+        let feed = dir.0.join("tracks.mkv");
+        let probes = ConversionProbes {
+            channels: Some(2),
+            channel_gains: None,
+            proc: Vec::new(),
+            probed: manifest::ProbedSource::default(),
+            duration_secs: None,
+        };
+        let feed_arg = feed.to_string_lossy().to_string();
+        for mode in ["stereo", "keep"] {
+            let mut job = valid_job();
+            job.src_path = feed_arg.clone();
+            job.out_dir = dir.0.to_string_lossy().to_string();
+            job.mode = mode.into();
+            let mut cleanup = OutputCleanup::default();
+            let plan = plan_conversion(&job, &feed, &probes, &mut cleanup).unwrap();
+            let input = plan.args.iter().position(|arg| arg == &feed_arg).unwrap();
+            assert_eq!(plan.args[input - 1], "-i");
+            assert_eq!(
+                plan.args[input + 1..input + 3],
+                ["-map", "0:a:0"],
+                "{mode}: {:?}",
+                plan.args
+            );
+            assert_eq!(plan.args.iter().filter(|arg| *arg == "-map").count(), 1, "{mode}");
+        }
+        let mut job = valid_job();
+        job.src_path = feed_arg.clone();
+        job.out_dir = dir.0.to_string_lossy().to_string();
+        job.mode = "split".into();
+        let mut cleanup = OutputCleanup::default();
+        let plan = plan_conversion(&job, &feed, &probes, &mut cleanup).unwrap();
+        assert!(plan.filter_chain.as_deref().unwrap().starts_with("[0:a:0]asplit=2"));
+        let maps: Vec<&String> = plan
+            .args
+            .windows(2)
+            .filter(|pair| pair[0] == "-map")
+            .map(|pair| &pair[1])
+            .collect();
+        assert_eq!(maps, ["[op0]", "[op1]"]);
+        assert_eq!(plan.map_args, vec![vec!["-map", "[op0]"], vec!["-map", "[op1]"]]);
+    }
+
+    #[test]
+    fn plans_record_each_outputs_map_and_use_rf64_only_for_large_wavs() {
+        let dir = ConversionTestDir::new();
+        let feed = dir.0.join("session.wav");
+        let plan_for = |mode: &str, format: &str, channels: Option<u32>, duration_secs: Option<f64>| {
+            let mut job = valid_job();
+            job.src_path = feed.to_string_lossy().to_string();
+            job.out_dir = dir.0.to_string_lossy().to_string();
+            job.mode = mode.into();
+            job.format = format.into();
+            let probes = ConversionProbes {
+                channels,
+                channel_gains: None,
+                proc: Vec::new(),
+                probed: manifest::ProbedSource {
+                    channels,
+                    ..manifest::ProbedSource::default()
+                },
+                duration_secs,
+            };
+            let mut cleanup = OutputCleanup::default();
+            plan_conversion(&job, &feed, &probes, &mut cleanup).unwrap()
+        };
+        let has_rf64 = |plan: &ConversionPlan| plan.encoder_args.windows(2).any(|pair| pair == ["-rf64", "auto"]);
+
+        // A three-hour 4-channel deposition mixed to stereo is about 2 GiB.
+        let stereo = plan_for("stereo", "wav", Some(4), Some(3.0 * 3600.0));
+        assert!(!has_rf64(&stereo), "{:?}", stereo.encoder_args);
+        assert_eq!(stereo.map_args, vec![vec!["-map", "0:a:0"]]);
+        // Split writes one mono file per channel.
+        assert!(!has_rf64(&plan_for("split", "wav", Some(4), Some(8.0 * 3600.0))));
+        // Keep Original with 16 channels passes 3.5 GiB after about 41 minutes.
+        let keep_short = plan_for("keep", "wav", Some(16), Some(30.0 * 60.0));
+        assert!(!has_rf64(&keep_short));
+        assert_eq!(keep_short.map_args, vec![vec!["-map", "0:a:0"]]);
+        assert!(has_rf64(&plan_for("keep", "wav", Some(16), Some(50.0 * 60.0))));
+        // Unknown duration or channel count keeps the 4 GiB safety.
+        assert!(has_rf64(&plan_for("keep", "wav", None, Some(60.0))));
+        assert!(has_rf64(&plan_for("stereo", "wav", Some(2), None)));
+        // Never for other formats.
+        assert!(!has_rf64(&plan_for("keep", "flac", Some(16), Some(50.0 * 60.0))));
+        // The -map in the command is the one the record carries.
+        let keep_long = plan_for("keep", "wav", Some(16), Some(50.0 * 60.0));
+        let rf64 = keep_long.args.iter().position(|arg| arg == "-rf64").unwrap();
+        let map = keep_long.args.iter().position(|arg| arg == "-map").unwrap();
+        assert_eq!(keep_long.args[map + 1], "0:a:0");
+        assert!(map < rf64);
+    }
+
+    #[test]
+    fn a_wav_output_without_a_riff_or_rf64_header_is_not_delivered() {
+        let dir = ConversionTestDir::new();
+        let source = dir.0.join("session.wav");
+        fs::write(&source, b"source bytes").unwrap();
+        let mut job = valid_job();
+        job.src_path = source.to_string_lossy().to_string();
+        job.mode = "keep".into();
+        let probes = ConversionProbes {
+            channels: None,
+            channel_gains: None,
+            proc: Vec::new(),
+            probed: manifest::ProbedSource::default(),
+            duration_secs: None,
+        };
+        let mut cleanup = OutputCleanup::default();
+        let plan = plan_conversion(&job, &source, &probes, &mut cleanup).unwrap();
+        let output = plan.planned[0].path.clone();
+        let record = plan.planned[0].manifest.clone();
+        fs::write(&output, b"not a wav header").unwrap();
+        let input = ManifestInput {
+            app_version: "1.1.0".into(),
+            created_at: "2026-11-13T09:00:00Z".into(),
+            source: FileRecord {
+                file_name: "session.wav".into(),
+                sha256: "a".repeat(64),
+                size_bytes: 12,
+            },
+            probed: &probes.probed,
+            labels: &job.labels,
+            shifted: false,
+        };
+        let cancel = ConversionCancel::new(Arc::new(AtomicU64::new(1)), 1);
+        let error = finish_outputs(&job, &plan, &input, cleanup, &cancel).unwrap_err();
+        assert!(error.contains("RIFF or RF64"), "{error}");
+        assert!(
+            !output.exists() && !record.exists(),
+            "the output and its record are removed"
+        );
+        assert!(source.exists());
+    }
+
+    /// FFmpeg-backed: when the container outlasts the converted stream (here a
+    /// 4 s a:0 and a 10 s a:1, so format.duration is 10 s), the fade-out is
+    /// placed on a:0's own end and the export record holds that filter.
+    #[test]
+    fn fade_out_is_placed_on_the_converted_streams_end() {
+        if !court_fixture_tools_available() {
+            return;
+        }
+        let dir = ConversionTestDir::new();
+        let source = dir.0.join("synthetic_short_first_track.mkv");
+        run_ffmpeg(
+            &[
+                "-f",
+                "lavfi",
+                "-i",
+                "sine=frequency=440:duration=4:sample_rate=48000",
+                "-f",
+                "lavfi",
+                "-i",
+                "sine=frequency=660:duration=10:sample_rate=48000",
+                "-map",
+                "0:a",
+                "-map",
+                "1:a",
+                "-c:a",
+                "pcm_s16le",
+                "-y",
+            ]
+            .map(String::from)
+            .into_iter()
+            .chain([source.to_string_lossy().to_string()])
+            .collect::<Vec<_>>(),
+        );
+        let container = ffprobe_json(&source, &["-show_format"]);
+        let container: f64 = container["format"]["duration"].as_str().unwrap().parse().unwrap();
+        assert!(container > 9.9, "fixture: container lasts {container}");
+
+        let mut job = court_job(&source, &dir.0, "keep", "wav");
+        job.fade = true;
+        job.fade_dur = 2.0;
+        job.chan_vols = vec![1.0];
+        let conversion = convert_with_system_ffmpeg(&job, None).unwrap();
+        let output = &conversion.files[0];
+        let record: serde_json::Value =
+            serde_json::from_slice(&fs::read(manifest::manifest_path_for(Path::new(&output.path))).unwrap()).unwrap();
+        assert_eq!(
+            record["processing"]["filterChain"],
+            "afade=t=out:st=2.000:d=2,afade=t=in:d=2"
+        );
+        assert_eq!(record["processing"]["mapArgs"], serde_json::json!(["-map", "0:a:0"]));
+        // The last 0.3 s is near the end of the fade-out, so it is much quieter
+        // than the tone just before the fade-out starts.
+        let middle = max_volume_db_between(Path::new(&output.path), 1.9, 2.0);
+        let tail = max_volume_db_between(Path::new(&output.path), 3.7, 4.0);
+        assert!(tail < middle - 10.0, "middle {middle} dB, tail {tail} dB");
+    }
+
+    /// FFmpeg-backed: a file whose audio streams differ in channel count is
+    /// converted from stream 0 in every mode, the export record says so, and
+    /// the queue probe reads both tracks with their tags.
+    #[test]
+    fn synthetic_two_stream_file_converts_stream_zero_and_records_it() {
+        if !court_fixture_tools_available() {
+            return;
+        }
+        let dir = ConversionTestDir::new();
+        let source = synthetic_two_stream_mkv(&dir.0);
+
+        // Control: FFmpeg's own choice, with no map, is the 4-channel stream.
+        let control = dir.0.join("control_auto.wav");
+        run_ffmpeg(&[
+            "-i".into(),
+            source.to_string_lossy().to_string(),
+            "-c:a".into(),
+            "pcm_s16le".into(),
+            control.to_string_lossy().to_string(),
+        ]);
+        assert_audio(&control, 4, "48000");
+
+        let streams = {
+            let output = std::process::Command::new("ffprobe")
+                .args(crate::ffmpeg::manifest_probe_args(&source))
+                .output()
+                .unwrap();
+            manifest::parse_audio_streams(&serde_json::from_slice(&output.stdout).unwrap())
+        };
+        assert_eq!(streams.converted_index, 0);
+        assert_eq!(streams.streams.len(), 2);
+        assert_eq!(streams.streams[0].channels, Some(1));
+        assert_eq!(streams.streams[0].language.as_deref(), Some("eng"));
+        assert_eq!(streams.streams[0].title.as_deref(), Some("Floor"));
+        assert_eq!(streams.streams[1].channels, Some(4));
+        assert_eq!(streams.streams[1].title.as_deref(), Some("Interpreter"));
+
+        // Stream 0 peaks at 0.5 x 1/8 of full scale; stream 1 is 18 dB lower.
+        let floor_peak = 20.0 * (0.5_f64 / 8.0).log10();
+        for (mode, outputs) in [("keep", 1), ("stereo", 1), ("split", 1)] {
+            let out = dir.0.join(mode);
+            fs::create_dir(&out).unwrap();
+            let mut job = court_job(&source, &out, mode, "wav");
+            job.labels = vec!["Floor".into()];
+            job.chan_vols = vec![1.0];
+            let conversion = convert_with_system_ffmpeg(&job, None).unwrap();
+            assert_eq!(conversion.files.len(), outputs, "{mode}");
+            let file = &conversion.files[0];
+            let path = Path::new(&file.path);
+            assert_audio(path, if mode == "stereo" { 2 } else { 1 }, "48000");
+            let peak = max_volume_db(path);
+            assert!(
+                (peak - floor_peak).abs() < 1.5,
+                "{mode}: peak {peak} dB, expected stream 0 at {floor_peak:.1} dB"
+            );
+            assert_records_stream_zero_of_two(file, &source);
+        }
     }
 
     #[test]

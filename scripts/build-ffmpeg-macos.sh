@@ -148,7 +148,13 @@ build_arch() {
   ! grep -q -- '--enable-nonfree' <<<"$version" || { echo "ERROR: $arch FFmpeg enabled nonfree code" >&2; exit 1; }
   ! grep -qi 'unredistributable' <<<"$version" || { echo "ERROR: $arch FFmpeg is unredistributable" >&2; exit 1; }
 
-  for decoder in ftr libopus aac flac pcm_s16le; do
+  # mp2, ac3 and wmav2 are the usual audio in the MPEG-PS/VOB, TS and WMV
+  # containers DepoAudio lists; scripts/container-smoke-fixtures.mjs decodes them.
+  # wmapro and wmavoice (WMA 9 Pro and WMA Voice in WMV), pcm_dvd (LPCM in
+  # VOB) and pcm_bluray (LPCM in AVCHD/M2TS) are present only because this
+  # configure keeps FFmpeg's default decoders; this gate keeps them there.
+  # FFmpeg cannot encode wmapro or wmavoice, so they have no smoke fixture.
+  for decoder in ftr libopus aac flac pcm_s16le mp2 ac3 wmav2 wmapro wmavoice pcm_dvd pcm_bluray; do
     grep -Eq "[[:space:]]${decoder}[[:space:]]" <<<"$decoders" || {
       echo "ERROR: $arch FFmpeg lacks decoder $decoder" >&2; exit 1;
     }
@@ -163,7 +169,7 @@ build_arch() {
       echo "ERROR: $arch FFmpeg lacks filter $filter" >&2; exit 1;
     }
   done
-  for format in wav mp3 flac opus mov ogg matroska avi; do
+  for format in wav mp3 flac opus mov ogg matroska avi mpeg mpegts asf; do
     grep -Eq "[[:space:]]${format}(,|[[:space:]])" <<<"$formats" || {
       echo "ERROR: $arch FFmpeg lacks format $format" >&2; exit 1;
     }

@@ -9,7 +9,7 @@ use tauri::AppHandle;
 use tokio::sync::oneshot;
 
 use crate::ffmpeg::{ensure_ftr_decoder, probe_duration_cancellable, sidecar_output_cancellable};
-use crate::helpers::{detect_format_for_path, ffmpeg_bin_name, input_codec_args, prepare_audio_feed_cancellable};
+use crate::helpers::{ffmpeg_bin_name, input_codec_args, prepare_audio_feed_cancellable};
 
 const MAX_WAVEFORM_SECONDS: f64 = 10.0 * 60.0;
 const WAVEFORM_SAMPLE_RATE: u32 = 1_000;
@@ -347,7 +347,9 @@ async fn decode_waveform(app: &AppHandle, key: &FileKey, cancelled: Arc<AtomicBo
     }
 
     let path = key.canonical_path.to_string_lossy().to_string();
-    let format = detect_format_for_path(&path).ok_or_else(|| "Unsupported audio format".to_string())?;
+    let format = crate::helpers::detect_format_blocking(path.clone())
+        .await
+        .ok_or_else(|| "Unsupported audio format".to_string())?;
     if format.handler == "rejected" {
         return Err(format
             .note
@@ -397,11 +399,11 @@ async fn decode_waveform(app: &AppHandle, key: &FileKey, cancelled: Arc<AtomicBo
         "file,pipe".into(),
     ];
     args.extend(input_codec_args(&feed));
+    args.extend(["-i".into(), feed.to_string_lossy().to_string()]);
+    // The converted stream (`-map 0:a:0`), so the waveform shows the audio
+    // the probes describe and the conversion encodes.
+    args.extend(crate::helpers::source_audio_map_args());
     args.extend([
-        "-i".into(),
-        feed.to_string_lossy().to_string(),
-        "-map".into(),
-        "0:a:0".into(),
         "-vn".into(),
         "-sn".into(),
         "-dn".into(),

@@ -1,5 +1,6 @@
+import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
-import { aggregateAnalysisResults } from '../lib/analysis'
+import { SCAN_SAMPLE_NOTE, SCAN_SAMPLE_SECS, aggregateAnalysisResults, scanSampleSpan } from '../lib/analysis'
 
 describe('aggregateAnalysisResults', () => {
   it('uses worst quality and aggregates batch-wide findings', () => {
@@ -40,5 +41,20 @@ describe('aggregateAnalysisResults', () => {
       speechRatio: null,
       turns: [],
     })
+  })
+})
+
+describe('Scan sample copy', () => {
+  it('matches the backend sample length in src-tauri/src/ffmpeg.rs', () => {
+    const rust = readFileSync('src-tauri/src/ffmpeg.rs', 'utf8')
+    const match = rust.match(/const ANALYSIS_SAMPLE_SECS: u32 = (\d+);/)
+    expect(match).not.toBeNull()
+    expect(SCAN_SAMPLE_SECS).toBe(Number(match[1]))
+  })
+
+  it('says how much of each file Scan checks', () => {
+    expect(SCAN_SAMPLE_NOTE).toBe('Scan checks the first 3 minutes of each file.')
+    expect(scanSampleSpan(60)).toBe('the first minute')
+    expect(scanSampleSpan(90)).toBe('the first 90 seconds')
   })
 })

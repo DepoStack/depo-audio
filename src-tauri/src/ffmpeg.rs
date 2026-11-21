@@ -222,7 +222,10 @@ pub(crate) async fn probe_duration_cancellable(
     parse_duration_probe(&output.stdout)
 }
 
-/// ffprobe arguments for the container duration.
+/// ffprobe arguments for the duration of the converted stream (`a:0`, the
+/// stream every FFmpeg pass maps), with the container duration as fallback.
+/// A video with a shorter first audio track, or a file with a longer second
+/// track, reports a container duration past the end of the converted stream.
 pub(crate) fn duration_probe_args(feed: &Path) -> Vec<String> {
     vec![
         "-v".into(),
@@ -231,16 +234,20 @@ pub(crate) fn duration_probe_args(feed: &Path) -> Vec<String> {
         "file".into(),
         "-print_format".into(),
         "json".into(),
-        "-show_format".into(),
+        "-select_streams".into(),
+        crate::helpers::source_audio_stream_specifier(),
+        "-show_entries".into(),
+        "stream=duration:stream_tags=DURATION:format=duration".into(),
         feed.to_string_lossy().to_string(),
     ]
 }
 
-/// Duration in seconds from `duration_probe_args` output, if readable.
+/// Duration in seconds from `duration_probe_args` output, if readable: the
+/// converted stream's own duration, else the container's.
 pub(crate) fn parse_duration_probe(stdout: &[u8]) -> Option<f64> {
     let text = String::from_utf8_lossy(stdout);
     let v: serde_json::Value = serde_json::from_str(&text).ok()?;
-    v["format"]["duration"].as_str()?.parse::<f64>().ok()
+    crate::manifest::converted_stream_duration(&v)
 }
 
 pub(crate) async fn probe_channels_cancellable(
@@ -252,7 +259,8 @@ pub(crate) async fn probe_channels_cancellable(
     parse_channel_probe(&out.stdout)
 }
 
-/// ffprobe arguments for the channel count of the first audio stream.
+/// ffprobe arguments for the channel count of the converted audio stream
+/// (`SOURCE_AUDIO_STREAM`, the same stream every FFmpeg pass maps).
 pub(crate) fn channel_probe_args(feed: &Path) -> Vec<String> {
     vec![
         "-v".into(),
@@ -263,7 +271,7 @@ pub(crate) fn channel_probe_args(feed: &Path) -> Vec<String> {
         "json".into(),
         "-show_streams".into(),
         "-select_streams".into(),
-        "a:0".into(),
+        crate::helpers::source_audio_stream_specifier(),
         feed.to_string_lossy().to_string(),
     ]
 }
@@ -297,8 +305,10 @@ pub(crate) async fn probe_manifest_source_cancellable(
         .unwrap_or_default()
 }
 
-/// ffprobe arguments for the export record's source facts (format tags and
-/// the first audio stream).
+/// ffprobe arguments for the export record's source facts: format tags and
+/// EVERY audio stream, in file order, so `streams[SOURCE_AUDIO_STREAM]` is the
+/// converted stream and the array length is the input's audio stream count.
+/// The Convert queue's multi-track notice reads the same document.
 pub(crate) fn manifest_probe_args(feed: &Path) -> Vec<String> {
     vec![
         "-v".into(),
@@ -310,9 +320,20 @@ pub(crate) fn manifest_probe_args(feed: &Path) -> Vec<String> {
         "-show_format".into(),
         "-show_streams".into(),
         "-select_streams".into(),
-        "a:0".into(),
+        "a".into(),
         feed.to_string_lossy().to_string(),
     ]
+}
+
+/// Audio streams of a queued file for the Convert queue's notice (the same
+/// ffprobe document the export record reads). None when ffprobe fails.
+pub(crate) async fn probe_audio_streams(app: &AppHandle, feed: &Path) -> Option<crate::manifest::AudioStreamsInfo> {
+    let out = sidecar_output_opt(app, ffprobe_bin_name(), manifest_probe_args(feed), 30).await?;
+    if !out.success {
+        return None;
+    }
+    let probe = serde_json::from_slice::<serde_json::Value>(&out.stdout).ok()?;
+    Some(crate::manifest::parse_audio_streams(&probe))
 }
 
 // ── Filter chain builder ─────────────────────────────────────────────────────

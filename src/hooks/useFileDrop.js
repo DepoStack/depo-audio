@@ -5,17 +5,30 @@ import { open as openDialog } from '@tauri-apps/plugin-dialog'
 import { basename, sortRecordingChunks } from '../utils'
 import { mergeQueuedFiles, partitionQueuePaths } from '../lib/queue'
 import { notifyConversionQueueChanged } from './useConversion'
+import { createLimiter } from '../lib/limit'
+
+// Each queue probe starts one ffprobe; a dropped FTR/TRM session can add
+// hundreds of chunks at once, so only a few run at a time.
+export const AUDIO_PROBE_CONCURRENCY = 4
 
 export default function useFileDrop(dropOverrideRef, queueLocked = false) {
   const [files, setFiles] = useState([])
   const [dragOver, setDragOver] = useState(false)
   const [caseName, setCaseName] = useState('')
   const [queueNotice, setQueueNotice] = useState('')
+  // Audio streams per queued path (probe_audio_streams_cmd), kept apart from
+  // `files` so a late probe never looks like a queue change.
+  const [audioStreams, setAudioStreams] = useState({})
 
   const filesRef = useRef(files)
   const caseNameRef = useRef(caseName)
   const queueLockedRef = useRef(queueLocked)
   const addQueueRef = useRef(Promise.resolve())
+  const [probeLimiter] = useState(() => createLimiter(AUDIO_PROBE_CONCURRENCY))
+  // The latest probe request per queued path. A result is kept only if its
+  // request is still the latest one, so a probe for a file that was removed
+  // (or removed and added again) never lands.
+  const probeTokensRef = useRef(new Map())
   useEffect(() => {
     filesRef.current = files
   }, [files])
@@ -26,74 +39,100 @@ export default function useFileDrop(dropOverrideRef, queueLocked = false) {
     queueLockedRef.current = queueLocked
   }, [queueLocked])
 
-  const addFiles = useCallback((paths, options = {}) => {
-    const task = async () => {
-      if (queueLockedRef.current) return { added: 0, locked: true }
+  const addFiles = useCallback(
+    (paths, options = {}) => {
+      const task = async () => {
+        if (queueLockedRef.current) return { added: 0, locked: true }
 
-      // Serialize async additions so two native drops/dialog completions cannot
-      // both inspect the same stale queue and append duplicate paths.
-      const { queuePaths, trsCompanions } = partitionQueuePaths(paths)
-      const filtered = sortRecordingChunks(queuePaths)
-      const detected = await Promise.all(
-        filtered.map(async p => {
-          try {
-            return {
-              file: { path: p, name: basename(p), fmt: await invoke('detect_format', { path: p }) },
-              error: null,
+        // Serialize async additions so two native drops/dialog completions cannot
+        // both inspect the same stale queue and append duplicate paths.
+        const { queuePaths, trsCompanions } = partitionQueuePaths(paths)
+        const filtered = sortRecordingChunks(queuePaths)
+        const detected = await Promise.all(
+          filtered.map(async p => {
+            try {
+              return {
+                file: { path: p, name: basename(p), fmt: await invoke('detect_format', { path: p }) },
+                error: null,
+              }
+            } catch (error) {
+              return { file: { path: p, name: basename(p), fmt: null }, error }
             }
-          } catch (error) {
-            return { file: { path: p, name: basename(p), fmt: null }, error }
-          }
-        }),
-      )
-      const next = detected.map(result => result.file)
-      const formatFailures = detected.filter(result => result.error)
-
-      // A conversion may have started while format detection was in flight.
-      if (queueLockedRef.current) return { added: 0, locked: true }
-
-      const previous = filesRef.current
-      const merged = mergeQueuedFiles(previous, next, { replace: !!options.replace })
-      const added = options.replace ? merged.length : Math.max(0, merged.length - previous.length)
-      const queueChanged =
-        !!options.replace ||
-        merged.length !== previous.length ||
-        merged.some((file, index) => file.path !== previous[index]?.path)
-      filesRef.current = merged
-      setFiles(merged)
-      if (queueChanged) notifyConversionQueueChanged()
-
-      const notices = []
-      if (trsCompanions.length > 0) {
-        const chunkCount = filtered.filter(path => /\.(?:ftr|trm)$/i.test(path)).length
-        notices.push(
-          chunkCount > 0
-            ? `TRS session companion detected. All ${chunkCount} dropped FTR/TRM ${chunkCount === 1 ? 'chunk is' : 'chunks are'} queued in chronological order, but TRS session metadata and protection validation are not yet supported.`
-            : 'TRS session companion detected. TRS session metadata and protection validation are not yet supported, so select or drop the accompanying FTR/TRM chunks directly.',
+          }),
         )
-      }
-      if (formatFailures.length > 0) {
-        const failedNames = formatFailures.map(result => result.file.name)
-        notices.push(
-          `Could not inspect ${failedNames.length === 1 ? failedNames[0] : `${failedNames.length} files`}: ${String(formatFailures[0].error)}. The ${failedNames.length === 1 ? 'file was' : 'files were'} queued, but format support could not be verified.`,
-        )
-      }
-      if (options.replace || notices.length > 0) setQueueNotice(notices.join(' '))
+        const next = detected.map(result => result.file)
+        const formatFailures = detected.filter(result => result.error)
 
-      if (!caseNameRef.current && merged.length > 0) {
-        const detected = await invoke('infer_case_name_cmd', { filename: merged[0].name }).catch(() => '')
-        if (detected && !caseNameRef.current) {
-          caseNameRef.current = detected
-          setCaseName(detected)
+        // A conversion may have started while format detection was in flight.
+        if (queueLockedRef.current) return { added: 0, locked: true }
+
+        const previous = filesRef.current
+        const merged = mergeQueuedFiles(previous, next, { replace: !!options.replace })
+        const added = options.replace ? merged.length : Math.max(0, merged.length - previous.length)
+        const queueChanged =
+          !!options.replace ||
+          merged.length !== previous.length ||
+          merged.some((file, index) => file.path !== previous[index]?.path)
+        filesRef.current = merged
+        setFiles(merged)
+        if (queueChanged) notifyConversionQueueChanged()
+
+        // Read-only probe of each new file's audio tracks, for the multi-track
+        // notice and the WAV size estimate. Best effort: no answer, no notice.
+        // At most AUDIO_PROBE_CONCURRENCY run at once.
+        const previousPaths = new Set(previous.map(file => file.path))
+        if (options.replace) {
+          probeLimiter.clearPending()
+          probeTokensRef.current = new Map()
+          setAudioStreams({})
         }
-      }
-      return { added, locked: false }
-    }
+        for (const file of merged) {
+          if (previousPaths.has(file.path) && !options.replace) continue
+          const token = {}
+          probeTokensRef.current.set(file.path, token)
+          const current = () => probeTokensRef.current.get(file.path) === token
+          probeLimiter
+            .run(() => (current() ? invoke('probe_audio_streams_cmd', { path: file.path }) : null))
+            .then(info => {
+              if (!Array.isArray(info?.streams) || !current()) return
+              setAudioStreams(streams => ({ ...streams, [file.path]: info }))
+            })
+            .catch(() => {})
+        }
 
-    const queued = addQueueRef.current.then(task, task)
-    addQueueRef.current = queued.catch(() => {})
-    return queued
-  }, [])
+        const notices = []
+        if (trsCompanions.length > 0) {
+          const chunkCount = filtered.filter(path => /\.(?:ftr|trm)$/i.test(path)).length
+          notices.push(
+            chunkCount > 0
+              ? `TRS session companion detected. All ${chunkCount} dropped FTR/TRM ${chunkCount === 1 ? 'chunk is' : 'chunks are'} queued in chronological order, but TRS session metadata and protection validation are not yet supported.`
+              : 'TRS session companion detected. TRS session metadata and protection validation are not yet supported, so select or drop the accompanying FTR/TRM chunks directly.',
+          )
+        }
+        if (formatFailures.length > 0) {
+          const failedNames = formatFailures.map(result => result.file.name)
+          notices.push(
+            `Could not inspect ${failedNames.length === 1 ? failedNames[0] : `${failedNames.length} files`}: ${String(formatFailures[0].error)}. The ${failedNames.length === 1 ? 'file was' : 'files were'} queued, but format support could not be verified.`,
+          )
+        }
+        if (options.replace || notices.length > 0) setQueueNotice(notices.join(' '))
+
+        if (!caseNameRef.current && merged.length > 0) {
+          const detected = await invoke('infer_case_name_cmd', { filename: merged[0].name }).catch(() => '')
+          if (detected && !caseNameRef.current) {
+            caseNameRef.current = detected
+            setCaseName(detected)
+          }
+        }
+        return { added, locked: false }
+      }
+
+      const queued = addQueueRef.current.then(task, task)
+      addQueueRef.current = queued.catch(() => {})
+      return queued
+    },
+    [probeLimiter],
+  )
 
   const removeFile = useCallback((path, converting) => {
     if (converting || queueLockedRef.current) return
@@ -102,6 +141,12 @@ export default function useFileDrop(dropOverrideRef, queueLocked = false) {
     if (next.length === previous.length) return
     filesRef.current = next
     setFiles(next)
+    probeTokensRef.current.delete(path)
+    setAudioStreams(current => {
+      if (!(path in current)) return current
+      const { [path]: _removed, ...rest } = current
+      return rest
+    })
     notifyConversionQueueChanged()
     if (next.length === 0) {
       caseNameRef.current = ''
@@ -110,17 +155,23 @@ export default function useFileDrop(dropOverrideRef, queueLocked = false) {
     }
   }, [])
 
-  const clearAll = useCallback(converting => {
-    if (!converting && !queueLockedRef.current) {
-      const hadFiles = filesRef.current.length > 0
-      filesRef.current = []
-      caseNameRef.current = ''
-      setFiles([])
-      setCaseName('')
-      setQueueNotice('')
-      if (hadFiles) notifyConversionQueueChanged()
-    }
-  }, [])
+  const clearAll = useCallback(
+    converting => {
+      if (!converting && !queueLockedRef.current) {
+        const hadFiles = filesRef.current.length > 0
+        filesRef.current = []
+        caseNameRef.current = ''
+        probeLimiter.clearPending()
+        probeTokensRef.current = new Map()
+        setFiles([])
+        setAudioStreams({})
+        setCaseName('')
+        setQueueNotice('')
+        if (hadFiles) notifyConversionQueueChanged()
+      }
+    },
+    [probeLimiter],
+  )
 
   // Tauri native drag-drop
   useEffect(() => {
@@ -178,7 +229,26 @@ export default function useFileDrop(dropOverrideRef, queueLocked = false) {
               'dm',
             ],
           },
-          { name: 'Video (audio extracted)', extensions: ['mp4', 'mov', 'mkv', 'avi', 'webm', 'm4v', '3gp'] },
+          {
+            name: 'Video (audio extracted)',
+            extensions: [
+              'mp4',
+              'mov',
+              'mkv',
+              'avi',
+              'webm',
+              'm4v',
+              '3gp',
+              'mpg',
+              'mpeg',
+              'vob',
+              'ts',
+              'mts',
+              'm2ts',
+              'wmv',
+              'asf',
+            ],
+          },
           { name: 'All Files', extensions: ['*'] },
         ],
       })
@@ -205,6 +275,7 @@ export default function useFileDrop(dropOverrideRef, queueLocked = false) {
   return {
     files,
     setFiles,
+    audioStreams,
     dragOver,
     caseName,
     setCaseName,

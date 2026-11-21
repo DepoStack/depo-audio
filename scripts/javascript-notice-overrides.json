@@ -1,18 +1,18 @@
 {
   "schemaVersion": 1,
   "expected": {
-    "javascriptComponents": 57,
+    "javascriptComponents": 56,
     "generatedCssComponents": 2,
-    "totalComponents": 59
+    "totalComponents": 58
   },
   "generatedCss": [
     {
       "name": "tailwindcss",
-      "version": "4.3.3",
-      "integrity": "sha512-gOhV3P7ufE62QDGg1zVaTgCR+EtPv92k2nIhVcVKcLmxT1sUBsQGhnZj175j+MqRt4zLF7ic+sCYjfhxMxj7YQ==",
+      "version": "4.3.5",
+      "integrity": "sha512-FcQk9BuffmEHJP2G0XmB2SplU1aLTI7j07Kunk+U74Ny+XiWOtzXz9aujFZ/avntw1e2cOv/3PkgzflQ7gX2vQ==",
       "inputFile": "src/globals.css",
       "inputContains": ["@import 'tailwindcss'"],
-      "outputContains": ["/*! tailwindcss v4.3.3 | MIT License | https://tailwindcss.com */"]
+      "outputContains": ["/*! tailwindcss v4.3.5 | MIT License | https://tailwindcss.com */"]
     },
     {
       "name": "tailwindcss-animate",
@@ -29,23 +29,23 @@
       "packages": [
         {
           "name": "@tauri-apps/plugin-dialog",
-          "version": "2.7.2",
-          "integrity": "sha512-pX0IGm1I3I6wc+zeKYcq1GSqogK6okCNX5fOdaNU5ab1AjGS6l1E5wFNjEb7meg7ZFSp0JUs+0jQGQNyOvLrsg=="
+          "version": "2.8.4",
+          "integrity": "sha512-+6ZOiXenOaxXwb8qCbBPdT2jX2cFPaVVHGIskrpmJLpmWj+qKRTD6X/z9x7hTdSQn7NedcoXCkWGej4a7dC4lw=="
         },
         {
           "name": "@tauri-apps/plugin-fs",
-          "version": "2.5.1",
-          "integrity": "sha512-9Lz+Jopp6QyeEWhlpkMx4R/+P9HgR+AVAI4vOZhlT8Xaymtz8iVI/Ov984/XTqgJz/5gz5NretqPB/XEMS3NhQ=="
+          "version": "2.7.1",
+          "integrity": "sha512-4TBVjpi/q8PuNzjpkAc2iBGXMTLjOrAyfTiiOL8ORaJCZJRG3tjzmQ4sqs2CMG75FvLyRkOkERfP7AyY4iBNwQ=="
         },
         {
           "name": "@tauri-apps/plugin-opener",
-          "version": "2.5.4",
-          "integrity": "sha512-1HnPkb+AmgO29HBazm4uPLKB+r7zzcTBW1d0fyYp1uP+jwtpoiNDGKMMzz58SFp49nOIrxdE3aUJtT57lfO9CQ=="
+          "version": "2.7.3",
+          "integrity": "sha512-Nm+v7vLBCDzYZxrmCJhpMgtPsPsKt5myMs7SMU/aBjPOmAFI1RrHfhMz7t5KlxjMOzRcelyNq1/j0pmC9SmBVA=="
         },
         {
           "name": "@tauri-apps/plugin-process",
-          "version": "2.3.1",
-          "integrity": "sha512-nCa4fGVaDL/B9ai03VyPOjfAHRHSBz5v6F/ObsB73r/dA3MHHhZtldaDMIc0V/pnUw9ehzr2iEG+XkSEyC0JJA=="
+          "version": "2.4.0",
+          "integrity": "sha512-GddrmsSLAYrLa/yTXlXK/YRDzUgYeeOnUXTbiyvJWkmI424RmDPD3FVLeqcon7rv6O6ZfhBilcrHWnSo7o6hIQ=="
         },
         {
           "name": "@tauri-apps/plugin-updater",

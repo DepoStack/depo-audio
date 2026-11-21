@@ -2,7 +2,15 @@ import { useState, useEffect, useRef } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
 import { MODES, FORMATS_OUT, MP3_BITRATES, CH_COLORS, FIXED_OUTPUT_RATES, effectiveOutputRate } from '../../constants'
-import { PRESETS, resolvePresetSettings } from '../../presets'
+import { openUrl } from '@tauri-apps/plugin-opener'
+import {
+  PRESETS,
+  NOT_TESTED_NOTE,
+  OPUS_CATALYST_NOTE,
+  STENOGRAPH_SOURCES,
+  describeSettings,
+  resolvePresetSettings,
+} from '../../presets'
 import { usePreferencesContext } from '../../hooks/PreferencesContext'
 import { Check, Loader2, Play } from 'lucide-react'
 import { Button } from '../ui/button'
@@ -15,7 +23,8 @@ import WorkspaceHeader from '../common/WorkspaceHeader'
 import ProcessingToggle from './ProcessingToggle'
 import FormatTable from './FormatTable'
 import FileRow from './FileRow'
-import { aggregateAnalysisResults } from '../../lib/analysis'
+import { wavSizeEstimateText } from '../../lib/outputSize'
+import { SCAN_SAMPLE_NOTE, aggregateAnalysisResults } from '../../lib/analysis'
 
 // The backend emits scan:progress events throughout each file's analysis
 // (including ~10s heartbeats while a wedged ffmpeg drains its timeout), so
@@ -51,6 +60,7 @@ export function countHiddenProcessingOptions({
 export default function ConvertTab({
   // Files
   files,
+  audioStreams = {},
   dragOver,
   caseName,
   setCaseName,
@@ -108,6 +118,52 @@ export default function ConvertTab({
   const trimEffective = trim && mode !== 'split'
   const autoLevelEffective = autoLevel && mode !== 'keep'
   const anyProcessing = normalize || trimEffective || fade || hpf || autoLevelEffective || declip
+  const presetState = describeSettings({
+    mode,
+    format: formatOut,
+    rate,
+    mp3Bitrate,
+    normalize,
+    trim,
+    fade,
+    fadeDur,
+    hpf,
+    autoLevel,
+    declip,
+  })
+  // The preset the person chose in this session. A preset is "in use" only
+  // when they chose it and the settings still match it; settings that merely
+  // happen to match one (the defaults match "For other or older CAT
+  // software") are described as a match, not as a choice.
+  const [chosenPresetId, setChosenPresetId] = useState(null)
+  const presetInUse =
+    presetState.kind === 'preset' && presetState.preset.id === chosenPresetId ? presetState.preset : null
+  const [sourceLinkError, setSourceLinkError] = useState('')
+  const openSource = async source => {
+    setSourceLinkError('')
+    try {
+      await openUrl(source.url)
+    } catch (error) {
+      setSourceLinkError(`Couldn't open Stenograph's \u201c${source.title}\u201d article: ${String(error)}`)
+    }
+  }
+  const applyPreset = preset => {
+    setChosenPresetId(preset.id)
+    const s = resolvePresetSettings(preset.settings)
+    handleModeChange(s.mode)
+    setFormatOut(s.format)
+    setRate(s.rate)
+    setNormalize(s.normalize)
+    setTrim(s.trim)
+    setFade(s.fade)
+    // The fade length only matters with fades on; leave the person's own
+    // value alone otherwise.
+    if (s.fade) setFadeDur(s.fadeDur)
+    setHpf(s.hpf)
+    setAutoLevel(s.autoLevel)
+    setDeclip(s.declip)
+    if (s.format === 'mp3') setMp3Bitrate(s.mp3Bitrate ?? 192)
+  }
   const [analysis, setAnalysis] = useState(null)
   const [scanning, setScanning] = useState(false)
   const [scanProgress, setScanProgress] = useState({ current: 0, total: 0, fileName: '', phase: '', filePct: 0 })
@@ -367,6 +423,7 @@ export default function ConvertTab({
   const stepDone = n => n < step || (n === 3 && queueSettled)
   const procCount = [autoLevelEffective, declip, hpf, normalize, trimEffective, fade].filter(Boolean).length
   const formatLabel = FORMATS_OUT.find(f => f.id === formatOut)?.label || formatOut
+  const wavEstimate = formatOut === 'wav' ? wavSizeEstimateText(files, audioStreams, { mode, rate }) : ''
   const modeLabel = MODES.find(m => m.id === mode)?.label || mode
   const unsupportedFiles = files.filter(file => file.fmt?.status === 'unsupported')
   const resultParts = [
@@ -388,7 +445,9 @@ export default function ConvertTab({
     : files.length === 0
       ? 'Add at least one recording to continue.'
       : unsupportedFiles.length > 0
-        ? 'Remove unsupported recordings or export them to WAV first.'
+        ? unsupportedFiles.every(file => file.fmt?.key === 'dcr-image')
+          ? 'Remove the files that are not recordings first.'
+          : 'Remove unsupported files first. The note for each one says how to export it.'
         : ''
 
   return (
@@ -504,6 +563,7 @@ export default function ConvertTab({
                   <FileRow
                     key={f.path}
                     file={f}
+                    streams={audioStreams[f.path]}
                     job={jobs[f.path]}
                     onRemove={() => removeFile(f.path, converting)}
                     converting={converting}
@@ -523,7 +583,13 @@ export default function ConvertTab({
               {unsupportedFiles.length === 1
                 ? unsupportedFiles[0].name
                 : `${unsupportedFiles.length} unsupported files`}{' '}
-              before converting. Export AES/DCR recordings to WAV from their native software first.
+              before converting.
+              {unsupportedFiles.map(file => (
+                <span key={file.path} className="mt-1 block text-foreground">
+                  <span className="font-semibold">{file.name}:</span>{' '}
+                  {file.fmt?.note || 'Export it to WAV from the software that recorded it first.'}
+                </span>
+              ))}
             </p>
           )}
 
@@ -546,55 +612,86 @@ export default function ConvertTab({
           )}
 
           {/* ── PRESETS ──────────────────────────────────────────────────── */}
-          {/* Highlight the preset the current settings match, so users can
-              see which preset is active and when they've diverged from it */}
-          <div className="flex items-center gap-1.5 flex-wrap mb-1">
-            <Label>Quick setup</Label>
-            {PRESETS.map(p => {
-              const s = resolvePresetSettings(p.settings)
-              // Opus and SGMCA fix their own rate, so compare the effective rate
-              const effRate = effectiveOutputRate(formatOut, rate)
-              const sEffRate = effectiveOutputRate(s.format, s.rate)
-              const active =
-                mode === s.mode &&
-                formatOut === s.format &&
-                effRate === sEffRate &&
-                normalize === s.normalize &&
-                trim === s.trim &&
-                fade === s.fade &&
-                fadeDur === s.fadeDur &&
-                hpf === s.hpf &&
-                autoLevel === s.autoLevel &&
-                declip === s.declip &&
-                // Bitrate only matters for MP3; presets default to 192 kbps
-                (s.format !== 'mp3' || mp3Bitrate === (s.mp3Bitrate ?? 192))
-              return (
-                <Button
-                  key={p.id}
-                  variant="outline"
-                  size="sm"
-                  title={p.desc}
-                  aria-pressed={active}
-                  className={active ? 'border-foreground bg-secondary text-foreground' : ''}
-                  onClick={() => {
-                    handleModeChange(s.mode)
-                    setFormatOut(s.format)
-                    setRate(s.rate)
-                    setNormalize(s.normalize)
-                    setTrim(s.trim)
-                    setFade(s.fade)
-                    setFadeDur(s.fadeDur)
-                    setHpf(s.hpf)
-                    setAutoLevel(s.autoLevel)
-                    setDeclip(s.declip)
-                    if (s.format === 'mp3') setMp3Bitrate(s.mp3Bitrate ?? 192)
-                  }}
+          {/* Each preset is named for where the file is going and states its
+              basis. The one the current settings match is highlighted; when
+              none matches, the picker says "Custom" and changes nothing. */}
+          <Card className="workflow-section" data-testid="preset-picker">
+            <CardHeader>
+              <CardTitle>Quick setup</CardTitle>
+              <span className="type-small text-[hsl(var(--sub))]" data-testid="preset-status" role="status">
+                {presetInUse
+                  ? `Using: ${presetInUse.name}`
+                  : presetState.kind === 'preset'
+                    ? `No preset chosen. The current settings are the same as \u201c${presetState.preset.name}\u201d.`
+                    : presetState.legacy
+                      ? `Custom: the earlier \u201c${presetState.legacy.name}\u201d preset. Closest new preset: ${presetState.closest?.name}`
+                      : 'Custom settings'}
+              </span>
+            </CardHeader>
+            <CardContent>
+              <div className="grid grid-cols-1 gap-2 p-3 sm:grid-cols-2 lg:grid-cols-3">
+                {PRESETS.map(p => {
+                  const active = presetInUse?.id === p.id
+                  return (
+                    <button
+                      key={p.id}
+                      type="button"
+                      title={p.desc}
+                      aria-pressed={active}
+                      aria-labelledby={`preset-name-${p.id}`}
+                      aria-describedby={`preset-basis-${p.id} preset-tested-${p.id}`}
+                      className={`relative flex flex-col items-start gap-0.5 px-3 py-2.5 rounded-lg border text-left transition-all cursor-pointer focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring ${
+                        active
+                          ? 'border-foreground bg-secondary'
+                          : 'border-border bg-card hover:border-[hsl(var(--sub))]'
+                      }`}
+                      onClick={() => applyPreset(p)}
+                    >
+                      <span id={`preset-name-${p.id}`} className="text-[12.5px] font-semibold text-foreground pr-5">
+                        {p.name}
+                      </span>
+                      <span id={`preset-basis-${p.id}`} className="type-small text-[hsl(var(--text2))] leading-snug">
+                        {p.basis}
+                      </span>
+                      <span id={`preset-tested-${p.id}`} className="type-small text-[hsl(var(--sub))]">
+                        {NOT_TESTED_NOTE}
+                      </span>
+                      {active && (
+                        <span aria-hidden="true" className="absolute top-2 right-2 text-foreground">
+                          <Check aria-hidden="true" className="h-3.5 w-3.5" strokeWidth={2.2} />
+                        </span>
+                      )}
+                    </button>
+                  )
+                })}
+              </div>
+              <p className="px-3 pb-3 type-small text-[hsl(var(--sub))]">
+                Format notes come from Stenograph&rsquo;s Solution Center articles{' '}
+                {STENOGRAPH_SOURCES.map((source, index) => (
+                  <span key={source.url}>
+                    {index > 0 && ' and '}
+                    <button
+                      type="button"
+                      className="underline underline-offset-2 text-[hsl(var(--text2))] hover:text-foreground focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring rounded-sm cursor-pointer"
+                      aria-label={`${source.title} (Stenograph Solution Center, opens in your browser)`}
+                      onClick={() => openSource(source)}
+                    >
+                      &ldquo;{source.title}&rdquo;
+                    </button>
+                  </span>
+                ))}
+                . Choosing a preset changes the settings below; you can still change any of them.
+              </p>
+              {sourceLinkError && (
+                <p
+                  role="alert"
+                  className="mx-3 mb-3 px-3 py-2 rounded-md border border-destructive/30 border-l-[3px] border-l-destructive type-small text-destructive"
                 >
-                  {p.name}
-                </Button>
-              )
-            })}
-          </div>
+                  {sourceLinkError}
+                </p>
+              )}
+            </CardContent>
+          </Card>
 
           {/* ── OUTPUT MODE (segmented) ──────────────────────────────────── */}
           <Card className="workflow-section">
@@ -649,6 +746,14 @@ export default function ConvertTab({
                   </button>
                 ))}
               </div>
+              {formatOut === 'opus' && (
+                <p
+                  data-testid="opus-catalyst-note"
+                  className="mx-3 mb-3 px-3 py-2 rounded-md border border-warning/30 bg-warning/10 type-small text-foreground"
+                >
+                  {OPUS_CATALYST_NOTE}
+                </p>
+              )}
               <div className="flex items-end gap-3 flex-wrap px-3 pb-3">
                 <div className="min-w-[130px]">
                   <Label className="mb-1 block" htmlFor="sample-rate">
@@ -693,6 +798,7 @@ export default function ConvertTab({
                   </div>
                 )}
               </div>
+              {wavEstimate && <p className="px-3 pb-3 type-small text-[hsl(var(--text2))]">{wavEstimate}</p>}
             </CardContent>
           </Card>
 
@@ -768,7 +874,13 @@ export default function ConvertTab({
               {!analysis && !scanning && !scanError && (
                 <p className="px-4 py-2.5 type-small text-[hsl(var(--sub))]">
                   Drop files and click <strong className="text-foreground">Scan</strong> to check for level differences
-                  and clipping. Scan suggests fixes; nothing changes until you apply them.
+                  and clipping. {SCAN_SAMPLE_NOTE} Scan suggests fixes; nothing changes until you apply them.
+                </p>
+              )}
+
+              {analysis && !scanning && (
+                <p className="px-4 pt-2.5 pb-1 type-small text-[hsl(var(--sub))]">
+                  {SCAN_SAMPLE_NOTE} Anything after that is not measured.
                 </p>
               )}
 
@@ -1113,7 +1225,7 @@ export default function ConvertTab({
             <p className="type-small text-[hsl(var(--sub))]">Add a recording to choose an output and convert.</p>
           )}
           {!converting && resultCount === 0 && unsupportedFiles.length > 0 && (
-            <p className="type-small text-warning">Export or remove the unsupported recording before converting.</p>
+            <p className="type-small text-warning">{convertDisabledReason}</p>
           )}
           {!converting && resultCount === 0 && files.length > 0 && unsupportedFiles.length === 0 && (
             <p className="text-[12px] text-[hsl(var(--sub))] truncate">

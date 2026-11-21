@@ -449,6 +449,46 @@ jobs:
         if: always()
         run: node scripts/ftr-smoke-fixture.mjs --clean
 
+      # Legacy legal-video containers (MPG/VOB, TS/MTS/M2TS, WMV/ASF) are listed
+      # as "audio track extracted" only while every bundled sidecar can demux
+      # them and decode their usual audio codec. Fixtures are synthetic (a
+      # generated tone and generated frames) and stay under RUNNER_TEMP.
+      - name: Generate synthetic legacy video container fixtures (macOS)
+        if: runner.os == 'macOS'
+        run: >-
+          node scripts/container-smoke-fixtures.mjs --generate
+          --ffmpeg src-tauri/binaries/ffmpeg-universal-apple-darwin
+
+      - name: Smoke-test legacy video container audio extraction (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          set -euo pipefail
+          for arch in aarch64 x86_64
+          do
+            node scripts/container-smoke-fixtures.mjs --check \
+              --ffmpeg "src-tauri/binaries/ffmpeg-$arch-apple-darwin" \
+              --ffprobe "src-tauri/binaries/ffprobe-$arch-apple-darwin"
+          done
+
+      - name: Generate synthetic legacy video container fixtures (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: >-
+          node scripts/container-smoke-fixtures.mjs --generate
+          --ffmpeg src-tauri/binaries/ffmpeg-x86_64-pc-windows-msvc.exe
+
+      - name: Smoke-test legacy video container audio extraction (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: >-
+          node scripts/container-smoke-fixtures.mjs --check
+          --ffmpeg src-tauri/binaries/ffmpeg-x86_64-pc-windows-msvc.exe
+          --ffprobe src-tauri/binaries/ffprobe-x86_64-pc-windows-msvc.exe
+
+      - name: Remove synthetic legacy video container fixtures
+        if: always()
+        run: node scripts/container-smoke-fixtures.mjs --clean
+
       # Reconfirm source and notice policy after native sidecars are staged.
       - name: Recheck release distribution gates before packaging
         run: |
@@ -1196,7 +1236,7 @@ jobs:
           cat "$manifest"
 
       - name: Preserve verified dependency evidence for release builds
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: dependency-evidence-${{ github.sha }}
           path: ${{ runner.temp }}/depoaudio-dependency-evidence
@@ -1344,7 +1384,7 @@ jobs:
           echo "Verified private draft $RELEASE_ID for $TAG at $GITHUB_SHA"
 
       - name: Preserve sanitized candidate pointer
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: release-candidate-pointer-${{ github.sha }}
           path: ${{ runner.temp }}/RELEASE-CANDIDATE-POINTER.json

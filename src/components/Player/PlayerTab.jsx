@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect } from 'react'
+import { useState, useRef, useEffect, useId } from 'react'
 import { convertFileSrc } from '@tauri-apps/api/core'
 import { open } from '@tauri-apps/plugin-dialog'
 import { Play, Pause, SkipBack, SkipForward, Bookmark, X, Plus, Repeat, Copy, Check } from 'lucide-react'
@@ -13,6 +13,11 @@ import {
   loadBookmarks,
   partitionPlaybackPaths,
   bookmarksToText,
+  BACKSTEP_RULE,
+  BACKSTEP_STEPS,
+  loadBackstep,
+  backstepLabel,
+  resumePosition,
 } from '../../lib/player'
 import { Button } from '../ui/button'
 import { Card, CardHeader, CardTitle, CardContent } from '../ui/card'
@@ -35,19 +40,24 @@ import Transcript from './Transcript'
 // Keyboard transport (when not typing in a field):
 //   Space / K  play-pause      ← / →  seek ±5s       J / L  seek ±10s
 //   ↑ / ↓      speed up/down    [ / ]  prev/next      B      bookmark
+//
+// Auto-backstep: resuming after a pause first rewinds the chosen number of
+// seconds (shown as "Backstep" in the transport). Seeks, track changes and
+// A-B loop wraps clear the pause point, so they never rewind.
 
 const PLAYER_STORAGE_WARNING =
-  'Player bookmarks and speed cannot be saved in this session. Export important bookmark notes before closing DepoAudio.'
+  'Player bookmarks, speed and backstep cannot be saved in this session. Export important bookmark notes before closing DepoAudio.'
 
 function loadPlayerStorageState() {
   try {
     return {
       speed: loadSpeed(window.localStorage.getItem('player-speed')),
+      backstep: loadBackstep(window.localStorage.getItem('player-backstep')),
       bookmarks: loadBookmarks(window.localStorage.getItem('player-bookmarks')),
       error: '',
     }
   } catch {
-    return { speed: 1, bookmarks: [], error: PLAYER_STORAGE_WARNING }
+    return { speed: 1, backstep: loadBackstep(null), bookmarks: [], error: PLAYER_STORAGE_WARNING }
   }
 }
 
@@ -60,6 +70,11 @@ export default function PlayerTab({ dropHandlerRef, onConvertFiles, openRequest,
   const [dragOver, setDragOver] = useState(false)
   const [initialStorage] = useState(loadPlayerStorageState)
   const [speed, setSpeedState] = useState(initialStorage.speed)
+  const [backstep, setBackstepState] = useState(initialStorage.backstep)
+  const backstepRuleId = useId()
+  // Position where the person last paused this track. Any seek (including our
+  // own backstep and the A-B loop wrap) clears it, so only a plain resume rewinds.
+  const pausedAtRef = useRef(null)
   const [loopA, setLoopA] = useState(null)
   const [loopB, setLoopB] = useState(null)
   const [copied, setCopied] = useState(false)
@@ -150,8 +165,24 @@ export default function PlayerTab({ dropHandlerRef, onConvertFiles, openRequest,
     const a = audioRef.current
     if (!a || !activeTrack) return
     setPlaybackError('')
-    if (!a.paused) a.pause()
-    else a.play().catch(e => setPlaybackError(`Couldn't play ${activeTrack.name}: ${e}`))
+    if (!a.paused) {
+      a.pause()
+      return
+    }
+    const loopStart = loopA != null && loopB != null && loopB > loopA ? loopA : null
+    const start = resumePosition({ currentTime: a.currentTime, pausedAt: pausedAtRef.current, backstep, loopStart })
+    pausedAtRef.current = null
+    if (start !== a.currentTime) a.currentTime = start
+    a.play().catch(e => setPlaybackError(`Couldn't play ${activeTrack.name}: ${e}`))
+  }
+
+  const applyBackstep = s => {
+    setBackstepState(s)
+    try {
+      window.localStorage.setItem('player-backstep', String(s))
+    } catch {
+      setStorageError(PLAYER_STORAGE_WARNING)
+    }
   }
 
   const seekBy = delta => {
@@ -310,6 +341,7 @@ export default function PlayerTab({ dropHandlerRef, onConvertFiles, openRequest,
   // the A-B loop since its points belong to the previous track.
   useEffect(() => {
     if (activeTrack && audioRef.current) {
+      pausedAtRef.current = null
       setPlaying(false)
       setPlaybackError('')
       audioRef.current.load()
@@ -684,7 +716,14 @@ export default function PlayerTab({ dropHandlerRef, onConvertFiles, openRequest,
               e.target.playbackRate = speed
             }}
             onPlay={() => setPlaying(true)}
-            onPause={() => setPlaying(false)}
+            onPause={e => {
+              setPlaying(false)
+              // A pause at the end of the track is not a resume point
+              pausedAtRef.current = e.target.ended ? null : e.target.currentTime
+            }}
+            onSeeking={() => {
+              pausedAtRef.current = null
+            }}
             onError={() => {
               setPlaying(false)
               setPlaybackError(
@@ -808,6 +847,25 @@ export default function PlayerTab({ dropHandlerRef, onConvertFiles, openRequest,
                 onChange={applySpeed}
                 className="hidden lg:inline-flex"
               />
+              <label className="flex items-center gap-1 type-small text-[hsl(var(--text2))]" title={BACKSTEP_RULE}>
+                Backstep
+                <span id={backstepRuleId} className="sr-only">
+                  {BACKSTEP_RULE}
+                </span>
+                <select
+                  aria-label="Backstep on resume"
+                  aria-describedby={backstepRuleId}
+                  className="h-7 rounded-md border border-border bg-card px-1.5 type-small text-foreground tabular-nums transition-colors focus:border-ring cursor-pointer"
+                  value={backstep}
+                  onChange={e => applyBackstep(loadBackstep(e.target.value))}
+                >
+                  {BACKSTEP_STEPS.map(s => (
+                    <option key={s} value={s}>
+                      {backstepLabel(s)}
+                    </option>
+                  ))}
+                </select>
+              </label>
               <div className="flex items-center gap-1" title="A-B loop: repeat a passage">
                 <Repeat size={13} className={cn(loopActive ? 'text-foreground' : 'text-[hsl(var(--sub))]')} />
                 <button

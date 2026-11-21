@@ -4,6 +4,7 @@ import { cwd } from 'node:process'
 import { cleanup, render, screen } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { MODES, DEPOAUDIO_RELEASES_URL, DEPOSTACK_URL } from '../constants'
+import { STENOGRAPH_SOURCES } from '../presets'
 import FileRow from '../components/Convert/FileRow'
 import UpdateBanner from '../components/UpdateBanner'
 import Spinner from '../components/common/Spinner'
@@ -34,7 +35,11 @@ describe('workflow remediation contract', () => {
     const opener = capability.permissions.find(permission => permission.identifier === 'opener:allow-open-url')
 
     expect(indexHtml).not.toMatch(/fonts\.(?:googleapis|gstatic)\.com/i)
-    expect(opener.allow).toEqual([{ url: DEPOSTACK_URL }, { url: DEPOAUDIO_RELEASES_URL }])
+    expect(opener.allow).toEqual([
+      { url: DEPOSTACK_URL },
+      { url: DEPOAUDIO_RELEASES_URL },
+      ...STENOGRAPH_SOURCES.map(source => ({ url: source.url })),
+    ])
     expect(opener.allow.some(entry => /\*/.test(entry.url))).toBe(false)
   })
 

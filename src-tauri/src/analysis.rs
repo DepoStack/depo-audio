@@ -398,6 +398,22 @@ async fn analyze_loudness_and_peaks(
     Ok((lufs_vec, peak_vec, failures))
 }
 
+/// FFmpeg arguments for one loudness/peak pass after the input prelude and
+/// codec hint: a bounded sample (`-t` before `-i`), the converted audio stream
+/// mapped explicitly (`-map 0:a:0`, the stream the channel probe counted),
+/// optionally one channel isolated with `pan=mono`, then `ebur128`. Using
+/// pan=mono instead of channelsplit avoids hardcoding a channel layout.
+fn loudness_pass_args(feed: &str, channel: Option<u32>, secs: &str) -> Vec<String> {
+    let filter = match channel {
+        Some(ch) => format!("pan=mono|c0=c{ch},ebur128=peak=true"),
+        None => "ebur128=peak=true".into(),
+    };
+    let mut args: Vec<String> = vec!["-t".into(), secs.into(), "-i".into(), feed.into()];
+    args.extend(crate::helpers::source_audio_map_args());
+    args.extend(["-af".into(), filter, "-f".into(), "null".into(), "-".into()]);
+    args
+}
+
 async fn analyze_single_channel(
     app: &AppHandle,
     feed: &Path,
@@ -408,40 +424,12 @@ async fn analyze_single_channel(
 ) -> Result<(f64, f64), String> {
     let feed_str = feed.to_string_lossy().to_string();
 
-    // Build filter: optionally extract a single channel via pan, then run ebur128.
-    // Using pan=mono instead of channelsplit avoids hardcoding a channel layout.
     // `-t` (input option, before `-i`) limits analysis to a representative
     // sample so a long recording can't make this pass run for minutes.
     let secs = crate::ffmpeg::ANALYSIS_SAMPLE_SECS.to_string();
     let mut args = crate::helpers::safe_ffmpeg_input_prelude();
     args.extend(input_codec.iter().cloned());
-    if let Some(ch) = channel {
-        let pan = format!("pan=mono|c0=c{}", ch);
-        let filter = format!("{},ebur128=peak=true", pan);
-        args.extend([
-            "-t".into(),
-            secs,
-            "-i".into(),
-            feed_str,
-            "-af".into(),
-            filter,
-            "-f".into(),
-            "null".into(),
-            "-".into(),
-        ]);
-    } else {
-        args.extend([
-            "-t".into(),
-            secs,
-            "-i".into(),
-            feed_str,
-            "-af".into(),
-            "ebur128=peak=true".into(),
-            "-f".into(),
-            "null".into(),
-            "-".into(),
-        ]);
-    }
+    args.extend(loudness_pass_args(&feed_str, channel, &secs));
 
     // Bounded timeout backstop — the -t cap means a healthy run finishes in
     // seconds, so a wedged ffmpeg can never hang the Scan. The heartbeat
@@ -485,7 +473,7 @@ async fn probe_sample_rate(app: &AppHandle, feed: &Path, ctx: Option<&ScanCtx>) 
         "json".into(),
         "-show_streams".into(),
         "-select_streams".into(),
-        "a:0".into(),
+        crate::helpers::source_audio_stream_specifier(),
         feed.to_string_lossy().to_string(),
     ];
 
@@ -500,7 +488,43 @@ async fn probe_sample_rate(app: &AppHandle, feed: &Path, ctx: Option<&ScanCtx>) 
 
 #[cfg(test)]
 mod tests {
-    use super::{build_recommendations, channel_gains_from_lufs};
+    use super::{build_recommendations, channel_gains_from_lufs, loudness_pass_args};
+
+    #[test]
+    fn loudness_passes_map_the_converted_audio_stream() {
+        assert_eq!(
+            loudness_pass_args("/in.mkv", Some(2), "180"),
+            vec![
+                "-t",
+                "180",
+                "-i",
+                "/in.mkv",
+                "-map",
+                "0:a:0",
+                "-af",
+                "pan=mono|c0=c2,ebur128=peak=true",
+                "-f",
+                "null",
+                "-"
+            ]
+        );
+        assert_eq!(
+            loudness_pass_args("/in.mkv", None, "180"),
+            vec![
+                "-t",
+                "180",
+                "-i",
+                "/in.mkv",
+                "-map",
+                "0:a:0",
+                "-af",
+                "ebur128=peak=true",
+                "-f",
+                "null",
+                "-"
+            ]
+        );
+    }
 
     #[test]
     fn channel_gain_analysis_leaves_silence_and_bounds_active_gain() {

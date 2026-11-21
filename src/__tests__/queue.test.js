@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { catJobPaths, mergeQueuedFiles, partitionQueuePaths, reexportConfirmCopy } from '../lib/queue'
+import { audioTrackNotice, catJobPaths, mergeQueuedFiles, partitionQueuePaths, reexportConfirmCopy } from '../lib/queue'
 
 describe('partitionQueuePaths', () => {
   it('separates TRS companions without discarding any dropped TRM chunks', () => {
@@ -59,5 +59,31 @@ describe('reexportConfirmCopy', () => {
       '2 files were added to the queue while this was open and are counted here.',
     )
     expect(reexportConfirmCopy({ queued: 1, queuedAtOpen: 2, incoming: 1 }).description).not.toContain('added to the')
+  })
+})
+
+describe('audioTrackNotice', () => {
+  const stream = (language, title, channels = 2) => ({ channels, sampleRate: 48000, language, title })
+
+  it('names the converted track with its language and title', () => {
+    expect(
+      audioTrackNotice({ convertedIndex: 0, streams: [stream('eng', 'Floor', 1), stream('spa', 'Interpreter', 4)] }),
+    ).toBe('This file has 2 audio tracks; converting track 1 (eng, "Floor"). The other track is not converted.')
+  })
+
+  it('leaves out tags the track does not have', () => {
+    expect(audioTrackNotice({ convertedIndex: 0, streams: [stream(null, null), stream(null, null), stream()] })).toBe(
+      'This file has 3 audio tracks; converting track 1. The other 2 tracks are not converted.',
+    )
+    expect(audioTrackNotice({ convertedIndex: 0, streams: [stream(null, 'Room 4'), stream('eng', null)] })).toContain(
+      'converting track 1 ("Room 4")',
+    )
+  })
+
+  it('says nothing for one track or no probe answer', () => {
+    expect(audioTrackNotice({ convertedIndex: 0, streams: [stream('eng', 'Floor')] })).toBe('')
+    expect(audioTrackNotice(null)).toBe('')
+    expect(audioTrackNotice(undefined)).toBe('')
+    expect(audioTrackNotice([])).toBe('')
   })
 })
