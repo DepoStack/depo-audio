@@ -203,9 +203,9 @@ export default function LocalDataSettings({
         <CardHeader>
           <CardTitle>Where DepoAudio keeps your data</CardTitle>
         </CardHeader>
-        <CardContent className="p-4 flex flex-col gap-3 text-[11px]">
+        <CardContent className="p-4 flex flex-col gap-3 type-small">
           {infoError && (
-            <p role="alert" className="rounded-md bg-destructive/10 px-3 py-2 text-destructive">
+            <p role="alert" className="rounded-md border-l-[3px] border-l-destructive px-3 py-2 text-destructive">
               {infoError}
             </p>
           )}
@@ -214,9 +214,7 @@ export default function LocalDataSettings({
               <div className="flex items-start justify-between gap-3">
                 <div className="flex flex-col min-w-0">
                   <span className="text-[12px] font-medium text-foreground">App data folder</span>
-                  <code className="mt-0.5 break-all font-mono text-[10.5px] text-[hsl(var(--text2))]">
-                    {info.appDataDir}
-                  </code>
+                  <code className="mt-0.5 break-all type-code text-[hsl(var(--text2))]">{info.appDataDir}</code>
                 </div>
                 <Button
                   size="sm"
@@ -235,13 +233,13 @@ export default function LocalDataSettings({
                   {info.items.map(item => (
                     <li key={item.name} className="flex items-baseline justify-between gap-3">
                       <span className="min-w-0">
-                        <code className="font-mono text-[10.5px] text-foreground">{item.name}</code>
+                        <code className="type-code text-foreground">{item.name}</code>
                         <span className="text-[hsl(var(--sub))]">
                           {' '}
                           — {ITEM_DESCRIPTIONS[item.kind] ?? 'DepoAudio file'}
                         </span>
                       </span>
-                      <span className="shrink-0 font-mono text-[10px] text-[hsl(var(--sub))]">
+                      <span className="shrink-0 tabular-nums text-[12px] text-[hsl(var(--sub))]">
                         {formatBytes(item.bytes)}
                       </span>
                     </li>
@@ -273,7 +271,7 @@ export default function LocalDataSettings({
         <CardHeader>
           <CardTitle>Back up and restore</CardTitle>
         </CardHeader>
-        <CardContent className="p-4 flex flex-col gap-3 text-[11px]">
+        <CardContent className="p-4 flex flex-col gap-3 type-small">
           <div className="flex items-center justify-between gap-3">
             <div className="flex flex-col min-w-0">
               <span className="text-[12px] font-medium text-foreground">Export library and transcripts</span>
@@ -347,7 +345,7 @@ export default function LocalDataSettings({
         <CardHeader>
           <CardTitle>Clear all DepoAudio data</CardTitle>
         </CardHeader>
-        <CardContent className="p-4 flex items-center justify-between gap-3 text-[11px]">
+        <CardContent className="p-4 flex items-center justify-between gap-3 type-small">
           <span className="min-w-0 text-[hsl(var(--sub))]">
             Removes the case library, settings, transcripts, bookmarks and the other files listed above from this
             computer. Recordings, converted files, export records and backups are not deleted. Export a backup first if
@@ -373,7 +371,7 @@ export default function LocalDataSettings({
       {error && (
         <p
           role="alert"
-          className="flex items-start gap-2 rounded-md bg-destructive/10 px-3 py-2 text-[11px] text-destructive"
+          className="flex items-start gap-2 rounded-md border-l-[3px] border-l-destructive px-3 py-2 type-small text-destructive"
         >
           <AlertCircle size={13} className="mt-0.5 shrink-0" /> {error}
         </p>

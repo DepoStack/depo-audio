@@ -5,7 +5,11 @@ import { fileURLToPath } from 'node:url'
 const distDirectory = fileURLToPath(new URL('../dist/', import.meta.url))
 const budgets = {
   javascript: 560 * 1024,
-  css: 64 * 1024,
+  // Raised from 64 KiB with the DepoStack brand foundation: the bundled
+  // Archivo/Fragment Mono @font-face rules with their size-adjusted fallbacks
+  // (src/styles/fonts.css) and the type-role utilities add ~2 KiB over main
+  // (59.5 KiB → ~61.3 KiB). 68 KiB keeps the same ~4 KiB of headroom main had.
+  css: 68 * 1024,
 }
 
 const emittedFiles = []

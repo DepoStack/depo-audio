@@ -73,6 +73,7 @@ export default function ConvertTab({
   doneCount,
   failCount,
   cancelledCount = 0,
+  onOpenInPlayer,
 }) {
   const {
     mode,
@@ -124,6 +125,22 @@ export default function ConvertTab({
   useEffect(() => {
     filesRef.current = files
   }, [files])
+
+  // Suggestions from the last scan that are not switched on yet
+  const pendingSuggestions = analysis
+    ? [
+        analysis.needsLeveling &&
+          mode !== 'keep' &&
+          !autoLevel && { id: 'autoLevel', label: 'Balance Microphone Levels' },
+        analysis.hasClipping && !declip && { id: 'declip', label: 'Fix Clipped Audio' },
+      ].filter(Boolean)
+    : []
+  const applySuggestions = () => {
+    for (const suggestion of pendingSuggestions) {
+      if (suggestion.id === 'autoLevel') setAutoLevel(true)
+      if (suggestion.id === 'declip') setDeclip(true)
+    }
+  }
 
   const handleModeChange = nextMode => {
     setMode(nextMode)
@@ -321,11 +338,9 @@ export default function ConvertTab({
       if (results.length > 0) {
         // Aggregate non-learned signal measurements across all files.
         const aggregated = aggregateAnalysisResults(results)
+        // The scan only suggests: nothing is switched on until the person
+        // chooses "Apply suggestions" or turns a toggle on themselves.
         setAnalysis(aggregated)
-
-        // Only enable processing that the scan actually recommends
-        if (aggregated.needsLeveling && mode !== 'keep') setAutoLevel(true)
-        if (aggregated.hasClipping) setDeclip(true)
       }
     } catch (e) {
       console.error('Scan failed:', e)
@@ -405,7 +420,7 @@ export default function ConvertTab({
                       done
                         ? 'bg-[hsl(var(--success))] border-[hsl(var(--success))] text-white'
                         : now
-                          ? 'bg-primary border-primary text-primary-foreground'
+                          ? 'bg-foreground border-foreground text-background'
                           : 'bg-card border-border text-[hsl(var(--sub))]'
                     }`}
                   >
@@ -434,7 +449,7 @@ export default function ConvertTab({
               queueLocked
                 ? 'border-border/60 bg-[hsl(var(--surface))] opacity-70'
                 : dragOver
-                  ? 'border-primary bg-[hsl(var(--gold-dim))]'
+                  ? 'border-foreground bg-secondary'
                   : 'border-border bg-[hsl(var(--surface))] hover:border-[hsl(var(--text2)/0.55)]'
             }`}
             onDragOver={queueLocked ? undefined : onDragOver}
@@ -451,7 +466,7 @@ export default function ConvertTab({
               <p className="text-[13px] font-semibold text-foreground">
                 {queueLocked ? 'File queue locked during conversion' : 'Add the recording you need to open or convert'}
               </p>
-              <p className="mt-0.5 text-[10.5px] leading-relaxed text-[hsl(var(--sub))]">
+              <p className="mt-0.5 type-small leading-relaxed text-[hsl(var(--sub))]">
                 {queueLocked
                   ? 'Wait for the current batch to finish before adding or replacing files.'
                   : 'Drop files here, or browse for WAV, MP3, FLAC, SGMCA, TRM, BWF, and supported video containers.'}
@@ -472,12 +487,12 @@ export default function ConvertTab({
           {files.length > 0 && (
             <div className="flex flex-col gap-2">
               <div className="flex items-center justify-between">
-                <span className="font-mono text-[11px] text-[hsl(var(--sub))]">
+                <span className="tabular-nums text-[12px] text-[hsl(var(--sub))]">
                   {files.length} file{files.length !== 1 ? 's' : ''} queued
                 </span>
                 {!converting && (
                   <button
-                    className="text-[11px] text-[hsl(var(--sub))] hover:text-foreground transition-colors cursor-pointer"
+                    className="type-small text-[hsl(var(--sub))] hover:text-foreground transition-colors cursor-pointer"
                     onClick={() => clearAll(converting)}
                   >
                     Clear all
@@ -492,6 +507,7 @@ export default function ConvertTab({
                     job={jobs[f.path]}
                     onRemove={() => removeFile(f.path, converting)}
                     converting={converting}
+                    onOpenInPlayer={onOpenInPlayer}
                   />
                 ))}
               </div>
@@ -501,7 +517,7 @@ export default function ConvertTab({
           {unsupportedFiles.length > 0 && (
             <p
               role="alert"
-              className="px-3 py-2 rounded-md border border-destructive/30 bg-destructive/10 text-[11px] text-destructive"
+              className="px-3 py-2 rounded-md border border-destructive/30 border-l-[3px] border-l-destructive type-small text-destructive"
             >
               Remove{' '}
               {unsupportedFiles.length === 1
@@ -514,7 +530,7 @@ export default function ConvertTab({
           {queueNotice && (
             <p
               role="status"
-              className="px-3 py-2 rounded-md border border-warning/30 bg-warning/10 text-[11px] text-foreground"
+              className="px-3 py-2 rounded-md border border-warning/30 bg-warning/10 type-small text-foreground"
             >
               {queueNotice}
             </p>
@@ -523,7 +539,7 @@ export default function ConvertTab({
           {conversionError && (
             <p
               role="alert"
-              className="px-3 py-2 rounded-md border border-destructive/30 bg-destructive/10 text-[11px] text-destructive"
+              className="px-3 py-2 rounded-md border border-destructive/30 border-l-[3px] border-l-destructive type-small text-destructive"
             >
               {conversionError}
             </p>
@@ -559,7 +575,7 @@ export default function ConvertTab({
                   size="sm"
                   title={p.desc}
                   aria-pressed={active}
-                  className={`rounded-full ${active ? 'border-primary bg-[hsl(var(--gold-dim))] text-foreground' : ''}`}
+                  className={active ? 'border-foreground bg-secondary text-foreground' : ''}
                   onClick={() => {
                     handleModeChange(s.mode)
                     setFormatOut(s.format)
@@ -583,7 +599,7 @@ export default function ConvertTab({
           {/* ── OUTPUT MODE (segmented) ──────────────────────────────────── */}
           <Card className="workflow-section">
             <CardHeader>
-              <CardTitle>OUTPUT MODE</CardTitle>
+              <CardTitle>Output mode</CardTitle>
             </CardHeader>
             <CardContent>
               <div className="output-mode-grid grid grid-cols-1 gap-1.5 bg-secondary/45 p-2 sm:grid-cols-3">
@@ -591,13 +607,13 @@ export default function ConvertTab({
                   <button
                     key={m.id}
                     aria-pressed={mode === m.id}
-                    className={`flex items-center gap-3 rounded-md border p-2.5 text-left transition-[color,background-color,border-color,transform] duration-150 active:translate-y-px focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring ${mode === m.id ? 'border-primary/40 bg-card' : 'border-transparent hover:border-border hover:bg-card/55'}`}
+                    className={`flex items-center gap-3 rounded-md border p-2.5 text-left transition-[color,background-color,border-color,transform] duration-150 active:translate-y-px ${mode === m.id ? 'border-foreground bg-card' : 'border-transparent hover:border-border hover:bg-card/55'}`}
                     onClick={() => handleModeChange(m.id)}
                   >
                     <ModeIcon id={m.id} active={mode === m.id} />
                     <div className="flex flex-col items-start">
                       <span className="text-[12px] font-semibold text-foreground">{m.label}</span>
-                      <span className="text-[10px] text-[hsl(var(--text2))] leading-tight">{m.desc}</span>
+                      <span className="type-small text-[hsl(var(--text2))] leading-tight">{m.desc}</span>
                     </div>
                   </button>
                 ))}
@@ -608,7 +624,7 @@ export default function ConvertTab({
           {/* ── FORMAT (tiles with plain-English trade-offs) ─────────────── */}
           <Card className="workflow-section">
             <CardHeader>
-              <CardTitle>FORMAT</CardTitle>
+              <CardTitle>Format</CardTitle>
             </CardHeader>
             <CardContent>
               <div className="format-output-grid grid grid-cols-1 gap-2 p-3 min-[420px]:grid-cols-2 sm:grid-cols-3 lg:grid-cols-5">
@@ -618,15 +634,15 @@ export default function ConvertTab({
                     aria-pressed={formatOut === f.id}
                     className={`relative flex flex-col items-start gap-0.5 px-3 py-2.5 rounded-lg border text-left transition-all cursor-pointer focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring ${
                       formatOut === f.id
-                        ? 'border-primary bg-[hsl(var(--gold-dim))]'
+                        ? 'border-foreground bg-secondary'
                         : 'border-border bg-card hover:border-[hsl(var(--sub))]'
                     }`}
                     onClick={() => setFormatOut(f.id)}
                   >
                     <span className="text-[13px] font-bold text-foreground">{f.label}</span>
-                    <span className="text-[10px] text-[hsl(var(--text2))] leading-tight">{f.desc}</span>
+                    <span className="type-small text-[hsl(var(--text2))] leading-tight">{f.desc}</span>
                     {formatOut === f.id && (
-                      <span aria-hidden="true" className="absolute top-1.5 right-2 text-foreground text-[11px]">
+                      <span aria-hidden="true" className="absolute top-1.5 right-2 text-foreground type-small">
                         <Check aria-hidden="true" className="h-3.5 w-3.5" strokeWidth={2.2} />
                       </span>
                     )}
@@ -636,11 +652,11 @@ export default function ConvertTab({
               <div className="flex items-end gap-3 flex-wrap px-3 pb-3">
                 <div className="min-w-[130px]">
                   <Label className="mb-1 block" htmlFor="sample-rate">
-                    SAMPLE RATE
+                    Sample rate
                   </Label>
                   <select
                     id="sample-rate"
-                    className="flex h-8 w-full rounded-lg border border-border bg-card px-2.5 py-1.5 text-xs text-foreground transition-colors focus:outline-hidden focus:border-primary cursor-pointer"
+                    className="flex h-8 w-full rounded-lg border border-border bg-card px-2.5 py-1.5 type-small text-foreground transition-colors focus:border-ring cursor-pointer"
                     value={effectiveOutputRate(formatOut, rate)}
                     disabled={formatOut in FIXED_OUTPUT_RATES}
                     title={
@@ -660,14 +676,14 @@ export default function ConvertTab({
                 </div>
                 {formatOut === 'mp3' && (
                   <div>
-                    <Label className="mb-1 block">MP3 BITRATE</Label>
+                    <Label className="mb-1 block">MP3 bitrate</Label>
                     <div className="flex gap-px bg-secondary rounded-md p-0.5">
                       {MP3_BITRATES.map(b => (
                         <button
                           key={b.value}
                           title={b.desc}
                           aria-pressed={mp3Bitrate === b.value}
-                          className={`px-2.5 py-1.5 text-[11px] font-semibold rounded-md transition-colors cursor-pointer focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring ${mp3Bitrate === b.value ? 'bg-card text-foreground shadow-xs' : 'text-[hsl(var(--sub))] hover:text-[hsl(var(--text2))]'}`}
+                          className={`px-2.5 py-1.5 type-label rounded-md transition-colors cursor-pointer ${mp3Bitrate === b.value ? 'bg-card text-foreground ring-1 ring-inset ring-foreground' : 'text-[hsl(var(--sub))] hover:text-[hsl(var(--text2))]'}`}
                           onClick={() => setMp3Bitrate(b.value)}
                         >
                           {b.label}
@@ -686,8 +702,8 @@ export default function ConvertTab({
           {files.length > 0 && mode !== 'keep' && (
             <Card className="workflow-section">
               <CardHeader>
-                <CardTitle>CHANNELS</CardTitle>
-                <span className="text-[10px] text-[hsl(var(--sub))]">
+                <CardTitle>Channels</CardTitle>
+                <span className="type-small text-[hsl(var(--sub))]">
                   {mode === 'stereo' && autoLevel && 'Name channels — volume managed by auto-level'}
                   {mode === 'stereo' && !autoLevel && 'Name channels and adjust mix volumes'}
                   {mode === 'split' && 'Channel names used as output filenames'}
@@ -701,9 +717,9 @@ export default function ConvertTab({
                         className="w-2 h-2 rounded-full shrink-0"
                         style={{ background: CH_COLORS[i % CH_COLORS.length] }}
                       />
-                      <span className="font-mono text-[10px] text-[hsl(var(--sub))] shrink-0 w-7">CH {i + 1}</span>
+                      <span className="tabular-nums text-[12px] text-[hsl(var(--sub))] shrink-0 w-7">CH {i + 1}</span>
                       <Input
-                        className="h-7 text-[11px] w-32 shrink-0"
+                        className="h-7 type-small w-32 shrink-0"
                         value={l}
                         maxLength={24}
                         placeholder={`Channel ${i + 1}`}
@@ -725,7 +741,7 @@ export default function ConvertTab({
                             }
                           />
                           <span
-                            className={`font-mono text-[10px] w-8 text-right shrink-0 ${autoLevel ? 'text-foreground' : 'text-[hsl(var(--sub))]'}`}
+                            className={`tabular-nums text-[12px] w-8 text-right shrink-0 ${autoLevel ? 'text-foreground' : 'text-[hsl(var(--sub))]'}`}
                           >
                             {autoLevel ? 'auto' : chanVols[i] === 0 ? 'mute' : chanVols[i].toFixed(2)}
                           </span>
@@ -741,7 +757,7 @@ export default function ConvertTab({
           {/* ── AUDIO PROCESSING (unified panel) ─────────────────────────── */}
           <Card className="workflow-section">
             <CardHeader>
-              <CardTitle>AUDIO PROCESSING</CardTitle>
+              <CardTitle>Audio processing</CardTitle>
               <Button variant="scan" size="sm" onClick={handleScan} disabled={!files.length || scanning || converting}>
                 {scanning
                   ? `Scanning${files.length > 1 ? ` (${files.length} files)` : ''}…`
@@ -750,14 +766,26 @@ export default function ConvertTab({
             </CardHeader>
             <CardContent>
               {!analysis && !scanning && !scanError && (
-                <p className="px-4 py-2.5 text-[11px] text-[hsl(var(--sub))]">
-                  Drop files and click <strong className="text-foreground">Scan</strong> to detect issues and
-                  auto-enable the right fixes.
+                <p className="px-4 py-2.5 type-small text-[hsl(var(--sub))]">
+                  Drop files and click <strong className="text-foreground">Scan</strong> to check for level differences
+                  and clipping. Scan suggests fixes; nothing changes until you apply them.
                 </p>
               )}
 
+              {analysis && !scanning && pendingSuggestions.length > 0 && (
+                <div className="flex flex-wrap items-center justify-between gap-2 px-4 py-2.5 border-b border-border/60">
+                  <p className="type-small text-[hsl(var(--text2))]">
+                    Scan suggests {pendingSuggestions.map(s => s.label).join(' and ')}. Nothing is switched on until you
+                    apply {pendingSuggestions.length === 1 ? 'it' : 'them'}.
+                  </p>
+                  <Button variant="outline" size="sm" onClick={applySuggestions} disabled={converting}>
+                    Apply suggestions
+                  </Button>
+                </div>
+              )}
+
               {scanError && !scanning && (
-                <p role="alert" className="px-4 py-2.5 text-[11px] text-[hsl(var(--warning))]">
+                <p role="alert" className="px-4 py-2.5 type-small text-[hsl(var(--warning))]">
                   {scanError}
                 </p>
               )}
@@ -770,7 +798,7 @@ export default function ConvertTab({
                       aria-label="Recording scan status"
                       aria-live="polite"
                       aria-atomic="true"
-                      className="text-[11px] text-[hsl(var(--sub))] flex items-center gap-1.5 min-w-0"
+                      className="type-small text-[hsl(var(--sub))] flex items-center gap-1.5 min-w-0"
                     >
                       <Loader2
                         aria-hidden="true"
@@ -791,7 +819,7 @@ export default function ConvertTab({
                       )}
                     </p>
                     <button
-                      className="text-[11px] text-[hsl(var(--sub))] hover:text-foreground transition-colors cursor-pointer shrink-0"
+                      className="type-small text-[hsl(var(--sub))] hover:text-foreground transition-colors cursor-pointer shrink-0"
                       onClick={cancelScan}
                       disabled={scanCancelling}
                     >
@@ -799,7 +827,7 @@ export default function ConvertTab({
                     </button>
                   </div>
                   {scanError && (
-                    <p role="alert" className="mb-1.5 text-[11px] text-[hsl(var(--warning))]">
+                    <p role="alert" className="mb-1.5 type-small text-[hsl(var(--warning))]">
                       {scanError}
                     </p>
                   )}
@@ -809,10 +837,10 @@ export default function ConvertTab({
                     aria-valuemin={0}
                     aria-valuemax={100}
                     aria-valuenow={scanProgressPercent}
-                    className="w-full h-1 bg-border rounded-full overflow-hidden"
+                    className="w-full h-1 bg-border overflow-hidden"
                   >
                     <div
-                      className="h-full bg-primary rounded-full transition-all motion-reduce:transition-none duration-300"
+                      className="h-full bg-foreground transition-all motion-reduce:transition-none duration-300"
                       style={{
                         width: `${scanProgressPercent}%`,
                       }}
@@ -848,8 +876,8 @@ export default function ConvertTab({
                   <>
                     {(showAutoLevel || showDeclip) && (
                       <div className="px-4 py-1.5 bg-secondary/50">
-                        <span className="font-mono text-[9px] font-medium tracking-[1.2px] uppercase text-[hsl(var(--sub))]">
-                          {hasAnalysis && !showAllProcessing ? 'RECOMMENDED' : 'SIGNAL REPAIR'}
+                        <span className="type-label text-[hsl(var(--sub))]">
+                          {hasAnalysis && !showAllProcessing ? 'Recommended' : 'Signal repair'}
                         </span>
                       </div>
                     )}
@@ -888,9 +916,7 @@ export default function ConvertTab({
                     {/* ── Fine-tune ── */}
                     {(showHpf || showNormalize || showTrim || showFade) && (
                       <div className="px-4 py-1.5 bg-secondary/50">
-                        <span className="font-mono text-[9px] font-medium tracking-[1.2px] uppercase text-[hsl(var(--sub))]">
-                          FINE-TUNE
-                        </span>
+                        <span className="type-label text-[hsl(var(--sub))]">Fine-tune</span>
                       </div>
                     )}
 
@@ -937,14 +963,14 @@ export default function ConvertTab({
                               <span className="text-[hsl(var(--sub))]">—</span>
                               <input
                                 type="number"
-                                className="w-[42px] bg-secondary border border-border rounded px-1 py-px font-mono text-[11px] text-foreground text-center focus:border-primary outline-hidden"
+                                className="w-[42px] bg-secondary border border-border rounded px-1 py-px tabular-nums text-[12px] text-foreground text-center focus:border-ring outline-hidden"
                                 min="0.1"
                                 max="5"
                                 step="0.1"
                                 value={fadeDur}
                                 onChange={e => setFadeDur(Math.max(0.1, parseFloat(e.target.value) || 0.5))}
                               />
-                              <span className="text-[11px] text-[hsl(var(--sub))]">s</span>
+                              <span className="type-small text-[hsl(var(--sub))]">s</span>
                             </span>
                           )
                         }
@@ -954,7 +980,7 @@ export default function ConvertTab({
                     {/* Show more / less toggle */}
                     {hasAnalysis && hiddenCount > 0 && !showAllProcessing && (
                       <button
-                        className="px-4 py-2 text-[11px] text-foreground hover:text-foreground transition-colors cursor-pointer text-left"
+                        className="px-4 py-2 type-small text-foreground hover:text-foreground transition-colors cursor-pointer text-left"
                         onClick={() => setShowAllProcessing(true)}
                       >
                         Show {hiddenCount} more option{hiddenCount !== 1 ? 's' : ''}...
@@ -962,7 +988,7 @@ export default function ConvertTab({
                     )}
                     {hasAnalysis && showAllProcessing && (
                       <button
-                        className="px-4 py-2 text-[11px] text-[hsl(var(--sub))] hover:text-foreground transition-colors cursor-pointer text-left"
+                        className="px-4 py-2 type-small text-[hsl(var(--sub))] hover:text-foreground transition-colors cursor-pointer text-left"
                         onClick={() => setShowAllProcessing(false)}
                       >
                         Show less
@@ -974,51 +1000,49 @@ export default function ConvertTab({
 
               {/* Processing chain preview */}
               <div className="flex items-center gap-2 px-4 py-2.5 border-t border-border/60 bg-secondary/30">
-                <span className="font-mono text-[9px] font-medium tracking-[1.2px] uppercase text-[hsl(var(--sub))] shrink-0">
-                  CHAIN
-                </span>
+                <span className="type-label text-[hsl(var(--sub))] shrink-0">Chain</span>
                 {anyProcessing ? (
                   <div className="flex items-center gap-1 flex-wrap">
                     {declip && (
                       <>
                         <Badge variant="info">De-clip</Badge>
-                        <span className="text-[10px] text-[hsl(var(--sub))]">→</span>
+                        <span className="type-small text-[hsl(var(--sub))]">→</span>
                       </>
                     )}
                     {hpf && (
                       <>
                         <Badge variant="default">HPF</Badge>
-                        <span className="text-[10px] text-[hsl(var(--sub))]">→</span>
+                        <span className="type-small text-[hsl(var(--sub))]">→</span>
                       </>
                     )}
                     {autoLevelEffective && (
                       <>
                         <Badge variant="info">Auto-Level</Badge>
-                        <span className="text-[10px] text-[hsl(var(--sub))]">→</span>
+                        <span className="type-small text-[hsl(var(--sub))]">→</span>
                       </>
                     )}
                     {normalize && (
                       <>
                         <Badge variant="default">Normalize</Badge>
-                        <span className="text-[10px] text-[hsl(var(--sub))]">→</span>
+                        <span className="type-small text-[hsl(var(--sub))]">→</span>
                       </>
                     )}
                     {trimEffective && (
                       <>
                         <Badge variant="default">Leading trim</Badge>
-                        <span className="text-[10px] text-[hsl(var(--sub))]">→</span>
+                        <span className="type-small text-[hsl(var(--sub))]">→</span>
                       </>
                     )}
                     {fade && <Badge variant="default">Fade {fadeDur}s</Badge>}
                   </div>
                 ) : (
-                  <span className="text-[10px] text-[hsl(var(--sub))] italic">
+                  <span className="type-small text-[hsl(var(--sub))] italic">
                     No processing — direct transcode only
                   </span>
                 )}
               </div>
 
-              <p className="px-4 py-2 text-[10px] text-[hsl(var(--sub))] border-t border-border/60">
+              <p className="px-4 py-2 type-small text-[hsl(var(--sub))] border-t border-border/60">
                 All processing runs on your machine — nothing is uploaded or sent anywhere.
               </p>
             </CardContent>
@@ -1027,13 +1051,13 @@ export default function ConvertTab({
           {/* ── DESTINATION ──────────────────────────────────────────────── */}
           <Card className="workflow-section">
             <CardHeader>
-              <CardTitle>DESTINATION</CardTitle>
+              <CardTitle>Destination</CardTitle>
             </CardHeader>
             <CardContent>
               <div className="flex items-end gap-3 flex-wrap p-3">
                 <div className="flex-1 min-w-[200px]">
                   <Label className="mb-1 block" htmlFor="case-name">
-                    CASE NAME
+                    Case name
                   </Label>
                   <Input
                     id="case-name"
@@ -1044,7 +1068,7 @@ export default function ConvertTab({
                 </div>
                 <div className="flex-1 min-w-[200px]">
                   <Label className="mb-1 block" htmlFor="out-dir">
-                    OUTPUT FOLDER
+                    Output folder
                   </Label>
                   <div className="flex gap-1.5">
                     <Input
@@ -1079,17 +1103,17 @@ export default function ConvertTab({
             <Badge variant="active">
               <span
                 aria-hidden="true"
-                className="w-1.5 h-1.5 rounded-full bg-primary animate-pulse motion-reduce:animate-none mr-1.5"
+                className="w-1.5 h-1.5 rounded-full bg-foreground animate-pulse motion-reduce:animate-none mr-1.5"
               />
               {cancelling ? 'Cancelling…' : doneCount > 0 ? `${doneCount} / ${files.length} done` : 'Converting…'}
             </Badge>
           )}
           {!converting && resultCount > 0 && <Badge variant={resultVariant}>{resultParts.join(', ')}</Badge>}
           {!converting && resultCount === 0 && files.length === 0 && (
-            <p className="text-[11.5px] text-[hsl(var(--sub))]">Add a recording to choose an output and convert.</p>
+            <p className="type-small text-[hsl(var(--sub))]">Add a recording to choose an output and convert.</p>
           )}
           {!converting && resultCount === 0 && unsupportedFiles.length > 0 && (
-            <p className="text-[11.5px] text-warning">Export or remove the unsupported recording before converting.</p>
+            <p className="type-small text-warning">Export or remove the unsupported recording before converting.</p>
           )}
           {!converting && resultCount === 0 && files.length > 0 && unsupportedFiles.length === 0 && (
             <p className="text-[12px] text-[hsl(var(--sub))] truncate">

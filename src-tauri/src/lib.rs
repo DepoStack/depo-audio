@@ -1,5 +1,6 @@
 mod analysis;
 mod catdetect;
+mod clock;
 mod commands;
 mod conversion;
 mod ffmpeg;

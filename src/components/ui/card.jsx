@@ -4,10 +4,7 @@ import { cn } from '../../lib/utils'
 const Card = React.forwardRef(({ className, ...props }, ref) => (
   <div
     ref={ref}
-    className={cn(
-      'rounded-xl border border-border/75 bg-card/80 text-card-foreground overflow-hidden shadow-none',
-      className,
-    )}
+    className={cn('rounded-xl border border-border/75 bg-card/80 text-card-foreground overflow-hidden', className)}
     {...props}
   />
 ))
@@ -23,14 +20,7 @@ const CardHeader = React.forwardRef(({ className, ...props }, ref) => (
 CardHeader.displayName = 'CardHeader'
 
 const CardTitle = React.forwardRef(({ as: Component = 'h3', className, ...props }, ref) => (
-  <Component
-    ref={ref}
-    className={cn(
-      'font-mono text-[9.5px] font-semibold tracking-[1.25px] uppercase text-[hsl(var(--text2))]',
-      className,
-    )}
-    {...props}
-  />
+  <Component ref={ref} className={cn('type-label text-[hsl(var(--text2))]', className)} {...props} />
 ))
 CardTitle.displayName = 'CardTitle'
 

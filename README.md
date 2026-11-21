@@ -15,7 +15,7 @@ Open and convert proprietary court-recording formats, improve levels and clippin
 ## What it does
 
 > **Release truth:** the download link currently serves published v1.0.2. This
-> branch prepares unpublished v1.0.3 and must not be described as downloadable
+> branch prepares unpublished v1.1.0 and must not be described as downloadable
 > until its private candidate, installers, approvals, and public release are
 > independently verified.
 
@@ -26,7 +26,7 @@ DepoAudio handles the audio side of a deposition or hearing, end to end:
 - ▶️ **Play & review** in a built-in player — color-coded audio tracks, 0.5×–2× speed, A-B loop, bookmarks, and a synced transcript editor.
 - 🗂️ **Organize** every conversion into an auto-filed case library, and pull recordings straight from installed court software.
 
-> **Recordings stay local.** Conversion, playback, analysis, and cleanup run on your machine; audio is not uploaded. Optional update checks may use the network. No account or subscription is required. Unpublished v1.0.3 does not install or download learned-model files.
+> **Recordings stay local.** Conversion, playback, analysis, and cleanup run on your machine; audio is not uploaded. Optional update checks may use the network. No account or subscription is required. Unpublished v1.1.0 does not install or download learned-model files.
 
 ---
 
@@ -75,7 +75,7 @@ Scanning is a bounded, cancellable local analysis pass. FFmpeg performs the sele
 - **Scan** measures channel loudness, peaks, clipping, balance, and sample rate
 - **Auto-level** — balances per-channel loudness from a bounded representative sample
 - **De-clip** distorted peaks, apply a high-pass filter, normalize, trim leading silence, or add fades
-- Learned denoise, clarity reconstruction, room-echo reduction, turn detection, speaker estimation, and neural quality scoring are not included in v1.0.3
+- Learned denoise, clarity reconstruction, room-echo reduction, turn detection, speaker estimation, and neural quality scoring are not included in v1.1.0
 - **Live progress** with a Cancel button; analysis and sidecar operations use bounded samples, timeouts, and cancellation paths
 
 ### ▶️ Built-in player
@@ -112,7 +112,7 @@ Scanning is a bounded, cancellable local analysis pass. FFmpeg performs the sele
 
 ## Learned-model boundary
 
-Unpublished v1.0.3 deliberately distributes and exposes **zero learned
+Unpublished v1.1.0 deliberately distributes and exposes **zero learned
 models**. It does not bundle model weights or ONNX Runtime, download models,
 load model files left in app data by an older build, or present learned
 processing controls. Settings may list an exact legacy regular file only so
@@ -120,7 +120,7 @@ the user can delete it and reclaim storage.
 
 The public [`models-v1`](../../releases/tag/models-v1) release remains immutable
 because published v1.0.2 can reference it. That historical compatibility
-contract is not a capability or download source for v1.0.3, and its provenance
+contract is not a capability or download source for v1.1.0, and its provenance
 and commercial-rights review remains a separate owner decision.
 
 ---
@@ -177,7 +177,7 @@ gitleaks git --no-banner --redact --exit-code 1 --log-opts=--all .   # skipped b
 The deterministic size check protects the emitted desktop frontend from accidental JavaScript or CSS growth. Rust
 license, source, and dependency policy lives in [`deny.toml`](deny.toml). Native binaries and installer payloads require
 the separate evidence ledger in [`THIRD_PARTY_LICENSES.md`](THIRD_PARTY_LICENSES.md); a green Cargo check is not
-redistribution clearance for those artifacts. The release check also proves the v1.0.3 compiled application graph,
+redistribution clearance for those artifacts. The release check also proves the v1.1.0 compiled application graph,
 packaged resources, active setup paths, and user interface contain no learned-model distribution or execution path.
 The proposed packaged-app automation remains deferred until
 its dependency graph passes the documented gate in [`docs/PACKAGED-APP-TESTING.md`](docs/PACKAGED-APP-TESTING.md).
@@ -227,7 +227,7 @@ gh workflow run release.yml --ref main -f tag=vX.Y.Z
 
 GitHub Actions verifies the private-candidate contract and creates one commit-bound **private draft** before building. A retry may reuse that draft only when it is still empty, bound to the exact same commit, and retains the canonical name, changelog notes, and prerelease state; stale, populated, altered, or duplicate same-tag drafts fail closed for manual reconciliation. The workflow regenerates commit-bound dependency evidence, builds a **universal macOS** `.dmg` and both **Windows** installers, tests the extracted downloadable containers, and routes every installer and evidence upload through a helper that rechecks the exact draft ID, tag, source commit, private state, and asset-name uniqueness. The Tauri action runs in build-only mode with no release ID, tag, or GitHub token, so it cannot replace release assets. Signing, notarization, and updater signatures are enabled independently only when their complete credential sets are present.
 
-> **The build workflow never publishes.** Its final job requires the exact MSI, NSIS EXE, DMG, versioned universal app archive, inventories, source evidence, notices, SBOMs, and toolchain record to remain on the same private draft. GitHub requires release-level token access even to read that draft, so the final job's inline audit receives `contents: write`; the release contract rejects upload, edit, delete, and publish commands in that job. It rejects `latest.json`; signed updater metadata belongs to a separate publication-approval step after exact-asset installation tests. Do not use GitHub's manual Publish button while any entry in `docs/V1.0.3-RELEASE-GATE.json` is open.
+> **The build workflow never publishes.** Its final job requires the exact MSI, NSIS EXE, DMG, versioned universal app archive, inventories, source evidence, notices, SBOMs, and toolchain record to remain on the same private draft. GitHub requires release-level token access even to read that draft, so the final job's inline audit receives `contents: write`; the release contract rejects upload, edit, delete, and publish commands in that job. It rejects `latest.json`; signed updater metadata belongs to a separate publication-approval step after exact-asset installation tests. Do not use GitHub's manual Publish button while any entry in `docs/V1.1.0-RELEASE-GATE.json` is open.
 
 ### Release signing configuration (one-time)
 
@@ -243,7 +243,7 @@ Without platform-signing credentials, private candidates contain an ad-hoc-signe
 
 If a key is lost or may be compromised, follow [`docs/RUNBOOK-SIGNING-KEYS.md`](docs/RUNBOOK-SIGNING-KEYS.md). To pull or replace a published release, follow [`docs/RUNBOOK-BAD-RELEASE.md`](docs/RUNBOOK-BAD-RELEASE.md).
 
-The private-candidate workflow scopes signing credentials to packaging, removes the imported Windows private key before executing candidate binaries, and uploads generated signatures through the verified draft helper. It deliberately does not generate or publish `latest.json`, and it never publishes the draft. The manual [`publish-release.yml`](.github/workflows/publish-release.yml) workflow first supports a read-only manifest inspection, then permits publication only from a protected `release-publication` environment after the committed gate binds the exact draft, assets, source and approval commits, updater decision, and current UTC release date. It never rebuilds, deletes, or replaces an installer, and it never creates or moves a tag. One person can complete a release: instead of a second reviewer, the workflow requires a wait timer of at least 24 hours on `release-publication` that administrators cannot bypass (deploying only from `main`), an active tag ruleset that restricts creating, moving, and deleting `v*` tags, and a signed annotated release tag at the exact source commit that GitHub reports as verified and whose tagger is the release owner email recorded in the gate. Those are dashboard settings the release owner makes by hand; the workflow reads them back and fails before any release write. Who is on the tag ruleset's bypass list is the one setting the workflow cannot fully check. Follow the exact [candidate-to-publication runbook](docs/V1.0.3-RELEASE-CANDIDATE.md#exact-candidate-to-publication-sequence).
+The private-candidate workflow scopes signing credentials to packaging, removes the imported Windows private key before executing candidate binaries, and uploads generated signatures through the verified draft helper. It deliberately does not generate or publish `latest.json`, and it never publishes the draft. The manual [`publish-release.yml`](.github/workflows/publish-release.yml) workflow first supports a read-only manifest inspection, then permits publication only from a protected `release-publication` environment after the committed gate binds the exact draft, assets, source and approval commits, updater decision, and current UTC release date. It never rebuilds, deletes, or replaces an installer, and it never creates or moves a tag. One person can complete a release: instead of a second reviewer, the workflow requires a wait timer of at least 24 hours on `release-publication` that administrators cannot bypass (deploying only from `main`), an active tag ruleset that restricts creating, moving, and deleting `v*` tags, and a signed annotated release tag at the exact source commit that GitHub reports as verified and whose tagger is the release owner email recorded in the gate. Those are dashboard settings the release owner makes by hand; the workflow reads them back and fails before any release write. Who is on the tag ruleset's bypass list is the one setting the workflow cannot fully check. Follow the exact [candidate-to-publication runbook](docs/V1.1.0-RELEASE-CANDIDATE.md#exact-candidate-to-publication-sequence).
 
 ---
 

@@ -118,28 +118,26 @@ export default function ImportModal({ defaultLabels, existingCases, onDone, onCl
               type="button"
               disabled={saving}
               aria-label="Close import dialog"
-              className="rounded-sm p-1 text-[hsl(var(--sub))] hover:text-foreground transition-colors disabled:opacity-40 focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1"
+              className="rounded-sm p-1 text-[hsl(var(--sub))] hover:text-foreground transition-colors disabled:opacity-40"
             >
               <X size={16} aria-hidden="true" />
             </button>
           </DialogClose>
         </DialogHeader>
 
-        <DialogDescription className="px-5 pt-2.5 text-xs text-[hsl(var(--sub))] leading-relaxed">
+        <DialogDescription className="px-5 pt-2.5 type-small text-[hsl(var(--sub))] leading-relaxed">
           Add already-converted or existing audio files directly to your library — no conversion needed.
         </DialogDescription>
 
         {/* File picker */}
         <fieldset className="min-w-0 px-5 pt-3.5">
-          <legend className="font-mono text-[9px] font-medium tracking-[1.2px] uppercase text-[hsl(var(--sub))]">
-            Files
-          </legend>
+          <legend className="type-label text-[hsl(var(--sub))]">Files</legend>
           <div className="flex items-center gap-2.5 mt-1.5">
             <Button type="button" size="sm" onClick={browsePick}>
               Browse files…
             </Button>
             {selectedFiles.length > 0 && (
-              <span role="status" aria-live="polite" className="text-[11px] text-[hsl(var(--sub))]">
+              <span role="status" aria-live="polite" className="type-small text-[hsl(var(--sub))]">
                 {selectedFiles.length} file{selectedFiles.length !== 1 ? 's' : ''} selected
               </span>
             )}
@@ -149,13 +147,13 @@ export default function ImportModal({ defaultLabels, existingCases, onDone, onCl
               {selectedFiles.map((p, i) => (
                 <div
                   key={i}
-                  className="flex items-center justify-between px-2.5 py-1 bg-secondary rounded-md text-[11px] text-[hsl(var(--text2))]"
+                  className="flex items-center justify-between px-2.5 py-1 bg-secondary rounded-md type-small text-[hsl(var(--text2))]"
                 >
                   <span className="truncate min-w-0">{basename(p)}</span>
                   <button
                     type="button"
                     aria-label={`Remove ${basename(p)} from the import`}
-                    className="text-[hsl(var(--sub))] hover:text-destructive transition-colors shrink-0 ml-2 rounded-sm p-1 focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1"
+                    className="text-[hsl(var(--sub))] hover:text-destructive transition-colors shrink-0 ml-2 rounded-sm p-1"
                     onClick={() => setSelectedFiles(f => f.filter((_, j) => j !== i))}
                   >
                     <X size={12} aria-hidden="true" />
@@ -168,9 +166,7 @@ export default function ImportModal({ defaultLabels, existingCases, onDone, onCl
 
         {/* Case */}
         <fieldset className="min-w-0 px-5 pt-3.5">
-          <legend className="font-mono text-[9px] font-medium tracking-[1.2px] uppercase text-[hsl(var(--sub))]">
-            Case name
-          </legend>
+          <legend className="type-label text-[hsl(var(--sub))]">Case name</legend>
           <div className="mt-1.5">
             {existingCases.length > 0 && (
               <div role="group" aria-label="Case type" className="flex gap-0.5 bg-secondary rounded-md p-0.5 mb-2">
@@ -178,9 +174,9 @@ export default function ImportModal({ defaultLabels, existingCases, onDone, onCl
                   type="button"
                   aria-pressed={caseInputMode === 'existing'}
                   className={cn(
-                    'flex-1 px-3 py-1.5 rounded-md text-xs font-semibold transition-colors focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1',
+                    'flex-1 px-3 py-1.5 rounded-md type-label transition-colors',
                     caseInputMode === 'existing'
-                      ? 'bg-[hsl(var(--gold-dim))] text-foreground'
+                      ? 'bg-card text-foreground ring-1 ring-inset ring-foreground'
                       : 'text-[hsl(var(--sub))] hover:text-[hsl(var(--text2))]',
                   )}
                   onClick={() => setCaseInputMode('existing')}
@@ -191,9 +187,9 @@ export default function ImportModal({ defaultLabels, existingCases, onDone, onCl
                   type="button"
                   aria-pressed={caseInputMode === 'new'}
                   className={cn(
-                    'flex-1 px-3 py-1.5 rounded-md text-xs font-semibold transition-colors focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1',
+                    'flex-1 px-3 py-1.5 rounded-md type-label transition-colors',
                     caseInputMode === 'new'
-                      ? 'bg-[hsl(var(--gold-dim))] text-foreground'
+                      ? 'bg-card text-foreground ring-1 ring-inset ring-foreground'
                       : 'text-[hsl(var(--sub))] hover:text-[hsl(var(--text2))]',
                   )}
                   onClick={() => setCaseInputMode('new')}
@@ -209,7 +205,7 @@ export default function ImportModal({ defaultLabels, existingCases, onDone, onCl
                 </Label>
                 <select
                   id="library-import-existing-case"
-                  className="flex h-8 w-full rounded-lg border border-border bg-card px-2.5 py-1.5 text-xs text-foreground transition-colors focus:outline-hidden focus:border-primary focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1"
+                  className="flex h-8 w-full rounded-lg border border-border bg-card px-2.5 py-1.5 type-small text-foreground transition-colors focus:border-ring"
                   value={caseName}
                   onChange={e => setCaseName(e.target.value)}
                 >
@@ -239,9 +235,7 @@ export default function ImportModal({ defaultLabels, existingCases, onDone, onCl
 
         {/* Speaker label */}
         <fieldset className="min-w-0 px-5 pt-3.5">
-          <legend className="font-mono text-[9px] font-medium tracking-[1.2px] uppercase text-[hsl(var(--sub))]">
-            Speaker or participant
-          </legend>
+          <legend className="type-label text-[hsl(var(--sub))]">Speaker or participant</legend>
           <div className="mt-1.5">
             <div role="group" aria-label="Speaker or participant label" className="flex flex-wrap gap-1.5">
               {defaultLabels.map(l => (
@@ -251,10 +245,7 @@ export default function ImportModal({ defaultLabels, existingCases, onDone, onCl
                   aria-pressed={label === l}
                   variant="outline"
                   size="sm"
-                  className={cn(
-                    'rounded-full',
-                    label === l && 'bg-[hsl(var(--gold-dim))] text-foreground border-primary/30',
-                  )}
+                  className={cn(label === l && 'bg-secondary text-foreground border-foreground')}
                   onClick={() => {
                     setLabel(l)
                     setCustomLabel('')
@@ -268,10 +259,7 @@ export default function ImportModal({ defaultLabels, existingCases, onDone, onCl
                 aria-pressed={label === '__custom__'}
                 variant="outline"
                 size="sm"
-                className={cn(
-                  'rounded-full',
-                  label === '__custom__' && 'bg-[hsl(var(--gold-dim))] text-foreground border-primary/30',
-                )}
+                className={cn(label === '__custom__' && 'bg-secondary text-foreground border-foreground')}
                 onClick={() => setLabel('__custom__')}
               >
                 Custom…
@@ -292,7 +280,7 @@ export default function ImportModal({ defaultLabels, existingCases, onDone, onCl
               </>
             )}
           </div>
-          <p className="mt-1.5 text-[10px] text-[hsl(var(--sub))] leading-relaxed">
+          <p className="mt-1.5 type-small text-[hsl(var(--sub))] leading-relaxed">
             All selected files will be filed under this label. Import multiple times for multiple speakers.
           </p>
         </fieldset>
@@ -302,15 +290,13 @@ export default function ImportModal({ defaultLabels, existingCases, onDone, onCl
             ref={errorRef}
             role="alert"
             tabIndex={-1}
-            className="mx-5 mt-2.5 px-3 py-2 bg-destructive/10 border border-destructive/20 rounded-md text-xs text-destructive focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1"
+            className="mx-5 mt-2.5 px-3 py-2 border-l-[3px] border-l-destructive border border-destructive/20 rounded-md type-small text-destructive"
           >
             <p>{error}</p>
             {errorDetail && (
               <details className="mt-1.5 text-foreground">
-                <summary className="w-fit cursor-pointer font-semibold focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1">
-                  Technical details
-                </summary>
-                <p className="mt-1 whitespace-pre-wrap break-words text-[10px] text-[hsl(var(--sub))]">{errorDetail}</p>
+                <summary className="w-fit cursor-pointer font-semibold">Technical details</summary>
+                <p className="mt-1 whitespace-pre-wrap break-words type-small text-[hsl(var(--sub))]">{errorDetail}</p>
               </details>
             )}
           </div>

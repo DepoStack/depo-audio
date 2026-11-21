@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from 'node:fs'
+import { existsSync, readFileSync, readdirSync } from 'node:fs'
 
 const read = path => readFileSync(new URL(`../${path}`, import.meta.url), 'utf8')
 const parseJson = path => JSON.parse(read(path))
@@ -14,8 +14,16 @@ const cargoToml = read('src-tauri/Cargo.toml')
 const cargoLock = read('src-tauri/Cargo.lock')
 const changelog = read('CHANGELOG.md')
 const thirdPartyInventory = read('THIRD_PARTY_LICENSES.md')
-const releaseCandidate = read('docs/V1.0.3-RELEASE-CANDIDATE.md')
-const releaseGate = parseJson('docs/V1.0.3-RELEASE-GATE.json')
+// The candidate runbook and machine-readable gate are named after the version
+// being released, so a version bump selects them without editing this check.
+const releaseCandidatePath = `docs/V${packageJson.version}-RELEASE-CANDIDATE.md`
+const releaseGatePath = `docs/V${packageJson.version}-RELEASE-GATE.json`
+expect(existsSync(new URL(`../${releaseCandidatePath}`, import.meta.url)), `${releaseCandidatePath} must exist`)
+expect(existsSync(new URL(`../${releaseGatePath}`, import.meta.url)), `${releaseGatePath} must exist`)
+const releaseCandidate = existsSync(new URL(`../${releaseCandidatePath}`, import.meta.url))
+  ? read(releaseCandidatePath)
+  : ''
+const releaseGate = existsSync(new URL(`../${releaseGatePath}`, import.meta.url)) ? parseJson(releaseGatePath) : {}
 const denyPolicy = read('deny.toml')
 const ciWorkflow = read('.github/workflows/ci.yml')
 const releaseWorkflow = read('.github/workflows/release.yml')
@@ -68,6 +76,11 @@ const candidateIsNoGo = releaseCandidate.includes('Status: **NO-GO for publicati
 // moved tauri-utils to urlpattern 0.6, so the time-bounded exception that
 // expired on 2026-09-30 was deleted rather than renewed. Any future advisory
 // exception must be re-added deliberately with its own owner and expiry.
+// RUSTSEC-2026-0543 (chrono is unmaintained) was cleared on 2026-11-20 by
+// moving DepoAudio's own timestamps to the `time` crate. Nothing else in the
+// release graph enables chrono (serde_with keeps it as an unused optional
+// dependency), so no exception was needed; a direct chrono dependency would
+// bring the advisory straight back.
 const lockedPackageVersions = name =>
   [...cargoLock.matchAll(/^\[\[package\]\]\s*\r?\nname = "([^"]+)"\s*\r?\nversion = "([^"]+)"/gm)]
     .filter(match => match[1] === name)
@@ -80,13 +93,130 @@ const atLeast = (actual, minimum) => {
   }
   return true
 }
-const denyAdvisorySection = (denyPolicy.match(/^\[advisories\]\s*\n([\s\S]*?)(?=^\[)/m)?.[1] ?? '')
-  .split('\n')
-  .filter(line => !line.trimStart().startsWith('#'))
-  .join('\n')
+// The [advisories] table may hold nothing but `ignore` (plus comments): a key
+// such as `unmaintained = "none"`, `unsound`, `yanked` or `db-urls` would turn
+// off whole advisory classes with no ID, owner or date. `ignore` must be empty,
+// with one bounded exception: the release owner approved RUSTSEC-2026-0543
+// (chrono is unmaintained) on 2026-11-20, remove-by 2027-03-31, in case Tauri
+// makes chrono reachable again. If that entry is ever added it must carry a
+// reason, the owner and the date in deny.toml, a matching ledger entry in
+// THIRD_PARTY_LICENSES.md, and it stops passing after 2027-03-31 (UTC).
+const chronoException = { id: 'RUSTSEC-2026-0543', owner: 'Andrew Mayes', removeBy: '2027-03-31' }
+const advisoryPolicyFailures = (deny, ledger, today) => {
+  const problems = []
+  const section = deny.match(/^\[advisories\]\s*\n([\s\S]*?)(?=^\[[^\]\s]|(?![\s\S]))/m)?.[1]
+  if (section === undefined) return ['deny.toml must have an [advisories] table']
+  const comments = section.split('\n').filter(line => line.trimStart().startsWith('#')).join('\n')
+  const body = section
+    .split('\n')
+    .filter(line => !line.trimStart().startsWith('#'))
+    .join('\n')
+    .trim()
+  if (body === 'ignore = []') return problems
+  const entry = body.match(/^ignore = \[\s*\{\s*id = "([^"]+)",\s*reason = "([^"]*)"\s*\},?\s*\]$/)
+  if (!entry) {
+    const keys = [...new Set([...body.matchAll(/^\s*([A-Za-z0-9_-]+)\s*=/gm)].map(match => match[1]))]
+    const extra = keys.filter(key => key !== 'ignore')
+    problems.push(
+      extra.length > 0
+        ? `deny.toml [advisories] may only set ignore; found ${extra.join(', ')}, which would turn off advisory checks with no named exception`
+        : `deny.toml [advisories] must be ignore = [] or exactly ignore = [{ id = "${chronoException.id}", reason = "..." }]; any other exception is not approved`,
+    )
+    return problems
+  }
+  const [, id, reason] = entry
+  if (id !== chronoException.id) {
+    problems.push(`deny.toml ignores ${id}; the only approved advisory exception is ${chronoException.id} (chrono)`)
+    return problems
+  }
+  if (today > chronoException.removeBy) {
+    problems.push(`the ${id} exception expired on ${chronoException.removeBy}; remove it from deny.toml or get a new owner decision`)
+  }
+  if (reason.trim().length < 20) problems.push(`the ${id} exception in deny.toml must give its reason`)
+  if (!comments.includes(chronoException.owner) || !comments.includes(chronoException.removeBy)) {
+    problems.push(`the deny.toml comment for ${id} must name the owner (${chronoException.owner}) and the remove-by date (${chronoException.removeBy})`)
+  }
+  const ledgerEntry = ledger.split(/\n\s*\n/).find(paragraph => paragraph.includes(id) && /exception/i.test(paragraph))
+  if (!ledgerEntry || !ledgerEntry.includes(chronoException.owner) || !ledgerEntry.includes(chronoException.removeBy)) {
+    problems.push(`THIRD_PARTY_LICENSES.md must record the ${id} exception with its owner (${chronoException.owner}) and remove-by date (${chronoException.removeBy})`)
+  }
+  return problems
+}
+// Every [*dependencies*] table, in any of Cargo's forms: `chrono = ...`,
+// `chrono.version = ...`, `[dependencies.chrono]`,
+// `[target.'cfg(...)'.dependencies.chrono]`, or a rename via package = "chrono".
+const directChronoDependencies = cargo => {
+  const tables = [...cargo.matchAll(/^\[([^\]\n]+)\][^\S\n]*(?:#.*)?\n([\s\S]*?)(?=^\[|(?![\s\S]))/gm)]
+  const found = []
+  for (const [, header, rawBody] of tables) {
+    const name = header.trim()
+    const body = rawBody.replace(/#.*$/gm, '')
+    const dependencyTable = name.match(/^(.*\b(?:dev-|build-)?dependencies)(?:\.(.+))?$/)
+    if (!dependencyTable) continue
+    const [, , dependency] = dependencyTable
+    if (dependency !== undefined) {
+      if (/^"?chrono"?$/.test(dependency.trim()) || /^\s*package\s*=\s*["']chrono["']/m.test(body)) found.push(name)
+    } else if (/^\s*"?chrono"?\s*(?:=|\.)|package\s*=\s*["']chrono["']/m.test(body)) {
+      found.push(name)
+    }
+  }
+  return found
+}
+const todayUtc = new Date().toISOString().slice(0, 10)
+for (const problem of advisoryPolicyFailures(denyPolicy, thirdPartyInventory, todayUtc)) expect(false, problem)
 expect(
-  /^ignore = \[\]$/m.test(denyAdvisorySection) && !/RUSTSEC-\d{4}-\d{4}/.test(denyAdvisorySection),
-  'deny.toml must not carry advisory exceptions; the expired rust-unic exception must stay deleted',
+  /^\[[^\]]*dependencies\]/m.test(cargoToml),
+  'src-tauri/Cargo.toml must declare its dependency tables',
+)
+const directChronoTables = directChronoDependencies(cargoToml)
+expect(
+  directChronoTables.length === 0,
+  `depo-audio must not depend on chrono directly (found in [${directChronoTables.join('], [')}]); chrono is unmaintained (RUSTSEC-2026-0543) and timestamps use the time crate (src-tauri/src/clock.rs)`,
+)
+// Pin the two policy parsers above so a later edit cannot quietly widen them.
+{
+  const ledger = 'The RUSTSEC-2026-0543 exception is owned by Andrew Mayes, remove by 2027-03-31.'
+  const approved = '[advisories]\n# Owner Andrew Mayes, remove by 2027-03-31.\nignore = [{ id = "RUSTSEC-2026-0543", reason = "chrono reached only through tauri-utils -> serde_with" }]\n\n[licenses]\n'
+  const cases = [
+    ['[advisories]\n# none\nignore = []\n\n[licenses]\n', ledger, '2026-11-20', 0],
+    ['[advisories]\nignore = []\n', '', '2030-01-01', 0],
+    ['[advisories]\nunmaintained = "none"\nignore = []\n\n[licenses]\n', ledger, '2026-11-20', 1],
+    ['[advisories]\nignore = []\nyanked = "allow"\n', ledger, '2026-11-20', 1],
+    ['[advisories]\ndb-urls = ["https://example.invalid/db"]\nignore = []\n', ledger, '2026-11-20', 1],
+    ['[advisories]\nignore = ["RUSTSEC-2026-0543"]\n', ledger, '2026-11-20', 1],
+    [approved, ledger, '2026-11-20', 0],
+    [approved, ledger, '2027-03-31', 0],
+    [approved, ledger, '2027-04-01', 1],
+    [approved, 'No ledger entry.', '2026-11-20', 1],
+    [approved.replace('Andrew Mayes', 'someone'), ledger, '2026-11-20', 1],
+    [approved.replace('RUSTSEC-2026-0543', 'RUSTSEC-2025-0075'), ledger, '2026-11-20', 1],
+    [approved.replace(' }]', ' }, { id = "RUSTSEC-2025-0075", reason = "x" }]'), ledger, '2026-11-20', 1],
+    [approved.replace(/reason = "[^"]*"/, 'reason = ""'), ledger, '2026-11-20', 1],
+  ]
+  cases.forEach(([deny, ledgerText, today, wantProblems], index) => {
+    const got = advisoryPolicyFailures(deny, ledgerText, today).length
+    expect(got === wantProblems, `advisory policy self-test case ${index} expected ${wantProblems} problem(s), got ${got}`)
+  })
+  const chronoForms = [
+    ['[dependencies]\nchrono = "0.4"\n', 1],
+    ['[dependencies]\nchrono.version = "0.4"\n', 1],
+    ['[dependencies.chrono]\nversion = "0.4"\n', 1],
+    ["[target.'cfg(windows)'.dependencies.chrono]\nversion = \"0.4\"\n", 1],
+    ['[dev-dependencies]\ndt = { package = "chrono", version = "0.4" }\n', 1],
+    ['[build-dependencies.dt]\npackage = "chrono"\nversion = "0.4"\n', 1],
+    ['[dependencies]\n# chrono = "0.4"\ntime = "0.3"\n[features]\nchrono = []\n', 0],
+  ]
+  chronoForms.forEach(([cargo, want], index) => {
+    const got = directChronoDependencies(cargo).length
+    expect(got === want, `direct-chrono self-test case ${index} expected ${want} match(es), got ${got}`)
+  })
+}
+const rustSourcesUsingChrono = readdirSync(new URL('../src-tauri/src/', import.meta.url))
+  .filter(name => name.endsWith('.rs'))
+  .filter(name => /\bchrono::/.test(read(`src-tauri/src/${name}`).replace(/\/\/.*$/gm, '')))
+expect(
+  rustSourcesUsingChrono.length === 0,
+  `Rust sources must build timestamps with the time crate, not chrono: ${rustSourcesUsingChrono.join(', ')}`,
 )
 expect(
   !/^\[\[package\]\]\s*\r?\nname = "unic-/m.test(cargoLock),
@@ -165,7 +295,7 @@ const gateBlockerById = new Map(gateBlockers.map(blocker => [blocker?.id, blocke
 const openGateBlockers = gateBlockers.filter(blocker => blocker?.status === 'open')
 const gateCandidate = releaseGate.candidate ?? {}
 
-expect(releaseGate.schemaVersion === 2, 'the v1.0.3 release gate must use schemaVersion 2')
+expect(releaseGate.schemaVersion === 2, `the v${version} release gate must use schemaVersion 2`)
 expect(releaseGate.version === version, 'the release-gate version must match package.json')
 expect(isIsoDate(releaseGate.reviewedDate), 'the release gate must carry a valid reviewedDate')
 expect(
@@ -333,8 +463,8 @@ expect(
   'tauri.conf.json must not bundle learned-model material or ONNX Runtime',
 )
 // tauri-build 2.7+ statically links the MSVC runtime into the Windows binary
-// unless this is false. Keep the dynamic linking the v1.0.3 candidate was built
-// with; embedding the runtime is a ledger and owner decision, not a default.
+// unless this is false. Keep the dynamic linking every earlier candidate was
+// built with; embedding the runtime is a ledger and owner decision, not a default.
 expect(
   tauriConfig.build?.windows?.staticVCRuntime === false &&
     tauriConfig.bundle?.windows?.bundleVCRuntime === undefined &&
@@ -356,7 +486,7 @@ expect(
     modelsSource.includes('recommend_speaker_detection: false') &&
     modelsSource.includes('recommend_enhance: false') &&
     modelsSource.includes('dereverb_available: false'),
-  'v1.0.3 system capabilities must fail closed for every learned-model feature',
+  `v${version} system capabilities must fail closed for every learned-model feature`,
 )
 for (const filename of forbiddenModels) {
   expect(artifactInventory.includes(`'${filename}'`), `artifact inventory must reject model material ${filename}`)
@@ -410,6 +540,15 @@ if (releaseMatch) {
   expect(
     unreleasedPosition < releaseMatch.index,
     'The Unreleased changelog heading must precede the current release heading',
+  )
+  // release.yml refuses to build a draft whose notes lack this heading, so
+  // catch a missing one here instead of at dispatch.
+  const sectionEnd = changelog.indexOf('\n## [', releaseMatch.index + releaseMatch[0].length)
+  const releaseSection = changelog.slice(releaseMatch.index, sectionEnd < 0 ? undefined : sectionEnd)
+  expect(
+    releaseSection.includes('\n### What this release includes\n') &&
+      releaseWorkflow.includes("section.includes('### What this release includes')"),
+    `The ${version} changelog section and release.yml must both use the "### What this release includes" heading`,
   )
 }
 expect(
@@ -555,10 +694,31 @@ expect(
     (publicationHelper.match(/await verifyReleaseProtections\(repo, candidate, token\)/g) ?? []).length === 3 &&
     publicationHelper.includes('validateSignedReleaseTag(reference, annotated') &&
     !publicationHelper.includes('/git/refs`') &&
-    releaseCandidate.includes('git tag -s v1.0.3') &&
+    releaseCandidate.includes(`git tag -s v${version}`) &&
     publicationHelper.includes('releaseAssetContract(final) !== finalAssetContract') &&
     packageJson.scripts['release:check'].includes('prepare-release-publication.mjs --self-test'),
   'publication must use the protected (wait timer without administrator bypass, protected tag signed by the recorded owner), immutable, approval-bound, self-tested release workflow without deletion, replacement, or tag-creation paths',
+)
+// publish-release.yml reads the gate through package.json's version. Its
+// concurrency group and confirmation strings are evaluated before checkout, so
+// they stay literal and must name the current release tag.
+expect(
+  !/docs\/V\d+\.\d+\.\d+-RELEASE-(?:GATE|CANDIDATE)/.test(publishReleaseWorkflow.replace(/^\s*#.*$/gm, '')) &&
+    publishReleaseWorkflow.includes("require('./docs/V' + require('./package.json').version + '-RELEASE-GATE.json')") &&
+    !/docs\/V\d+\.\d+\.\d+-RELEASE-GATE/.test(publicationHelper) &&
+    publicationHelper.includes('const GATE_PATH = new URL(`../docs/V${PACKAGE_VERSION}-RELEASE-GATE.json`'),
+  'publish-release.yml and prepare-release-publication.mjs must locate the release gate from package.json',
+)
+expect(
+  publishReleaseWorkflow.includes(`group: release-v${version}\n`) &&
+    publishReleaseWorkflow.includes(`description: 'Type INSPECT v${version} or PUBLISH v${version} exactly'`) &&
+    publishReleaseWorkflow.includes(`test "$CONFIRMATION" = 'INSPECT v${version}'`) &&
+    publishReleaseWorkflow.includes(`test "$CONFIRMATION" = 'PUBLISH v${version}'`) &&
+    !/(?:INSPECT|PUBLISH) v(?!\$)/.test(
+      publishReleaseWorkflow.replaceAll(`INSPECT v${version}`, '').replaceAll(`PUBLISH v${version}`, ''),
+    ) &&
+    !/group: release-v(?!\$)/.test(publishReleaseWorkflow.replace(`group: release-v${version}\n`, '')),
+  `publish-release.yml concurrency group and INSPECT/PUBLISH confirmations must name v${version}`,
 )
 expect(
   releaseWorkflow.includes("NODE_VERSION: '22.23.1'") && releaseWorkflow.includes("RUST_VERSION: '1.98.0'"),
@@ -766,7 +926,13 @@ expect(
     javascriptNoticeComponents.componentCount === 59 &&
     javascriptNoticeComponents.javascriptComponentCount === 57 &&
     javascriptNoticeComponents.generatedCssComponentCount === 2 &&
+    javascriptNoticeComponents.bundledFontCount === 2 &&
+    ['Archivo', 'Fragment Mono'].every(family =>
+      javascriptNoticeComponents.bundledFonts?.some(font => font.family === family && font.license === 'OFL-1.1'),
+    ) &&
     javascriptNoticeHtml.includes('DepoAudio JavaScript and generated-CSS third-party notices') &&
+    javascriptNoticeHtml.includes('<h2 id="bundled-fonts">Bundled fonts</h2>') &&
+    !javascriptNoticeHtml.includes('All shipped components have reviewed legal material') &&
     javascriptNoticeGenerator.includes('javascript-notice-overrides.json') &&
     gitAttributes.includes('scripts/javascript-license-overrides/** text eol=lf') &&
     packageJson.scripts['notices:generate'] === 'node scripts/generate-javascript-notices.mjs' &&
@@ -905,7 +1071,9 @@ const releaseGateEvidenceBindings = {
     artifactInventory.includes("'javascript-notices-html'") &&
     artifactInventory.includes("'javascript-notices-components'"),
   'macos-ffmpeg-rc2-evidence':
-    releaseCandidate.includes('Build RC2 with the new macOS source-built FFmpeg sidecars') &&
+    releaseCandidate.includes(
+      'Extract both downloadable macOS containers and verify the source-built FFmpeg sidecars',
+    ) &&
     releaseWorkflow.includes('Smoke-test downloadable macOS containers') &&
     macPackagedSmoke.includes('smoke_app "$dmg_app" \'DMG\'') &&
     macPackagedSmoke.includes('smoke_app "$archive_app" \'Archive\''),
@@ -938,10 +1106,18 @@ const releaseGateEvidenceBindings = {
     macPackagedSmoke.includes('EXPECT_PLATFORM_SIGNING'),
   'rust-advisory-exception-acceptance':
     ciWorkflow.includes('command: check advisories') &&
-    releaseCandidate.includes('was built before the Tauri 2.12 upgrade') &&
-    releaseGate.blockers
+    advisoryPolicyFailures(denyPolicy, thirdPartyInventory, todayUtc).length === 0 &&
+    releaseCandidate.includes('rerun `cargo deny check advisories` against the exact candidate source commit') &&
+    gateBlockers
       .find(blocker => blocker?.id === 'rust-advisory-exception-acceptance')
-      ?.evidenceNeeded?.some(item => item.includes('rebuild a new private candidate')),
+      ?.evidenceNeeded?.some(item => item.includes('cargo deny check advisories')),
+  'bundled-fonts-ofl-ledger':
+    thirdPartyInventory.includes('## Bundled fonts') &&
+    thirdPartyInventory.includes('SIL Open Font License 1.1') &&
+    ['archivo-OFL.txt', 'fragment-mono-OFL.txt'].every(name =>
+      existsSync(new URL(`../public/fonts/${name}`, import.meta.url)),
+    ) &&
+    releaseCandidate.includes('Archivo and Fragment Mono'),
   'codec-patent-review':
     thirdPartyInventory.includes('complete codec/patent review') &&
     thirdPartyInventory.includes('an open-source copyright license does not grant every patent'),
@@ -955,34 +1131,14 @@ for (const [blockerId, isBoundToEvidence] of Object.entries(releaseGateEvidenceB
   expect(isBoundToEvidence, `release blocker ${blockerId} is no longer tied to its repository evidence gate`)
 }
 
-const reviewedCandidateReceiptIsBound =
-  gateCandidate.releaseId === 379418038 &&
-  gateCandidate.sourceCommit === '2a9053117fc90e5b208b8e29c92646715285f8dc' &&
-  gateCandidate.assetManifestSha256 === '0db9eaa86b8203abeee8d120281bf8696bfb36183b803f9d34b0650fe5198860' &&
-  releaseCandidate.includes('33338834735') &&
-  releaseCandidate.includes('33340819049') &&
-  releaseCandidate.includes('0db9eaa86b8203abeee8d120281bf8696bfb36183b803f9d34b0650fe5198860')
-expect(
-  reviewedCandidateReceiptIsBound,
-  'the reviewed private candidate must remain bound to its exact release, source, inspection manifest, and workflow receipts',
-)
-const candidateBuildRunUrl = 'https://github.com/DepoStack/depo-audio/actions/runs/33338834735'
-const candidateInspectionRunUrl = 'https://github.com/DepoStack/depo-audio/actions/runs/33340819049'
-for (const blockerId of ['javascript-runtime-notices', 'macos-ffmpeg-rc2-evidence', 'synthetic-ftr-packaged-decode']) {
-  const blocker = gateBlockerById.get(blockerId)
-  const evidenceRefs = Array.isArray(blocker?.evidenceRefs) ? new Set(blocker.evidenceRefs) : null
-  expect(
-    blocker?.status === 'open' &&
-      evidenceRefs?.has(candidateBuildRunUrl) &&
-      evidenceRefs.has(candidateInspectionRunUrl),
-    `technical blocker ${blockerId} must retain exact candidate evidence and remain open until a named reviewer closes it`,
-  )
-}
 const otherOpenGateBlockers = openGateBlockers.filter(blocker => blocker.id !== 'release-changelog-finalization')
 const changelogIsDated = datedReleaseHeading.test(changelog)
 const changelogGateIsOpen = gateBlockerById.get('release-changelog-finalization')?.status === 'open'
 if (otherOpenGateBlockers.length > 0) {
-  expect(!changelogIsDated, 'the v1.0.3 changelog must remain Unpublished while another publication blocker is open')
+  expect(
+    !changelogIsDated,
+    `the v${version} changelog must remain Unpublished while another publication blocker is open`,
+  )
 }
 expect(
   changelogGateIsOpen === (!changelogIsDated || otherOpenGateBlockers.length > 0),

@@ -1,13 +1,14 @@
 import { useState } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import { CH_COLORS } from '../../constants'
-import { FileAudio, X, FolderOpen, ChevronDown, ChevronUp } from 'lucide-react'
+import { FileAudio, X, FolderOpen, ChevronDown, ChevronUp, Play } from 'lucide-react'
 import { Badge } from '../ui/badge'
 import { cn } from '../../lib/utils'
 import StatusChip from '../common/StatusChip'
 import MiniPlayer from './MiniPlayer'
+import { isPlayerPlayable } from '../../lib/player'
 
-export default function FileRow({ file, job, onRemove, converting }) {
+export default function FileRow({ file, job, onRemove, converting, onOpenInPlayer }) {
   const [expanded, setExpanded] = useState(false)
   const [folderError, setFolderError] = useState('')
   const status = job?.status || 'waiting'
@@ -19,7 +20,7 @@ export default function FileRow({ file, job, onRemove, converting }) {
       aria-busy={status === 'converting'}
       className={cn(
         'bg-card border border-border rounded-lg overflow-hidden transition-colors',
-        status === 'converting' && 'border-primary',
+        status === 'converting' && 'border-foreground',
         status === 'done' && 'border-success/40',
         status === 'error' && 'border-destructive/40',
         status === 'cancelled' && 'border-warning/40',
@@ -48,7 +49,7 @@ export default function FileRow({ file, job, onRemove, converting }) {
               <Badge variant={isRej ? 'error' : isExp ? 'warning' : 'tag'}>{file.fmt.name.split('·')[0].trim()}</Badge>
             )}
           </div>
-          <span className="text-[10px] text-[hsl(var(--sub))] truncate block">{file.path}</span>
+          <span className="type-small text-[hsl(var(--sub))] truncate block">{file.path}</span>
         </div>
         <div className="flex items-center gap-2 shrink-0">
           <StatusChip status={status} />
@@ -82,7 +83,7 @@ export default function FileRow({ file, job, onRemove, converting }) {
           return (
             <div className="px-3 pb-2.5">
               {(job?.phase || pct != null || job?.seconds > 0) && (
-                <span className="text-[10px] text-[hsl(var(--sub))] block mb-1">{progressText}</span>
+                <span className="type-small text-[hsl(var(--sub))] block mb-1">{progressText}</span>
               )}
               <div
                 role="progressbar"
@@ -91,15 +92,15 @@ export default function FileRow({ file, job, onRemove, converting }) {
                 aria-valuemax={100}
                 aria-valuenow={pct == null ? undefined : Math.round(pct)}
                 aria-valuetext={progressText}
-                className="w-full h-1 bg-border rounded-full overflow-hidden"
+                className="w-full h-1 bg-border overflow-hidden"
               >
                 {pct != null ? (
                   <div
-                    className="h-full bg-primary rounded-full transition-all motion-reduce:transition-none duration-300"
+                    className="h-full bg-foreground transition-all motion-reduce:transition-none duration-300"
                     style={{ width: `${pct}%` }}
                   />
                 ) : (
-                  <div className="h-full bg-primary rounded-full animate-[loading_1.2s_ease-in-out_infinite] motion-reduce:animate-none" />
+                  <div className="h-full bg-foreground animate-[loading_1.2s_ease-in-out_infinite] motion-reduce:animate-none" />
                 )}
               </div>
             </div>
@@ -110,43 +111,75 @@ export default function FileRow({ file, job, onRemove, converting }) {
           {job.outputs.map((out, i) => (
             <MiniPlayer key={out.path} out={out} color={CH_COLORS[i % 4]} multi={job.outputs.length > 1} />
           ))}
-          {job.outputs.length > 1 && (
-            <button
-              className="flex items-center gap-1 text-[10px] text-[hsl(var(--sub))] hover:text-foreground transition-colors mt-1 self-start"
-              onClick={async () => {
-                setFolderError('')
-                try {
-                  await invoke('show_in_folder', { path: job.outputs[0].path })
-                } catch (error) {
-                  setFolderError(`Could not reveal the output folder: ${String(error)}`)
-                }
-              }}
-            >
-              <FolderOpen size={11} />
-              Show in Explorer / Finder
-            </button>
-          )}
+          {(() => {
+            const playable = job.outputs.map(out => out.path).filter(isPlayerPlayable)
+            const actionClass =
+              'flex items-center gap-1 rounded px-1 py-0.5 type-small text-[hsl(var(--text2))] hover:text-foreground hover:bg-secondary/60 transition-colors focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring'
+            return (
+              <div className="flex flex-wrap items-center gap-2 mt-1">
+                <button
+                  type="button"
+                  className={actionClass}
+                  // Accessible names start with the visible label (WCAG 2.5.3)
+                  aria-label={
+                    job.outputs.length > 1
+                      ? `Reveal in folder: the ${job.outputs.length} outputs of ${file.name}`
+                      : `Reveal in folder: ${job.outputs[0].name}`
+                  }
+                  onClick={async () => {
+                    setFolderError('')
+                    try {
+                      await invoke('show_in_folder', { path: job.outputs[0].path })
+                    } catch (error) {
+                      setFolderError(`Could not reveal the output folder: ${String(error)}`)
+                    }
+                  }}
+                >
+                  <FolderOpen size={11} aria-hidden="true" />
+                  Reveal in folder
+                </button>
+                {onOpenInPlayer && playable.length > 0 && (
+                  <button
+                    type="button"
+                    className={actionClass}
+                    aria-label={
+                      playable.length > 1
+                        ? `Open in Player: the ${playable.length} outputs of ${file.name}`
+                        : `Open in Player: ${job.outputs.find(out => out.path === playable[0])?.name}`
+                    }
+                    onClick={() => onOpenInPlayer(playable)}
+                  >
+                    <Play size={11} aria-hidden="true" />
+                    Open in Player
+                  </button>
+                )}
+              </div>
+            )
+          })()}
           {folderError && (
-            <p role="alert" className="mt-1 rounded bg-destructive/10 px-2 py-1.5 text-[10px] text-destructive">
+            <p
+              role="alert"
+              className="mt-1 rounded border-l-[3px] border-l-destructive px-2 py-1.5 type-small text-destructive"
+            >
               {folderError}
             </p>
           )}
         </div>
       )}
       {status === 'done' && job.warning && (
-        <p role="alert" className="mx-3 mb-2.5 rounded bg-warning/10 px-2 py-1.5 text-[10px] text-warning">
+        <p role="alert" className="mx-3 mb-2.5 rounded bg-warning/10 px-2 py-1.5 type-small text-warning">
           {job.warning}
         </p>
       )}
       {status === 'cancelled' && (
-        <p className="px-3 pb-2.5 text-[10px] text-[hsl(var(--sub))]">
+        <p className="px-3 pb-2.5 type-small text-[hsl(var(--sub))]">
           {job.error || 'Conversion cancelled. No partial output was kept.'}
         </p>
       )}
       {status === 'error' && (
         <div className="px-3 pb-2.5">
           <button
-            className="text-[10px] text-[hsl(var(--sub))] hover:text-foreground transition-colors flex items-center gap-1"
+            className="type-small text-[hsl(var(--sub))] hover:text-foreground transition-colors flex items-center gap-1"
             onClick={() => setExpanded(e => !e)}
           >
             {expanded ? (
@@ -160,7 +193,7 @@ export default function FileRow({ file, job, onRemove, converting }) {
             )}
           </button>
           {expanded && (
-            <pre className="mt-1 text-[10px] text-destructive font-mono whitespace-pre-wrap break-all bg-destructive/5 rounded p-2">
+            <pre className="mt-1 type-code text-destructive whitespace-pre-wrap break-all border-l-[3px] border-l-destructive rounded p-2">
               {job.error}
             </pre>
           )}

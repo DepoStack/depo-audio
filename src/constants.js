@@ -32,7 +32,9 @@ export const MP3_BITRATES = [
   { value: 320, label: '320k', desc: 'Highest quality' },
 ]
 
-export const CH_COLORS = ['#c49a36', '#4a8fdf', '#3a9e6a', '#c94e4e']
+// Channel/track marks come from the --speaker-N design tokens (per theme), never
+// hard-coded hex. CSS paint values: usable as a background, color or SVG fill.
+export const CH_COLORS = [1, 2, 3, 4].map(n => `hsl(var(--speaker-${n}))`)
 
 export const FORMAT_ROWS = [
   // Standard formats — play and import directly, convert optionally

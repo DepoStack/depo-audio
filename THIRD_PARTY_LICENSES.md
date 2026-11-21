@@ -83,10 +83,45 @@ lockfile now resolves `rustls` 0.23.46, `rustls-webpki` 0.103.17, `tokio`
 reports `advisories ok` and `bans ok, licenses ok, sources ok` for the three
 release targets.
 
-The existing private v1.0.3 candidate was built from the earlier lockfile, so
-it still contains every package named above. Whether to rebuild it or accept
-those advisories in writing is an open owner decision in
-`docs/V1.0.3-RELEASE-GATE.json` (`rust-advisory-exception-acceptance`). The
+On 2026-11-20 the advisory check failed on one maintenance advisory with no
+safe upgrade, and it was resolved without an exception:
+
+| Advisory            | Package  | Resolution                             |
+| ------------------- | -------- | -------------------------------------- |
+| `RUSTSEC-2026-0543` | `chrono` | DepoAudio's direct use moved to `time` |
+
+The advisory says chrono is unmaintained; it reports no known vulnerability,
+and every chrono version is affected. cargo-deny found chrono only as a direct
+dependency of `depo-audio`, which used it for its timestamps (the export
+record's `createdAt`, the backup's `exportedAt`, a Library case's `createdAt`,
+session dates and zip entry times). Those moved to the `time` crate, already in
+the Tauri graph, with tests that pin each written string to the exact text
+chrono wrote. `Cargo.lock` still lists chrono as an optional dependency of
+`serde_with` (through `tauri-utils`), but no crate enables that feature, so
+chrono is not built for any release target and cargo-deny 0.20.2
+reports `advisories ok` with no exception. The release owner, Andrew Mayes,
+approved a time-bounded exception (remove by 2027-03-31) the same day in case
+chrono stayed reachable through Tauri; it was not needed and was not added.
+The committed Rust notice report
+(`src-tauri/resources/third-party/rust/THIRD-PARTY-LICENSES.html`) was
+regenerated with cargo-about 0.9.2 and no longer lists `chrono` 0.4.45, or
+`iana-time-zone` 0.1.65 and `num-traits` 0.2.19, which only chrono used.
+`npm run release:check` fails if `depo-audio` depends on chrono directly again,
+in any Cargo table form. If a future Tauri release does enable chrono, the
+advisory check fails again. The approved exception can then be added for
+`RUSTSEC-2026-0543` alone, with a reason, and with the owner and the
+2027-03-31 remove-by date both in deny.toml and in a ledger entry here.
+`npm run release:check` rejects it after 2027-03-31, rejects any other
+advisory ID, and rejects any other `[advisories]` key that would switch off a
+class of advisories.
+
+The superseded private v1.0.3 candidate was built from the earlier lockfile,
+so it still contains every package named above. The release plan recorded on
+2026-11-20 is to release v1.1.0 from `main` instead, built from this lockfile
+with no advisory exception. The owner's formal sign-off of that supersession
+is still pending in the `rust-advisory-exception-acceptance` blocker in
+`docs/V1.1.0-RELEASE-GATE.json`, which also requires a publication-time rerun
+of the advisory check on the exact source commit. The
 advisory job is blocking, and CI also runs weekly on a schedule so a new
 advisory turns `main` red within a week. Recheck the live database on every
 review because this baseline can change after the date above.
@@ -174,9 +209,9 @@ The final installer audit is authoritative. Workflow inputs alone cannot prove
 what a bundler, linker, framework packager, or bootstrapper placed in an
 artifact.
 
-## Historical model inventory and v1.0.3 non-distribution boundary
+## Historical model inventory and v1.1.0 non-distribution boundary
 
-v1.0.3 distributes and exposes zero learned models. Its resource manifest has
+v1.1.0 distributes and exposes zero learned models. Its resource manifest has
 no model directory, the resolved Rust graph excludes `nnnoiseless` and ONNX
 Runtime, the command/UI surface has no install or download path, and legacy
 app-data files are never resolved or executed. An exact allowlisted regular
@@ -188,7 +223,7 @@ v1.0.2 can reference that compatibility contract. The read-only restoration
 workflow reconstructs and verifies those historical bytes from immutable
 sources; it cannot create, upload, replace, or delete a public asset. The
 rights findings below therefore remain an owner-governance issue for existing
-public history, not a v1.0.3 capability or distribution path. Hash verification
+public history, not a v1.1.0 capability or distribution path. Hash verification
 proves identity, not permission to redistribute.
 
 ### Exact historical findings (reviewed 2026-08-29)
@@ -236,24 +271,60 @@ proves identity, not permission to redistribute.
 
 In the historical delivery column below, `Bundled` and `Download-only` describe
 v1.0.2 behavior. None of these files is bundled, downloaded, or executed by
-v1.0.3.
+v1.1.0.
 
 | Model artifact            | Reviewed SHA-256                                                   | Repository delivery evidence                                                                                                                                                                                                                                                              | Provenance/license status                                                                                                                                                                                                                                                     |
 | ------------------------- | ------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `silero_vad.onnx`         | `a4a068cd6cf1ea8355b84327595838ca748ec29a25bc91fc82e6c299ccdc5808` | Bundled; exact community-conversion revision is linked above                                                                                                                                                                                                                              | **Evidence required:** the identified upstream official artifact is not byte-identical. Establish the exact export lineage, weights/training-data terms, notices, and commercial redistribution permission.                                                                   |
 | `smart-turn-v3-int8.onnx` | `3d072c8fb04446955a365b533686e7e06015ad09929bb824b910c72ff89f5be1` | Bundled; exact ONNX and dataset revisions are linked above                                                                                                                                                                                                                                | **Evidence required:** the exact train/test revisions publish no license field. Preserve applicable dataset/Whisper notices and establish the conversion, training-data, and commercial redistribution rights chain.                                                          |
 | `flashsr.onnx`            | `e255c76b227f16f7f392cc43677c38bd2c5aa129f042a2ba3eb03fb29e470c7a` | Bundled; exact ONNX, HierSpeech++ lineage, and Expresso source are linked above                                                                                                                                                                                                           | **Blocked:** Expresso is documented as CC BY-NC 4.0 training data. Record applicable commercial rights or replace/remove the model before publication; an MIT code or wrapper license does not resolve that conflict.                                                         |
-| `dfn3_enc.onnx`           | `7c5399d3da8a50ebef1c1a0ae421b33376aa5e45d0e92df16da7e83c9c131916` | Legacy `models-v1` asset and bundled through v1.0.2; removed from the v1.0.3 bundle and install catalog                                                                                                                                                                                   | **Evidence required for the retained legacy public asset:** exact DeepFilterNet revision, weights license, export history, training-data terms, notices, and commercial redistribution permission.                                                                            |
-| `dfn3_erb_dec.onnx`       | `ab669a1d10afe20911728b33053a452071042317a90581092b325da7b2f9d895` | Legacy `models-v1` asset and bundled through v1.0.2; removed from the v1.0.3 bundle and install catalog                                                                                                                                                                                   | Same evidence required as `dfn3_enc.onnx`.                                                                                                                                                                                                                                    |
-| `dfn3_df_dec.onnx`        | `23114ce3b0f6464b763ee62f7bb8aab6b2a129a21eabd5bcfe59413db05f278a` | Legacy `models-v1` asset and bundled through v1.0.2; removed from the v1.0.3 bundle and install catalog                                                                                                                                                                                   | Same evidence required as `dfn3_enc.onnx`.                                                                                                                                                                                                                                    |
+| `dfn3_enc.onnx`           | `7c5399d3da8a50ebef1c1a0ae421b33376aa5e45d0e92df16da7e83c9c131916` | Legacy `models-v1` asset and bundled through v1.0.2; removed from the v1.1.0 bundle and install catalog                                                                                                                                                                                   | **Evidence required for the retained legacy public asset:** exact DeepFilterNet revision, weights license, export history, training-data terms, notices, and commercial redistribution permission.                                                                            |
+| `dfn3_erb_dec.onnx`       | `ab669a1d10afe20911728b33053a452071042317a90581092b325da7b2f9d895` | Legacy `models-v1` asset and bundled through v1.0.2; removed from the v1.1.0 bundle and install catalog                                                                                                                                                                                   | Same evidence required as `dfn3_enc.onnx`.                                                                                                                                                                                                                                    |
+| `dfn3_df_dec.onnx`        | `23114ce3b0f6464b763ee62f7bb8aab6b2a129a21eabd5bcfe59413db05f278a` | Legacy `models-v1` asset and bundled through v1.0.2; removed from the v1.1.0 bundle and install catalog                                                                                                                                                                                   | Same evidence required as `dfn3_enc.onnx`.                                                                                                                                                                                                                                    |
 | `speaker_seg_int8.onnx`   | `d582f4b4c6b48205de7e0643c57df0df5615a3c176189be3fc461e9d18827b5d` | Bundled; exact converter and pyannote revisions are linked above                                                                                                                                                                                                                          | **Blocked:** MSDWild terms prohibit commercial use/redistribution and other named corpora have separate terms. Document the exact versions and applicable rights chain, or replace/remove the model. Do not infer that the trainer lacked permissions.                        |
-| `speaker_embed.onnx`      | `1a331345f04805badbb495c775a6ddffcdd1a732567d5ec8b3d5749e3c7a5e4b` | Legacy `models-v1` asset; removed from the v1.0.3 install catalog. An already-downloaded app-data copy is shown only as removable legacy storage.                                                                                                                                         | **Evidence required for the retained legacy public asset:** upstream provenance is not established by the historical app commit. Record the original model/revision, weights license, export history, training-data terms, notices, and commercial redistribution permission. |
+| `speaker_embed.onnx`      | `1a331345f04805badbb495c775a6ddffcdd1a732567d5ec8b3d5749e3c7a5e4b` | Legacy `models-v1` asset; removed from the v1.1.0 install catalog. An already-downloaded app-data copy is shown only as removable legacy storage.                                                                                                                                         | **Evidence required for the retained legacy public asset:** upstream provenance is not established by the historical app commit. Record the original model/revision, weights license, export history, training-data terms, notices, and commercial redistribution permission. |
 | `dnsmos_sig_bak_ovr.onnx` | `269fbebdb513aa23cddfbb593542ecc540284a91849ac50516870e1ac78f6edd` | Download-only; restore workflow fetches path `DNSMOS/DNSMOS/sig_bak_ovr.onnx` from immutable Microsoft commit `82f1b17e7776a43eee395d0f45bae8abb700ad00`. The fetched file is 1,157,965 bytes and matches the app pin. The repository root at that commit contains a CC BY 4.0 `LICENSE`. | **Evidence required:** immutable byte identity is established, but repository-level licensing alone does not prove the terms applicable to this exact weight. Archive the applicable model/dataset terms, attribution, and commercial redistribution review before approval.  |
 
-`dfn3_config.ini` was bundled through v1.0.2 and is removed from the v1.0.3
+`dfn3_config.ini` was bundled through v1.0.2 and is removed from the v1.1.0
 bundle with the three inactive weights. The historical/public DeepFilterNet
 distribution record still requires the same reviewed source and license
 evidence; removing it from a new installer does not rewrite that history.
+
+## Bundled fonts
+
+The frontend bundles two DepoStack brand typefaces as web fonts. Vite copies
+`public/fonts/` into the frontend build unchanged, and the Tauri build embeds
+it, licence texts included, in the application binary, so nothing is fetched
+from the network at runtime. The bundled third-party notices
+(`src-tauri/resources/third-party/javascript/THIRD-PARTY-NOTICES.html` and
+`COMPONENTS.json`) also list both families with their copyright lines and full
+OFL texts.
+
+| Font                                                              | Files                                                                                                                                       | Source                                                                                              | License                                                         |
+| ----------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------- | --------------------------------------------------------------- |
+| Archivo (variable, weight 400-800, width 62-100%; italic 400-700) | `public/fonts/archivo-latin-normal.woff2`, `archivo-latin-ext-normal.woff2`, `archivo-latin-italic.woff2`, `archivo-latin-ext-italic.woff2` | The Archivo Project Authors (Omnibus-Type), as subset for depostack.com (`depo-stack/public/fonts`) | SIL Open Font License 1.1, `public/fonts/archivo-OFL.txt`       |
+| Fragment Mono 400                                                 | `public/fonts/fragment-mono-latin-400.woff2`, `fragment-mono-latin-ext-400.woff2`                                                           | The Fragment-Mono Project Authors, as subset for depostack.com (`depo-stack/public/fonts`)          | SIL Open Font License 1.1, `public/fonts/fragment-mono-OFL.txt` |
+
+The OFL permits bundling and redistribution with software provided each copy
+keeps the copyright notice and licence; the licence files above are embedded
+in the app with the fonts and reproduced in the bundled third-party notices.
+The fonts are not sold on their own and keep their reserved names.
+
+**Evidence required.** v1.1.0 is the first release to ship these fonts, and the
+release owner has not yet recorded a licence and distribution decision
+(`bundled-fonts-ofl-ledger` in `docs/V1.1.0-RELEASE-GATE.json`). Before
+publication:
+
+- confirm the upstream source and copyright notice of the subset files copied
+  from `depo-stack/public/fonts`, and that each matches its OFL text;
+- the Tauri build embeds the frontend, fonts and licence texts included, in the
+  application binary, so an extracted-installer inventory does not list them
+  as files. The fonts are not npm packages; the notice generator
+  (`npm run notices:check`) lists them from `public/fonts` in the bundled
+  third-party notices, with their copyright lines and OFL texts, and fails if a
+  font file has no reviewed family or licence text. Decide whether those
+  bundled notices meet the OFL condition that the copyright notice and licence
+  accompany each copy, or whether the About screen should also link to them.
 
 ## Release approval checklist
 
@@ -277,7 +348,7 @@ Before publishing or promoting a release:
   model hashes and record the owner's separate remediation decision;
 - record codec patent review separately from copyright-license review;
 - compare the extracted inventory on both macOS and Windows with this document;
-- confirm the v1.0.3 inventories contain no learned-model bytes, generated FTR
+- confirm the v1.1.0 inventories contain no learned-model bytes, generated FTR
   fixture bytes, or derived smoke-test outputs;
 - record the release tag, app commit, artifact hashes, reviewer, date, and any
   approved time-bounded exception.

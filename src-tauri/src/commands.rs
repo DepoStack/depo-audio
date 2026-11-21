@@ -3,7 +3,6 @@ use std::fs;
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
-use chrono::Utc;
 use tauri::{AppHandle, Emitter, Manager, State};
 use tauri_plugin_opener::OpenerExt;
 use uuid::Uuid;
@@ -538,7 +537,7 @@ fn library_import_files_inner(
             let path = canonical.to_string_lossy().to_string();
             Ok(Session {
                 id: Uuid::new_v4().to_string(),
-                date: Utc::now().format("%Y-%m-%d").to_string(),
+                date: crate::clock::date_ymd(&crate::clock::now_utc()),
                 source_file: path.clone(),
                 source_name,
                 participants: vec![Participant {
@@ -565,7 +564,7 @@ fn library_import_files_inner(
             lib.cases.push(Case {
                 id: Uuid::new_v4().to_string(),
                 name: sanitized_name,
-                created_at: Utc::now().to_rfc3339(),
+                created_at: crate::clock::rfc3339_library(&crate::clock::now_utc()),
                 archived: false,
                 sessions: vec![],
             });
@@ -726,7 +725,7 @@ pub fn local_data_export_cmd(
         &transcripts,
         &bookmarks,
         &app.package_info().version.to_string(),
-        &Utc::now(),
+        &crate::clock::now_utc(),
     )?;
     crate::localdata::write_new_file(&path, &zip)?;
     Ok(counts)

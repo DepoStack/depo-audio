@@ -95,14 +95,14 @@ async function assertNoModelMaterial(root, relativeRoot) {
   const files = await collectFiles(path.join(root, ...relativeRoot.split('/')))
   for (const file of files) {
     if (isForbiddenResourceEntry(file)) {
-      throw new Error(`Learned-model material is forbidden in v1.0.3: ${relativeRoot}/${file.relative}`)
+      throw new Error(`Learned-model material is forbidden in a release: ${relativeRoot}/${file.relative}`)
     }
     if (file.type === 'symlink') {
-      throw new Error(`Symbolic links are forbidden in verified v1.0.3 resources: ${relativeRoot}/${file.relative}`)
+      throw new Error(`Symbolic links are forbidden in verified release resources: ${relativeRoot}/${file.relative}`)
     }
     const hash = sha256(await readFile(file.absolute))
     if (KNOWN_MODEL_SHA256.has(hash)) {
-      throw new Error(`Known learned-model bytes are forbidden in v1.0.3: ${relativeRoot}/${file.relative}`)
+      throw new Error(`Known learned-model bytes are forbidden in a release: ${relativeRoot}/${file.relative}`)
     }
   }
 }
@@ -189,7 +189,7 @@ function assertCapabilitiesBoundary(modelsSource) {
     if (!modelsSource.includes(contract)) throw new Error(`System capabilities do not fail closed: ${contract}`)
   }
   if (/(?:https?:\/\/|download_model|reqwest::)/u.test(modelsSource)) {
-    throw new Error('The v1.0.3 model surface contains a download path')
+    throw new Error('The release model surface contains a download path')
   }
 }
 
@@ -284,7 +284,8 @@ async function selfTest() {
       learnedSourceRejected = String(error).includes('Learned-model source remains on main')
     }
     await rm(learnedSource)
-    if (!learnedSourceRejected) throw new Error('Model distribution self-test did not reject a learned-model source file')
+    if (!learnedSourceRejected)
+      throw new Error('Model distribution self-test did not reject a learned-model source file')
     await expectFixtureRejection(
       root,
       'src-tauri/src/conversion.rs',

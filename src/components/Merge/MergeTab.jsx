@@ -130,7 +130,7 @@ export default function MergeTab() {
           {/* ── Source Files ──────────────────────────────── */}
           <Card>
             <CardHeader>
-              <CardTitle>RECORDINGS TO MERGE</CardTitle>
+              <CardTitle>Recordings to merge</CardTitle>
               <Button size="sm" onClick={browseFiles}>
                 Add Files
               </Button>
@@ -141,7 +141,7 @@ export default function MergeTab() {
                 role="button"
                 tabIndex={0}
                 aria-label="Add recordings to merge: press Enter to browse"
-                className="border-2 border-dashed border-border rounded-lg m-3 py-10 px-8 text-center cursor-pointer transition-colors hover:border-primary focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
+                className="border-2 border-dashed border-border rounded-lg m-3 py-10 px-8 text-center cursor-pointer transition-colors hover:border-foreground"
                 onClick={browseFiles}
                 onKeyDown={e => {
                   if (e.key === 'Enter' || e.key === ' ') {
@@ -153,7 +153,7 @@ export default function MergeTab() {
                 <p className="text-[13px] font-semibold text-foreground mb-1">
                   Add two or more recordings of the same event
                 </p>
-                <p className="text-[11px] text-[hsl(var(--sub))] mb-5">
+                <p className="type-small text-[hsl(var(--sub))] mb-5">
                   Reporter mic, backup recorder, phone — any combination works.
                 </p>
                 <div className="flex items-start justify-center gap-6 text-left">
@@ -163,12 +163,12 @@ export default function MergeTab() {
                     ['3', 'One clean file', 'The clearest source wins at every moment'],
                   ].map(([n, title, desc]) => (
                     <div key={n} className="flex items-start gap-2 max-w-[180px]">
-                      <span className="w-5 h-5 rounded-full bg-[hsl(var(--gold-dim))] text-foreground text-[10px] font-bold flex items-center justify-center shrink-0 mt-0.5">
+                      <span className="w-5 h-5 rounded-full border border-foreground text-foreground type-label flex items-center justify-center shrink-0 mt-0.5">
                         {n}
                       </span>
                       <div className="flex flex-col">
-                        <span className="text-[11px] font-semibold text-foreground">{title}</span>
-                        <span className="text-[10px] text-[hsl(var(--sub))] leading-snug">{desc}</span>
+                        <span className="type-label text-foreground">{title}</span>
+                        <span className="type-small text-[hsl(var(--sub))] leading-snug">{desc}</span>
                       </div>
                     </div>
                   ))}
@@ -182,10 +182,10 @@ export default function MergeTab() {
                     className="group flex items-center gap-2.5 px-3 py-2 rounded-md transition-colors hover:bg-secondary/50"
                   >
                     <span className="w-2 h-2 rounded-full shrink-0" style={{ background: CH_COLORS[i % 4] }} />
-                    <span className="font-mono text-[10px] text-[hsl(var(--sub))] min-w-[65px]">
+                    <span className="tabular-nums text-[12px] text-[hsl(var(--sub))] min-w-[65px]">
                       {i === 0 ? 'Reference' : `Source ${i + 1}`}
                     </span>
-                    <span className="flex-1 text-xs text-foreground truncate min-w-0" title={s.path}>
+                    <span className="flex-1 type-small text-foreground truncate min-w-0" title={s.path}>
                       {s.name}
                     </span>
                     {syncResults[i - 1] && i > 0 && (
@@ -212,7 +212,7 @@ export default function MergeTab() {
           {sources.length >= 2 && (
             <Card>
               <CardHeader>
-                <CardTitle>MERGE OPTIONS</CardTitle>
+                <CardTitle>Merge options</CardTitle>
               </CardHeader>
 
               <CardContent className="p-4">
@@ -227,8 +227,8 @@ export default function MergeTab() {
                       className="mt-0.5 accent-primary"
                     />
                     <div className="flex flex-col">
-                      <span className="text-xs font-semibold text-foreground">Best quality</span>
-                      <span className="text-[11px] text-[hsl(var(--sub))]">
+                      <span className="type-label text-foreground">Best quality</span>
+                      <span className="type-small text-[hsl(var(--sub))]">
                         Picks the clearest source for each moment — fills gaps automatically
                       </span>
                     </div>
@@ -243,8 +243,8 @@ export default function MergeTab() {
                       className="mt-0.5 accent-primary"
                     />
                     <div className="flex flex-col">
-                      <span className="text-xs font-semibold text-foreground">Mix all together</span>
-                      <span className="text-[11px] text-[hsl(var(--sub))]">
+                      <span className="type-label text-foreground">Mix all together</span>
+                      <span className="type-small text-[hsl(var(--sub))]">
                         Blends all sources equally — louder but keeps everything
                       </span>
                     </div>
@@ -253,11 +253,11 @@ export default function MergeTab() {
 
                 <div className="flex items-end gap-3 pt-3 border-t border-border/40 mt-3">
                   <div className="flex-1">
-                    <Label className="mb-1.5 block">OUTPUT NAME</Label>
+                    <Label className="mb-1.5 block">Output name</Label>
                     <Input value={outName} placeholder="merged" onChange={e => setOutName(e.target.value)} />
                   </div>
                   <div>
-                    <Label className="mb-1.5 block">FORMAT</Label>
+                    <Label className="mb-1.5 block">Format</Label>
                     <div className="flex gap-0.5 bg-secondary rounded-md p-0.5">
                       {FORMATS_OUT.filter(f => f.id !== 'sgmca').map(f => (
                         <button
@@ -265,9 +265,9 @@ export default function MergeTab() {
                           title={f.desc}
                           aria-pressed={format === f.id}
                           className={cn(
-                            'px-3 py-1.5 rounded-md text-xs font-semibold transition-colors focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring',
+                            'px-3 py-1.5 rounded-md type-label transition-colors',
                             format === f.id
-                              ? 'bg-[hsl(var(--gold-dim))] text-foreground'
+                              ? 'bg-card text-foreground ring-1 ring-inset ring-foreground'
                               : 'text-[hsl(var(--sub))] hover:text-[hsl(var(--text2))]',
                           )}
                           onClick={() => setFormat(f.id)}
@@ -286,15 +286,15 @@ export default function MergeTab() {
           {result && (
             <Card className="border-success/30">
               <CardHeader>
-                <CardTitle>MERGED OUTPUT</CardTitle>
+                <CardTitle>Merged output</CardTitle>
               </CardHeader>
               <CardContent className="px-4 py-3">
                 <span className="text-sm font-semibold text-foreground block">{result.outputName}</span>
-                <span className="text-[11px] text-[hsl(var(--sub))] block mt-0.5">
+                <span className="type-small text-[hsl(var(--sub))] block mt-0.5">
                   {fmtTime(result.duration)} · {fmtSize(result.outputSize)} · {result.sourcesUsed} sources
                 </span>
                 {result.syncOffsets?.length > 1 && (
-                  <span className="text-[11px] text-[hsl(var(--sub))] block mt-0.5">
+                  <span className="type-small text-[hsl(var(--sub))] block mt-0.5">
                     Sync offsets:{' '}
                     {result.syncOffsets
                       .slice(1)
@@ -303,7 +303,7 @@ export default function MergeTab() {
                   </span>
                 )}
                 {result.warning && (
-                  <p className="mt-2 rounded-md border border-warning/30 bg-warning/10 px-2.5 py-2 text-xs text-foreground">
+                  <p className="mt-2 rounded-md border border-warning/30 bg-warning/10 px-2.5 py-2 type-small text-foreground">
                     {result.warning}
                   </p>
                 )}
@@ -312,7 +312,7 @@ export default function MergeTab() {
           )}
 
           {error && (
-            <p className="px-3 py-2 bg-destructive/10 border border-destructive/20 rounded-md text-xs text-destructive">
+            <p className="px-3 py-2 border-l-[3px] border-l-destructive border border-destructive/20 rounded-md type-small text-destructive">
               {error}
             </p>
           )}
@@ -322,19 +322,19 @@ export default function MergeTab() {
       <footer className="shrink-0 flex items-center justify-between px-6 py-3 border-t border-border bg-[hsl(var(--surface))]">
         <div className="flex items-center gap-2">
           {syncing && (
-            <span className="flex items-center gap-1.5 px-2.5 py-1 bg-[hsl(var(--blue)/0.1)] text-[hsl(var(--blue))] text-[11px] font-mono rounded-full">
+            <span className="flex items-center gap-1.5 px-2.5 py-1 bg-[hsl(var(--blue)/0.1)] text-[hsl(var(--blue))] text-[12px] tabular-nums">
               <span className="w-1.5 h-1.5 rounded-full bg-[hsl(var(--blue))] animate-dot-pulse" />
               Detecting sync…
             </span>
           )}
           {merging && (
-            <span className="flex items-center gap-1.5 px-2.5 py-1 bg-[hsl(var(--blue)/0.1)] text-[hsl(var(--blue))] text-[11px] font-mono rounded-full">
+            <span className="flex items-center gap-1.5 px-2.5 py-1 bg-[hsl(var(--blue)/0.1)] text-[hsl(var(--blue))] text-[12px] tabular-nums">
               <span className="w-1.5 h-1.5 rounded-full bg-[hsl(var(--blue))] animate-dot-pulse" />
               Merging…
             </span>
           )}
           {result && !merging && (
-            <span className="flex items-center gap-1.5 px-2.5 py-1 bg-success/10 text-success text-[11px] font-mono rounded-full">
+            <span className="flex items-center gap-1.5 px-2.5 py-1 bg-success/10 text-success text-[12px] tabular-nums">
               Merge complete
             </span>
           )}

@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useId } from 'react'
+import { useState, useEffect, useCallback, useId, useRef } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import { openUrl } from '@tauri-apps/plugin-opener'
 import {
@@ -16,6 +16,7 @@ import {
   HardDrive,
 } from 'lucide-react'
 import { DEPOAUDIO_RELEASES_URL, DEPOSTACK_URL } from '../constants'
+import { LogoSvg } from './common/Icons'
 import { Dialog, DialogContent, DialogTitle, DialogClose, DialogDescription } from './ui/dialog'
 import { Button } from './ui/button'
 import { Input } from './ui/input'
@@ -105,7 +106,7 @@ function NumberField({ label, hint, unit, value, setValue, min, max, step = 1, d
         {unit && <span className="ml-1 text-[hsl(var(--sub))] font-normal">({unit})</span>}
       </Label>
       {hint && (
-        <p id={hintId} className="text-[11px] leading-snug text-[hsl(var(--sub))]">
+        <p id={hintId} className="type-small leading-snug text-[hsl(var(--sub))]">
           {hint}
         </p>
       )}
@@ -135,7 +136,7 @@ function SelectField({ label, hint, value, setValue, options }) {
   return (
     <div className="flex flex-col gap-1">
       <Label className="text-[12px] font-medium text-foreground">{label}</Label>
-      {hint && <p className="text-[11px] leading-snug text-[hsl(var(--sub))]">{hint}</p>}
+      {hint && <p className="type-small leading-snug text-[hsl(var(--sub))]">{hint}</p>}
       <Select value={value} onValueChange={setValue}>
         <SelectTrigger className="h-8 text-[12px] max-w-[260px]" aria-label={label}>
           <SelectValue />
@@ -159,7 +160,7 @@ function ResetCard({ title, onReset, children }) {
       <CardHeader>
         <CardTitle>{title}</CardTitle>
         {onReset && (
-          <Button variant="ghost" size="sm" className="h-6 text-[10px]" onClick={onReset} title="Reset to defaults">
+          <Button variant="ghost" size="sm" className="h-6 type-small" onClick={onReset} title="Reset to defaults">
             <RotateCcw size={11} /> Reset
           </Button>
         )}
@@ -219,12 +220,12 @@ function LegacyModelStorage() {
       <CardHeader>
         <CardTitle>Legacy model files</CardTitle>
         {modelsLoading ? (
-          <span role="status" aria-live="polite" className="font-mono text-[10px] text-[hsl(var(--sub))]">
+          <span role="status" aria-live="polite" className="tabular-nums text-[12px] text-[hsl(var(--sub))]">
             Checking local storage…
           </span>
         ) : (
           !modelLoadError && (
-            <span className="font-mono text-[10px] text-[hsl(var(--sub))]">
+            <span className="tabular-nums text-[12px] text-[hsl(var(--sub))]">
               {legacyModels.length} removable {legacyModels.length === 1 ? 'file' : 'files'} · {legacySize.toFixed(1)}{' '}
               MB
             </span>
@@ -235,7 +236,7 @@ function LegacyModelStorage() {
         {modelLoadError && (
           <div
             role="alert"
-            className="flex items-center gap-2 px-3 py-2 rounded-md bg-destructive/10 text-destructive text-[11px]"
+            className="flex items-center gap-2 px-3 py-2 rounded-md border-l-[3px] border-l-destructive text-destructive type-small"
           >
             <AlertCircle size={13} className="shrink-0" />
             <span className="flex-1">{modelLoadError}</span>
@@ -248,7 +249,7 @@ function LegacyModelStorage() {
         {error && (
           <div
             role="alert"
-            className="flex items-center gap-2 px-3 py-2 rounded-md bg-destructive/10 text-destructive text-[11px]"
+            className="flex items-center gap-2 px-3 py-2 rounded-md border-l-[3px] border-l-destructive text-destructive type-small"
           >
             <AlertCircle size={13} className="shrink-0" /> {error}
           </div>
@@ -257,7 +258,7 @@ function LegacyModelStorage() {
         {!modelLoadError && legacyModels.length > 0 && (
           <div
             role="status"
-            className="flex items-start gap-2 rounded-md border border-warning/40 bg-warning/10 px-3 py-2 text-[11px] text-foreground"
+            className="flex items-start gap-2 rounded-md border border-warning/40 bg-warning/10 px-3 py-2 type-small text-foreground"
           >
             <AlertCircle size={13} className="mt-0.5 shrink-0 text-warning" />
             <span>
@@ -270,7 +271,7 @@ function LegacyModelStorage() {
         {!modelsLoading && !modelLoadError && legacyModels.length === 0 && (
           <div
             role="status"
-            className="rounded-md border border-border bg-secondary/30 px-3 py-3 text-[11px] text-foreground"
+            className="rounded-md border border-border bg-secondary/30 px-3 py-3 type-small text-foreground"
           >
             No legacy model files were found. This release does not install or download learned-model files.
           </div>
@@ -288,7 +289,7 @@ function LegacyModelStorage() {
                     <AlertCircle size={13} className="text-warning shrink-0" />
                     <span className="truncate">{m.displayName}</span>
                   </div>
-                  <div className="text-[11px] text-[hsl(var(--sub))] mt-0.5 ml-[19px]">
+                  <div className="type-small text-[hsl(var(--sub))] mt-0.5 ml-[19px]">
                     {m.description} — {m.sizeMb} MB
                   </div>
                 </div>
@@ -310,9 +311,9 @@ function LegacyModelStorage() {
           </div>
         )}
 
-        <p className="text-[11px] text-[hsl(var(--sub))] border-t border-border/60 pt-2.5">
-          Learned-model processing is not included in v1.0.3. This page only removes unused files left by an older
-          build; it never downloads or installs model files.
+        <p className="type-small text-[hsl(var(--sub))] border-t border-border/60 pt-2.5">
+          Learned-model processing is not included in this version of DepoAudio. This page only removes unused files
+          left by an older build; it never downloads or installs model files.
         </p>
       </CardContent>
     </Card>
@@ -361,6 +362,11 @@ export default function SettingsPanel({
     setDefaultOutputMode,
   } = prefs
   const [section, setSection] = useState('models')
+  // Each section opens at its top, not at the previous section's scroll
+  const contentRef = useRef(null)
+  useEffect(() => {
+    if (contentRef.current) contentRef.current.scrollTop = 0
+  }, [section])
   const [externalLinkError, setExternalLinkError] = useState('')
   // After an import or a partial clear, closing Settings reloads the app so
   // every screen reads the changed library and storage (DA-07).
@@ -407,7 +413,7 @@ export default function SettingsPanel({
     <Dialog open={open} onOpenChange={handleOpenChange}>
       <DialogContent className="max-w-[760px] p-0 gap-0 overflow-hidden">
         <div className="flex items-center justify-between px-5 py-3.5 border-b border-border">
-          <DialogTitle className="text-[15px] font-semibold text-foreground">Settings</DialogTitle>
+          <DialogTitle className="type-h3 text-foreground">Settings</DialogTitle>
           <DialogClose />
         </div>
         <DialogDescription className="sr-only">Application settings</DialogDescription>
@@ -429,7 +435,7 @@ export default function SettingsPanel({
                 title={label}
                 className={`flex items-center gap-2.5 px-2.5 md:px-3 py-2 rounded-lg text-[12.5px] font-medium transition-colors focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring ${
                   section === id
-                    ? 'bg-[hsl(var(--gold-dim))] text-foreground'
+                    ? 'bg-secondary text-foreground ring-1 ring-inset ring-foreground'
                     : 'text-[hsl(var(--text2))] hover:bg-secondary/60'
                 }`}
               >
@@ -439,8 +445,16 @@ export default function SettingsPanel({
             ))}
           </nav>
 
-          {/* Content pane */}
-          <div className="flex-1 overflow-y-auto p-4 md:p-5 flex flex-col gap-3.5">
+          {/* Content pane: the only part of Settings that scrolls. Cards clip
+              their own corners (overflow-hidden), which lets a flex column
+              shrink them below their content, so every direct child keeps its
+              full height here and the pane scrolls instead. (*:shrink-0, not
+              an arbitrary [&>*] variant, so the jsdom test can match it.) */}
+          <div
+            ref={contentRef}
+            data-testid="settings-content"
+            className="flex-1 min-w-0 min-h-0 overflow-y-auto overscroll-contain p-4 md:p-5 flex flex-col gap-3.5 *:shrink-0"
+          >
             {section === 'models' && <LegacyModelStorage />}
 
             {section === 'data' && (
@@ -458,17 +472,10 @@ export default function SettingsPanel({
                     <CardTitle>Quick setup</CardTitle>
                   </CardHeader>
                   <CardContent className="p-4 flex flex-col gap-2">
-                    <p className="text-[11px] text-[hsl(var(--sub))]">Start from a preset, then fine-tune below.</p>
+                    <p className="type-small text-[hsl(var(--sub))]">Start from a preset, then fine-tune below.</p>
                     <div className="flex gap-1.5 flex-wrap">
                       {SETTINGS_PRESETS.map(p => (
-                        <Button
-                          key={p.id}
-                          variant="outline"
-                          size="sm"
-                          className="rounded-full"
-                          title={p.desc}
-                          onClick={() => applyPreset(p)}
-                        >
+                        <Button key={p.id} variant="outline" size="sm" title={p.desc} onClick={() => applyPreset(p)}>
                           {p.name}
                         </Button>
                       ))}
@@ -632,7 +639,7 @@ export default function SettingsPanel({
                       <span className="text-[12px] font-medium text-foreground">
                         Check for updates from GitHub Releases
                       </span>
-                      <span className="text-[11px] text-[hsl(var(--sub))] mt-0.5">
+                      <span className="type-small text-[hsl(var(--sub))] mt-0.5">
                         <span role="status" aria-live="polite" aria-atomic="true">
                           {updateStatus === 'checking' && 'Checking for updates…'}
                           {updateStatus === 'available' && `Version ${update?.version} is available.`}
@@ -692,7 +699,7 @@ export default function SettingsPanel({
                     <div className="flex flex-col gap-2">
                       <div className="flex flex-col min-w-0">
                         <span className="text-[12px] font-medium text-foreground">Version {APP_VERSION}</span>
-                        <span className="text-[11px] text-[hsl(var(--sub))] mt-0.5">
+                        <span className="type-small text-[hsl(var(--sub))] mt-0.5">
                           For a support request, copy the diagnostics: app version, operating system, FFmpeg version and
                           error type. No file names or folders, and nothing is sent.
                         </span>
@@ -707,12 +714,22 @@ export default function SettingsPanel({
                     </div>
 
                     <div className="flex items-center justify-between gap-3 border-t border-border pt-3">
-                      <div className="flex flex-col min-w-0">
-                        <span className="text-[12px] font-medium text-foreground">DepoAudio, powered by DepoStack</span>
-                        <span className="text-[11px] text-[hsl(var(--sub))] mt-0.5">
-                          A growing suite of tools built for court reporters. DepoAudio itself stays free and open
-                          source.
+                      <div className="flex items-start gap-3 min-w-0">
+                        {/* DepoAudio keeps its own icon and wordmark; DepoStack is endorsed in text (depo-stack/BRAND.md §8) */}
+                        <span className="shrink-0">
+                          <LogoSvg />
                         </span>
+                        <div className="flex flex-col min-w-0">
+                          {/* DepoAudio, powered by DepoStack: the wordmark leads, the endorsement follows smaller in ink 2 */}
+                          <span className="text-foreground">
+                            <span className="type-wordmark">DepoAudio</span>
+                            <span className="type-small text-[hsl(var(--text2))]">, powered by DepoStack</span>
+                          </span>
+                          <span className="type-small text-[hsl(var(--sub))] mt-0.5">
+                            A growing suite of tools built for court reporters. DepoAudio itself stays free and open
+                            source.
+                          </span>
+                        </div>
                       </div>
                       <Button
                         size="sm"
@@ -727,7 +744,7 @@ export default function SettingsPanel({
                     <div className="flex items-center justify-between gap-3 border-t border-border pt-3">
                       <div className="flex flex-col min-w-0">
                         <span className="text-[12px] font-medium text-foreground">FFmpeg and audio codecs</span>
-                        <span className="text-[11px] text-[hsl(var(--sub))] mt-0.5">
+                        <span className="type-small text-[hsl(var(--sub))] mt-0.5">
                           DepoAudio uses FFmpeg under LGPL v2.1 or later. License notices and reviewed build/source
                           references are included; corresponding-source delivery is verified before publication.
                         </span>
@@ -745,7 +762,7 @@ export default function SettingsPanel({
                     {externalLinkError && (
                       <p
                         role="alert"
-                        className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-[11px] text-destructive"
+                        className="rounded-md border border-destructive/30 border-l-[3px] border-l-destructive px-3 py-2 type-small text-destructive"
                       >
                         {externalLinkError}
                       </p>

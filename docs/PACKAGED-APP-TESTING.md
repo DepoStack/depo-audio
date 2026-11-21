@@ -33,7 +33,7 @@ The first smoke subset should cover:
 - accessible local file-selection controls without opening a native dialog;
 - an automated WCAG 2 A/AA scan of the initial view that blocks serious and critical violations.
 
-The suite should not convert or inspect a court recording, mutate the Library, install an update, or call an external service. v1.0.3 has no model-download path; the suite must fail if one appears. It does not replace keyboard, screen-reader, clean-install, Gatekeeper, SmartScreen, signing, audio-output, or release-asset testing.
+The suite should not convert or inspect a court recording, mutate the Library, install an update, or call an external service. DepoAudio has no model-download path; the suite must fail if one appears. It does not replace keyboard, screen-reader, clean-install, Gatekeeper, SmartScreen, signing, audio-output, or release-asset testing.
 
 ## Platform and privacy gates
 
@@ -52,6 +52,6 @@ npm run build
 npm run size:check
 ```
 
-The current budgets are 560 KiB of JavaScript and 64 KiB of CSS. They leave modest headroom above the August 24, 2026 baseline of 487.6 KiB of JavaScript and 52.9 KiB of CSS while still surfacing material growth. The script walks `dist/` deterministically, includes all `.js`, `.mjs`, and `.css` assets, excludes source maps and other asset types, and fails when the build output is absent.
+The current budgets are 560 KiB of JavaScript and 68 KiB of CSS. They leave modest headroom above the August 24, 2026 baseline of 487.6 KiB of JavaScript and 52.9 KiB of CSS while still surfacing material growth. The CSS budget was raised from 64 KiB in November 2026 for the DepoStack brand foundation (bundled Archivo and Fragment Mono `@font-face` rules with size-adjusted fallbacks, and the type-role utilities), which brought CSS to about 61.3 KiB. The script walks `dist/` deterministically, includes all `.js`, `.mjs`, and `.css` assets, excludes source maps and other asset types, and fails when the build output is absent.
 
 This is an engineering regression guard, not a claim about installer size, download transfer, runtime memory, startup time, or user-perceived performance. It runs as a blocking CI step immediately after the frontend build. Budget changes require an intentional review of the emitted assets and the reason for the increase.

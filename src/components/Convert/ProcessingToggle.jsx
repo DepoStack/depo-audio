@@ -26,14 +26,14 @@ export default function ProcessingToggle({ name, desc, checked, onChange, smart,
           {name}
           {detected && (
             <span
-              className="text-[9.5px] font-semibold px-1.5 py-px rounded-full text-[hsl(var(--success))] bg-[hsl(var(--success)/0.12)]"
+              className="type-label px-1.5 py-px text-[hsl(var(--success))] bg-[hsl(var(--success)/0.12)]"
               title={detected}
             >
               Recommended — {detected}
             </span>
           )}
         </Label>
-        <span id={descriptionId} className="text-[11px] text-[hsl(var(--sub))] leading-snug">
+        <span id={descriptionId} className="type-small text-[hsl(var(--sub))] leading-snug">
           {desc}
         </span>
         {extra}

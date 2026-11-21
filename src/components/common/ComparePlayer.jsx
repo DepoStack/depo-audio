@@ -110,7 +110,7 @@ export default function ComparePlayer({
         <Button
           variant="ghost"
           size="sm"
-          className={activeSource === 'original' ? 'bg-card text-foreground shadow-xs' : ''}
+          className={activeSource === 'original' ? 'bg-card text-foreground ring-1 ring-inset ring-foreground' : ''}
           onClick={() => switchSource('original')}
         >
           {originalLabel}
@@ -118,7 +118,7 @@ export default function ComparePlayer({
         <Button
           variant="ghost"
           size="sm"
-          className={activeSource === 'processed' ? 'bg-[hsl(var(--success)/0.12)] text-success shadow-xs' : ''}
+          className={activeSource === 'processed' ? 'bg-card text-foreground ring-1 ring-inset ring-foreground' : ''}
           onClick={() => switchSource('processed')}
         >
           {processedLabel}
@@ -128,7 +128,7 @@ export default function ComparePlayer({
       {/* Waveform */}
       <Waveform
         audioPath={activeSource === 'original' ? originalPath : processedPath}
-        color={activeSource === 'original' ? '#8097b4' : '#3a9e6a'}
+        color={activeSource === 'original' ? 'hsl(var(--sub))' : 'hsl(var(--success))'}
         currentTime={currentTime}
         duration={duration}
         height={48}
@@ -137,21 +137,21 @@ export default function ComparePlayer({
 
       {/* Controls */}
       <div className="flex items-center justify-center gap-3">
-        <span className="font-mono text-[11px] text-[hsl(var(--sub))] min-w-[40px] text-center">
+        <span className="tabular-nums text-[12px] text-[hsl(var(--sub))] min-w-[40px] text-center">
           {fmtTime(currentTime)}
         </span>
         <button
-          className="w-9 h-9 rounded-full bg-[hsl(var(--gold-dim))] border border-primary/30 text-foreground flex items-center justify-center shrink-0 transition-colors hover:bg-primary/20 hover:border-primary"
+          className="w-9 h-9 bg-secondary border border-foreground/60 text-foreground flex items-center justify-center shrink-0 transition-colors hover:border-foreground"
           onClick={toggle}
         >
           {playing ? <Pause size={14} /> : <Play size={14} />}
         </button>
-        <span className="font-mono text-[11px] text-[hsl(var(--sub))] min-w-[40px] text-center">
+        <span className="tabular-nums text-[12px] text-[hsl(var(--sub))] min-w-[40px] text-center">
           {fmtTime(duration)}
         </span>
       </div>
 
-      <p className="text-[11px] text-[hsl(var(--sub))] text-center">
+      <p className="type-small text-[hsl(var(--sub))] text-center">
         {activeSource === 'original' ? 'Listening to the original' : 'Listening to the processed version'}
         {' — '}click the other button to compare
       </p>

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { catJobPaths, mergeQueuedFiles, partitionQueuePaths } from '../lib/queue'
+import { catJobPaths, mergeQueuedFiles, partitionQueuePaths, reexportConfirmCopy } from '../lib/queue'
 
 describe('partitionQueuePaths', () => {
   it('separates TRS companions without discarding any dropped TRM chunks', () => {
@@ -36,5 +36,28 @@ describe('mergeQueuedFiles', () => {
 describe('catJobPaths', () => {
   it('returns every valid file path in a detected court-software job', () => {
     expect(catJobPaths({ files: [{ path: '/one.trm' }, { path: '/two.trm' }, {}] })).toEqual(['/one.trm', '/two.trm'])
+  })
+})
+
+describe('reexportConfirmCopy', () => {
+  it('counts the queue and the Library files with the right number', () => {
+    const many = reexportConfirmCopy({ queued: 3, queuedAtOpen: 3, incoming: 2 })
+    expect(many.title).toBe('Replace the 3 files in the queue?')
+    expect(many.confirmLabel).toBe('Replace 3 files')
+    expect(many.description).toBe(
+      'The 3 files waiting in Convert are taken out of the queue. Nothing is deleted from disk. Add to queue keeps them and adds the 2 Library files after them.',
+    )
+    expect(many.destructive).toBe(true)
+
+    const one = reexportConfirmCopy({ queued: 1, queuedAtOpen: 1, incoming: 1 })
+    expect(one.title).toBe('Replace the 1 file in the queue?')
+    expect(one.description).not.toMatch(/\bfiles\b/)
+  })
+
+  it('names files added while the dialog was open', () => {
+    expect(reexportConfirmCopy({ queued: 4, queuedAtOpen: 2, incoming: 1 }).description).toContain(
+      '2 files were added to the queue while this was open and are counted here.',
+    )
+    expect(reexportConfirmCopy({ queued: 1, queuedAtOpen: 2, incoming: 1 }).description).not.toContain('added to the')
   })
 })

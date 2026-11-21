@@ -21,6 +21,10 @@
 # checked-out bytes identical on Windows and Unix release runners.
 scripts/javascript-license-overrides/** text eol=lf
 
+# Bundled font licence texts are hashed and embedded into the JavaScript
+# notices; keep them LF on Windows runners too.
+public/fonts/*.txt text eol=lf
+
 # Native Windows automation keeps conventional CRLF endings.
 *.bat text eol=crlf
 *.cmd text eol=crlf
@@ -37,4 +41,5 @@ scripts/javascript-license-overrides/** text eol=lf
 *.png binary
 *.tgz binary
 *.wav binary
+*.woff2 binary
 *.zip binary
