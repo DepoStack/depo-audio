@@ -1629,6 +1629,23 @@ mod tests {
 
     // ── SGMCA layout, writer and slicing (FFmpeg on PATH) ───────────────────
 
+    /// The granule-based duration must match what libopus actually decodes,
+    /// sample for sample, and stay within one 20 ms frame of the source.
+    /// FFmpeg versions differ in how many trailing samples they keep when
+    /// they resample to 16 kHz (FFmpeg 8 drops 768 samples at 48 kHz from a
+    /// 2 s tone; 6.1 keeps them all), so an exact 2 s check would test FFmpeg.
+    fn assert_sgmca_duration(path: &Path, info: &crate::sgmca::SgmcaInfo) {
+        let channels = usize::from(info.head.channels);
+        let decoded = decode_f32(path, channels);
+        assert!(
+            decoded.iter().all(|channel| channel.len() as u64 == info.samples),
+            "libopus decoded {:?} samples per channel, the granules say {}",
+            decoded.iter().map(Vec::len).collect::<Vec<_>>(),
+            info.samples
+        );
+        assert!((info.duration_seconds - SYNTHETIC_SECONDS).abs() <= 0.02, "{info:?}");
+    }
+
     #[test]
     fn plain_family_255_sgmca_is_read_in_place_and_split() {
         if !court_fixture_tools_available() {
@@ -1643,7 +1660,7 @@ mod tests {
             (4, 4, 0)
         );
         assert_eq!(info.head.input_sample_rate, 16_000);
-        assert!((info.duration_seconds - SYNTHETIC_SECONDS).abs() < 0.001, "{info:?}");
+        assert_sgmca_duration(&sgmca, &info);
         let out = dir.0.join("out");
         fs::create_dir(&out).unwrap();
 
@@ -1672,7 +1689,7 @@ mod tests {
         assert_eq!(info.head.channels, 4);
         assert_eq!(info.head.mapping, [0, 1, 2, 3]);
         assert_eq!(info.head.input_sample_rate, 16_000);
-        assert!((info.duration_seconds - SYNTHETIC_SECONDS).abs() < 0.001, "{info:?}");
+        assert_sgmca_duration(written, &info);
         assert_audio(written, 4, "48000");
         let record = checked_export_record(file, &wav);
         assert_eq!(record["output"]["format"], "sgmca");
