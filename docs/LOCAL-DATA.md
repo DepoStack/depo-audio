@@ -16,7 +16,7 @@ the app, with the exact folder path on that computer.
 | Legacy model files | app data folder, `models/` | Files left by an older build. DepoAudio never loads them |
 | Transcripts | app web view storage, key `transcript:<track path>` | The transcript lines you edited for a track (speaker, text, time) |
 | Bookmarks | app web view storage, `player-bookmarks` | Bookmark times, labels and the track path |
-| Playback speed and theme | app web view storage, `player-speed`, `depoaudio-theme` | One setting each |
+| Playback speed, backstep and theme | app web view storage, `player-speed`, `player-backstep`, `depoaudio-theme` | One setting each |
 
 The app data folder is `<system app data>/com.andrewmayes.depoaudio`:
 

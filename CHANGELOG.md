@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- **The Player rewinds a little when you resume.** After a pause, pressing Play, Space or K first goes back 2 seconds so the last words are heard again. The Backstep menu next to the transport shows the current value and offers Off, 1, 2, 3 and 5 seconds; the choice is saved like playback speed. Seeking, changing tracks and the A-B loop wrapping do not rewind, the rewind never goes before the start of the track, and inside an active A-B loop it never goes before the loop start.
+
 ## [1.1.0] - Unpublished
 
 DepoAudio 1.1.0 is the first release since 1.0.2. It includes everything that was prepared for 1.0.3. That version was never published, so there is no 1.0.3 download.

@@ -80,7 +80,7 @@ Scanning is a bounded, cancellable local analysis pass. FFmpeg performs the sele
 
 ### ▶️ Built-in player
 
-- Color-coded tracks, **0.5×–2× speed**, **A-B loop**, editable **bookmarks**
+- Color-coded tracks, **0.5×–2× speed**, **auto-backstep** on resume, **A-B loop**, editable **bookmarks**
 - Full keyboard transport
 - **Synced transcript editor** — import SRT, VTT, or TXT, follow the playhead, stamp and edit cues, then export SRT or TXT
 

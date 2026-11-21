@@ -104,14 +104,15 @@ describe('clearing web data', () => {
       [storageKey('C:\\cases\\b.wav')]: JSON.stringify([lineB]),
       'player-bookmarks': '[]',
       'player-speed': '2',
+      'player-backstep': '3',
       'depoaudio-theme': 'dark',
       'not-depoaudio': 'kept',
     })
   })
 
   it('removes every DepoAudio key and nothing else', () => {
-    expect(WEB_STORAGE_KEYS).toEqual(['player-bookmarks', 'player-speed', 'depoaudio-theme'])
-    expect(clearWebData(storage)).toEqual({ removed: 5, failed: 0 })
+    expect(WEB_STORAGE_KEYS).toEqual(['player-bookmarks', 'player-speed', 'player-backstep', 'depoaudio-theme'])
+    expect(clearWebData(storage)).toEqual({ removed: 6, failed: 0 })
     expect([...storage.data.keys()]).toEqual(['not-depoaudio'])
   })
 
@@ -119,7 +120,7 @@ describe('clearing web data', () => {
     storage.removeItem = () => {
       throw new Error('blocked')
     }
-    expect(clearWebData(storage)).toEqual({ removed: 0, failed: 5 })
+    expect(clearWebData(storage)).toEqual({ removed: 0, failed: 6 })
   })
 })
 
