@@ -8,18 +8,22 @@ import Waveform from './Waveform'
 // ── Before/After comparison player ──────────────────────────────────────────
 //
 // Plays original and processed audio in sync so users can hear the difference.
-// A/B toggle switches between them at the same playback position.
+// A/B toggle switches between them at the same playback position. Only the
+// active source plays; the other waits at the same position.
 
 export default function ComparePlayer({
   originalPath,
   processedPath,
   originalLabel = 'Original',
   processedLabel = 'Processed',
+  unavailableMessage = "This file can't be played here.",
+  note = '',
 }) {
   const [activeSource, setActiveSource] = useState('processed') // 'original' | 'processed'
   const [playing, setPlaying] = useState(false)
   const [currentTime, setCurrentTime] = useState(0)
   const [duration, setDuration] = useState(0)
+  const [failed, setFailed] = useState({ original: false, processed: false })
   const originalRef = useRef(null)
   const processedRef = useRef(null)
 
@@ -41,7 +45,13 @@ export default function ComparePlayer({
     }
   }
 
+  const markFailed = source => {
+    setFailed(prev => ({ ...prev, [source]: true }))
+    if (activeSource === source) setPlaying(false)
+  }
+
   const switchSource = source => {
+    if (source === activeSource) return
     const wasPlaying = playing
     const time = currentTime
 
@@ -89,6 +99,7 @@ export default function ComparePlayer({
         onEnded={() => {
           if (activeSource === 'original') setPlaying(false)
         }}
+        onError={() => markFailed('original')}
       />
       <audio
         ref={processedRef}
@@ -103,13 +114,15 @@ export default function ComparePlayer({
         onEnded={() => {
           if (activeSource === 'processed') setPlaying(false)
         }}
+        onError={() => markFailed('processed')}
       />
 
       {/* A/B toggle */}
-      <div className="flex gap-0.5 bg-secondary rounded-md p-0.5 self-center">
+      <div role="group" aria-label="Listen to" className="flex gap-0.5 bg-secondary rounded-md p-0.5 self-center">
         <Button
           variant="ghost"
           size="sm"
+          aria-pressed={activeSource === 'original'}
           className={activeSource === 'original' ? 'bg-card text-foreground ring-1 ring-inset ring-foreground' : ''}
           onClick={() => switchSource('original')}
         >
@@ -118,6 +131,7 @@ export default function ComparePlayer({
         <Button
           variant="ghost"
           size="sm"
+          aria-pressed={activeSource === 'processed'}
           className={activeSource === 'processed' ? 'bg-card text-foreground ring-1 ring-inset ring-foreground' : ''}
           onClick={() => switchSource('processed')}
         >
@@ -142,6 +156,7 @@ export default function ComparePlayer({
         </span>
         <button
           className="w-9 h-9 bg-secondary border border-foreground/60 text-foreground flex items-center justify-center shrink-0 transition-colors hover:border-foreground"
+          aria-label={playing ? 'Pause' : 'Play'}
           onClick={toggle}
         >
           {playing ? <Pause size={14} /> : <Play size={14} />}
@@ -151,10 +166,18 @@ export default function ComparePlayer({
         </span>
       </div>
 
-      <p className="type-small text-[hsl(var(--sub))] text-center">
-        {activeSource === 'original' ? 'Listening to the original' : 'Listening to the processed version'}
-        {' — '}click the other button to compare
+      <p className="type-small text-[hsl(var(--sub))] text-center" aria-live="polite">
+        {activeSource === 'original'
+          ? `Listening to the ${originalLabel.toLowerCase()}`
+          : `Listening to the ${processedLabel.toLowerCase()}`}
+        {' — '}choose the other button to compare at the same position
       </p>
+      {note && <p className="type-small text-[hsl(var(--text2))] text-center">{note}</p>}
+      {failed[activeSource] && (
+        <p role="alert" className="rounded border-l-[3px] border-l-destructive px-2 py-1.5 type-small text-destructive">
+          {activeSource === 'original' ? unavailableMessage : `${processedLabel} can't be played here.`}
+        </p>
+      )}
     </div>
   )
 }

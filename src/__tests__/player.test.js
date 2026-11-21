@@ -13,6 +13,8 @@ import {
   loadBackstep,
   backstepLabel,
   resumePosition,
+  compareTarget,
+  COMPARE_UNAVAILABLE_REASON,
 } from '../lib/player'
 
 // Characterization tests for the Player tab's pure logic: accepted files,
@@ -160,5 +162,25 @@ describe('auto-backstep', () => {
   it('stays inside an active A-B loop', () => {
     expect(resumePosition({ currentTime: 31, pausedAt: 31, backstep: 3, loopStart: 30 })).toBe(30)
     expect(resumePosition({ currentTime: 20, pausedAt: 20, backstep: 3, loopStart: 30 })).toBe(17)
+  })
+})
+
+describe('compareTarget', () => {
+  const mp3 = { path: '/out/a.mp3', name: 'a.mp3' }
+  it('enables compare for a playable source and output', () => {
+    expect(compareTarget('/in/a.wav', [mp3])).toEqual({ enabled: true, output: mp3, reason: '', note: '' })
+  })
+  it('disables compare for court containers with a plain reason', () => {
+    for (const ext of ['sgmca', 'trm', 'ftr']) {
+      const target = compareTarget(`/in/a.${ext}`, [mp3])
+      expect(target.enabled).toBe(false)
+      expect(target.reason).toBe(COMPARE_UNAVAILABLE_REASON)
+    }
+  })
+  it('names the first output for split conversions', () => {
+    const ch2 = { path: '/out/a_ch2.wav', name: 'a_ch2.wav' }
+    const target = compareTarget('/in/a.wav', [mp3, ch2])
+    expect(target.output).toBe(mp3)
+    expect(target.note).toMatch(/^Comparing a\.mp3 with the original/)
   })
 })

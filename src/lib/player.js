@@ -101,6 +101,24 @@ export function isPlayerPlayable(path) {
   return AUDIO_EXTS.includes(ext) && !CONVERSION_REQUIRED_EXTS.has(ext)
 }
 
+export const COMPARE_UNAVAILABLE_REASON = "Original can't be played here; open the output in Player."
+
+// What "Compare with original" on a converted row can do. The original must
+// open in the web view as it is (court containers such as .sgmca/.trm/.ftr
+// cannot), and so must the output. Split conversions compare the first
+// playable output, and the note names it.
+export function compareTarget(sourcePath, outputs) {
+  const output = (outputs || []).find(out => isPlayerPlayable(out?.path)) ?? null
+  if (!isPlayerPlayable(sourcePath) || !output) {
+    return { enabled: false, output, reason: COMPARE_UNAVAILABLE_REASON, note: '' }
+  }
+  const note =
+    outputs.length > 1
+      ? `Comparing ${output.name} with the original. The original plays all of its channels together.`
+      : ''
+  return { enabled: true, output, reason: '', note }
+}
+
 export function freshAudioPaths(paths, tracks) {
   return partitionPlaybackPaths(paths, tracks).playable
 }
