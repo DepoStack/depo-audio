@@ -2,7 +2,7 @@ import { useState, useEffect, useRef } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
 import { MODES, FORMATS_OUT, MP3_BITRATES, CH_COLORS } from '../../constants'
-import { PRESETS, resolvePresetSettings } from '../../presets'
+import { PRESETS, NOT_TESTED_NOTE, OPUS_CATALYST_NOTE, describeSettings, resolvePresetSettings } from '../../presets'
 import { usePreferencesContext } from '../../hooks/PreferencesContext'
 import { Check, Loader2, Play } from 'lucide-react'
 import { Button } from '../ui/button'
@@ -110,6 +110,35 @@ export default function ConvertTab({
   const trimEffective = trim && mode !== 'split'
   const autoLevelEffective = autoLevel && mode !== 'keep'
   const anyProcessing = normalize || trimEffective || fade || hpf || autoLevelEffective || declip
+  const presetState = describeSettings({
+    mode,
+    format: formatOut,
+    rate,
+    mp3Bitrate,
+    normalize,
+    trim,
+    fade,
+    fadeDur,
+    hpf,
+    autoLevel,
+    declip,
+  })
+  const applyPreset = preset => {
+    const s = resolvePresetSettings(preset.settings)
+    handleModeChange(s.mode)
+    setFormatOut(s.format)
+    setRate(s.rate)
+    setNormalize(s.normalize)
+    setTrim(s.trim)
+    setFade(s.fade)
+    // The fade length only matters with fades on; leave the person's own
+    // value alone otherwise.
+    if (s.fade) setFadeDur(s.fadeDur)
+    setHpf(s.hpf)
+    setAutoLevel(s.autoLevel)
+    setDeclip(s.declip)
+    if (s.format === 'mp3') setMp3Bitrate(s.mp3Bitrate ?? 192)
+  }
   const [analysis, setAnalysis] = useState(null)
   const [scanning, setScanning] = useState(false)
   const [scanProgress, setScanProgress] = useState({ current: 0, total: 0, fileName: '', phase: '', filePct: 0 })
@@ -556,55 +585,58 @@ export default function ConvertTab({
           )}
 
           {/* ── PRESETS ──────────────────────────────────────────────────── */}
-          {/* Highlight the preset the current settings match, so users can
-              see which preset is active and when they've diverged from it */}
-          <div className="flex items-center gap-1.5 flex-wrap mb-1">
-            <Label>Quick setup</Label>
-            {PRESETS.map(p => {
-              const s = resolvePresetSettings(p.settings)
-              // Opus always converts at 48 kHz, so compare the effective rate
-              const effRate = formatOut === 'opus' ? '48000' : rate
-              const sEffRate = s.format === 'opus' ? '48000' : s.rate
-              const active =
-                mode === s.mode &&
-                formatOut === s.format &&
-                effRate === sEffRate &&
-                normalize === s.normalize &&
-                trim === s.trim &&
-                fade === s.fade &&
-                fadeDur === s.fadeDur &&
-                hpf === s.hpf &&
-                autoLevel === s.autoLevel &&
-                declip === s.declip &&
-                // Bitrate only matters for MP3; presets default to 192 kbps
-                (s.format !== 'mp3' || mp3Bitrate === (s.mp3Bitrate ?? 192))
-              return (
-                <Button
-                  key={p.id}
-                  variant="outline"
-                  size="sm"
-                  title={p.desc}
-                  aria-pressed={active}
-                  className={active ? 'border-foreground bg-secondary text-foreground' : ''}
-                  onClick={() => {
-                    handleModeChange(s.mode)
-                    setFormatOut(s.format)
-                    setRate(s.rate)
-                    setNormalize(s.normalize)
-                    setTrim(s.trim)
-                    setFade(s.fade)
-                    setFadeDur(s.fadeDur)
-                    setHpf(s.hpf)
-                    setAutoLevel(s.autoLevel)
-                    setDeclip(s.declip)
-                    if (s.format === 'mp3') setMp3Bitrate(s.mp3Bitrate ?? 192)
-                  }}
-                >
-                  {p.name}
-                </Button>
-              )
-            })}
-          </div>
+          {/* Each preset is named for where the file is going and states its
+              basis. The one the current settings match is highlighted; when
+              none matches, the picker says "Custom" and changes nothing. */}
+          <Card className="workflow-section" data-testid="preset-picker">
+            <CardHeader>
+              <CardTitle>Quick setup</CardTitle>
+              <span className="type-small text-[hsl(var(--sub))]" data-testid="preset-status" role="status">
+                {presetState.kind === 'preset'
+                  ? `Using: ${presetState.preset.name}`
+                  : presetState.legacy
+                    ? `Custom: the earlier \u201c${presetState.legacy.name}\u201d preset. Closest new preset: ${presetState.closest?.name}`
+                    : 'Custom settings'}
+              </span>
+            </CardHeader>
+            <CardContent>
+              <div className="grid grid-cols-1 gap-2 p-3 sm:grid-cols-2 lg:grid-cols-3">
+                {PRESETS.map(p => {
+                  const active = presetState.kind === 'preset' && presetState.preset.id === p.id
+                  return (
+                    <button
+                      key={p.id}
+                      type="button"
+                      title={p.desc}
+                      aria-pressed={active}
+                      aria-describedby={`preset-basis-${p.id}`}
+                      className={`relative flex flex-col items-start gap-0.5 px-3 py-2.5 rounded-lg border text-left transition-all cursor-pointer focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring ${
+                        active
+                          ? 'border-foreground bg-secondary'
+                          : 'border-border bg-card hover:border-[hsl(var(--sub))]'
+                      }`}
+                      onClick={() => applyPreset(p)}
+                    >
+                      <span className="text-[12.5px] font-semibold text-foreground pr-5">{p.name}</span>
+                      <span id={`preset-basis-${p.id}`} className="type-small text-[hsl(var(--text2))] leading-snug">
+                        {p.basis}
+                      </span>
+                      <span className="type-small text-[hsl(var(--sub))]">{NOT_TESTED_NOTE}</span>
+                      {active && (
+                        <span aria-hidden="true" className="absolute top-2 right-2 text-foreground">
+                          <Check aria-hidden="true" className="h-3.5 w-3.5" strokeWidth={2.2} />
+                        </span>
+                      )}
+                    </button>
+                  )
+                })}
+              </div>
+              <p className="px-3 pb-3 type-small text-[hsl(var(--sub))]">
+                Format notes come from Stenograph&rsquo;s Solution Center articles on associating audio and on
+                single-channel audio. Choosing a preset changes the settings below; you can still change any of them.
+              </p>
+            </CardContent>
+          </Card>
 
           {/* ── OUTPUT MODE (segmented) ──────────────────────────────────── */}
           <Card className="workflow-section">
@@ -659,6 +691,14 @@ export default function ConvertTab({
                   </button>
                 ))}
               </div>
+              {formatOut === 'opus' && (
+                <p
+                  data-testid="opus-catalyst-note"
+                  className="mx-3 mb-3 px-3 py-2 rounded-md border border-warning/30 bg-warning/10 type-small text-foreground"
+                >
+                  {OPUS_CATALYST_NOTE}
+                </p>
+              )}
               <div className="flex items-end gap-3 flex-wrap px-3 pb-3">
                 <div className="min-w-[130px]">
                   <Label className="mb-1 block" htmlFor="sample-rate">

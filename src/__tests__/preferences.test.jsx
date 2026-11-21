@@ -129,7 +129,7 @@ describe('processing defaults', () => {
   })
 
   it('fails closed even when stale preset data requests learned processing', () => {
-    const courtroom = PRESETS.find(preset => preset.id === 'courtroom')
+    const courtroom = PRESETS.find(preset => preset.id === 'split-wav')
     expect(
       resolvePresetSettings({ ...courtroom.settings, denoise: true, enhance: true, dereverb: true }),
     ).toMatchObject({ denoise: false, enhance: false, dereverb: false })
@@ -137,7 +137,7 @@ describe('processing defaults', () => {
   })
 
   it('keeps preset descriptions within released non-learned processing', () => {
-    const courtroom = PRESETS.find(preset => preset.id === 'courtroom')
+    const courtroom = PRESETS.find(preset => preset.id === 'split-wav')
     expect(PRESETS.map(preset => preset.desc).join(' ')).not.toMatch(
       /denoise|noise removal|enhance clarity|echo|reverb/i,
     )
