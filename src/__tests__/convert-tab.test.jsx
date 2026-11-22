@@ -452,6 +452,30 @@ describe('ConvertTab preset picker', () => {
     }
   })
 
+  it('says Keep Original to MP3, M4A or Opus keeps only mono and stereo recordings', () => {
+    for (const formatOut of ['mp3', 'm4a', 'opus']) {
+      preferencesContext.current = { ...preferences(), mode: 'keep', formatOut }
+      const view = render(<ConvertTab {...props()} />)
+      expect(screen.getByTestId('keep-stereo-only-note')).toHaveTextContent(
+        'Keep Original to this format works only for mono and stereo recordings',
+      )
+      expect(screen.getByTestId('keep-stereo-only-note')).toHaveTextContent('choose WAV, FLAC or SGMCA')
+      view.unmount()
+    }
+    for (const [mode, formatOut] of [
+      ['keep', 'wav'],
+      ['keep', 'flac'],
+      ['keep', 'sgmca'],
+      ['stereo', 'mp3'],
+      ['split', 'm4a'],
+    ]) {
+      preferencesContext.current = { ...preferences(), mode, formatOut }
+      const view = render(<ConvertTab {...props()} />)
+      expect(screen.queryByTestId('keep-stereo-only-note')).not.toBeInTheDocument()
+      view.unmount()
+    }
+  })
+
   it('marks a chosen preset as in use while the settings still match it', () => {
     preferencesContext.current = { ...preferences(), normalize: true, hpf: true, autoLevel: true }
     const view = render(<ConvertTab {...props()} />)

@@ -5,7 +5,6 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
 
 use regex::Regex;
-use uuid::Uuid;
 
 use crate::types::FormatInfo;
 
@@ -38,6 +37,8 @@ const DCR_READER_NOTE: &str = "Applies marked redactions; password-protected par
 const DCR_IMAGE_NOTE: &str = "This .dcr starts like a camera raw image (TIFF), not like court audio. Check that you picked the right file. If it is a court recording, export it to WAV from the software that recorded it.";
 const DS2_NOTE: &str = "DS2 (DSS Pro) dictation files cannot be opened here. Export to WAV with OM System / Olympus dictation software (for example ODMS), then add the WAV. An encrypted DS2 also needs its password in that software.";
 const WEBEX_NOTE: &str = "Webex network recordings (.arf, .wrf) cannot be opened here. Convert an .arf to MP4 with the Webex Recording Converter, or a .wrf to WMV with the Webex WRF2WMV Converter (both Windows only), then add the converted file.";
+const DM_NOTE: &str = "Reads the audio inside; tested with synthetic files only. Recorded-over blocks are skipped and the audio is kept in file order.";
+const DM_UNRECOGNIZED_NOTE: &str = "This .dm file's header isn't one DepoAudio recognizes. DepoAudio reads .dm audio files written by DigitalCAT / SoundSync; check that you picked the right file.";
 const SONY_VOICE_NOTE: &str = "Sony IC recorder files (.msv, .dvf) cannot be opened here. Convert to WAV with Sony Digital Voice Editor, then add the WAV. Sony no longer offers it for download, so an existing copy is needed.";
 
 pub(crate) fn get_formats() -> Vec<FormatInfo> {
@@ -73,9 +74,14 @@ pub(crate) fn get_formats() -> Vec<FormatInfo> {
             note: Some("FTR uses its own multichannel codec (tag 0x4180) and requires FFmpeg's native FTR decoder. Drop all .trm files for a session together.".into()) },
         FormatInfo { key: "bwf".into(), name: "Broadcast WAV".into(), vendor: "CourtSmart / Various".into(),
             status: "supported".into(), handler: "passthrough".into(), channels: None, note: None },
-        FormatInfo { key: "digitalcat".into(), name: "DigitalCAT Audio".into(), vendor: "Stenovations".into(),
-            status: "experimental".into(), handler: "passthrough".into(), channels: None,
-            note: Some("No public spec — conversion may fail. Please report results on GitHub.".into()) },
+        // The audio is read out of the .dm into a temporary WAV (dm.rs).
+        FormatInfo { key: "digitalcat".into(), name: "DigitalCAT Audio".into(), vendor: "Stenovations · DigitalCAT / SoundSync".into(),
+            status: "experimental".into(), handler: "digitalcat".into(), channels: None,
+            note: Some(DM_NOTE.into()) },
+        // A .dm whose first bytes are not the SoundSync audio header.
+        FormatInfo { key: "digitalcat-unrecognized".into(), name: "DigitalCAT Audio (unrecognized)".into(), vendor: "Stenovations".into(),
+            status: "unsupported".into(), handler: "rejected".into(), channels: None,
+            note: Some(DM_UNRECOGNIZED_NOTE.into()) },
         FormatInfo { key: "aes".into(), name: "Eclipse AudioSync".into(), vendor: "Eclipse CAT".into(),
             status: "unsupported".into(), handler: "rejected".into(), channels: None,
             note: Some("AES-128 encrypted. Open in Eclipse → File → Export Audio → WAV first.".into()) },
@@ -178,12 +184,13 @@ pub(crate) fn detect_format_by_extension(path: &str) -> Option<FormatInfo> {
     fmts.into_iter().find(|f| f.key == key)
 }
 
-/// The format of a file: the extension decides, then two cheap content
+/// The format of a file: the extension decides, then cheap content
 /// checks. A `.dcr` is a Liberty / BIS Digital recording when it starts with
 /// their signature, a camera raw image when it starts like a TIFF, and an
-/// unknown recording otherwise (an unreadable one keeps the reader), and a
+/// unknown recording otherwise (an unreadable one keeps the reader); a `.dm`
+/// that does not start with the `.dm` audio header is named as such; and a
 /// readable `.ts` with no transport-stream sync pattern (most often a
-/// TypeScript source file) is left unrecognised. Both checks read only a
+/// TypeScript source file) is left unrecognised. The checks read only a
 /// regular file; a FIFO, device or unreadable path keeps the extension's
 /// answer, so detection never waits on a pipe. Blocking file I/O: async
 /// callers use `detect_format_blocking`.
@@ -203,6 +210,7 @@ pub(crate) fn detect_format_for_path(path: &str) -> Option<FormatInfo> {
             };
             get_formats().into_iter().find(|f| f.key == key)
         }
+        "dm" if !could_be_dm(Path::new(path)) => get_formats().into_iter().find(|f| f.key == "digitalcat-unrecognized"),
         // .ts is also a TypeScript source extension.
         "ts" if !could_be_transport_stream(Path::new(path)) => None,
         _ => Some(format),
@@ -260,6 +268,16 @@ fn dcr_content(path: &Path) -> DcrContent {
             DcrContent::Tiff
         }
         Some(_) => DcrContent::Other,
+    }
+}
+
+/// True unless the file is readable and does not start with the `.dm` audio
+/// header (header size 8 and a plausible WAVEFORMATEX). Unreadable files
+/// pass, so the extension decides and the conversion reports the problem.
+fn could_be_dm(path: &Path) -> bool {
+    match leading_bytes::<64>(path) {
+        Some((bytes, filled)) => crate::dm::looks_like_dm(&bytes[..filled]),
+        None => true,
     }
 }
 
@@ -396,7 +414,7 @@ pub(crate) const AUDIO_PREPARATION_CANCELLED_MESSAGE: &str = "Audio preparation 
 fn strip_sgmca_header_with_cancel(
     src: &Path,
     cancelled: Option<&(dyn Fn() -> bool + Send + Sync)>,
-) -> Result<(PathBuf, bool), String> {
+) -> Result<(PathBuf, Option<crate::safety::TempFile>), String> {
     let is_cancelled = || cancelled.is_some_and(|check| check());
     if is_cancelled() {
         return Err(AUDIO_PREPARATION_CANCELLED_MESSAGE.into());
@@ -416,66 +434,101 @@ fn strip_sgmca_header_with_cancel(
     if is_cancelled() {
         return Err(AUDIO_PREPARATION_CANCELLED_MESSAGE.into());
     }
+    // FFmpeg plays a file with several sessions (one Ogg stream each) as one
+    // stream with the gaps between them closed, which moves every later
+    // session to the wrong time. Such a file is refused, by name of each
+    // session, until sessions can be handled one at a time.
+    crate::sgmca::ensure_single_session(&mut file, offset, cancelled).map_err(|error| {
+        if is_cancelled() {
+            AUDIO_PREPARATION_CANCELLED_MESSAGE.to_string()
+        } else {
+            error
+        }
+    })?;
+    if is_cancelled() {
+        return Err(AUDIO_PREPARATION_CANCELLED_MESSAGE.into());
+    }
     if offset == 0 {
-        return Ok((src.to_path_buf(), false));
+        return Ok((src.to_path_buf(), None));
     }
 
-    // Security note: UUID-based temp filenames are unpredictable, which is sufficient
-    // for a single-user desktop app. The system temp dir inherits OS-level permissions
-    // (typically user-only on macOS/Windows). For multi-user or server contexts, consider
-    // creating a private subdirectory with restrictive permissions (0o700).
-    // The copy keeps the .sgmca extension so every later step treats it as
-    // SGMCA (decoder choice included); FFmpeg finds the Ogg stream by content.
-    let tmp = std::env::temp_dir().join(format!(
-        "depoaudio_{}.sgmca",
-        Uuid::new_v4().to_string().replace('-', "")
-    ));
+    // The copy goes in DepoAudio's private work folder (workdir.rs). It
+    // keeps the .sgmca extension so every later step treats it as SGMCA
+    // (decoder choice included); FFmpeg finds the Ogg stream by content.
     file.seek(SeekFrom::Start(offset)).map_err(|e| e.to_string())?;
-    let copy_result = (|| -> Result<(), String> {
-        let mut out = fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&tmp)
-            .map_err(|error| error.to_string())?;
-        let mut chunk = vec![0u8; 65536];
-        loop {
-            if is_cancelled() {
-                return Err(AUDIO_PREPARATION_CANCELLED_MESSAGE.into());
-            }
-            let n = file.read(&mut chunk).map_err(|error| error.to_string())?;
-            if n == 0 {
-                break;
-            }
-            out.write_all(&chunk[..n]).map_err(|error| error.to_string())?;
-        }
+    let (guard, mut out) = crate::workdir::new_temp_file("depoaudio_", "sgmca")?;
+    // On any error or cancellation the guard drops and removes the copy.
+    let mut chunk = vec![0u8; 65536];
+    loop {
         if is_cancelled() {
             return Err(AUDIO_PREPARATION_CANCELLED_MESSAGE.into());
         }
-        out.sync_all().map_err(|error| error.to_string())
-    })();
-    if let Err(error) = copy_result {
-        let _ = fs::remove_file(&tmp);
-        return Err(error.to_string());
+        let n = file.read(&mut chunk).map_err(|error| error.to_string())?;
+        if n == 0 {
+            break;
+        }
+        out.write_all(&chunk[..n]).map_err(|error| error.to_string())?;
     }
-    Ok((tmp, true))
+    if is_cancelled() {
+        return Err(AUDIO_PREPARATION_CANCELLED_MESSAGE.into());
+    }
+    // Read back by this run only: no sync_all.
+    Ok((guard.path.clone(), Some(guard)))
 }
 
 #[cfg(test)]
-pub(crate) fn strip_sgmca_header(src: &Path) -> Result<(PathBuf, bool), String> {
+pub(crate) fn strip_sgmca_header(src: &Path) -> Result<(PathBuf, Option<crate::safety::TempFile>), String> {
     strip_sgmca_header_with_cancel(src, None)
 }
 
+// ── DigitalCAT .dm demux ──────────────────────────────────────────────────────
+
+/// Read the audio of a `.dm` into a new temporary RIFF WAVE file (see
+/// `dm.rs`). The original is only read. The copy is removed when the
+/// returned guard drops, and on any error or cancellation before that.
+fn demux_dm_with_cancel(
+    src: &Path,
+    cancelled: Option<&(dyn Fn() -> bool + Send + Sync)>,
+) -> Result<(crate::safety::TempFile, crate::dm::DmTimeline), String> {
+    let is_cancelled = || cancelled.is_some_and(|check| check());
+    let dm = crate::dm::parse_dm(src, &is_cancelled)?;
+    let mut timeline = crate::dm::build_timeline(&dm);
+    // Counts only; marker text is never kept (see bmf.rs).
+    timeline.marker_file = crate::bmf::summary_beside(src, &dm);
+    if crate::dm::audio_totals(&dm).0 == 0 {
+        return Err("This .dm file has no audio left to convert: every block was recorded over or empty.".into());
+    }
+    // In the private work folder, like the SGMCA copy above.
+    let (guard, file) = crate::workdir::new_temp_file("depoaudio_", "wav")?;
+    let mut writer = std::io::BufWriter::with_capacity(256 * 1024, file);
+    crate::dm::write_wav(src, &dm, &mut writer, &is_cancelled)?;
+    // Read back by this run only: flushed, not sync_all'ed.
+    writer
+        .into_inner()
+        .map_err(|error| format!("Could not write the temporary audio copy: {error}"))?;
+    if is_cancelled() {
+        return Err(AUDIO_PREPARATION_CANCELLED_MESSAGE.into());
+    }
+    Ok((guard, timeline))
+}
+
 /// The file FFmpeg reads for one source, and what still has to happen to it.
-/// An SGMCA becomes a temporary Ogg copy and a Liberty / BIS DCR a temporary
-/// WAV (`crate::dcr`); every other format is read as it is. A DCR whose
+/// An SGMCA with a vendor prefix becomes a temporary Ogg copy, a `.dm` a
+/// temporary WAV of its audio, and a Liberty / BIS DCR a temporary WAV
+/// (`crate::dcr`), each in DepoAudio's private work folder
+/// (`crate::workdir`); every other format is read as it is. A DCR whose
 /// codec FFmpeg decodes one channel per stream also needs `merge` run before
-/// `path` exists. Every temporary file is removed when this is dropped.
+/// `path` holds its audio. Every temporary file is removed when this is
+/// dropped.
 pub(crate) struct PreparedFeed {
     pub path: PathBuf,
+    /// The temporary copy, when there is one; removed when this drops.
     pub guard: Option<crate::safety::TempFile>,
     pub merge: Option<crate::dcr::MergeStep>,
     /// What the DCR reader found, for a DCR source.
     pub dcr: Option<crate::dcr::DcrInfo>,
+    /// For a `.dm`: its blocks and time stamps, for the export record.
+    pub dm_timeline: Option<crate::dm::DmTimeline>,
 }
 
 impl PreparedFeed {
@@ -485,6 +538,7 @@ impl PreparedFeed {
             guard,
             merge: None,
             dcr: None,
+            dm_timeline: None,
         }
     }
 }
@@ -495,7 +549,12 @@ pub(crate) fn has_extension(src: &Path, wanted: &str) -> bool {
         .is_some_and(|extension| extension.eq_ignore_ascii_case(wanted))
 }
 
-pub(crate) fn prepare_audio_feed_with_cancel(
+/// Prepare the selected file for FFmpeg: an SGMCA loses its vendor prefix,
+/// a `.dm` has its audio read into a WAV and a Liberty / BIS DCR is demuxed
+/// into a WAV, each in a temporary copy that every probe, scan, waveform and
+/// conversion reads; any other file is used as it is. A DCR may still need
+/// its channel merge (`finish_prepared_feed`).
+pub(crate) fn prepare_audio_feed_detailed(
     src: &Path,
     cancelled: Option<&(dyn Fn() -> bool + Send + Sync)>,
 ) -> Result<PreparedFeed, String> {
@@ -516,19 +575,41 @@ pub(crate) fn prepare_audio_feed_with_cancel(
                     guard: Some(feed.guard),
                     merge: feed.merge,
                     dcr: Some(feed.info),
+                    dm_timeline: None,
                 })
             }
             DcrContent::Tiff => Err(DCR_IMAGE_NOTE.into()),
             DcrContent::Other => Err(DCR_NOTE.into()),
         };
     }
+    if has_extension(src, "dm") {
+        let (guard, timeline) = demux_dm_with_cancel(src, cancelled)?;
+        let mut prepared = PreparedFeed::ready(guard.path.clone(), Some(guard));
+        prepared.dm_timeline = Some(timeline);
+        return Ok(prepared);
+    }
     if !has_extension(src, "sgmca") {
         return Ok(PreparedFeed::ready(src.to_path_buf(), None));
     }
 
-    let (feed, is_temp) = strip_sgmca_header_with_cancel(src, cancelled)?;
-    let guard = is_temp.then(|| crate::safety::TempFile::new(feed.clone()));
+    let (feed, guard) = strip_sgmca_header_with_cancel(src, cancelled)?;
     Ok(PreparedFeed::ready(feed, guard))
+}
+
+/// `prepare_audio_feed_detailed` for callers that need only the file and
+/// its guard. A DCR whose channels still have to be merged by FFmpeg is
+/// refused here rather than handed over half made: async callers use
+/// `prepare_audio_feed_cancellable`, which runs the merge. Used by tests.
+#[cfg(test)]
+pub(crate) fn prepare_audio_feed_with_cancel(
+    src: &Path,
+    cancelled: Option<&(dyn Fn() -> bool + Send + Sync)>,
+) -> Result<(PathBuf, Option<crate::safety::TempFile>), String> {
+    let prepared = prepare_audio_feed_detailed(src, cancelled)?;
+    if prepared.merge.is_some() {
+        return Err("This recording's channels still need to be joined by FFmpeg before it can be read.".into());
+    }
+    Ok((prepared.path, prepared.guard))
 }
 
 /// How long the FFmpeg run that joins a DCR's channels may take.
@@ -570,8 +651,8 @@ pub(crate) async fn finish_prepared_feed(
 }
 
 /// The error for a failed DCR channel merge, with FFmpeg's last message.
-/// The merge names temporary files under the user's temp folder (which on
-/// Windows holds the account name), so a message that mentions a path keeps
+/// The merge names temporary files in DepoAudio's work folder, under the
+/// user's profile (which holds the account name), so a message that mentions a path keeps
 /// only its last part after `: ` when that part has no path in it (for
 /// example "No space left on device"), and is left out otherwise.
 pub(crate) fn dcr_merge_error(codec: &str, stderr: &[u8]) -> String {
@@ -609,11 +690,10 @@ pub(crate) async fn prepare_audio_feed_cancellable(
     cancelled: Arc<dyn Fn() -> bool + Send + Sync>,
 ) -> Result<(PathBuf, Option<crate::safety::TempFile>), String> {
     let blocking_cancel = cancelled.clone();
-    let prepared = tauri::async_runtime::spawn_blocking(move || {
-        prepare_audio_feed_with_cancel(&src, Some(blocking_cancel.as_ref()))
-    })
-    .await
-    .map_err(|error| format!("Audio preparation task failed: {error}"))??;
+    let prepared =
+        tauri::async_runtime::spawn_blocking(move || prepare_audio_feed_detailed(&src, Some(blocking_cancel.as_ref())))
+            .await
+            .map_err(|error| format!("Audio preparation task failed: {error}"))??;
     let finished = finish_prepared_feed(app, prepared, cancelled.as_ref()).await?;
     Ok((finished.path, finished.guard))
 }
@@ -792,55 +872,6 @@ pub(crate) fn reserve_unique_path_with<T>(
     ))
 }
 
-/// Temporary feeds older than this are left over from a run that did not
-/// finish (a crash or a forced quit): no step of a run uses one for longer
-/// (the longest, a `.dcr` channel merge, stops at four hours).
-pub(crate) const STALE_TEMP_FEED_SECS: u64 = 24 * 60 * 60;
-
-/// Whether `name` is a temporary audio feed this app writes into the temp
-/// folder: `depoaudio_` and 32 hex digits, then `.wav` (a demuxed `.dcr`)
-/// or `.sgmca` (an SGMCA copy). Nothing else matches.
-fn is_temp_feed_name(name: &str) -> bool {
-    let Some(rest) = name.strip_prefix("depoaudio_") else {
-        return false;
-    };
-    let Some((id, ext)) = rest.split_once('.') else {
-        return false;
-    };
-    id.len() == 32 && id.bytes().all(|byte| byte.is_ascii_hexdigit()) && matches!(ext, "wav" | "sgmca")
-}
-
-/// Remove temporary feeds left in `dir` by a run that did not finish. A
-/// feed is a decoded copy of a recording, so it should not stay behind. Only
-/// regular files with a feed's name (see `is_temp_feed_name`) that were last
-/// changed more than `older_than` ago are removed; symlinks and folders are
-/// never touched. Returns how many were removed.
-pub(crate) fn sweep_stale_temp_feeds(dir: &Path, older_than: std::time::Duration) -> usize {
-    let Ok(entries) = fs::read_dir(dir) else {
-        return 0;
-    };
-    let now = std::time::SystemTime::now();
-    let mut removed = 0;
-    for entry in entries.flatten() {
-        let name = entry.file_name();
-        if !name.to_str().is_some_and(is_temp_feed_name) {
-            continue;
-        }
-        let Ok(metadata) = fs::symlink_metadata(entry.path()) else {
-            continue;
-        };
-        let stale = metadata
-            .modified()
-            .ok()
-            .and_then(|modified| now.duration_since(modified).ok())
-            .is_some_and(|age| age > older_than);
-        if metadata.is_file() && stale && fs::remove_file(entry.path()).is_ok() {
-            removed += 1;
-        }
-    }
-    removed
-}
-
 pub(crate) fn safe_label(s: &str) -> String {
     s.chars()
         .map(|c| if "<>:\"/\\|?* ".contains(c) { '_' } else { c })
@@ -862,45 +893,6 @@ mod tests {
     use super::*;
     use std::collections::HashSet;
 
-    #[test]
-    fn stale_temp_feeds_are_swept_and_nothing_else_is() {
-        let dir = std::env::temp_dir().join(format!("depoaudio_sweep_test_{}", Uuid::new_v4().simple()));
-        fs::create_dir(&dir).unwrap();
-        let id = Uuid::new_v4().simple().to_string();
-        let old = std::time::SystemTime::now() - std::time::Duration::from_secs(STALE_TEMP_FEED_SECS + 60);
-        let write = |name: &str, aged: bool| {
-            let path = dir.join(name);
-            fs::write(&path, b"decoded audio").unwrap();
-            if aged {
-                fs::File::options()
-                    .write(true)
-                    .open(&path)
-                    .unwrap()
-                    .set_modified(old)
-                    .unwrap();
-            }
-            path
-        };
-        let stale_wav = write(&format!("depoaudio_{id}.wav"), true);
-        let stale_sgmca = write(&format!("depoaudio_{id}.sgmca"), true);
-        let fresh = write(&format!("depoaudio_{}.wav", Uuid::new_v4().simple()), false);
-        let kept = [
-            write("depoaudio_hearing.wav", true),
-            write(&format!("depoaudio_merged_{id}.wav"), true),
-            write(&format!("depoaudio_{id}.flac"), true),
-            write(&format!("hearing_{id}.wav"), true),
-            write("Smith v Jones.wav", true),
-        ];
-        let folder = dir.join(format!("depoaudio_{}.wav", Uuid::new_v4().simple()));
-        fs::create_dir(&folder).unwrap();
-        let removed = sweep_stale_temp_feeds(&dir, std::time::Duration::from_secs(STALE_TEMP_FEED_SECS));
-        assert_eq!(removed, 2);
-        assert!(!stale_wav.exists() && !stale_sgmca.exists());
-        assert!(fresh.exists(), "a feed in use by another run is kept");
-        assert!(kept.iter().all(|path| path.exists()));
-        assert!(folder.is_dir());
-        fs::remove_dir_all(&dir).unwrap();
-    }
     use std::sync::{Arc, Barrier};
     use std::thread;
 
@@ -1009,10 +1001,32 @@ mod tests {
         bytes.extend_from_slice(&stream);
         fs::write(&source, bytes).unwrap();
 
-        let (prepared, is_temp) = strip_sgmca_header(&source).unwrap();
-        assert!(is_temp);
+        let (prepared, guard) = strip_sgmca_header(&source).unwrap();
+        assert!(guard.is_some());
+        assert!(prepared.starts_with(crate::workdir::tests::test_root()));
         assert_eq!(fs::read(&prepared).unwrap(), stream);
-        fs::remove_file(prepared).unwrap();
+        drop(guard);
+        assert!(!prepared.exists(), "the copy goes with its guard");
+    }
+
+    #[test]
+    fn a_multi_session_sgmca_is_refused_with_or_without_a_header() {
+        let dir = ReservationTestDir::new();
+        let one = crate::sgmca::fixtures::synthetic(50, 312, 0, |_| 30);
+        let segmented = crate::sgmca::fixtures::segmented(&[
+            ("2026-11-22T10:15:30-0500", &one),
+            ("2026-11-22T10:20:00-0500", &one),
+        ]);
+        let mut chained = one.clone();
+        chained.extend_from_slice(&one);
+        for (name, bytes) in [("segmented.sgmca", segmented), ("chained.sgmca", chained)] {
+            let source = dir.path().join(name);
+            fs::write(&source, bytes).unwrap();
+            let error = prepare_audio_feed_with_cancel(&source, None).unwrap_err();
+            assert!(error.contains("2 recording sessions"), "{name}: {error}");
+        }
+        let entries: Vec<_> = fs::read_dir(dir.path()).unwrap().collect();
+        assert_eq!(entries.len(), 2, "no temporary copy is left beside the sources");
     }
 
     #[test]
@@ -1021,8 +1035,8 @@ mod tests {
         let source = dir.path().join("plain.sgmca");
         fs::write(&source, crate::sgmca::fixtures::synthetic(5, 312, 0, |_| 30)).unwrap();
 
-        let (prepared, is_temp) = strip_sgmca_header(&source).unwrap();
-        assert!(!is_temp);
+        let (prepared, guard) = strip_sgmca_header(&source).unwrap();
+        assert!(guard.is_none());
         assert_eq!(prepared, source);
     }
 
@@ -1053,6 +1067,93 @@ mod tests {
 
         assert_eq!(error, AUDIO_PREPARATION_CANCELLED_MESSAGE);
         assert!(checks.load(Ordering::Relaxed) >= 5);
+        assert!(
+            crate::workdir::tests::thread_run_files().is_empty(),
+            "a cancelled copy is removed"
+        );
+    }
+
+    #[test]
+    fn a_dm_is_detected_by_its_header_and_prepared_as_a_temporary_wav() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let dir = ReservationTestDir::new();
+        let block = vec![3u8; 520];
+        let source = dir.path().join("Session 1.DM");
+        let bytes = crate::dm::tests::dm_bytes(
+            &crate::dm::tests::gsm_format(),
+            520,
+            &[(1_763_800_000, &block), (0, &block), (1_763_800_001, &block)],
+        );
+        fs::write(&source, &bytes).unwrap();
+        let format = detect_format_for_path(&source.to_string_lossy()).unwrap();
+        assert_eq!(format.key, "digitalcat");
+        assert_eq!(format.handler, "digitalcat");
+        // A path that cannot be read keeps the extension's answer.
+        assert_eq!(detect_format_by_extension("missing.dm").unwrap().key, "digitalcat");
+        assert_eq!(
+            detect_format_for_path("/no/such/dir/missing.dm").unwrap().key,
+            "digitalcat"
+        );
+
+        let prepared = prepare_audio_feed_detailed(&source, None).unwrap();
+        assert_ne!(prepared.path, source);
+        assert!(prepared.path.starts_with(crate::workdir::tests::test_root()));
+        assert_eq!(prepared.path.extension().unwrap(), "wav");
+        let wav = fs::read(&prepared.path).unwrap();
+        assert_eq!(&wav[..4], b"RIFF");
+        assert_eq!(&wav[8..16], b"WAVEfmt ");
+        let timeline = prepared.dm_timeline.clone().unwrap();
+        assert_eq!(timeline.blocks_erased, 1);
+        let feed = prepared.path.clone();
+        drop(prepared);
+        assert!(!feed.exists(), "the temporary WAV goes with its guard");
+        assert_eq!(fs::read(&source).unwrap(), bytes, "the original is only read");
+
+        let checks = AtomicUsize::new(0);
+        let cancelled = || checks.fetch_add(1, Ordering::Relaxed) >= 2;
+        let error = prepare_audio_feed_with_cancel(&source, Some(&cancelled)).unwrap_err();
+        assert_eq!(error, AUDIO_PREPARATION_CANCELLED_MESSAGE);
+        assert!(
+            crate::workdir::tests::thread_run_files().is_empty(),
+            "nothing is left after success or cancellation"
+        );
+
+        // A .dm whose every block is recorded over is refused, and leaves
+        // nothing behind.
+        let erased = dir.path().join("erased.dm");
+        fs::write(
+            &erased,
+            crate::dm::tests::dm_bytes(&crate::dm::tests::gsm_format(), 520, &[(0, &block), (0, &block)]),
+        )
+        .unwrap();
+        let error = prepare_audio_feed_detailed(&erased, None).err().unwrap();
+        assert!(error.contains("no audio left"), "{error}");
+        assert!(crate::workdir::tests::thread_run_files().is_empty());
+
+        // A copy cut off 300 bytes into its last block still gives the
+        // complete blocks before it, and the queue still gets a duration.
+        let cut = dir.path().join("Session 1 (cut).dm");
+        fs::write(&cut, &bytes[..bytes.len() - 220]).unwrap();
+        let prepared = prepare_audio_feed_detailed(&cut, None).unwrap();
+        let timeline = prepared.dm_timeline.clone().unwrap();
+        assert_eq!(timeline.blocks_total, 2);
+        assert_eq!(timeline.truncated_tail_bytes, 308);
+        let wav = fs::read(&prepared.path).unwrap();
+        // One kept block (the other is recorded over): 520 bytes of data.
+        assert_eq!(
+            u32::from_le_bytes(wav[wav.len() - 524..wav.len() - 520].try_into().unwrap()),
+            520
+        );
+        drop(prepared);
+        let info = crate::dm::streams_info(&cut).unwrap();
+        assert_eq!(info.dm.unwrap().truncated_tail_bytes, 308);
+        assert!((info.duration_secs.unwrap() - 2560.0 / 11025.0).abs() < 1e-9);
+        assert_eq!(
+            fs::read(&cut).unwrap(),
+            &bytes[..bytes.len() - 220],
+            "the original is only read"
+        );
     }
 
     #[test]

@@ -56,6 +56,7 @@ use std::io::{self, BufWriter, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
 use serde::Serialize;
+#[cfg(test)]
 use uuid::Uuid;
 
 use crate::safety::TempFile;
@@ -2540,14 +2541,11 @@ pub(crate) fn queue_streams_info(path: &Path) -> crate::manifest::AudioStreamsIn
         streams,
         duration_secs,
         dcr: Some(dcr),
+        dm: None,
     }
 }
 
 // ── Demux into temporary WAV feeds ──────────────────────────────────────────
-
-fn temp_wav_path() -> PathBuf {
-    std::env::temp_dir().join(format!("depoaudio_{}.wav", Uuid::new_v4().simple()))
-}
 
 /// A WAV header for `data_len` bytes of `fmt` audio. RF64 (with a `ds64`
 /// chunk) when the sizes do not fit 32 bits.
@@ -2590,14 +2588,11 @@ fn wav_header(fmt: &[u8], fact_samples: Option<u64>, data_len: u64) -> Vec<u8> {
     header
 }
 
+/// A new temporary WAV in DepoAudio's private work folder (`crate::workdir`),
+/// removed when the guard drops.
 fn create_temp_wav() -> Result<(TempFile, BufWriter<File>), String> {
-    let path = temp_wav_path();
-    let file = fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(&path)
-        .map_err(|error| format!("Could not create a temporary file for the recording: {error}"))?;
-    Ok((TempFile::new(path), BufWriter::with_capacity(WRITE_BUFFER_BYTES, file)))
+    let (guard, file) = crate::workdir::new_temp_file("depoaudio_", "wav")?;
+    Ok((guard, BufWriter::with_capacity(WRITE_BUFFER_BYTES, file)))
 }
 
 fn finish_wav(writer: BufWriter<File>, data_len: u64) -> Result<(), String> {
@@ -2889,7 +2884,9 @@ pub(crate) fn prepare_feed(src: &Path, cancelled: &dyn Fn() -> bool) -> Result<D
             info,
         });
     }
-    let output = temp_wav_path();
+    // Made empty and private in the work folder before FFmpeg overwrites it.
+    let guard = crate::workdir::new_temp_path("depoaudio_", "wav")?;
+    let output = guard.path.clone();
     let estimate = crate::helpers::wav_estimated_bytes(
         Some(info.output_duration_secs),
         Some(info.channels),
@@ -2898,8 +2895,8 @@ pub(crate) fn prepare_feed(src: &Path, cancelled: &dyn Fn() -> bool) -> Result<D
     let paths: Vec<PathBuf> = inputs.iter().map(|input| input.path.clone()).collect();
     let args = merge_args(&paths, &output, estimate);
     Ok(DcrFeed {
-        path: output.clone(),
-        guard: TempFile::new(output.clone()),
+        path: output,
+        guard,
         merge: Some(MergeStep { inputs, args }),
         info,
     })

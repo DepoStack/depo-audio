@@ -753,6 +753,174 @@ pub(crate) fn locate_stream<R: Read + Seek>(file: &mut R) -> Result<u64, String>
     })
 }
 
+// ── Recording sessions ───────────────────────────────────────────────────────
+
+/// One Opus stream found in an SGMCA file. A file that holds several is a
+/// recording in several sessions, each with its own Ogg stream.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct StreamSession {
+    /// Byte offset of the stream's beginning-of-stream page.
+    pub offset: u64,
+    pub channels: u8,
+    /// Last granule position of the stream minus its pre-skip, in seconds,
+    /// when any of its pages carries a granule position.
+    pub duration_seconds: Option<f64>,
+    /// The start text of a segment header right in front of the stream,
+    /// when one is there (see `segment_start_label`).
+    pub start_label: Option<String>,
+}
+
+/// Bytes read at a time while looking for sessions.
+const SESSION_SCAN_CHUNK: usize = 1 << 20;
+
+/// Length of the segment header that some SGMCA files carry in front of each
+/// session's Ogg stream: a little-endian u32 size (56), version, kind and a
+/// reserved word, a 32-byte NUL-padded start text, then the payload size.
+const SEGMENT_HEADER_LEN: usize = 56;
+
+/// The start text of a segment header ending at `offset`, if the 56 bytes
+/// before it look like one: size field 56 and a printable ASCII start text.
+/// It is only shown to the person, never used to place audio.
+fn segment_start_label<R: Read + Seek>(file: &mut R, offset: u64) -> Option<String> {
+    let start = offset.checked_sub(SEGMENT_HEADER_LEN as u64)?;
+    file.seek(SeekFrom::Start(start)).ok()?;
+    let mut header = [0u8; SEGMENT_HEADER_LEN];
+    if read_fully(file, &mut header).ok()? != SEGMENT_HEADER_LEN {
+        return None;
+    }
+    if u32::from_le_bytes(header[..4].try_into().ok()?) as usize != SEGMENT_HEADER_LEN {
+        return None;
+    }
+    let text = &header[16..48];
+    let end = text.iter().position(|&byte| byte == 0).unwrap_or(text.len());
+    let text = &text[..end];
+    if text.is_empty() || text.len() < 8 || !text.iter().all(|byte| byte.is_ascii_graphic()) {
+        return None;
+    }
+    if header[16 + end..48].iter().any(|&byte| byte != 0) {
+        return None;
+    }
+    Some(String::from_utf8_lossy(text).into_owned())
+}
+
+/// Every Opus stream in the file from `first` (the offset `locate_stream`
+/// found) to the end: each CRC-correct beginning-of-stream page carrying an
+/// `OpusHead` is one session. Pages are skipped whole once their CRC checks,
+/// and anything between pages (a segment header, damage) is searched for the
+/// next `OggS`, so a later session is found wherever it starts.
+pub(crate) fn find_sessions<R: Read + Seek>(
+    file: &mut R,
+    first: u64,
+    cancelled: CancelCheck<'_>,
+) -> Result<Vec<StreamSession>, String> {
+    file.seek(SeekFrom::Start(first)).map_err(|error| error.to_string())?;
+    let mut found: Vec<(u64, u32, OpusHead)> = Vec::new();
+    let mut last_granule: Vec<Option<u64>> = Vec::new();
+    let mut buffer: Vec<u8> = Vec::with_capacity(SESSION_SCAN_CHUNK + MAX_PAGE_LEN);
+    let mut base = first;
+    let mut cursor = 0usize;
+    let mut at_end = false;
+    let mut chunk = vec![0u8; SESSION_SCAN_CHUNK];
+    loop {
+        if !at_end && buffer.len() - cursor < MAX_PAGE_LEN {
+            if cancelled.is_some_and(|check| check()) {
+                return Err(INSPECT_CANCELLED_MESSAGE.into());
+            }
+            buffer.drain(..cursor);
+            base += cursor as u64;
+            cursor = 0;
+            let read = read_fully(file, &mut chunk)?;
+            buffer.extend_from_slice(&chunk[..read]);
+            at_end = read < chunk.len();
+            continue;
+        }
+        if buffer.len() - cursor < 4 {
+            break;
+        }
+        let rest = &buffer[cursor..];
+        if rest.starts_with(b"OggS") {
+            if let Some((page, length)) = parse_page_at(rest, base + cursor as u64) {
+                if page.is_bos() && !page.is_continued() {
+                    let first_packet = page.lacing.iter().position(|&lace| lace < 255).map(|last| {
+                        let len: usize = page.lacing[..=last].iter().map(|&lace| lace as usize).sum();
+                        &page.body[..len]
+                    });
+                    if let Some(head) = first_packet
+                        .filter(|packet| packet.starts_with(b"OpusHead"))
+                        .and_then(|packet| OpusHead::parse(packet).ok())
+                    {
+                        found.push((page.offset, page.serial, head));
+                        last_granule.push(None);
+                    }
+                }
+                // The latest stream with this serial owns the page.
+                if let Some(index) = found.iter().rposition(|(_, serial, _)| *serial == page.serial) {
+                    if let Some(granule) = page.granule() {
+                        last_granule[index] = Some(granule);
+                    }
+                }
+                cursor += length;
+                continue;
+            }
+        }
+        // Not a page here: look for the next capture pattern.
+        match buffer[cursor + 1..].windows(4).position(|window| window == b"OggS") {
+            Some(index) => cursor += 1 + index,
+            None => cursor = (buffer.len() - 3).max(cursor + 1),
+        }
+    }
+    let mut sessions = Vec::with_capacity(found.len());
+    for ((offset, _, head), granule) in found.into_iter().zip(last_granule) {
+        let duration_seconds =
+            granule.map(|granule| granule.saturating_sub(u64::from(head.pre_skip)) as f64 / OPUS_RATE as f64);
+        sessions.push(StreamSession {
+            offset,
+            channels: head.channels,
+            duration_seconds,
+            start_label: segment_start_label(file, offset),
+        });
+    }
+    Ok(sessions)
+}
+
+/// Why a file with several sessions is not read as one recording, naming each
+/// session with its start text (when the file has one) and length.
+pub(crate) fn multiple_sessions_message(sessions: &[StreamSession]) -> String {
+    let described: Vec<String> = sessions
+        .iter()
+        .enumerate()
+        .map(|(index, session)| {
+            let mut parts = Vec::new();
+            if let Some(start) = &session.start_label {
+                parts.push(format!("segment header start {start}"));
+            }
+            if let Some(seconds) = session.duration_seconds {
+                parts.push(format!("{seconds:.3} s"));
+            }
+            parts.push(format!("{} channels", session.channels));
+            format!("session {} ({})", index + 1, parts.join(", "))
+        })
+        .collect();
+    format!(
+        "This SGMCA file holds {} recording sessions: {}. DepoAudio reads an SGMCA file as one continuous stream, so each later session would follow the one before it with the time between them removed, and its audio would sit at the wrong time in the output. DepoAudio cannot yet handle the sessions separately, so it does not open this file. Export each session to WAV in Case CATalyst first.",
+        sessions.len(),
+        described.join("; ")
+    )
+}
+
+/// Refuse a file with more than one session (see `multiple_sessions_message`).
+pub(crate) fn ensure_single_session<R: Read + Seek>(
+    file: &mut R,
+    first: u64,
+    cancelled: CancelCheck<'_>,
+) -> Result<(), String> {
+    let sessions = find_sessions(file, first, cancelled)?;
+    if sessions.len() > 1 {
+        return Err(multiple_sessions_message(&sessions));
+    }
+    Ok(())
+}
+
 // ── Inspection ───────────────────────────────────────────────────────────────
 
 /// What an SGMCA (or any Ogg Opus) recording holds, from a full walk of its
@@ -789,9 +957,12 @@ struct OpenStream {
     pending: Option<PagePackets>,
 }
 
-fn open_stream(path: &Path) -> Result<OpenStream, String> {
+fn open_stream(path: &Path, cancelled: CancelCheck<'_>) -> Result<OpenStream, String> {
     let mut file = fs::File::open(path).map_err(|error| format!("Could not open the recording: {error}"))?;
     let offset = locate_stream(&mut file)?;
+    // The reader below follows the first stream only, so a file with a
+    // second session would be described (or sliced) as its first alone.
+    ensure_single_session(&mut file, offset, cancelled)?;
     file.seek(SeekFrom::Start(offset)).map_err(|error| error.to_string())?;
     let mut packets = PacketReader::new(BufReader::with_capacity(1 << 16, file), offset);
 
@@ -878,7 +1049,7 @@ impl Timeline {
 
 /// Walk the whole recording, checking every page and packet.
 pub(crate) fn inspect(path: &Path, cancelled: CancelCheck<'_>) -> Result<SgmcaInfo, String> {
-    let mut stream = open_stream(path)?;
+    let mut stream = open_stream(path, cancelled)?;
     let mut timeline = Timeline { next_start: None };
     let mut buffered = Vec::new();
     let mut audio_packets = 0u64;
@@ -1000,7 +1171,7 @@ fn write_slice(
     end_seconds: Option<f64>,
     cancelled: CancelCheck<'_>,
 ) -> Result<SliceReport, String> {
-    let mut stream = open_stream(src)?;
+    let mut stream = open_stream(src, cancelled)?;
     let pre_skip = stream.head.pre_skip as u64;
     let mut writer = OggWriter::new(BufWriter::with_capacity(1 << 16, out), stream.serial);
 
@@ -1137,6 +1308,30 @@ pub(crate) fn verify_written(path: &Path, cancelled: CancelCheck<'_>) -> Result<
 #[cfg(test)]
 pub(crate) mod fixtures {
     use super::*;
+
+    /// A made-up multi-session layout: a 40-byte file header, then for each
+    /// session a 56-byte segment header (size 56, version 1, kind 2, a NUL-
+    /// padded start text, the stream's length) followed by its Ogg stream.
+    /// The header bytes are invented for tests, not copied from a recording.
+    pub(crate) fn segmented(sessions: &[(&str, &[u8])]) -> Vec<u8> {
+        let mut out = Vec::new();
+        out.extend_from_slice(&40u32.to_le_bytes());
+        out.extend_from_slice(&1u32.to_le_bytes());
+        out.extend_from_slice(b"DEPOAUDIO-TEST\0\0");
+        out.resize(40, 0);
+        for (start, stream) in sessions {
+            out.extend_from_slice(&(SEGMENT_HEADER_LEN as u32).to_le_bytes());
+            out.extend_from_slice(&1u32.to_le_bytes());
+            out.extend_from_slice(&2u32.to_le_bytes());
+            out.extend_from_slice(&0u32.to_le_bytes());
+            let mut text = start.as_bytes().to_vec();
+            text.resize(32, 0);
+            out.extend_from_slice(&text);
+            out.extend_from_slice(&(stream.len() as u64).to_le_bytes());
+            out.extend_from_slice(stream);
+        }
+        out
+    }
 
     /// A family-255 header for `channels` mono streams.
     pub(crate) fn sgmca_head(channels: u8, pre_skip: u16) -> OpusHead {
@@ -1455,6 +1650,91 @@ mod tests {
         fs::write(&dst, b"keep me").unwrap();
         assert!(slice(&src, &dst, 0.0, None, None).is_err());
         assert_eq!(fs::read(&dst).unwrap(), b"keep me");
+    }
+
+    #[test]
+    fn a_file_with_two_sessions_is_refused_with_each_sessions_start_and_length() {
+        let dir = tempdir::Dir::new();
+        // 10 s (500 packets) and 5 s (250 packets), pre-skip 312.
+        let first = synthetic(500, 312, 0, |_| 40);
+        let second = synthetic(250, 312, 0, |_| 40);
+        let bytes = segmented(&[
+            ("2026-11-22T10:15:30-0500", &first),
+            ("2026-11-22T10:20:00-0500", &second),
+        ]);
+        let mut cursor = std::io::Cursor::new(bytes.clone());
+        let offset = locate_stream(&mut cursor).unwrap();
+        assert_eq!(offset, 40 + SEGMENT_HEADER_LEN as u64);
+        let sessions = find_sessions(&mut cursor, offset, None).unwrap();
+        assert_eq!(sessions.len(), 2);
+        assert_eq!(sessions[0].offset, offset);
+        assert_eq!(
+            sessions[1].offset,
+            offset + first.len() as u64 + SEGMENT_HEADER_LEN as u64
+        );
+        assert_eq!(sessions[0].start_label.as_deref(), Some("2026-11-22T10:15:30-0500"));
+        assert_eq!(sessions[1].start_label.as_deref(), Some("2026-11-22T10:20:00-0500"));
+        assert_eq!(sessions[0].duration_seconds, Some((500.0 * 960.0 - 312.0) / 48_000.0));
+        assert_eq!(sessions[1].duration_seconds, Some((250.0 * 960.0 - 312.0) / 48_000.0));
+        assert!(sessions.iter().all(|session| session.channels == 4));
+
+        // Inspection would describe the first session alone; it refuses.
+        let path = write_temp(&dir, "two.sgmca", &bytes);
+        let error = inspect(&path, None).unwrap_err();
+        assert!(error.contains("2 recording sessions"), "{error}");
+        assert!(
+            error.contains("segment header start 2026-11-22T10:15:30-0500, 9.993 s"),
+            "{error}"
+        );
+        assert!(
+            error.contains("segment header start 2026-11-22T10:20:00-0500, 4.994 s"),
+            "{error}"
+        );
+        assert!(error.contains("time between them removed"), "{error}");
+        let dst = dir.0.join("slice.sgmca");
+        assert!(slice(&path, &dst, 0.0, None, None)
+            .unwrap_err()
+            .contains("2 recording sessions"));
+        assert!(!dst.exists());
+
+        // Two plain Ogg streams back to back (no segment headers) are two
+        // sessions too, without start texts.
+        let mut chained = first.clone();
+        chained.extend_from_slice(&second);
+        let mut cursor = std::io::Cursor::new(chained);
+        let sessions = find_sessions(&mut cursor, 0, None).unwrap();
+        assert_eq!(sessions.len(), 2);
+        assert!(sessions.iter().all(|session| session.start_label.is_none()));
+    }
+
+    #[test]
+    fn one_session_with_a_header_stray_markers_and_trailing_bytes_is_one_session() {
+        let dir = tempdir::Dir::new();
+        let stream = synthetic(300, 312, 0, |index| 30 + index % 200);
+        let mut bytes = segmented(&[("2026-11-22T10:15:30-0500", &stream)]);
+        bytes.extend_from_slice(b"OggS trailing bytes that are not a page");
+        bytes.extend(std::iter::repeat_n(0x5a, 70_000));
+        let mut cursor = std::io::Cursor::new(bytes.clone());
+        let offset = locate_stream(&mut cursor).unwrap();
+        let sessions = find_sessions(&mut cursor, offset, None).unwrap();
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0].start_label.as_deref(), Some("2026-11-22T10:15:30-0500"));
+        let path = write_temp(&dir, "one.sgmca", &bytes);
+        let info = inspect(&path, None).unwrap();
+        assert_eq!(info.samples, 300 * 960 - 312);
+
+        // A stream larger than one read chunk is walked across chunk edges.
+        let large = synthetic(3000, 312, 0, |_| 900);
+        assert!(large.len() > SESSION_SCAN_CHUNK);
+        let mut cursor = std::io::Cursor::new(large);
+        assert_eq!(find_sessions(&mut cursor, 0, None).unwrap().len(), 1);
+
+        let cancel = || true;
+        let mut cursor = std::io::Cursor::new(bytes);
+        assert_eq!(
+            find_sessions(&mut cursor, offset, Some(&cancel)).unwrap_err(),
+            INSPECT_CANCELLED_MESSAGE
+        );
     }
 
     #[test]

@@ -154,12 +154,20 @@ build_arch() {
   # VOB) and pcm_bluray (LPCM in AVCHD/M2TS) are present only because this
   # configure keeps FFmpeg's default decoders; this gate keeps them there.
   # FFmpeg cannot encode wmapro or wmavoice, so they have no smoke fixture.
-  # pcm_alaw through mp3float and the amerge filter decode Liberty / BIS DCR
-  # audio (crate::dcr): only their presence is checked here.
-  for decoder in ftr libopus aac flac pcm_s16le mp2 ac3 wmav2 wmapro wmavoice pcm_dvd pcm_bluray \
-    pcm_alaw pcm_mulaw pcm_u8 pcm_s24le pcm_s32le adpcm_ima_wav gsm_ms mp3float; do
+  # gsm_ms (the DigitalCAT / SoundSync default), adpcm_ima_wav, adpcm_ms,
+  # pcm_alaw and pcm_mulaw decode the WAV that DepoAudio reads out of a .dm
+  # file (src-tauri/src/dm.rs); scripts/container-smoke-fixtures.mjs decodes
+  # all but GSM, which has no LGPL encoder to make a fixture with.
+  for decoder in ftr libopus aac flac pcm_s16le mp2 ac3 wmav2 wmapro wmavoice pcm_dvd pcm_bluray gsm_ms adpcm_ima_wav adpcm_ms pcm_alaw pcm_mulaw; do
     grep -Eq "[[:space:]]${decoder}[[:space:]]" <<<"$decoders" || {
       echo "ERROR: $arch FFmpeg lacks decoder $decoder" >&2; exit 1;
+    }
+  done
+  # pcm_alaw through mp3float and the amerge filter decode Liberty / BIS DCR
+  # audio (crate::dcr): only their presence is checked here.
+  for decoder in pcm_alaw pcm_mulaw pcm_u8 pcm_s24le pcm_s32le adpcm_ima_wav gsm_ms mp3float; do
+    grep -Eq "[[:space:]]${decoder}[[:space:]]" <<<"$decoders" || {
+      echo "ERROR: $arch FFmpeg lacks decoder $decoder (DCR)" >&2; exit 1;
     }
   done
   for encoder in libmp3lame libopus aac flac pcm_s16le; do
@@ -167,7 +175,7 @@ build_arch() {
       echo "ERROR: $arch FFmpeg lacks encoder $encoder" >&2; exit 1;
     }
   done
-  for filter in adeclip highpass volume loudnorm afade silenceremove alimiter asplit pan aresample ebur128 amerge; do
+  for filter in adeclip highpass volume loudnorm afade silenceremove alimiter asplit pan aresample ebur128 amerge aformat astats; do
     grep -Eq "[[:space:]]${filter}[[:space:]]" <<<"$filters" || {
       echo "ERROR: $arch FFmpeg lacks filter $filter" >&2; exit 1;
     }

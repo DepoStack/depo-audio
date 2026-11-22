@@ -69,10 +69,11 @@ describe('freshAudioPaths', () => {
   it('keeps directly playable audio and routes native containers through conversion', () => {
     const out = freshAudioPaths(['/a.wav', '/b.pdf', '/c.trm', '/d.WAV', '/e.sgmca'], [])
     expect(out).toEqual(['/a.wav', '/d.WAV'])
-    expect(partitionPlaybackPaths(['/a.wav', '/c.trm', '/d.ftr', '/e.sgmca'], []).conversionRequired).toEqual([
+    expect(partitionPlaybackPaths(['/a.wav', '/c.trm', '/d.ftr', '/e.sgmca', '/f.DM'], []).conversionRequired).toEqual([
       '/c.trm',
       '/d.ftr',
       '/e.sgmca',
+      '/f.DM',
     ])
   })
   it('skips paths already queued and dedupes the drop', () => {
@@ -115,6 +116,7 @@ describe('constants', () => {
       'trm',
       'ftr',
       'bwf',
+      'dm',
       'dcr',
     ])
   })
@@ -179,7 +181,7 @@ describe('compareTarget', () => {
     })
   })
   it('disables compare for court containers with a plain reason', () => {
-    for (const ext of ['sgmca', 'trm', 'ftr', 'dcr']) {
+    for (const ext of ['sgmca', 'trm', 'ftr', 'dm', 'dcr']) {
       const target = compareTarget(`/in/a.${ext}`, [mp3])
       expect(target.enabled).toBe(false)
       expect(target.reason).toBe(COMPARE_UNAVAILABLE_REASON)
