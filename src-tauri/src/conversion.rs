@@ -1790,6 +1790,111 @@ mod tests {
         assert_eq!(fs::read(&trm).unwrap(), original, "the original is never modified");
     }
 
+    /// A copy of the owner's sample with `edit` applied to its bytes.
+    fn vendor_sample_variant(dir: &Path, name: &str, edit: impl FnOnce(&mut Vec<u8>)) -> PathBuf {
+        let mut bytes = fs::read(trm_fixture::vendor_notes_sample()).unwrap();
+        edit(&mut bytes);
+        let path = dir.join(name);
+        fs::write(&path, bytes).unwrap();
+        path
+    }
+
+    fn u32_le(bytes: &[u8], at: usize) -> usize {
+        u32::from_le_bytes(bytes[at..at + 4].try_into().unwrap()) as usize
+    }
+
+    #[test]
+    fn vendor_sample_variants_convert_in_full_and_keep_non_local_starts_out_of_bext() {
+        if !trm_fixture::aac_tools_available() {
+            return;
+        }
+        if !trm_fixture::native_ftr_decoder_on_path() {
+            eprintln!("skipping: this FFmpeg has no native ftr decoder");
+            return;
+        }
+        let dir = ConversionTestDir::new();
+        let out = dir.0.join("out");
+        fs::create_dir(&out).unwrap();
+        let full_samples = |path: &str, rate: u64| {
+            assert_eq!(output_samples(path).len() as u64, 15_360 * rate / 1000 * 4, "{path}");
+        };
+
+        // idx1 cut to its first 100 of 240 entries: movi still holds all 240
+        // chunks, which DepoAudio now finds by walking movi.
+        let short = vendor_sample_variant(&dir.0, "short_index.trm", |bytes| {
+            let idx1 = bytes.windows(4).rposition(|window| window == b"idx1").unwrap();
+            bytes.truncate(idx1 + 8 + 100 * 16);
+            bytes[idx1 + 4..idx1 + 8].copy_from_slice(&1600u32.to_le_bytes());
+            let riff = (bytes.len() - 8) as u32;
+            bytes[4..8].copy_from_slice(&riff.to_le_bytes());
+        });
+        let conversion =
+            convert_with_system_ffmpeg_options(&court_job(&short, &out, "keep", "wav"), None, native_options())
+                .unwrap();
+        let record = checked_export_record(&conversion.files[0], &short);
+        let route = &record["source"]["trm"];
+        assert_eq!(route["indexMismatch"], true);
+        assert_eq!(route["indexKind"], "walked");
+        assert_eq!(route["packets"], 240);
+        assert_eq!(route["durationSecs"], 15.36);
+        assert_eq!(route["decodePath"], "deinterleaved");
+        assert!(route["routeReasons"]
+            .as_array()
+            .unwrap()
+            .contains(&serde_json::json!("index-misses-audio-chunks")));
+        let rate = record["output"]["sampleRate"].as_u64().unwrap();
+        full_samples(&conversion.files[0].path, rate);
+
+        // The private bit set on every frame: DepoAudio finds no stream-0
+        // frame to split from, so FFmpeg's native decoder (which does not use
+        // the bit) reads the whole file, and the record says why.
+        let all_private = vendor_sample_variant(&dir.0, "all_private.trm", |bytes| {
+            let mut pos = bytes.windows(4).position(|window| window == b"movi").unwrap() + 4;
+            while &bytes[pos..pos + 4] == b"00wb" {
+                let size = u32_le(bytes, pos + 4);
+                let mut frame = pos + 8;
+                while frame < pos + 8 + size {
+                    bytes[frame + 2] |= 0x02;
+                    frame += ((usize::from(bytes[frame + 4]) << 8) | usize::from(bytes[frame + 5])) >> 5;
+                }
+                pos += 8 + size + (size & 1);
+            }
+        });
+        let conversion =
+            convert_with_system_ffmpeg_options(&court_job(&all_private, &out, "keep", "wav"), None, native_options())
+                .unwrap();
+        assert!(conversion.args.windows(2).any(|pair| pair == ["-c:a", "ftr"]));
+        let record = checked_export_record(&conversion.files[0], &all_private);
+        assert!(record["source"].get("trm").is_none());
+        assert_eq!(
+            record["source"]["trmInspectionError"],
+            crate::trm::NO_COMPLETE_ROUND_MESSAGE
+        );
+        let rate = record["output"]["sampleRate"].as_u64().unwrap();
+        full_samples(&conversion.files[0].path, rate);
+
+        // No TLOC chunk: the start is UTC, which a bext time reference (local
+        // midnight) cannot carry, so the WAV gets none and the record keeps it.
+        let utc_only = vendor_sample_variant(&dir.0, "utc_only.trm", |bytes| {
+            let tloc = bytes.windows(4).position(|window| window == b"TLOC").unwrap();
+            bytes[tloc..tloc + 4].copy_from_slice(b"JUNK");
+        });
+        let conversion =
+            convert_with_system_ffmpeg_options(&court_job(&utc_only, &out, "keep", "wav"), None, native_options())
+                .unwrap();
+        let record = checked_export_record(&conversion.files[0], &utc_only);
+        assert_eq!(record["source"]["trm"]["startBasis"], "tutc-utc");
+        let start = &record["startTime"];
+        assert_eq!(
+            (start["known"].clone(), start["source"].clone()),
+            (serde_json::json!(true), serde_json::json!("ftr-tutc"))
+        );
+        assert_eq!(start["writtenToOutput"], false);
+        assert!(start["note"].as_str().unwrap().contains("not local time"));
+        assert_eq!(wav_time_reference(&conversion.files[0].path), None);
+        assert!(!conversion.args.iter().any(|arg| arg == "-write_bext"));
+    }
+
     #[test]
     fn a_stereo_stream_trm_splits_to_one_file_per_microphone_in_order() {
         if !trm_fixture::aac_tools_available() {

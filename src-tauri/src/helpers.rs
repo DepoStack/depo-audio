@@ -474,6 +474,8 @@ pub(crate) struct AudioFeed {
     /// decoder as it is: why the inspection failed.
     trm_inspection_error: Option<String>,
     _guards: Vec<crate::safety::TempFile>,
+    /// The folder holding the channel files; dropped after them.
+    _channel_dir: Option<ChannelDir>,
 }
 
 impl AudioFeed {
@@ -494,6 +496,7 @@ impl AudioFeed {
             channels_per_input: 1,
             trm_inspection_error: None,
             _guards: Vec::new(),
+            _channel_dir: None,
         }
     }
 
@@ -649,18 +652,65 @@ impl AudioFeed {
     }
 }
 
-/// The folder, inside the system temporary folder, that holds DepoAudio's
-/// temporary FTR channel files and nothing else.
-const CHANNEL_FILE_DIR: &str = "depoaudio_trm_channels";
+/// The name prefix of each conversion's own channel-file folder inside the
+/// system temporary folder: `depoaudio_trm_run_<32 hex>`.
+const CHANNEL_DIR_PREFIX: &str = "depoaudio_trm_run_";
 /// Channel files older than this are left over from a run that was killed
 /// or crashed: a live conversion's files are far younger.
 pub(crate) const STALE_CHANNEL_FILE_AGE: std::time::Duration = std::time::Duration::from_secs(24 * 60 * 60);
 
-fn channel_file_dir() -> Result<PathBuf, String> {
-    let dir = std::env::temp_dir().join(CHANNEL_FILE_DIR);
-    fs::create_dir_all(&dir)
-        .map_err(|error| format!("Could not create a temporary folder for channel files: {error}"))?;
-    Ok(dir)
+/// A folder this conversion created for its channel files, removed with
+/// everything in it when the feed is dropped.
+#[derive(Debug)]
+pub(crate) struct ChannelDir(PathBuf);
+
+impl ChannelDir {
+    pub(crate) fn path(&self) -> &Path {
+        &self.0
+    }
+}
+
+impl Drop for ChannelDir {
+    fn drop(&mut self) {
+        // The folder is this run's own (random name, created here, owner
+        // only); remove_dir_all does not follow links inside it.
+        let _ = fs::remove_dir_all(&self.0);
+    }
+}
+
+/// Create a new folder for one conversion's channel files in `parent`: a
+/// random name that must not exist yet (an existing folder or link is never
+/// reused), and on Unix readable, writable and listable by its owner only
+/// (0o700), so another local user can neither read the decoded audio nor
+/// replace a channel file before FFmpeg reads it.
+pub(crate) fn create_channel_dir_in(parent: &Path) -> Result<ChannelDir, String> {
+    let fail = |error: std::io::Error| format!("Could not create a temporary folder for channel files: {error}");
+    let dir = parent.join(format!("{CHANNEL_DIR_PREFIX}{}", Uuid::new_v4().simple()));
+    let mut builder = fs::DirBuilder::new();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        builder.mode(0o700);
+    }
+    builder.create(&dir).map_err(fail)?;
+    let guard = ChannelDir(dir);
+    let metadata = fs::symlink_metadata(guard.path()).map_err(fail)?;
+    if !metadata.is_dir() {
+        return Err("The temporary folder for channel files is not a plain folder.".into());
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if metadata.permissions().mode() & 0o077 != 0 {
+            return Err("The temporary folder for channel files could be read by other users.".into());
+        }
+    }
+    Ok(guard)
+}
+
+fn is_channel_dir_name(name: &str) -> bool {
+    name.strip_prefix(CHANNEL_DIR_PREFIX)
+        .is_some_and(|id| id.len() == 32 && id.bytes().all(|byte| byte.is_ascii_hexdigit()))
 }
 
 /// A file name the channel split writes: `depoaudio_trm_<32 hex>_ch<N>.aac`.
@@ -711,14 +761,69 @@ pub(crate) fn sweep_stale_channel_files_in(dir: &Path, max_age: std::time::Durat
     removed
 }
 
-/// The startup sweep of DepoAudio's own channel-file folder.
+/// Remove the channel-file folders that killed or crashed runs left in
+/// `parent`: folders (never links) named as [`create_channel_dir_in`] names
+/// them, on Unix private to their owner, and last changed more than
+/// `max_age` ago. Only stale channel files are removed from each, then the
+/// folder if it is empty. Returns how many channel files were removed.
+pub(crate) fn sweep_stale_channel_dirs_in(parent: &Path, max_age: std::time::Duration) -> usize {
+    let Ok(entries) = fs::read_dir(parent) else {
+        return 0;
+    };
+    let now = std::time::SystemTime::now();
+    let mut removed = 0;
+    for entry in entries.filter_map(Result::ok) {
+        if !is_channel_dir_name(&entry.file_name().to_string_lossy()) {
+            continue;
+        }
+        let Ok(metadata) = fs::symlink_metadata(entry.path()) else {
+            continue;
+        };
+        if !metadata.is_dir() {
+            continue;
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            if metadata.permissions().mode() & 0o077 != 0 {
+                continue;
+            }
+        }
+        let stale = metadata
+            .modified()
+            .ok()
+            .and_then(|modified| now.duration_since(modified).ok())
+            .is_some_and(|age| age > max_age);
+        if stale {
+            removed += sweep_stale_channel_files_in(&entry.path(), max_age);
+            let _ = fs::remove_dir(entry.path());
+        }
+    }
+    removed
+}
+
+/// The startup sweep of DepoAudio's own channel-file folders.
 pub(crate) fn sweep_stale_channel_files() -> usize {
-    sweep_stale_channel_files_in(&std::env::temp_dir().join(CHANNEL_FILE_DIR), STALE_CHANNEL_FILE_AGE)
+    sweep_stale_channel_dirs_in(&std::env::temp_dir(), STALE_CHANNEL_FILE_AGE)
 }
 
 /// The selected file is an FTR recording (`.trm`, `.ftr`, `.tll`).
 pub(crate) fn is_trm_path(path: &Path) -> bool {
     detect_format_by_extension(&path.to_string_lossy()).is_some_and(|format| format.handler == "ftr")
+}
+
+/// An FTR recording handed to FFmpeg's native decoder as it is, without
+/// DepoAudio's layout reading; `reason` says why, for the export record.
+fn native_as_is(src: &Path, reason: String) -> AudioFeed {
+    AudioFeed {
+        inputs: vec![src.to_path_buf()],
+        input_codec: input_codec_args(src),
+        trm: None,
+        channels_per_input: 1,
+        trm_inspection_error: Some(reason),
+        _guards: Vec::new(),
+        _channel_dir: None,
+    }
 }
 
 fn prepare_trm_feed(
@@ -737,19 +842,21 @@ fn prepare_trm_feed(
         // DepoAudio's reading of the layout is unconfirmed, so a file it
         // cannot read goes to FFmpeg's native decoder as it is, as before;
         // the export record gives the reason.
-        Err(error) if options.native_ftr && !options.native_failed => {
-            return Ok(AudioFeed {
-                inputs: vec![src.to_path_buf()],
-                input_codec: input_codec_args(src),
-                trm: None,
-                channels_per_input: 1,
-                trm_inspection_error: Some(error),
-                _guards: Vec::new(),
-            })
-        }
+        Err(error) if options.native_ftr && !options.native_failed => return Ok(native_as_is(src, error)),
         Err(error) => return Err(error),
     };
     let (decode_path, reasons) = crate::trm::choose_route(&info, options);
+    // DepoAudio read the layout but found no complete round to split (its
+    // stream-marker rule, from notes never checked against a real FTR
+    // recording, may not fit this recorder): the native decoder, which does
+    // not use that rule, reads the file as it is, as for an unreadable one.
+    if decode_path == crate::trm::DecodePath::Deinterleaved
+        && info.frames_per_channel == 0
+        && options.native_ftr
+        && !options.native_failed
+    {
+        return Ok(native_as_is(src, crate::trm::NO_COMPLETE_ROUND_MESSAGE.to_string()));
+    }
     match decode_path {
         crate::trm::DecodePath::NativeFtr => Ok(AudioFeed {
             inputs: vec![src.to_path_buf()],
@@ -758,6 +865,7 @@ fn prepare_trm_feed(
             channels_per_input: 1,
             trm_inspection_error: None,
             _guards: Vec::new(),
+            _channel_dir: None,
         }),
         // MP2, MP3 or WMA in an FTR file: FFmpeg picks the decoder.
         crate::trm::DecodePath::Plain => Ok(AudioFeed {
@@ -765,8 +873,9 @@ fn prepare_trm_feed(
             ..AudioFeed::plain(src.to_path_buf())
         }),
         crate::trm::DecodePath::Deinterleaved => {
+            let channel_dir = create_channel_dir_in(&std::env::temp_dir())?;
             let (written, files) =
-                crate::trm::deinterleave_trm_with_cancel(src, &channel_file_dir()?, Some(&info), cancelled)?;
+                crate::trm::deinterleave_trm_with_cancel(src, channel_dir.path(), Some(&info), cancelled)?;
             let guards = files.iter().cloned().map(crate::safety::TempFile::new).collect();
             let channels_per_input = u32::from(written.channels_per_stream.max(1));
             Ok(AudioFeed {
@@ -776,6 +885,7 @@ fn prepare_trm_feed(
                 channels_per_input,
                 trm_inspection_error: None,
                 _guards: guards,
+                _channel_dir: Some(channel_dir),
             })
         }
     }
@@ -1132,6 +1242,7 @@ mod tests {
             channels_per_input: 1,
             trm_inspection_error: None,
             _guards: Vec::new(),
+            _channel_dir: None,
         };
         assert!(feed.is_merged());
         assert_eq!(
@@ -1195,6 +1306,7 @@ mod tests {
             trm: None,
             trm_inspection_error: None,
             _guards: Vec::new(),
+            _channel_dir: None,
         };
         let (args, inner) = stereo.channel_input_args(3, &[]).unwrap();
         assert_eq!(args, ["-f", "aac", "-i", "/tmp/ch1.aac"]);
@@ -1257,6 +1369,158 @@ mod tests {
             ..native
         };
         assert!(prepare_audio_feed_with_cancel(&source, failed, None).is_err());
+    }
+
+    #[test]
+    fn an_ftr_recording_with_no_round_to_split_goes_to_the_native_decoder_when_present() {
+        use crate::trm::tests as trm_fixture;
+        let dir = ReservationTestDir::new();
+        // Every frame carries the private bit, so DepoAudio's split finds no
+        // stream-0 frame; FFmpeg's native decoder does not use the bit.
+        let channels = trm_fixture::fake_frames(2, 3);
+        let (mut stream, lengths) = trm_fixture::ftr_frame_stream(&channels);
+        let mut pos = 0;
+        for length in &lengths {
+            stream[pos + 2] |= 0x02;
+            pos += length;
+        }
+        let source = dir.path().join("all_private.trm");
+        fs::write(
+            &source,
+            trm_fixture::build_avi(
+                &trm_fixture::AviSpec::closed(2),
+                &trm_fixture::round_packets(&stream, &lengths, 2, 1),
+            ),
+        )
+        .unwrap();
+        assert_eq!(crate::trm::inspect_trm(&source).unwrap().frames_per_channel, 0);
+        let native = FeedOptions {
+            native_ftr: true,
+            native_failed: false,
+        };
+        let feed = prepare_audio_feed_with_cancel(&source, native, None).unwrap();
+        assert!(feed.trm().is_none() && !feed.trm_frames_read());
+        assert_eq!(feed.trm_inspection_error(), Some(crate::trm::NO_COMPLETE_ROUND_MESSAGE));
+        assert_eq!(
+            feed.input_args(&[]),
+            ["-c:a", "ftr", "-i", source.to_string_lossy().as_ref()]
+        );
+        // Without the decoder, or once it has failed, there is nothing to split.
+        for options in [
+            FeedOptions::default(),
+            FeedOptions {
+                native_failed: true,
+                ..native
+            },
+        ] {
+            assert!(prepare_audio_feed_with_cancel(&source, options, None)
+                .unwrap_err()
+                .contains("No complete round"));
+        }
+    }
+
+    #[test]
+    fn channel_files_go_to_a_new_private_folder_removed_with_the_feed() {
+        use crate::trm::tests as trm_fixture;
+        let dir = ReservationTestDir::new();
+        let channels = trm_fixture::fake_frames(2, 3);
+        let (stream, _) = trm_fixture::ftr_frame_stream(&channels);
+        let source = dir.path().join("split.trm");
+        fs::write(
+            &source,
+            trm_fixture::build_avi(
+                &trm_fixture::AviSpec::closed(2),
+                &trm_fixture::sized_packets(&stream, 37),
+            ),
+        )
+        .unwrap();
+        let feed = prepare_audio_feed_with_cancel(&source, FeedOptions::default(), None).unwrap();
+        assert_eq!(feed.trm().unwrap().decode_path, crate::trm::DecodePath::Deinterleaved);
+        let folder = feed.inputs[0].parent().unwrap().to_path_buf();
+        assert!(feed.inputs.iter().all(|input| input.parent() == Some(folder.as_path())));
+        assert!(is_channel_dir_name(&folder.file_name().unwrap().to_string_lossy()));
+        assert_eq!(folder.parent(), Some(std::env::temp_dir().as_path()));
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = |path: &Path| fs::symlink_metadata(path).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode(&folder), 0o700);
+            for input in &feed.inputs {
+                assert_eq!(mode(input), 0o600, "{}", input.display());
+            }
+        }
+        // A second conversion gets a folder of its own.
+        let other = create_channel_dir_in(&std::env::temp_dir()).unwrap();
+        assert_ne!(other.path(), folder);
+        drop(other);
+        drop(feed);
+        assert!(!folder.exists());
+    }
+
+    #[test]
+    fn an_existing_folder_or_link_is_never_reused_for_channel_files() {
+        let dir = ReservationTestDir::new();
+        let made = create_channel_dir_in(dir.path()).unwrap();
+        assert!(made.path().is_dir());
+        // Creation never accepts a folder that is already there.
+        assert!(fs::DirBuilder::new().create(made.path()).is_err());
+        let path = made.path().to_path_buf();
+        drop(made);
+        assert!(!path.exists());
+        // A missing parent is an error, not a folder made elsewhere.
+        assert!(create_channel_dir_in(&dir.path().join("missing")).is_err());
+    }
+
+    #[test]
+    fn the_startup_sweep_removes_only_stale_channel_folders_of_its_own() {
+        let dir = ReservationTestDir::new();
+        let old = std::time::SystemTime::now() - std::time::Duration::from_secs(3 * 24 * 60 * 60);
+        let id = "0123456789abcdef0123456789abcdef";
+        let set_old = |path: &Path| {
+            fs::File::open(path).unwrap().set_modified(old).unwrap();
+        };
+        let stale = create_channel_dir_in(dir.path()).unwrap();
+        let stale_file = stale.path().join(format!("depoaudio_trm_{id}_ch0.aac"));
+        fs::write(&stale_file, b"x").unwrap();
+        set_old(&stale_file);
+        set_old(stale.path());
+        let fresh = create_channel_dir_in(dir.path()).unwrap();
+        let fresh_file = fresh.path().join(format!("depoaudio_trm_{id}_ch0.aac"));
+        fs::write(&fresh_file, b"x").unwrap();
+        set_old(&fresh_file);
+        // Not named as DepoAudio names its folders.
+        let other = dir.path().join("depoaudio_trm_run_notours");
+        fs::create_dir(&other).unwrap();
+        let other_file = other.join(format!("depoaudio_trm_{id}_ch0.aac"));
+        fs::write(&other_file, b"x").unwrap();
+        set_old(&other_file);
+        set_old(&other);
+        #[cfg(unix)]
+        let (open_folder, open_file, link) = {
+            use std::os::unix::fs::PermissionsExt;
+            // A folder others can write to is not one DepoAudio made.
+            let open_folder = dir.path().join(format!("depoaudio_trm_run_{}", "f".repeat(32)));
+            fs::create_dir(&open_folder).unwrap();
+            fs::set_permissions(&open_folder, fs::Permissions::from_mode(0o777)).unwrap();
+            let open_file = open_folder.join(format!("depoaudio_trm_{id}_ch0.aac"));
+            fs::write(&open_file, b"x").unwrap();
+            set_old(&open_file);
+            set_old(&open_folder);
+            // A link named like a folder of DepoAudio's is never followed.
+            let link = dir.path().join(format!("depoaudio_trm_run_{}", "e".repeat(32)));
+            std::os::unix::fs::symlink(&other, &link).unwrap();
+            (open_folder, open_file, link)
+        };
+
+        assert_eq!(sweep_stale_channel_dirs_in(dir.path(), STALE_CHANNEL_FILE_AGE), 1);
+        assert!(!stale_file.exists() && !stale.path().exists());
+        assert!(fresh_file.exists() && other_file.exists());
+        #[cfg(unix)]
+        {
+            assert!(open_file.exists() && open_folder.exists());
+            assert!(fs::symlink_metadata(&link).unwrap().file_type().is_symlink());
+        }
+        drop(fresh);
     }
 
     #[test]

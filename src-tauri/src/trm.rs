@@ -11,7 +11,9 @@
 //!   include `TUTC` and `TLOC` (u64 FILETIMEs: the file's start in UTC and in
 //!   local time), `USER` and `UDAT` (UTF-16LE user name and free text, which
 //!   DepoAudio only notes as present, never reads into text), `FILE` (the
-//!   file's own name, UTF-16LE) and the 20-byte `FTRA` (five u32 values;
+//!   file's own name, UTF-16LE, kept only when it is a name in the
+//!   recorder's format, otherwise only noted as present) and the 20-byte
+//!   `FTRA` (five u32 values;
 //!   informational for `.trm`). After `idx1` the recorder may append `peak`,
 //!   `SIGN` and `CERT`; they are skipped (a signature is reported as
 //!   "signed (not verified)", never checked or produced).
@@ -28,7 +30,9 @@
 //!   (N = `nChannels` / 2). `0x180` with neither bit is refused, as FTR's own
 //!   splitter refuses it. MP2, MP3 and WMA tags are ordinary audio for FFmpeg.
 //! - Audio chunks (`00wb`) are found through `idx1` (offsets relative to the
-//!   `movi` list or absolute) or, without a usable index, by walking `movi`.
+//!   `movi` list or absolute) or, without a usable index or when the index
+//!   misses chunks `movi` holds, by walking `movi` (which looks past a
+//!   damaged stretch for the next audio chunk).
 //!   Level-meter chunks (`NNal`) and video chunks are ignored.
 //! - The chunk payloads, joined in file order, are one run of ADTS AAC-LC
 //!   frames that may cross chunk boundaries. The first frame whose ADTS
@@ -86,7 +90,11 @@ const ADTS_SAMPLE_RATES: [u32; 13] = [
 ];
 /// `FILE` holds 256 UTF-16 units; `USER` 0x200 bytes and `UDAT` 0x400.
 const FILE_NAME_CHUNK_BYTES: u64 = 0x200;
-const PRIVATE_TEXT_CHUNK_MAX_BYTES: u64 = 0x400;
+/// The recorder cuts the name part of a file name to this many characters.
+const FILE_NAME_PART_MAX_CHARS: usize = 28;
+/// Characters the recorder keeps in the name part besides letters and
+/// digits (every other one becomes `-`).
+const FILE_NAME_PART_EXTRA_CHARS: &str = "!$`() +,-.=[]^'{}";
 /// 100 ns FILETIME ticks between 1601-01-01 and 1970-01-01.
 const FILETIME_UNIX_EPOCH: u64 = 116_444_736_000_000_000;
 const FILETIME_TICKS_PER_DAY: u64 = 24 * 60 * 60 * 10_000_000;
@@ -99,6 +107,11 @@ const TRM_CHANGED_MESSAGE: &str = "The FTR recording changed while it was being 
 /// does DepoAudio (FFmpeg's native decoder would read it without a check).
 pub(crate) const TRM_UNSPLITTABLE_MESSAGE: &str =
     "This FTR recording's format isn't one FTR's own player can split, so DepoAudio does not convert it.";
+/// The reason recorded when DepoAudio read the layout but found no complete
+/// round to split, and FFmpeg's native decoder read the file instead.
+const NO_COMPLETE_ROUND_ERROR: &str =
+    "No complete round of FTR audio frames was found in this recording, so there is nothing to convert.";
+pub(crate) const NO_COMPLETE_ROUND_MESSAGE: &str = "DepoAudio found no complete round of audio frames it could split (no frame it could take as stream 0), so FFmpeg's native ftr decoder read the file as it is, without DepoAudio's checks.";
 const TRM_FRAME_CHANNELS_MESSAGE: &str = "This FTR recording's audio frames carry a different number of channels than its header declares, so DepoAudio cannot tell which microphone is which and does not split it.";
 
 /// A refusal that no other route may override: the file is not handed to
@@ -248,8 +261,12 @@ pub(crate) struct TrmInfo {
     pub start_local: Option<String>,
     /// Which time gives the start in `startTime` of the export record.
     pub start_basis: Option<StartBasis>,
-    /// The `FILE` chunk: the name the recorder gave this file.
+    /// The `FILE` chunk: the name the recorder gave this file, only when
+    /// it is a name in the recorder's own format (see
+    /// [`recorder_file_name`]); any other text is never copied here.
     pub recorded_file_name: Option<String>,
+    /// A `FILE` chunk holds text, whether or not it is kept above.
+    pub recorded_file_name_present: bool,
     /// A `USER` chunk with a non-empty user name (the name is never read
     /// into DepoAudio's records, logs or messages).
     pub user_name_present: bool,
@@ -292,6 +309,24 @@ pub(crate) struct TrmInfo {
     /// Frames read but not delivered (incomplete rounds, or frames out of
     /// stream order).
     pub dropped_frames: u64,
+    /// Partial rounds discarded before the last one delivered. They are not
+    /// filled with silence, so each moves all later audio one round (1024
+    /// samples) earlier than its time from the start.
+    pub dropped_rounds: u64,
+    /// `dropped_rounds` as seconds at the sample rate: the least that later
+    /// audio is earlier than its time from the start. None without a rate.
+    pub timeline_shift_secs: Option<f64>,
+    /// Damaged stretches of `movi` (an unreadable chunk header, a zero gap,
+    /// a chunk size past the end) that the walk skipped to reach the next
+    /// audio chunk, and the bytes skipped. The audio they held is lost and
+    /// its length is not known.
+    pub walk_gaps: u64,
+    pub walk_gap_bytes: u64,
+    /// `idx1` does not list every audio chunk: `movi` holds audio chunks
+    /// after the last one listed, or the count listed differs from the
+    /// header's chunk count (`strh` dwLength, `FTRA` d). The chunks were
+    /// then found by walking `movi` if that found more.
+    pub index_mismatch: bool,
     /// Delivered frames with either of the two ADTS length bits FTR ignores
     /// (`b3 & 3`) set; they are cleared in the stream files.
     pub length_high_bit_frames: u64,
@@ -339,6 +374,9 @@ impl TrmInfo {
         if self.index_kind == IndexKind::Walked {
             reasons.push("no-usable-index");
         }
+        if self.index_mismatch {
+            reasons.push("index-misses-audio-chunks");
+        }
         if self.open_ended {
             reasons.push("open-ended");
         }
@@ -378,9 +416,11 @@ impl TrmInfo {
         reasons
     }
 
-    /// The file's start as a BWF time reference: samples since midnight at
-    /// the source sample rate, from `TLOC` (local, as BWF counts it), else
-    /// `TUTC`, else the `FILE` name. None without a start or a rate.
+    /// The file's start as samples since midnight at the source sample
+    /// rate, from `TLOC` (local, as a BWF time reference counts it), else
+    /// `TUTC`, else the `FILE` name. Only a `TLOC` start is written into an
+    /// output's bext chunk (`SourceTiming::is_local_time_of_day`); the
+    /// others stay in the export record. None without a start or a rate.
     pub(crate) fn start_timing(&self) -> Option<crate::manifest::SourceTiming> {
         let filetime = self.start_filetime?;
         let basis = self.start_basis?;
@@ -506,14 +546,44 @@ fn filetime_text(filetime: u64, utc: bool) -> Option<String> {
     ))
 }
 
-/// The FILETIME in an FTR file name `<name>_YYYYMMDD-HHMM_<16 hex>.<ext>`.
-fn filetime_from_file_name(name: &str) -> Option<u64> {
-    let stem = name.rsplit_once('.').map_or(name, |(stem, _)| stem);
-    let (_, hex) = stem.rsplit_once('_')?;
-    if hex.len() != 16 || !hex.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+/// A `FILE` chunk's text when it is a file name in the recorder's format,
+/// `<name>_YYYYMMDD-HHMM_<16 hex>.<ext>`: a name part of at most 28
+/// characters, each a letter, a digit or one of ``!$`() +,-.=[]^'{}``, with no
+/// space at either end; the FILETIME as 16 lowercase hex digits (high then
+/// low dword); the date and time written from that same FILETIME; and an
+/// extension of 1 to 8 ASCII letters and digits. Returns the name and the
+/// FILETIME, or None for any other text.
+fn recorder_file_name(text: &str) -> Option<(String, u64)> {
+    let (stem, extension) = text.rsplit_once('.')?;
+    if extension.is_empty() || extension.len() > 8 || !extension.bytes().all(|byte| byte.is_ascii_alphanumeric()) {
         return None;
     }
-    u64::from_str_radix(hex, 16).ok().filter(|value| *value > 0)
+    let (rest, hex) = stem.rsplit_once('_')?;
+    let (name, stamp) = rest.rsplit_once('_')?;
+    if name.chars().count() > FILE_NAME_PART_MAX_CHARS
+        || name.trim() != name
+        || !name
+            .chars()
+            .all(|c| c.is_alphanumeric() || FILE_NAME_PART_EXTRA_CHARS.contains(c))
+    {
+        return None;
+    }
+    if hex.len() != 16 || !hex.bytes().all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f')) {
+        return None;
+    }
+    let filetime = u64::from_str_radix(hex, 16).ok().filter(|value| *value > 0)?;
+    // The recorder writes the date and time from the same FILETIME, with no
+    // zone conversion: YYYYMMDD-HHMM.
+    let written = filetime_text(filetime, false)?;
+    let expected = format!(
+        "{}{}{}-{}{}",
+        &written[0..4],
+        &written[5..7],
+        &written[8..10],
+        &written[11..13],
+        &written[14..16]
+    );
+    (stamp == expected).then(|| (text.to_string(), filetime))
 }
 
 /// UTF-16LE text up to its first NUL.
@@ -649,6 +719,8 @@ struct Layout {
     tutc: Option<u64>,
     tloc: Option<u64>,
     recorded_file_name: Option<String>,
+    recorded_file_name_present: bool,
+    file_name_filetime: Option<u64>,
     user_name_present: bool,
     user_data_present: bool,
     signed: bool,
@@ -738,10 +810,22 @@ fn read_chunk_data(file: &mut File, data: u64, size: u64, remaining: u64, limit:
     Ok(bytes)
 }
 
-/// Whether a private text chunk holds any text. Only this is kept.
+/// Whether a chunk holds any text (any non-zero byte), wherever in the
+/// chunk it is: the whole chunk is read in pieces and the bytes discarded.
+/// Only this is kept.
 fn holds_text(file: &mut File, data: u64, size: u64, remaining: u64) -> Result<bool, String> {
-    let bytes = read_chunk_data(file, data, size, remaining, PRIVATE_TEXT_CHUNK_MAX_BYTES)?;
-    Ok(bytes.chunks_exact(2).any(|unit| unit != [0, 0]))
+    file.seek(SeekFrom::Start(data)).map_err(io_error)?;
+    let mut left = size.min(remaining);
+    let mut piece = vec![0u8; READ_PIECE_BYTES];
+    while left > 0 {
+        let take = left.min(piece.len() as u64) as usize;
+        file.read_exact(&mut piece[..take]).map_err(io_error)?;
+        if piece[..take].iter().any(|byte| *byte != 0) {
+            return Ok(true);
+        }
+        left -= take as u64;
+    }
+    Ok(false)
 }
 
 /// The streams the tag's layout bits make of `nChannels`, as FTR's splitter
@@ -840,13 +924,19 @@ fn read_layout(file: &mut File, file_len: u64) -> Result<Layout, String> {
                 }
             }
             b"FILE" => {
+                // Kept only when it is a name in the recorder's own format;
+                // any other text (which could be anything) only as present.
                 let bytes = read_chunk_data(file, data, size, remaining, FILE_NAME_CHUNK_BYTES)?;
-                let name = utf16_text(&bytes);
-                let name = name.trim();
-                layout.recorded_file_name = (!name.is_empty()).then(|| name.to_string());
+                if let Some((name, filetime)) = recorder_file_name(&utf16_text(&bytes)) {
+                    layout.recorded_file_name = Some(name);
+                    layout.file_name_filetime = Some(filetime);
+                }
+                layout.recorded_file_name_present |= holds_text(file, data, size, remaining)?;
             }
-            b"USER" => layout.user_name_present = holds_text(file, data, size, remaining)?,
-            b"UDAT" => layout.user_data_present = holds_text(file, data, size, remaining)?,
+            // Any chunk of either kind that holds text counts, wherever the
+            // text is: a later empty duplicate does not hide an earlier one.
+            b"USER" => layout.user_name_present |= holds_text(file, data, size, remaining)?,
+            b"UDAT" => layout.user_data_present |= holds_text(file, data, size, remaining)?,
             b"idx1" => {
                 if size == 0 {
                     // Never closed: the index runs to EOF, and nothing after
@@ -992,6 +1082,12 @@ struct DealStats {
     padding: u64,
     trailing_skipped: u64,
     dropped: u64,
+    /// Partial rounds discarded before the end: each is at least one
+    /// 1024-sample period missing on every stream.
+    lost_rounds: u64,
+    /// Gaps in the `movi` walk that were skipped to the next audio chunk.
+    walk_gaps: u64,
+    walk_gap_bytes: u64,
     high_bits: u64,
     config_mismatches: u64,
     incomplete_final_round: bool,
@@ -1065,13 +1161,35 @@ impl<'a> Dealer<'a> {
         self.process()
     }
 
+    /// Discard a partial round mid-recording: its period is missing from
+    /// every stream, so later audio moves earlier by one round.
     fn drop_round(&mut self) {
+        if !self.round_ends.is_empty() {
+            self.stats.lost_rounds += 1;
+        }
+        self.clear_round();
+    }
+
+    fn clear_round(&mut self) {
         self.stats.dropped += self.round_ends.len() as u64;
         self.round.clear();
         self.round_ends.clear();
         self.round_scrambled = 0;
         self.round_high_bits = 0;
         self.round_config_mismatches = 0;
+    }
+
+    /// The walk skipped `bytes` of unreadable data to reach the next audio
+    /// chunk: a frame begun before the gap cannot be completed after it, so
+    /// its bytes and the round in progress are given up.
+    fn gap(&mut self, bytes: u64) {
+        self.stats.walk_gaps += 1;
+        self.stats.walk_gap_bytes += bytes;
+        for byte in std::mem::take(&mut self.buffer) {
+            self.skip_byte(byte);
+        }
+        self.carry_pending = false;
+        self.drop_round();
     }
 
     fn skip_byte(&mut self, byte: u8) {
@@ -1216,7 +1334,7 @@ impl<'a> Dealer<'a> {
     fn finish(mut self) -> (DealStats, Option<u32>) {
         if !self.round_ends.is_empty() {
             self.stats.incomplete_final_round = true;
-            self.drop_round();
+            self.clear_round();
         }
         // What is left is either the start of a frame the file cuts off, or
         // bytes after the last frame.
@@ -1301,10 +1419,19 @@ fn index_candidates(path: &Path, layout: &Layout) -> Result<Vec<IndexKind>, Stri
     })
 }
 
+/// What reading the chunks `idx1` lists found.
+struct IndexRead {
+    /// The last chunk was cut off by EOF.
+    truncated: bool,
+    /// Audio chunks listed (and read).
+    audio_chunks: u64,
+    /// Where the chunk after the last audio chunk listed would start.
+    after_last: u64,
+}
+
 /// Read every `00wb` chunk `idx1` lists, reading offsets as `kind` says and
 /// checking each listed chunk header against the file before using it.
-/// Returns None when the index does not match the file, and otherwise
-/// whether the last chunk was cut off by EOF.
+/// Returns None when the index does not match the file.
 fn read_by_index(
     path: &Path,
     layout: &Layout,
@@ -1312,7 +1439,7 @@ fn read_by_index(
     kind: IndexKind,
     dealer: &mut Dealer<'_>,
     cancelled: Cancel<'_>,
-) -> Result<Option<bool>, String> {
+) -> Result<Option<IndexRead>, String> {
     let Some((idx_start, idx_len)) = layout.idx1 else {
         return Ok(None);
     };
@@ -1321,6 +1448,7 @@ fn read_by_index(
     let mut payload = SourceReader::open(path)?;
     let mut piece = vec![0u8; READ_PIECE_BYTES];
     let mut last_end = layout.movi_pos;
+    let mut after_last = layout.movi_pos + 4;
     let mut truncated = false;
     let mut entry = [0u8; 16];
     let mut audio_entries = 0u64;
@@ -1357,15 +1485,121 @@ fn read_by_index(
         }
         audio_entries += 1;
         last_end = data + available;
+        after_last = data + size + (size & 1);
         feed_payload(&mut payload, data, available, &mut piece, dealer, cancelled)?;
     }
-    Ok((audio_entries > 0).then_some(truncated))
+    Ok((audio_entries > 0).then_some(IndexRead {
+        truncated,
+        audio_chunks: audio_entries,
+        after_last,
+    }))
+}
+
+/// Whether `movi` holds an audio chunk after `from` (the end of the last
+/// one the index lists): chunk headers are stepped over to the end of
+/// `movi`, payloads are not read, and the look stops at the first header
+/// that is not a chunk.
+fn audio_chunk_after(
+    path: &Path,
+    layout: &Layout,
+    file_len: u64,
+    from: u64,
+    cancelled: Cancel<'_>,
+) -> Result<bool, String> {
+    let mut reader = SourceReader::open(path)?;
+    let end = layout.movi_end.min(file_len);
+    let mut pos = from;
+    let mut steps = 0u64;
+    while pos + 8 <= end {
+        steps += 1;
+        if steps.is_multiple_of(CANCEL_CHECK_EVERY) {
+            check_cancel(cancelled)?;
+        }
+        let mut head = [0u8; 8];
+        reader.seek_to(pos)?;
+        reader.read_exact(&mut head)?;
+        if &head[0..4] == b"00wb" {
+            return Ok(true);
+        }
+        if !is_chunk_id(&head[0..4]) {
+            return Ok(false);
+        }
+        if &head[0..4] == b"LIST" {
+            pos += 12;
+            continue;
+        }
+        let size = u64::from(u32_at(&head, 4).unwrap_or(0));
+        pos = pos + 8 + size + (size & 1);
+    }
+    Ok(false)
+}
+
+fn is_chunk_id(id: &[u8]) -> bool {
+    id != [0, 0, 0, 0] && id.iter().all(|byte| byte.is_ascii_alphanumeric() || *byte == b' ')
+}
+
+/// How far past a damaged stretch of `movi` the walk looks for the next
+/// audio chunk before it gives up.
+const WALK_RESYNC_SCAN_BYTES: u64 = 4 * 1024 * 1024;
+
+/// Look for the next audio chunk from `from` (inclusive) to `limit`: a
+/// `00wb` header whose payload fits before `end` and opens with an FTR frame
+/// header. Reads in pieces. Returns its position, and whether every byte
+/// before it (or before `limit`, when none was found) was zero.
+fn find_audio_chunk(
+    reader: &mut SourceReader,
+    from: u64,
+    limit: u64,
+    end: u64,
+    cancelled: Cancel<'_>,
+) -> Result<(Option<u64>, bool), String> {
+    let mut all_zero = true;
+    let mut base = from;
+    let mut window: Vec<u8> = Vec::new();
+    // 8 header bytes plus the 7 of the first frame header.
+    const NEED: usize = 8 + ADTS_HEADER_BYTES;
+    while base < limit {
+        check_cancel(cancelled)?;
+        let want = (end - (base + window.len() as u64)).min(READ_PIECE_BYTES as u64) as usize;
+        if want == 0 && window.len() < NEED {
+            break;
+        }
+        if want > 0 {
+            let start = window.len();
+            window.resize(start + want, 0);
+            reader.seek_to(base + start as u64)?;
+            reader.read_exact(&mut window[start..])?;
+        }
+        let mut index = 0usize;
+        while index + NEED <= window.len() && base + (index as u64) < limit {
+            let at = &window[index..];
+            if &at[0..4] == b"00wb" {
+                let size = u64::from(u32_at(at, 4).unwrap_or(0));
+                let data = base + index as u64 + 8;
+                if size >= ADTS_HEADER_BYTES as u64 && data + size <= end && is_ftr_frame_header(&at[8..NEED]) {
+                    return Ok((Some(base + index as u64), all_zero));
+                }
+            }
+            all_zero &= at[0] == 0;
+            index += 1;
+        }
+        window.drain(..index);
+        base += index as u64;
+        if want == 0 {
+            break;
+        }
+    }
+    Ok((None, all_zero && window.iter().all(|byte| *byte == 0)))
 }
 
 /// Walk `movi` from its first chunk: skip each chunk (padded to even), read
-/// `00wb` payloads, step into `LIST` sub-lists, and stop at a zero chunk id
-/// (the end of the written data) or at a chunk id that is not printable.
-/// Returns whether the walk ended early (cut-off chunk or unreadable id).
+/// `00wb` payloads and step into `LIST` sub-lists. At a damaged stretch (a
+/// zero or unprintable chunk id, or a chunk claiming more than `movi`
+/// holds) it looks up to [`WALK_RESYNC_SCAN_BYTES`] ahead, from the end of
+/// the previous chunk's data (in case its pad byte is missing), for the
+/// next audio chunk, and continues there, counting the gap. Zeros up to the
+/// end of the look are the end of the written data. Returns whether the
+/// walk ended early (cut-off chunk or unreadable data with no audio after).
 fn read_by_walking(
     path: &Path,
     layout: &Layout,
@@ -1377,6 +1611,8 @@ fn read_by_walking(
     let mut piece = vec![0u8; READ_PIECE_BYTES];
     let end = layout.movi_end.min(file_len);
     let mut pos = layout.movi_pos + 4;
+    // End of the previous chunk's data, before any pad byte.
+    let mut data_end = pos;
     let mut steps = 0u64;
     while pos + 8 <= end && !dealer.limit_reached {
         steps += 1;
@@ -1387,18 +1623,39 @@ fn read_by_walking(
         reader.seek_to(pos)?;
         reader.read_exact(&mut head)?;
         let id = &head[0..4];
-        if id == [0, 0, 0, 0] {
-            return Ok(false);
-        }
-        if !id.iter().all(|byte| byte.is_ascii_alphanumeric() || *byte == b' ') {
-            return Ok(true);
-        }
         let size = u64::from(u32_at(&head, 4).unwrap_or(0));
-        if id == b"LIST" {
+        let readable = is_chunk_id(id);
+        if readable && id == b"LIST" {
             pos += 12;
+            data_end = pos;
             continue;
         }
         let data = pos + 8;
+        if !readable || data + size > end {
+            let from = data_end.min(pos);
+            let limit = from.saturating_add(WALK_RESYNC_SCAN_BYTES).min(end);
+            let (next, all_zero) = find_audio_chunk(&mut reader, from, limit, end, cancelled)?;
+            match next {
+                Some(next) if next != pos => {
+                    // Nothing skipped when the next chunk starts before
+                    // `pos`: the previous chunk lacked its pad byte, and no
+                    // audio was lost.
+                    let skipped = next.saturating_sub(pos);
+                    if skipped > 0 {
+                        dealer.gap(skipped);
+                    } else {
+                        dealer.stats.walk_gaps += 1;
+                    }
+                    pos = next;
+                    data_end = next;
+                    continue;
+                }
+                // Zeros to the end of movi: the end of the written data.
+                _ if !readable => return Ok(!(id == [0, 0, 0, 0] && all_zero && limit == end)),
+                // A chunk cut off by the end: read what there is of it.
+                _ => {}
+            }
+        }
         let available = size.min(end - data);
         if id == b"00wb" {
             feed_payload(&mut reader, data, available, &mut piece, dealer, cancelled)?;
@@ -1406,6 +1663,7 @@ fn read_by_walking(
         if available < size {
             return Ok(true);
         }
+        data_end = data + size;
         pos = data + size + (size & 1);
     }
     // Fewer than 8 bytes left: a chunk header was cut off.
@@ -1417,7 +1675,7 @@ fn header_info(layout: &Layout, file_len: u64, kind: IndexKind) -> TrmInfo {
     let (start_filetime, start_basis) = match (layout.tloc, layout.tutc) {
         (Some(local), _) => (Some(local), Some(StartBasis::Local)),
         (None, Some(utc)) => (Some(utc), Some(StartBasis::Utc)),
-        (None, None) => match layout.recorded_file_name.as_deref().and_then(filetime_from_file_name) {
+        (None, None) => match layout.file_name_filetime {
             Some(named) => (Some(named), Some(StartBasis::FileName)),
             None => (None, None),
         },
@@ -1443,6 +1701,7 @@ fn header_info(layout: &Layout, file_len: u64, kind: IndexKind) -> TrmInfo {
         start_basis,
         start_filetime,
         recorded_file_name: layout.recorded_file_name.clone(),
+        recorded_file_name_present: layout.recorded_file_name_present,
         user_name_present: layout.user_name_present,
         user_data_present: layout.user_data_present,
         signature: layout.signed.then_some(SIGNED_NOT_VERIFIED),
@@ -1484,6 +1743,12 @@ fn build_info(
         trailing_skipped_bytes: stats.trailing_skipped,
         incomplete_final_round: stats.incomplete_final_round,
         dropped_frames: stats.dropped,
+        dropped_rounds: stats.lost_rounds,
+        timeline_shift_secs: sample_rate
+            .filter(|rate| *rate > 0 && stats.lost_rounds > 0)
+            .map(|rate| (stats.lost_rounds * SAMPLES_PER_FRAME) as f64 / f64::from(rate)),
+        walk_gaps: stats.walk_gaps,
+        walk_gap_bytes: stats.walk_gap_bytes,
         length_high_bit_frames: stats.high_bits,
         frame_channel_mismatches: stats.config_mismatches,
         truncated: layout.truncated || truncated || stats.cut_final_frame,
@@ -1512,17 +1777,54 @@ pub(crate) fn inspect_trm_with_cancel(path: &Path, cancelled: Cancel<'_>) -> Res
         // MP2, MP3 or WMA: FFmpeg reads these as ordinary audio.
         return Ok(header_info(&layout, file_len, IndexKind::NotRead));
     }
+    let walk = || -> Result<TrmInfo, String> {
+        let mut dealer = Dealer::new(&layout, None, None);
+        let truncated = read_by_walking(path, &layout, file_len, &mut dealer, cancelled)?;
+        let (stats, rate) = dealer.finish();
+        Ok(build_info(&layout, file_len, IndexKind::Walked, truncated, stats, rate))
+    };
     for kind in index_candidates(path, &layout)? {
         let mut dealer = Dealer::new(&layout, None, None);
-        if let Some(truncated) = read_by_index(path, &layout, file_len, kind, &mut dealer, cancelled)? {
+        if let Some(read) = read_by_index(path, &layout, file_len, kind, &mut dealer, cancelled)? {
             let (stats, rate) = dealer.finish();
-            return Ok(build_info(&layout, file_len, kind, truncated, stats, rate));
+            let indexed = build_info(&layout, file_len, kind, read.truncated, stats, rate);
+            if !index_misses_chunks(path, &layout, file_len, &read, cancelled)? {
+                return Ok(indexed);
+            }
+            // FFmpeg's AVI reader reads an interleaved file straight through
+            // movi, not through idx1: so does DepoAudio, if that finds more.
+            let walked = walk()?;
+            let chosen = if walked.packets > indexed.packets {
+                walked
+            } else {
+                indexed
+            };
+            return Ok(TrmInfo {
+                index_mismatch: true,
+                ..chosen
+            });
         }
     }
-    let mut dealer = Dealer::new(&layout, None, None);
-    let truncated = read_by_walking(path, &layout, file_len, &mut dealer, cancelled)?;
-    let (stats, rate) = dealer.finish();
-    Ok(build_info(&layout, file_len, IndexKind::Walked, truncated, stats, rate))
+    walk()
+}
+
+/// The index does not describe every audio chunk: `movi` holds one after the
+/// last chunk listed, or (for a closed recording) the number listed is not
+/// the header's chunk count (`strh` dwLength, `FTRA` d).
+fn index_misses_chunks(
+    path: &Path,
+    layout: &Layout,
+    file_len: u64,
+    read: &IndexRead,
+    cancelled: Cancel<'_>,
+) -> Result<bool, String> {
+    if !layout.open_ended {
+        let differs = |count: u32| u64::from(count) != read.audio_chunks;
+        if layout.header_length.is_some_and(differs) || layout.ftra.is_some_and(|ftra| differs(ftra.d)) {
+            return Ok(true);
+        }
+    }
+    audio_chunk_after(path, layout, file_len, read.after_last, cancelled)
 }
 
 /// Read the recording again exactly as `info` describes it (same index kind,
@@ -1543,8 +1845,11 @@ fn extract<'s>(
     let truncated = match info.index_kind {
         IndexKind::Walked => read_by_walking(path, &layout, file_len, &mut dealer, cancelled)?,
         IndexKind::NotRead => return Err(TRM_CHANGED_MESSAGE.into()),
-        kind => read_by_index(path, &layout, file_len, kind, &mut dealer, cancelled)?
-            .ok_or_else(|| TRM_CHANGED_MESSAGE.to_string())?,
+        kind => {
+            read_by_index(path, &layout, file_len, kind, &mut dealer, cancelled)?
+                .ok_or_else(|| TRM_CHANGED_MESSAGE.to_string())?
+                .truncated
+        }
     };
     if dealer.limit_reached {
         // Every inspected round was delivered, so the inspection describes
@@ -1558,6 +1863,7 @@ fn extract<'s>(
     let (stats, rate) = dealer.finish();
     let mut written = build_info(&layout, file_len, info.index_kind, truncated, stats, rate);
     written.grew_while_read = grew;
+    written.index_mismatch = info.index_mismatch;
     Ok(written)
 }
 
@@ -1616,9 +1922,7 @@ pub(crate) fn deinterleave_trm_with_cancel(
         );
     }
     if info.frames_per_channel == 0 {
-        return Err(
-            "No complete round of FTR audio frames was found in this recording, so there is nothing to convert.".into(),
-        );
+        return Err(NO_COMPLETE_ROUND_ERROR.into());
     }
     if info.frame_channel_mismatches > 0 {
         return Err(TRM_FRAME_CHANNELS_MESSAGE.into());
@@ -1631,9 +1935,15 @@ pub(crate) fn deinterleave_trm_with_cancel(
     let mut writers = Vec::with_capacity(usize::from(info.streams));
     for stream in 0..info.streams {
         let stream_path = out_dir.join(format!("{stem}_ch{stream}.aac"));
-        let file = fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
+        let mut options = fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            // Owner only: the decoded audio of a court recording.
+            options.mode(0o600);
+        }
+        let file = options
             .open(&stream_path)
             .map_err(|error| format!("Could not create a temporary channel file: {error}"))?;
         files.paths.push(stream_path);
@@ -1846,7 +2156,13 @@ pub(crate) mod tests {
         let mut avih = le(&[0, 0, 0, spec.flags, packets.len() as u32, 0, streams, 0, 0, 0]);
         avih.resize(56, 0);
         let mut strh = b"auds".to_vec();
-        strh.extend(le(&[0, 0, 0, 0, 1024, TONE_RATE, 0, spec.length, 4096, u32::MAX, 0]));
+        // 0 writes the audio chunk count, as a recorder does at close.
+        let length = if spec.length == 0 {
+            packets.len() as u32
+        } else {
+            spec.length
+        };
+        strh.extend(le(&[0, 0, 0, 0, 1024, TONE_RATE, 0, length, 4096, u32::MAX, 0]));
         strh.resize(56, 0);
         let mut strf = Vec::new();
         strf.extend(spec.tag.to_le_bytes());
@@ -2498,12 +2814,140 @@ pub(crate) mod tests {
         assert_eq!(info.dropped_frames, 2);
         assert_eq!(info.resync_skipped_bytes, 0);
         assert!(info.native_blockers().contains(&"channel-order-resynced"));
+        // The dropped round is not filled with silence: later audio moves
+        // one 64 ms round earlier, and the export record says so.
+        assert_eq!(info.dropped_rounds, 1);
+        assert_eq!(info.timeline_shift_secs, Some(0.064));
+        let note = crate::manifest::trm_timeline_note(&info).unwrap();
+        assert!(note.contains("dropped 1 incomplete round(s)"), "{note}");
 
         let (_, files) = deinterleave_trm(&path, &dir.0).unwrap();
         for (channel, file) in files.iter().enumerate() {
             let mut expected = expected_channel(&channels, channel, 8);
             expected.remove(3);
             assert_eq!(split_adts(&fs::read(file).unwrap()), expected, "channel {channel}");
+        }
+    }
+
+    /// Insert `bytes` at `at` in a built AVI (or delete `delete` bytes there)
+    /// and fix the RIFF and `movi` list sizes.
+    fn splice_movi(avi: &mut Vec<u8>, at: usize, delete: usize, bytes: &[u8]) {
+        avi.splice(at..at + delete, bytes.iter().copied());
+        let movi = avi.windows(4).position(|window| window == b"movi").unwrap() - 8;
+        let delta = bytes.len() as i64 - delete as i64;
+        for size_at in [4, movi + 4] {
+            let size = u32_at(avi, size_at).unwrap() as i64 + delta;
+            avi[size_at..size_at + 4].copy_from_slice(&(size as u32).to_le_bytes());
+        }
+    }
+
+    /// Offsets of the `00wb` chunk headers in a built AVI.
+    fn audio_chunk_offsets(avi: &[u8]) -> Vec<usize> {
+        let movi = avi.windows(4).position(|window| window == b"movi").unwrap();
+        let mut pos = movi + 4;
+        let mut offsets = Vec::new();
+        while avi.get(pos..pos + 4) == Some(b"00wb") {
+            offsets.push(pos);
+            let size = u32_at(avi, pos + 4).unwrap() as usize;
+            pos += 8 + size + (size & 1);
+        }
+        offsets
+    }
+
+    #[test]
+    fn the_walk_continues_past_a_damaged_stretch_and_counts_it() {
+        let dir = TrmTestDir::new();
+        let channels = fake_frames(2, 8);
+        let (stream, lengths) = ftr_frame_stream(&channels);
+        let packets = round_packets(&stream, &lengths, 2, 1);
+        let mut spec = AviSpec::closed(2);
+        spec.index = Index::None;
+        let clean = build_avi(&spec, &packets);
+        for (name, gap) in [("zeros", vec![0u8; 100]), ("garbage", vec![0xABu8; 50])] {
+            let mut avi = clean.clone();
+            let third = audio_chunk_offsets(&avi)[2];
+            splice_movi(&mut avi, third, 0, &gap);
+            let path = write(&dir.0, &format!("{name}.trm"), &avi);
+            let info = inspect_trm(&path).unwrap();
+            assert_eq!(info.index_kind, IndexKind::Walked, "{name}");
+            assert_eq!((info.packets, info.frames_per_channel), (8, 8), "{name}");
+            assert_eq!((info.walk_gaps, info.walk_gap_bytes), (1, gap.len() as u64), "{name}");
+            assert_eq!(info.dropped_rounds, 0, "{name}");
+            assert!(!info.truncated, "{name}");
+            assert!(crate::manifest::trm_timeline_note(&info)
+                .unwrap()
+                .contains("unrecorded amount"));
+            let (_, files) = deinterleave_trm(&path, &dir.0).unwrap();
+            for (channel, file) in files.iter().enumerate() {
+                assert_eq!(
+                    split_adts(&fs::read(file).unwrap()),
+                    expected_channel(&channels, channel, 8),
+                    "{name} channel {channel}"
+                );
+            }
+        }
+
+        // An odd-sized chunk written without its pad byte: nothing is lost.
+        let odd = packets.iter().position(|packet| packet.len() % 2 == 1).unwrap();
+        assert!(odd + 1 < packets.len());
+        let mut avi = clean.clone();
+        let at = audio_chunk_offsets(&avi)[odd] + 8 + packets[odd].len();
+        assert_eq!(avi[at], 0);
+        splice_movi(&mut avi, at, 1, &[]);
+        let info = inspect_trm(&write(&dir.0, "no_pad.trm", &avi)).unwrap();
+        assert_eq!((info.packets, info.frames_per_channel), (8, 8));
+        assert_eq!((info.walk_gaps, info.walk_gap_bytes, info.dropped_rounds), (1, 0, 0));
+        assert_eq!(crate::manifest::trm_timeline_note(&info), None);
+
+        // Zeros to the end of movi are still the end of the written data.
+        let mut avi = clean.clone();
+        let end = avi.windows(4).position(|window| window == b"movi").unwrap() + 4;
+        let end = end + u32_at(&avi, end - 8).unwrap() as usize - 4;
+        splice_movi(&mut avi, end, 0, &[0u8; 64]);
+        let info = inspect_trm(&write(&dir.0, "tail.trm", &avi)).unwrap();
+        assert_eq!((info.packets, info.walk_gaps, info.truncated), (8, 0, false));
+    }
+
+    #[test]
+    fn an_index_that_lists_fewer_chunks_than_movi_holds_is_not_trusted() {
+        let dir = TrmTestDir::new();
+        let channels = fake_frames(2, 6);
+        let (stream, lengths) = ftr_frame_stream(&channels);
+        let packets = round_packets(&stream, &lengths, 2, 1);
+        let full = build_avi(&AviSpec::closed(2), &packets);
+        assert!(!inspect_trm(&write(&dir.0, "full.trm", &full)).unwrap().index_mismatch);
+
+        // idx1 cut to its first 3 entries (sizes fixed): movi holds 6.
+        let idx1 = full.windows(4).rposition(|window| window == b"idx1").unwrap();
+        let mut short = full[..idx1 + 8 + 3 * 16].to_vec();
+        short[idx1 + 4..idx1 + 8].copy_from_slice(&48u32.to_le_bytes());
+        let riff = (short.len() - 8) as u32;
+        short[4..8].copy_from_slice(&riff.to_le_bytes());
+        let path = write(&dir.0, "short.trm", &short);
+        let info = inspect_trm(&path).unwrap();
+        assert!(info.index_mismatch);
+        assert_eq!(info.index_kind, IndexKind::Walked);
+        assert_eq!((info.packets, info.frames_per_channel), (6, 6));
+        assert!(info.native_blockers().contains(&"index-misses-audio-chunks"));
+        let (_, files) = deinterleave_trm(&path, &dir.0).unwrap();
+        for (channel, file) in files.iter().enumerate() {
+            assert_eq!(
+                split_adts(&fs::read(file).unwrap()),
+                expected_channel(&channels, channel, 6)
+            );
+        }
+
+        // The header's chunk count (or FTRA d) disagrees with a full index:
+        // the walk finds no more, so the index is kept, and native is not used.
+        for (length, ftra) in [(7, None), (0, Some([1, 0, 0, 5, u32::MAX]))] {
+            let mut spec = AviSpec::closed(2);
+            spec.length = length;
+            spec.ftra = ftra;
+            let info = inspect_trm(&write(&dir.0, "count.trm", &build_avi(&spec, &packets))).unwrap();
+            assert!(info.index_mismatch, "{length} {ftra:?}");
+            assert_eq!(info.index_kind, IndexKind::Idx1Absolute);
+            assert_eq!(info.packets, 6);
+            assert!(info.native_blockers().contains(&"index-misses-audio-chunks"));
         }
     }
 
@@ -3056,11 +3500,93 @@ pub(crate) mod tests {
             assert_eq!(info.signature, None);
         }
         assert_eq!(
-            filetime_from_file_name("x_20260101-0900_01dc7afd0268a800.trm"),
-            Some(SAMPLE_START)
+            recorder_file_name("x_20260101-0900_01dc7afd0268a800.trm"),
+            Some(("x_20260101-0900_01dc7afd0268a800.trm".to_string(), SAMPLE_START))
         );
-        assert_eq!(filetime_from_file_name("x_20260101-0900_01dc7afd0268a8.trm"), None);
-        assert_eq!(filetime_from_file_name("plain name.trm"), None);
+        assert_eq!(recorder_file_name("x_20260101-0900_01dc7afd0268a8.trm"), None);
+        assert_eq!(recorder_file_name("plain name.trm"), None);
+    }
+
+    #[test]
+    fn file_chunk_text_is_kept_only_in_the_recorders_name_format() {
+        // The owner's sample name, and names the recorder's rules allow.
+        for name in [
+            "Synthetic sample (not FTR)_20260101-0900_01dc7afd0268a800.trm",
+            "_20260101-0900_01dc7afd0268a800.trm",
+            "Courtroom 4 [A]!$`+,-.=^'{}_20260101-0900_01dc7afd0268a800.tll",
+        ] {
+            assert_eq!(
+                recorder_file_name(name).map(|(_, time)| time),
+                Some(SAMPLE_START),
+                "{name}"
+            );
+        }
+        for text in [
+            // Control characters, a line break, an underscore in the name
+            // part, or a name part longer than 28 characters.
+            "SECRETNOTE line\nbreak",
+            "Room\t4_20260101-0900_01dc7afd0268a800.trm",
+            "Room_4_20260101-0900_01dc7afd0268a800.trm",
+            "Smith versus Jones, deposition of_20260101-0900_01dc7afd0268a800.trm",
+            " Room 4_20260101-0900_01dc7afd0268a800.trm",
+            // The date and time must be the FILETIME's, uppercase hex is
+            // not the recorder's, and there must be an extension.
+            "Room 4_20260102-0900_01dc7afd0268a800.trm",
+            "Room 4_20260101-0900_01DC7AFD0268A800.trm",
+            "Room 4_20260101-0900_01dc7afd0268a800",
+            "Room 4_20260101-0900_01dc7afd0268a800.t r m",
+        ] {
+            assert_eq!(recorder_file_name(text), None, "{text:?}");
+        }
+
+        let dir = TrmTestDir::new();
+        let channels = fake_frames(1, 2);
+        let (stream, lengths) = ftr_frame_stream(&channels);
+        let packets = round_packets(&stream, &lengths, 1, 1);
+        let mut spec = AviSpec::closed(1);
+        spec.header_extra = utf16_chunk(b"FILE", "SECRETNOTE line\nbreak", 0x200);
+        let info = inspect_trm(&write(&dir.0, "file.trm", &build_avi(&spec, &packets))).unwrap();
+        assert_eq!(info.recorded_file_name, None);
+        assert!(info.recorded_file_name_present);
+        // No start from a name that is not the recorder's.
+        assert_eq!(info.start_basis, None);
+        let route = TrmRoute::new(info, DecodePath::Deinterleaved, Vec::new());
+        let json = serde_json::to_string(&route).unwrap();
+        assert!(!json.contains("SECRETNOTE") && !format!("{route:?}").contains("SECRETNOTE"));
+        assert!(json.contains("\"recordedFileNamePresent\":true"));
+    }
+
+    #[test]
+    fn private_text_is_seen_in_any_duplicate_chunk_and_anywhere_in_it() {
+        let dir = TrmTestDir::new();
+        let channels = fake_frames(1, 2);
+        let (stream, lengths) = ftr_frame_stream(&channels);
+        let packets = round_packets(&stream, &lengths, 1, 1);
+        // Text in a first USER chunk, then an empty one; a UDAT chunk whose
+        // text starts past 0x400 bytes; a FILE chunk whose text starts past
+        // the 0x200 bytes the name is read from.
+        let mut late = vec![0u8; 0x900];
+        late[0x880..0x884].copy_from_slice(&[b'n', 0, b'o', 0]);
+        let mut extra = utf16_chunk(b"USER", "Private Person", 0x200);
+        extra.extend(utf16_chunk(b"USER", "", 0x200));
+        extra.extend(chunk(b"UDAT", &late));
+        extra.extend(chunk(b"FILE", &late[..0x300]));
+        let mut spec = AviSpec::closed(1);
+        spec.header_extra = extra;
+        let info = inspect_trm(&write(&dir.0, "private.trm", &build_avi(&spec, &packets))).unwrap();
+        assert!(info.user_name_present);
+        assert!(info.user_data_present);
+        let mut late_file = vec![0u8; 0x300];
+        late_file[0x280] = b'x';
+        let mut spec = AviSpec::closed(1);
+        spec.header_extra = chunk(b"FILE", &late_file);
+        let info = inspect_trm(&write(&dir.0, "late_file.trm", &build_avi(&spec, &packets))).unwrap();
+        assert!(info.recorded_file_name_present && info.recorded_file_name.is_none());
+        // Empty chunks are not text.
+        let mut spec = AviSpec::closed(1);
+        spec.header_extra = [utf16_chunk(b"USER", "", 0x200), utf16_chunk(b"UDAT", "", 0x400)].concat();
+        let info = inspect_trm(&write(&dir.0, "empty.trm", &build_avi(&spec, &packets))).unwrap();
+        assert!(!info.user_name_present && !info.user_data_present && !info.recorded_file_name_present);
     }
 
     /// Stereo ADTS frames: `left` Hz on channel 0, `right` Hz on channel 1.

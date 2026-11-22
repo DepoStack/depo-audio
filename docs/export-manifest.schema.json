@@ -31,10 +31,10 @@
         "fileName": { "type": "string", "description": "File name only, never a folder path." },
         "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$", "description": "SHA-256 of the original file as selected, before any format preparation." },
         "sizeBytes": { "type": "integer", "minimum": 0 },
-        "trmInspectionError": { "type": "string", "description": "Only for an FTR recording DepoAudio could not read: why. FFmpeg's native ftr decoder then read the file as it is (ffmpeg -c:a ftr -i <source>), without DepoAudio's layout checks, and there is no trm object. Written by versions after 1.1.0." },
+        "trmInspectionError": { "type": "string", "description": "Only for an FTR recording DepoAudio could not read, or in which it found no complete round of frames to split: why. FFmpeg's native ftr decoder then read the file as it is (ffmpeg -c:a ftr -i <source>), without DepoAudio's layout checks, and there is no trm object. Written by versions after 1.1.0." },
         "trm": {
           "type": "object",
-          "description": "Only for an FTR recording (.trm, .ftr, .tll): what DepoAudio found when it read the file, and how FFmpeg decoded it. The layout reading follows the owner's interoperability notes and has been checked against a sample made by the owner's rebuild tool, not against a recording made by FTR. The USER (user name) and UDAT (free text) chunks are never copied here: only whether they hold text. Written by versions after 1.1.0.",
+          "description": "Only for an FTR recording (.trm, .ftr, .tll): what DepoAudio found when it read the file, and how FFmpeg decoded it. The layout reading follows the owner's interoperability notes and has been checked against a sample made by the owner's rebuild tool, not against a recording made by FTR. The USER (user name) and UDAT (free text) chunks are never copied here: only whether they hold text; the FILE chunk's text only when it is a name in the recorder's own format. Written by versions after 1.1.0.",
           "additionalProperties": false,
           "required": ["tag", "channels", "sampleRate", "startBoundary", "endBoundary", "openEnded", "indexKind", "packets", "frames", "framesPerChannel", "scrambledFrames", "straddlingFrames", "misalignedPackets", "resyncSkippedBytes", "incompleteFinalRound", "droppedFrames", "truncated", "ftra", "videoStreams", "durationSecs", "decodePath", "routeReasons"],
           "properties": {
@@ -56,7 +56,8 @@
             "startUtc": { "type": ["string", "null"], "description": "The TUTC chunk (the file's start, UTC) as an RFC 3339 time ending in Z; null without the chunk. Written by versions after 1.1.0 that record it." },
             "startLocal": { "type": ["string", "null"], "description": "The TLOC chunk (the same start in the recorder's local time) as a date and time with no offset; null without the chunk. Written by versions after 1.1.0 that record it." },
             "startBasis": { "enum": ["tloc-local", "tutc-utc", "file-name-unknown-zone", null], "description": "Which time gives startTime: TLOC (local, as a BWF time reference counts it), else TUTC (UTC), else the FILETIME in the FILE chunk's name (its time zone not stated); null when none is present. Written by versions after 1.1.0 that record it." },
-            "recordedFileName": { "type": ["string", "null"], "description": "The FILE chunk: the name the recorder gave this file. Written by versions after 1.1.0 that record it." },
+            "recordedFileName": { "type": ["string", "null"], "description": "The FILE chunk: the name the recorder gave this file, only when it is in the recorder's own name format (see recordedFileNamePresent); null otherwise. Written by versions after 1.1.0 that record it." },
+            "recordedFileNamePresent": { "type": "boolean", "description": "The FILE chunk holds text. Its text is recorded in recordedFileName only when it is a file name in the recorder's own format (name part of at most 28 letters, digits or !$`() +,-.=[]^'{}, then _YYYYMMDD-HHMM_ and the FILETIME as 16 lowercase hex digits matching that date and time, then an extension); any other text is never recorded. Written by versions after 1.1.0 that record it." },
             "userNamePresent": { "type": "boolean", "description": "A USER chunk holds a user name. The name itself is never recorded. Written by versions after 1.1.0 that record it." },
             "userDataPresent": { "type": "boolean", "description": "A UDAT chunk holds free text. The text itself is never recorded. Written by versions after 1.1.0 that record it." },
             "signature": { "enum": ["signed (not verified)", null], "description": "SIGN/CERT chunks follow the index. DepoAudio does not check (or write) signatures. Written by versions after 1.1.0 that record it." },
@@ -76,6 +77,11 @@
             "trailingSkippedBytes": { "type": "integer", "minimum": 0, "description": "Non-zero bytes after the last frame delivered that are not a frame. Written by versions after 1.1.0 that check it." },
             "incompleteFinalRound": { "type": "boolean", "description": "The last round was missing channels and was not delivered." },
             "droppedFrames": { "type": "integer", "minimum": 0, "description": "Frames read but not delivered: their round was incomplete, or they were out of channel order." },
+            "droppedRounds": { "type": "integer", "minimum": 0, "description": "Incomplete rounds of frames dropped before the last round delivered. They are not filled with silence, so each moves all later audio one round (1024 samples) earlier than its time from the start; startTime.note says so. Written by versions after 1.1.0 that check it." },
+            "timelineShiftSecs": { "type": ["number", "null"], "minimum": 0, "description": "droppedRounds x 1024 / sampleRate: the least that the audio at the end is earlier than its time from the start. Null when no round was dropped. Written by versions after 1.1.0 that check it." },
+            "walkGaps": { "type": "integer", "minimum": 0, "description": "Places where the walk of the movi list met data that is not a chunk (an unreadable chunk header, a zero gap, a chunk size past the end) and looked ahead for the next audio chunk. Written by versions after 1.1.0 that check it." },
+            "walkGapBytes": { "type": "integer", "minimum": 0, "description": "Bytes the walk skipped at those places (0 for a chunk written without its pad byte). The audio they held is missing and its length is not known. Written by versions after 1.1.0 that check it." },
+            "indexMismatch": { "type": "boolean", "description": "idx1 does not list every audio chunk: movi holds audio chunks after the last one listed, or the number listed is not the header's chunk count (headerChunkCount, ftra.d). The chunks were then found by walking movi when that found more. Written by versions after 1.1.0 that check it." },
             "lengthHighBitFrames": { "type": "integer", "minimum": 0, "description": "Delivered frames with either of the two ADTS frame-length bits FTR ignores set; DepoAudio cleared them in the temporary channel files. Written by versions after 1.1.0 that check it." },
             "frameChannelMismatches": { "type": "integer", "minimum": 0, "description": "Delivered frames whose ADTS channel configuration is not channelsPerStream. A file with any is not split. Written by versions after 1.1.0 that check it." },
             "truncated": { "type": "boolean", "description": "The file ends inside a chunk or a frame, or its chunk list stops at unreadable data." },
@@ -103,7 +109,7 @@
             "routeReasons": {
               "type": "array",
               "description": "Why the native decoder was not used; empty for native-ftr.",
-              "items": { "enum": ["not-ftr-aac", "frame-channels-differ-from-header", "no-usable-index", "open-ended", "truncated", "frames-cross-chunks", "chunks-not-on-round-boundaries", "several-rounds-per-chunk", "data-before-channel-0", "channel-order-resynced", "unreadable-data", "zero-padding", "incomplete-rounds", "frame-length-high-bits", "native-decoder-unavailable", "native-decode-failed"] }
+              "items": { "enum": ["not-ftr-aac", "frame-channels-differ-from-header", "no-usable-index", "index-misses-audio-chunks", "open-ended", "truncated", "frames-cross-chunks", "chunks-not-on-round-boundaries", "several-rounds-per-chunk", "data-before-channel-0", "channel-order-resynced", "unreadable-data", "zero-padding", "incomplete-rounds", "frame-length-high-bits", "native-decoder-unavailable", "native-decode-failed"] }
             },
             "inputOptions": { "type": "array", "items": { "type": "string" }, "description": "The options FFmpeg was given before each -i: [\"-c:a\", \"ftr\"] before the recording itself (native-ftr), [\"-f\", \"aac\"] before each temporary channel file (deinterleaved), or none (ffmpeg-plain). Written by versions after 1.1.0 that record it." },
             "inputCount": { "type": "integer", "minimum": 1, "maximum": 16, "description": "How many -i inputs FFmpeg read: 1 for native-ftr and ffmpeg-plain, or one temporary file per stream for deinterleaved, which filterChain joins in channel order with amerge before anything else. The temporary files are deleted afterwards. Written by versions after 1.1.0 that record it." }
@@ -172,7 +178,7 @@
         "sourceSampleRate": { "type": ["integer", "null"], "minimum": 1 },
         "secondsSinceMidnight": { "type": ["number", "null"], "minimum": 0 },
         "outputTimeReferenceSamples": { "type": ["integer", "null"], "minimum": 0, "description": "The same start, rescaled to output.sampleRate. Null when the output start differs from the source start (leading-silence trim) or the start is unknown." },
-        "writtenToOutput": { "type": "boolean", "description": "True when the output WAV carries outputTimeReferenceSamples in its own bext chunk. When false, the output carries no time_reference at all and this record is the only place the start is kept." },
+        "writtenToOutput": { "type": "boolean", "description": "True when the output WAV carries outputTimeReferenceSamples in its own bext chunk. When false, the output carries no time_reference at all and this record is the only place the start is kept. A start that is not local time of day (ftr-tutc, ftr-file-name) is never written to an output, since a bext time reference counts from local midnight." },
         "note": { "type": "string" }
       }
     }
