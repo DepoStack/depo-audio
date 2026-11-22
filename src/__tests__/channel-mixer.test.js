@@ -5,10 +5,13 @@ import {
   channelGains,
   channelRouting,
   createChannelMixer,
+  hearingSummary,
   initialStrips,
   loadVolume,
+  mixChannelCount,
   probedChannelCount,
   separationNote,
+  stripChanged,
   stripLabels,
   volumePercent,
 } from '../lib/channelMixer'
@@ -17,14 +20,28 @@ import { installFakeAudio } from './helpers/fakeAudioContext'
 const strip = (patch = {}) => ({ volume: 1, muted: false, soloed: false, ...patch })
 
 describe('listening mix gain math', () => {
-  it('plays every channel at its own volume when nothing is muted or soloed', () => {
-    expect(channelGains([strip(), strip({ volume: 0.5 }), strip({ volume: 2 })])).toEqual([1, 0.5, 2])
+  it('plays a stereo file left and right at each strip volume', () => {
+    expect(channelGains([strip(), strip({ volume: 0.5 })])).toEqual([1, 0.5])
+    expect(channelGains([strip({ volume: 2 }), strip()])).toEqual([2, 1])
+  })
+
+  it('shares the level between heard channels when 3 or more are summed into both ears', () => {
+    expect(channelGains([strip(), strip({ volume: 0.5 }), strip({ volume: 2 })])).toEqual([1 / 3, 0.5 / 3, 2 / 3])
+    expect(channelGains(initialStrips(4))).toEqual([0.25, 0.25, 0.25, 0.25])
+    // Four identical mic signals at -6 dBFS (0.5) sum to 0.5 per ear, the
+    // level of one mic, instead of 2.0 (+6 dBFS, clipped).
+    const sum = channelGains(initialStrips(4)).reduce((total, g) => total + g * 0.5, 0)
+    expect(sum).toBeCloseTo(0.5)
+    expect(channelGains(initialStrips(16)).reduce((total, g) => total + g, 0)).toBeCloseTo(1)
+    // One channel left heard plays at its own level.
+    expect(channelGains([strip({ soloed: true }), strip(), strip(), strip()])).toEqual([1, 0, 0, 0])
+    expect(channelGains([strip(), strip({ muted: true }), strip({ muted: true })])).toEqual([1, 0, 0])
   })
 
   it('any solo leaves only soloed channels audible', () => {
     const strips = [strip(), strip({ soloed: true }), strip(), strip({ soloed: true, volume: 0.25 })]
     expect(audibleChannels(strips)).toEqual([false, true, false, true])
-    expect(channelGains(strips)).toEqual([0, 1, 0, 0.25])
+    expect(channelGains(strips)).toEqual([0, 0.5, 0, 0.125])
   })
 
   it('mute wins: a muted channel is silent with or without solo', () => {
@@ -34,7 +51,8 @@ describe('listening mix gain math', () => {
   })
 
   it('clamps channel volume to 0–200% and ignores junk', () => {
-    expect(channelGains([strip({ volume: 5 }), strip({ volume: -1 }), strip({ volume: 'x' })])).toEqual([2, 0, 1])
+    expect(channelGains([strip({ volume: 5 }), strip({ volume: -1 })])).toEqual([2, 0])
+    expect(channelGains([strip({ volume: 'x' }), strip()])).toEqual([1, 1])
   })
 
   it('keeps left/right for 2 channels and sends 3+ channels to both ears', () => {
@@ -72,6 +90,8 @@ describe('listening mix gain math', () => {
     expect(stripLabels({ fileChannels: 8, heardChannels: 2 })).toEqual(['Left mix', 'Right mix'])
     expect(stripLabels({ fileChannels: 8, heardChannels: 6 })).toHaveLength(6)
     expect(stripLabels({ fileChannels: 8, heardChannels: 1 })).toEqual([])
+    expect(stripLabels({ fileChannels: 1, heardChannels: null })).toEqual([])
+    expect(stripLabels({ fileChannels: null, heardChannels: null })).toEqual([])
   })
 
   it('says how many channels the Player can separate', () => {
@@ -139,6 +159,8 @@ describe('createChannelMixer', () => {
 
   it('applies solo, mute and volume to the channel gains and master to the master gain', () => {
     const { mixer, context } = build(3)
+    // Before any strips arrive, 3 channels share the level.
+    expect(fake.channelGains(context).map(g => g.gain.value)).toEqual([1 / 3, 1 / 3, 1 / 3])
     mixer.setStrips([strip(), strip({ soloed: true, volume: 1.5 }), strip({ muted: true })])
     expect(fake.channelGains(context).map(g => g.gain.value)).toEqual([0, 1.5, 0])
     mixer.setMaster(0.3)
@@ -147,13 +169,20 @@ describe('createChannelMixer', () => {
     expect(fake.master(context).gain.value).toBe(1)
   })
 
-  it('re-routes for the channel count the web view passes and keeps the gains', () => {
+  it('re-routes for the channel count the web view passes, starting the new channels at default', () => {
     const { mixer, context } = build(8)
-    mixer.setStrips([strip({ muted: true }), strip()])
+    // A Solo set on Ch 5 of the file must not carry over to the down-mix.
+    mixer.setStrips(initialStrips(8).map((s, i) => (i === 4 ? { ...s, soloed: true } : s)))
+    expect(fake.channelGains(context).map(g => g.gain.value)).toEqual([0, 0, 0, 0, 1, 0, 0, 0])
     mixer.setLayout(2)
     expect(mixer.layout).toBe(2)
     const live = fake.channelGains(context)
     expect(live).toHaveLength(2)
+    expect(live.map(g => g.gain.value)).toEqual([1, 1])
+    // Strips for another layout are ignored, never applied to the wrong channels.
+    mixer.setStrips(initialStrips(8).map(s => ({ ...s, soloed: true, volume: 2 })))
+    expect(live.map(g => g.gain.value)).toEqual([1, 1])
+    mixer.setStrips([strip({ muted: true }), strip()])
     expect(live.map(g => g.gain.value)).toEqual([0, 1])
     // The 8-way splitter is no longer fed.
     const source = context.nodes.find(n => n.kind === 'source')
@@ -220,5 +249,24 @@ describe('createChannelMixer', () => {
 
   it('starts every channel at 100%', () => {
     expect(initialStrips(2)).toEqual([strip(), strip()])
+  })
+
+  it('says how many channels are heard once anything is muted or soloed', () => {
+    expect(hearingSummary(initialStrips(4))).toBe('')
+    expect(hearingSummary([strip({ volume: 0.5 }), strip()])).toBe('')
+    expect(hearingSummary([strip(), strip({ soloed: true }), strip(), strip()])).toBe('Hearing 1 of 4 channels.')
+    expect(hearingSummary([strip({ muted: true }), strip()])).toBe('Hearing 1 of 2 channels.')
+    expect(hearingSummary([strip({ muted: true }), strip({ muted: true })])).toMatch(/Every channel is silent/)
+    expect(hearingSummary([strip({ muted: true })])).toBe('')
+  })
+
+  it('splits the channels the web view passes, or the file channels', () => {
+    expect(mixChannelCount({ fileChannels: 6, heardChannels: null })).toBe(6)
+    expect(mixChannelCount({ fileChannels: 6, heardChannels: 6 })).toBe(6)
+    expect(mixChannelCount({ fileChannels: 6, heardChannels: 2 })).toBe(2)
+    expect(mixChannelCount({ fileChannels: null, heardChannels: 2 })).toBe(0)
+    expect(stripChanged(strip())).toBe(false)
+    expect(stripChanged(strip({ volume: 0.5 }))).toBe(true)
+    expect(stripChanged(strip({ muted: true }))).toBe(true)
   })
 })

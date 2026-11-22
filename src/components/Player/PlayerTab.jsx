@@ -31,9 +31,13 @@ import {
   CHANNEL_PROBE_URL,
   createChannelMixer,
   initialStrips,
+  mixChannelCount,
+  stripChanged,
   loadVolume,
   probedChannelCount,
 } from '../../lib/channelMixer'
+
+const NO_STRIPS = []
 
 // ── Global Audio Player ─────────────────────────────────────────────────────
 //
@@ -445,15 +449,18 @@ export default function PlayerTab({ dropHandlerRef, onConvertFiles, openRequest,
   }, [activePath])
   const fileChannels = probe.path === activePath ? probe.channels : null
   const heardChannels = heard.path === activePath ? heard.count : null
+  // One strip per channel the mix really splits. When the web view turns out
+  // to mix the file down, strips set for the file's channels no longer match
+  // anything the person can see, so they start over (and the Player says so)
+  // instead of a hidden Solo or Mute silencing the mix.
+  const mixLayout = mixChannelCount({ fileChannels, heardChannels })
+  const ownStrips = mix.path === activePath ? mix.strips : NO_STRIPS
   const strips = useMemo(
-    () =>
-      mix.path === activePath && mix.strips.length === (fileChannels || 0)
-        ? mix.strips
-        : initialStrips(fileChannels || 0),
-    [mix, activePath, fileChannels],
+    () => (ownStrips.length === mixLayout ? ownStrips : initialStrips(mixLayout)),
+    [ownStrips, mixLayout],
   )
+  const stripsCleared = ownStrips.length > mixLayout && ownStrips.some(stripChanged)
   const setStrips = next => setMix({ path: activePath, strips: next })
-  const mixLayout = heardChannels != null && fileChannels && heardChannels < fileChannels ? heardChannels : fileChannels
 
   const latestRef = useRef({})
   useEffect(() => {
@@ -685,6 +692,8 @@ export default function PlayerTab({ dropHandlerRef, onConvertFiles, openRequest,
                     onStrips={setStrips}
                     heardChannels={heardChannels}
                     probeAvailable={probeAvailable}
+                    probed={probe.path === activePath}
+                    stripsCleared={stripsCleared}
                     notice={mixNotice}
                   />
                 </CardContent>

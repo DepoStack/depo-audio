@@ -3,17 +3,15 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import PlayerTab from '../components/Player/PlayerTab'
 import { installFakeAudio } from './helpers/fakeAudioContext'
 
-const channelsByPath = { '/out/four.wav': 4, '/out/stereo.wav': 2, '/out/mono.wav': 1 }
+const channelsByPath = { '/out/four.wav': 4, '/out/six.wav': 6, '/out/stereo.wav': 2, '/out/mono.wav': 1 }
 
 vi.mock('@tauri-apps/api/core', () => ({
   convertFileSrc: path => `asset://${path}`,
-  invoke: vi.fn((command, { path }) =>
-    Promise.resolve(
-      command === 'probe_audio_streams_cmd'
-        ? { convertedIndex: 0, streams: [{ channels: channelsByPath[path] }] }
-        : null,
-    ),
-  ),
+  invoke: vi.fn((command, { path }) => {
+    if (command !== 'probe_audio_streams_cmd') return Promise.resolve(null)
+    if (path === '/out/unprobed.wav') return Promise.reject(new Error('ffprobe failed'))
+    return Promise.resolve({ convertedIndex: 0, streams: [{ channels: channelsByPath[path] }] })
+  }),
 }))
 
 vi.mock('@tauri-apps/plugin-dialog', () => ({ open: vi.fn() }))
@@ -142,8 +140,17 @@ describe('Player listening mix', () => {
     fireEvent.change(screen.getByRole('slider', { name: 'Volume' }), { target: { value: '0.5' } })
     expect(fake.master(context).gain.value).toBe(0.5)
 
-    fireEvent.click(screen.getByRole('button', { name: 'Reset channels' }))
-    expect(fake.channelGains(context).map(g => g.gain.value)).toEqual([1, 1, 1, 1])
+    const reset = screen.getByRole('button', { name: 'Reset channels' })
+    reset.focus()
+    fireEvent.click(reset)
+    // 4 channels share the level in both ears.
+    expect(fake.channelGains(context).map(g => g.gain.value)).toEqual([0.25, 0.25, 0.25, 0.25])
+    // The button stays (so focus does too) and the reset is announced.
+    expect(document.activeElement).toBe(reset)
+    expect(reset).toHaveAttribute('aria-disabled', 'true')
+    expect(screen.getByRole('status')).toHaveTextContent('Channels reset. Every channel is heard at 100%.')
+    fireEvent.click(reset)
+    expect(screen.getByRole('status')).toHaveTextContent('Channels reset.')
 
     fireEvent.click(toggle)
     await settle()
@@ -228,5 +235,91 @@ describe('Player listening mix', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Play' }))
     expect(screen.getByText(/Separate channels could not start/)).toBeInTheDocument()
     expect(fake.contexts[0].close).toHaveBeenCalled()
+  })
+
+  it('announces how many channels are heard and ties the listening-only note to the strips', async () => {
+    await renderPlayer()
+    fireEvent.click(screen.getByRole('button', { name: 'Separate channels' }))
+    await settle()
+    const group = screen.getByRole('group', { name: 'Channel strips' })
+    expect(group).toHaveAccessibleDescription(/Changes what you hear only/)
+    const status = screen.getByRole('status')
+    expect(status).toHaveTextContent('')
+    fireEvent.click(screen.getByRole('button', { name: 'Solo Ch 2' }))
+    expect(status).toHaveTextContent('Hearing 1 of 4 channels.')
+    fireEvent.click(screen.getByRole('button', { name: 'Mute Ch 4' }))
+    expect(status).toHaveTextContent('Hearing 1 of 4 channels.')
+    fireEvent.click(screen.getByRole('button', { name: 'Solo Ch 2' }))
+    expect(status).toHaveTextContent('Hearing 3 of 4 channels.')
+    // Messages come before the strips, so they stay in view with many channels.
+    expect(status.compareDocumentPosition(group) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    // Reset channels is there but has nothing to do until a strip changes.
+    fireEvent.click(screen.getByRole('button', { name: 'Mute Ch 4' }))
+    expect(screen.getByRole('button', { name: 'Reset channels' })).toHaveAttribute('aria-disabled', 'true')
+  })
+
+  it('clears a Solo set before the web view turned out to mix the file down', async () => {
+    let now = 0
+    vi.spyOn(performance, 'now').mockImplementation(() => now)
+    const { audio } = await renderPlayer(['/out/six.wav'])
+    fireEvent.click(screen.getByRole('button', { name: 'Separate channels' }))
+    await settle()
+    expect(screen.getAllByTestId('channel-strip')).toHaveLength(6)
+    fireEvent.click(screen.getByRole('button', { name: 'Solo Ch 5' }))
+    const context = fake.contexts[0]
+    expect(fake.channelGains(context).map(g => g.gain.value)).toEqual([0, 0, 0, 0, 1, 0])
+    const mixed = fakeElement(audio())
+    mixed.play()
+    now = 1000
+    await act(async () => {
+      fake.workletNodes.at(-1).port.onmessage({ data: { channels: 2 } })
+    })
+    expect(screen.getAllByTestId('channel-strip')).toHaveLength(2)
+    // Both halves of the down-mix are heard: the hidden Solo is gone.
+    expect(fake.channelGains(context).map(g => g.gain.value)).toEqual([1, 1])
+    expect(screen.getByRole('button', { name: 'Solo Left mix' })).toHaveAttribute('aria-pressed', 'false')
+    expect(screen.getByRole('status')).toHaveTextContent(
+      'The web view mixes this file down, so the Mute, Solo and volume settings you made for its channels were cleared.',
+    )
+    // Turning the mix off and on does not bring the hidden Solo back.
+    fireEvent.click(screen.getByRole('button', { name: 'Separate channels' }))
+    await settle()
+    fireEvent.click(screen.getByRole('button', { name: 'Separate channels' }))
+    await settle()
+    const again = fake.contexts.at(-1)
+    expect(fake.channelGains(again).every(g => g.gain.value > 0)).toBe(true)
+    // A change on the visible strips replaces the message.
+    fireEvent.click(screen.getAllByRole('button', { name: /^Mute / })[0])
+    expect(screen.getByRole('status')).toHaveTextContent('Hearing 1 of 2 channels.')
+    vi.restoreAllMocks()
+  })
+
+  it('keeps Separate channels reachable when the next track has one channel', async () => {
+    await renderPlayer(['/out/stereo.wav', '/out/mono.wav'])
+    fireEvent.click(screen.getByRole('button', { name: 'Separate channels' }))
+    await settle()
+    fireEvent.click(screen.getByRole('button', { name: 'Next track' }))
+    await settle()
+    const toggle = screen.getByRole('button', { name: 'Separate channels' })
+    expect(toggle).toHaveAttribute('aria-pressed', 'true')
+    expect(screen.queryAllByTestId('channel-strip')).toHaveLength(0)
+    expect(screen.queryByRole('button', { name: 'Mute Ch 1' })).toBeNull()
+    expect(screen.getByText(/This track has 1 channel, so there is nothing to separate/)).toBeInTheDocument()
+    expect(fake.channelGains(fake.contexts[0]).map(g => g.gain.value)).toEqual([1])
+    fireEvent.click(toggle)
+    await settle()
+    expect(document.querySelector('audio')).not.toHaveAttribute('crossorigin')
+    expect(screen.queryByRole('button', { name: 'Separate channels' })).toBeNull()
+  })
+
+  it('keeps Separate channels reachable when the next track cannot be probed', async () => {
+    await renderPlayer(['/out/stereo.wav', '/out/unprobed.wav'])
+    fireEvent.click(screen.getByRole('button', { name: 'Separate channels' }))
+    await settle()
+    fireEvent.click(screen.getByRole('button', { name: 'Next track' }))
+    await settle()
+    expect(screen.getByRole('button', { name: 'Separate channels' })).toHaveAttribute('aria-pressed', 'true')
+    expect(screen.getByText(/could not count this track's channels/)).toBeInTheDocument()
+    expect(screen.queryAllByTestId('channel-strip')).toHaveLength(0)
   })
 })

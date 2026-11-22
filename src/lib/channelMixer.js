@@ -9,7 +9,10 @@
 //
 // A 2-channel file keeps its left/right placement. With 3 or more channels
 // every channel is sent to both ears, so a microphone on channel 5 is not
-// dropped by a stereo output. The source also feeds a small AudioWorklet that
+// dropped by a stereo output. Channels sent to the same ear add up, so each
+// heard channel is scaled by 1 / (number of heard channels): with every strip
+// at 100%, four mics that all pick up the same voice sum to the level of one
+// mic, not four times it, and soloing one mic plays it at its own level. The source also feeds a small AudioWorklet that
 // reports how many channels the web view actually passes to Web Audio: a web
 // view may mix a multichannel file down before Web Audio sees it, and the
 // Player says so instead of showing strips that would do nothing.
@@ -55,11 +58,21 @@ export function audibleChannels(strips) {
   return strips.map(s => !s.muted && (!anySolo || s.soloed))
 }
 
-// Gain for each channel's GainNode: its own volume when heard, else 0. The
-// master volume is applied once, on the master node.
+// Gain for each channel's GainNode: its own volume when heard, else 0. With
+// 3 or more channels (all summed into both ears) each heard channel is also
+// divided by the number of heard channels so the sum cannot exceed what the
+// loudest single channel would play at the same strip volume. The master
+// volume is applied once, on the master node.
 export function channelGains(strips) {
   const audible = audibleChannels(strips)
-  return strips.map((s, i) => (audible[i] ? clampChannelVolume(s.volume) : 0))
+  const heard = audible.filter(Boolean).length
+  const share = strips.length >= 3 && heard > 1 ? 1 / heard : 1
+  return strips.map((s, i) => (audible[i] ? clampChannelVolume(s.volume) * share : 0))
+}
+
+// True when a strip differs from its default (Mute, Solo or volume changed).
+export function stripChanged(s) {
+  return Boolean(s?.muted || s?.soloed || (s && s.volume !== DEFAULT_CHANNEL_VOLUME))
 }
 
 export function clampChannelVolume(v) {
@@ -80,13 +93,31 @@ export function channelRouting(count) {
 export function stripLabels({ fileChannels, heardChannels }) {
   const downmixed = heardChannels != null && fileChannels != null && heardChannels < fileChannels
   const count = downmixed ? heardChannels : fileChannels || 0
-  if (!downmixed) return Array.from({ length: count }, (_, i) => `Ch ${i + 1}`)
+  // One channel has nothing to separate: no strips.
   if (count < 2) return []
+  if (!downmixed) return Array.from({ length: count }, (_, i) => `Ch ${i + 1}`)
   if (count === 2) return ['Left mix', 'Right mix']
   return Array.from({ length: count }, (_, i) => `Mix ${i + 1}`)
 }
 
-// The plain note shown under the strips about how many channels the Player
+// How many channels the mix splits: the file's channels, or fewer when the
+// web view mixes the file down before Web Audio sees it.
+export function mixChannelCount({ fileChannels, heardChannels }) {
+  if (!fileChannels) return 0
+  return heardChannels != null && heardChannels < fileChannels ? heardChannels : fileChannels
+}
+
+// What the status line says about the strips: how many channels are heard
+// once anything is muted or soloed, or that nothing is heard.
+export function hearingSummary(strips) {
+  if (!Array.isArray(strips) || strips.length < 2) return ''
+  const heard = audibleChannels(strips).filter(Boolean).length
+  if (heard === 0) return 'Every channel is silent. Turn off a Mute or a Solo to hear the file.'
+  if (!strips.some(s => s.muted || s.soloed)) return ''
+  return `Hearing ${heard} of ${strips.length} channels.`
+}
+
+// The plain note shown above the strips about how many channels the Player
 // can separate here.
 export function separationNote({ fileChannels, heardChannels, probeAvailable }) {
   if (!fileChannels || fileChannels < 2) return ''
@@ -184,9 +215,12 @@ export function createChannelMixer({
     splitter = context.createChannelSplitter(layout)
     merger = context.createChannelMerger(2)
     const routes = channelRouting(layout)
+    // Until the caller sends strips for this layout, every channel is heard
+    // at its default share, never at full level summed N times.
+    const start = lastGains.length === layout ? lastGains : channelGains(initialStrips(layout))
     gains = routes.map((targets, i) => {
       const gain = context.createGain()
-      gain.gain.value = lastGains[i] ?? DEFAULT_CHANNEL_VOLUME
+      gain.gain.value = start[i]
       splitter.connect(gain, i)
       targets.forEach(input => gain.connect(merger, 0, input))
       return gain
@@ -246,10 +280,14 @@ export function createChannelMixer({
       if (disposed) return
       setGain(context, master.gain, Math.min(1, Math.max(0, Number(volume) || 0)))
     },
+    // strips must have one entry per channel of the current layout; any other
+    // length is ignored (stale strips must never silence or boost a channel
+    // the person cannot see).
     setStrips(strips) {
       if (disposed) return
-      lastGains = channelGains(strips)
-      gains.forEach((g, i) => setGain(context, g.gain, lastGains[i] ?? DEFAULT_CHANNEL_VOLUME))
+      const list = Array.isArray(strips) && strips.length === layout ? strips : initialStrips(layout)
+      lastGains = channelGains(list)
+      gains.forEach((g, i) => setGain(context, g.gain, lastGains[i]))
     },
     // A new track: counts heard for the previous file no longer apply.
     resetHeard() {
