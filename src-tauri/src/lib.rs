@@ -1,4 +1,5 @@
 mod analysis;
+mod bmf;
 mod catdetect;
 mod clock;
 mod commands;

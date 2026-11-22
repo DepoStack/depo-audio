@@ -33,19 +33,18 @@
         "sizeBytes": { "type": "integer", "minimum": 0 },
         "dmTimeline": {
           "type": "object",
-          "description": "Only for a DigitalCAT / SoundSync .dm source, whose audio DepoAudio reads into a temporary WAV before FFmpeg decodes it. Lists the source's complete blocks, the recorded-over blocks that were skipped, any incomplete block at the end that was left out, and where the block time stamps jump. The audio is kept in file order. Stamps are whole seconds (UTC), so they place a block to within about a second; for a recording, a stamp marks roughly the end of its block. Positions come from block counts, not stamps. Nothing here is written into the output audio. Written by versions after 1.1.0; absent for every other source.",
+          "description": "Only for a DigitalCAT / SoundSync .dm source, whose audio DepoAudio reads into a temporary WAV before FFmpeg decodes it. Lists the blocks read, the recorded-over blocks that were skipped, what was left out after a short block or an incomplete block, where the block time stamps jump, and counts from a .bmf marker file beside the .dm. Blocks are read in file order up to the first short block or incomplete block, which is where the format notes say SoundSync's player stops. Stamps are whole seconds (UTC), so they place a block to within about a second; the notes say a recording stamps about the end of each block and a WAV import the start, and the file does not say which made it. Positions come from block counts, not stamps. Nothing here is written into the output audio. Written by versions after 1.1.0; absent for every other source.",
           "additionalProperties": false,
           "required": ["formatTag", "codecName", "blockSize", "blocksTotal", "blocksErased", "shortFinalBlock", "stampsMonotonic", "segments"],
           "properties": {
             "formatTag": { "type": "integer", "minimum": 0, "maximum": 65535, "description": "The WAVEFORMATEX wFormatTag stored in the .dm (0x0031, 49, is GSM 6.10)." },
             "codecName": { "type": "string", "description": "The FFmpeg decoder DepoAudio expects for formatTag (for example gsm_ms or pcm_s16le), or the tag in hex when it has no name for it." },
             "blockSize": { "type": "integer", "minimum": 1, "description": "Block size in bytes from the .dm header." },
-            "blocksTotal": { "type": "integer", "minimum": 1, "description": "Complete blocks in the file. An incomplete block at the end is not counted (see truncatedTailBytes)." },
+            "blocksTotal": { "type": "integer", "minimum": 1, "description": "Blocks read: complete blocks in file order, up to and including the first short block. An incomplete block at the end (truncatedTailBytes) and anything after a short block (bytesAfterShortBlock) are not counted." },
             "blocksErased": { "type": "integer", "minimum": 0, "description": "Blocks whose stamp is 0 (recorded over). Their audio is stale and was left out." },
-            "shortFinalBlock": { "type": "boolean", "description": "The last block is shorter than blockSize and its whole codec blocks are kept. False when that short block was recorded over (stamp 0): it is then counted in blocksErased only, and none of it is used." },
+            "shortFinalBlock": { "type": "boolean", "description": "The last block read is shorter than blockSize and its whole codec blocks are kept, with a warning: the format notes say SoundSync's own player does not play a short block. False when that short block was recorded over (stamp 0): it is then counted in blocksErased only, and none of it is used." },
             "lastBlockBytesDropped": { "type": "integer", "minimum": 0, "description": "Bytes at the end of a kept short last block that were less than one whole codec block and were left out." },
-            "shortBlocksBeforeEnd": { "type": "integer", "minimum": 0, "description": "Blocks shorter than blockSize that are not the last block. The layout notes describe none; their whole codec blocks and every block after them are kept, and warnings names each." },
-            "shortBlockBytesDropped": { "type": "integer", "minimum": 0, "description": "Bytes of those short blocks (not recorded over) that were less than one whole codec block and were left out." },
+            "bytesAfterShortBlock": { "type": "integer", "minimum": 0, "description": "Bytes of the file after a short block that is not at the end of the file. The format notes say SoundSync's player stops at a short block, and SoundSync finds blocks (including the ones it marks as recorded over) by their fixed spacing, which a short block breaks; so these bytes were not read as blocks and are not in the audio. warnings names the short block." },
             "truncatedTailBytes": { "type": "integer", "minimum": 0, "description": "Bytes at the end of the file after the last complete block: a block the file ends partway through (for example a recording or copy that did not finish). They were left out of the audio." },
             "stampsMonotonic": { "type": "boolean", "description": "False when a later block has an earlier stamp than the block before it. Only that is observed, not the cause: the layout notes give record-over (newer blocks appended at the end) as one, and a recorder clock set back during the session gives the same stamps." },
             "segments": {
@@ -54,16 +53,33 @@
               "items": {
                 "type": "object",
                 "additionalProperties": false,
-                "required": ["startSample", "startUtc", "blocks"],
+                "required": ["startSample", "firstStampUtc", "blocks"],
                 "properties": {
                   "startSample": { "type": ["integer", "null"], "minimum": 0, "description": "First sample of the segment in the decoded source audio, at the source's sample rate and before any trim or resampling. Null when the codec's samples per block are not known." },
-                  "startUtc": { "type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$", "description": "The stamp of the segment's first block, in UTC (1 second resolution)." },
+                  "firstStampUtc": { "type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$", "description": "The stamp of the segment's first block as stored, in UTC (1 second resolution). Not adjusted: for a recording the notes say it marks about the end of that block, for a WAV import its start." },
                   "blocks": { "type": "integer", "minimum": 1 }
                 }
               }
             },
             "segmentsOmitted": { "type": "integer", "minimum": 0, "description": "Segments after the first 1000, counted but not listed." },
-            "warnings": { "type": "array", "items": { "type": "string" }, "description": "Facts that did not stop the conversion, such as a block size other than the one this audio format usually gets, a short block before the end, or an incomplete block at the end." }
+            "warnings": { "type": "array", "items": { "type": "string" }, "description": "Facts that did not stop the conversion, such as a block size other than the one this audio format usually gets, a short block (kept, but not played by SoundSync), what was left out after a short block, or an incomplete block at the end." },
+            "markerFile": {
+              "type": "object",
+              "description": "A SoundSync bookmark file (.bmf) beside the .dm, found by SoundSync's naming rule (the .dm's name with .bmf for the extension, letter case ignored). Only read, and only counted: marker text is never recorded. Absent when there is no such file.",
+              "additionalProperties": false,
+              "required": ["status"],
+              "properties": {
+                "status": { "enum": ["read", "unreadable", "ambiguous"], "description": "read: its FileInfo stream was read. unreadable: see problem. ambiguous: several files have the name in different letter case and none is the all lower-case name SoundSync writes, so none was read." },
+                "fileName": { "type": ["string", "null"] },
+                "sizeBytes": { "type": ["integer", "null"], "minimum": 0 },
+                "sha256": { "type": ["string", "null"], "pattern": "^[0-9a-f]{64}$" },
+                "entries": { "type": ["integer", "null"], "minimum": 0, "description": "Bookmark entries in the FileInfo stream." },
+                "entriesWithText": { "type": ["integer", "null"], "minimum": 0, "description": "Entries that carry text. The text itself is not recorded." },
+                "entriesInSoundsyncRange": { "type": ["integer", "null"], "minimum": 0, "description": "Entries SoundSync would keep on opening the file: positions from 0 to its timeline length (the sound bytes its loader counts divided by the byte rate, in whole seconds, times 1000 ms)." },
+                "entriesMatchingABlock": { "type": ["integer", "null"], "minimum": 0, "description": "Kept entries whose clock time (first block's stamp plus the position in whole seconds, as SoundSync seeks) is the stamp of a block DepoAudio read. The others point into a pause, at a recorded-over stretch, or past what was read." },
+                "problem": { "type": ["string", "null"], "description": "Why the file could not be read, in DepoAudio's words; never any of its content." }
+              }
+            }
           }
         }
       }

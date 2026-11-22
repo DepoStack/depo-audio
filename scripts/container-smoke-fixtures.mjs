@@ -231,8 +231,9 @@ export function buildDm(fmt, data) {
 // Read a .dm into the WAV layout dm.rs writes: its WAVEFORMATEX as `fmt `
 // (padded to even), a `fact` chunk for formats outside the PCM family when
 // the samples are countable, and the blocks that are not recorded over, in
-// file order, as `data`. A short block keeps only whole codec blocks, and an
-// incomplete block at the end of the file is left out.
+// file order, as `data`. Reading stops after the first short block (where
+// SoundSync's player stops), which keeps only its whole codec blocks, and
+// before an incomplete block at the end of the file.
 export function demuxDm(buffer) {
   if (buffer.length < 16 || buffer.readUInt32LE(4) !== 8) throw new Error('not a .dm audio header')
   const formatSize = buffer.readUInt32LE(8)
@@ -247,10 +248,11 @@ export function demuxDm(buffer) {
     if (at + 8 > buffer.length) break
     const stamp = buffer.readUInt32LE(at)
     const length = buffer.readUInt32LE(at + 4)
-    if (length === 0 || length > blockSize) throw new Error('bad .dm block')
+    if (length > blockSize) throw new Error('bad .dm block')
     if (at + 8 + length > buffer.length) break
     if (stamp !== 0) kept.push(buffer.subarray(at + 8, at + 8 + length - (length % align)))
     at += 8 + length
+    if (length < blockSize) break
   }
   if (kept.length === 0 && at === 16 + formatSize) throw new Error('.dm has no complete block')
   const data = Buffer.concat(kept)
@@ -610,6 +612,13 @@ async function selfTest() {
   const gsm = wavChunks(demuxDm(buildDm(gsmFmt, Buffer.alloc(520 * 3 + 100, 1))))
   assert.equal(gsm.data.length, 520 * 2 + 65, 'erased block dropped, 35 stray bytes dropped')
   assert.throws(() => demuxDm(Buffer.from('RIFF0000WAVEfmt ')), /not a \.dm audio header/u)
+  // Nothing after a short block is read, even a block that would be refused.
+  // (Block 1, the short one here, is also the recorded-over block.)
+  const shortThenMore = Buffer.concat([
+    buildDm(gsmFmt, Buffer.alloc(520 + 100, 1)),
+    Buffer.from([1, 0, 0, 0, 0xff, 0xff, 0, 0]),
+  ])
+  assert.equal(wavChunks(demuxDm(shortThenMore)).data.length, 520, 'block 1 is short and recorded over')
   // demuxDm must give the same bytes dm.rs wrote for every committed fixture.
   const goldenNames = (await readdir(GOLDEN_DM_DIRECTORY)).filter(name => name.endsWith('.dm')).sort()
   assert.deepEqual(goldenNames, GOLDEN_DM.map(entry => `${entry.name}.dm`).sort(), 'every golden .dm is listed')

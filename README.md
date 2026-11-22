@@ -118,10 +118,13 @@ release with synthetic files carrying MP2, AC-3 or WMAv2 audio. No real
 deposition recording in these containers has been tried yet.
 
 DigitalCAT / SoundSync `.dm` files: DepoAudio reads the audio inside into a
-temporary WAV for FFmpeg, skips blocks that were recorded over, and keeps the
-audio in file order. It has been tested with synthetic files only, built from
-owner-supplied notes on the layout ([`docs/formats/dm.md`](docs/formats/dm.md))
-that have not yet been checked against a recorded file.
+temporary WAV for FFmpeg, skips blocks that were recorded over, keeps the
+audio in file order and stops at a short block, where the notes say
+SoundSync's player stops; anything left out is reported. A `.bmf` marker file
+beside it is counted in the export record, without its text. It has been
+tested with synthetic files only, built from owner-supplied notes on the
+layout ([`docs/formats/dm.md`](docs/formats/dm.md)) that have not yet been
+checked against a file SoundSync recorded.
 
 ---
 

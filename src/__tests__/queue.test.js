@@ -109,17 +109,24 @@ describe('dmNotice', () => {
       `3 recorded-over blocks skipped. ${backwards}`,
     )
   })
-  it('says when a file ends partway through a block or has short blocks before its end', () => {
+  it('says when a file ends partway through a block or reading stopped at a short block', () => {
     expect(dmNotice({ dm: { blocksErased: 0, stampsMonotonic: true, truncatedTailBytes: 300 } })).toBe(
       'The file ends partway through a block, so it may not have finished recording or copying; the complete blocks are converted and the incomplete one is left out.',
     )
-    expect(dmNotice({ dm: { stampsMonotonic: true, shortBlocksBeforeEnd: 1 } })).toBe(
-      'A short block comes before the end of the file; the audio after it is kept.',
+    expect(dmNotice({ dm: { stampsMonotonic: true, shortFinalBlock: true, bytesAfterShortBlock: 4220 } })).toBe(
+      "A short block comes before the end of the file. The format notes say SoundSync's player stops there, and so does DepoAudio: the 4220 bytes after it are not converted.",
     )
-    expect(dmNotice({ dm: { stampsMonotonic: true, shortBlocksBeforeEnd: 2 } })).toBe(
-      '2 short blocks come before the end of the file; the audio after them is kept.',
+    expect(dmNotice({ dm: { stampsMonotonic: true, bytesAfterShortBlock: 1 } })).toBe(
+      "A short block comes before the end of the file. The format notes say SoundSync's player stops there, and so does DepoAudio: the byte after it is not converted.",
     )
-    expect(dmNotice({ dm: { stampsMonotonic: true, shortBlocksBeforeEnd: 0, truncatedTailBytes: 0 } })).toBe('')
+    expect(dmNotice({ dm: { stampsMonotonic: true, shortFinalBlock: true, bytesAfterShortBlock: 0 } })).toBe(
+      "The last block is shorter than the others. The format notes say SoundSync's player does not play it; its whole codec blocks are converted.",
+    )
+    expect(
+      dmNotice({
+        dm: { stampsMonotonic: true, shortFinalBlock: false, bytesAfterShortBlock: 0, truncatedTailBytes: 0 },
+      }),
+    ).toBe('')
   })
   it('is empty with nothing to report or no answer', () => {
     expect(dmNotice({ dm: { blocksErased: 0, stampsMonotonic: true } })).toBe('')

@@ -1224,12 +1224,12 @@ pub(crate) mod tests {
         assert_eq!(timeline["shortFinalBlock"], true);
         assert_eq!(timeline["lastBlockBytesDropped"], 35);
         assert_eq!(timeline["stampsMonotonic"], false);
-        assert_eq!(timeline["shortBlocksBeforeEnd"], 0);
-        assert_eq!(timeline["shortBlockBytesDropped"], 0);
+        assert_eq!(timeline["bytesAfterShortBlock"], 0);
         assert_eq!(timeline["truncatedTailBytes"], 0);
+        assert!(timeline.get("markerFile").is_none(), "no .bmf, no markerFile");
         assert_eq!(timeline["segments"].as_array().unwrap().len(), 3);
         assert_eq!(timeline["segments"][1]["startSample"], 8 * 320);
-        assert_eq!(timeline["segments"][2]["startUtc"], "2025-11-22T08:10:00Z");
+        assert_eq!(timeline["segments"][2]["firstStampUtc"], "2025-11-22T08:10:00Z");
 
         // Older records without the optional fields still validate; unknown
         // fields and malformed stamps do not.
@@ -1238,8 +1238,7 @@ pub(crate) mod tests {
             "lastBlockBytesDropped",
             "segmentsOmitted",
             "warnings",
-            "shortBlocksBeforeEnd",
-            "shortBlockBytesDropped",
+            "bytesAfterShortBlock",
             "truncatedTailBytes",
         ] {
             older["source"]["dmTimeline"].as_object_mut().unwrap().remove(field);
@@ -1247,16 +1246,19 @@ pub(crate) mod tests {
         assert!(schema_errors_for_value(&older).is_empty());
         let mut drift = record.clone();
         drift["source"]["dmTimeline"]["guessedSpeaker"] = "Witness".into();
-        drift["source"]["dmTimeline"]["segments"][0]["startUtc"] = "yesterday".into();
+        drift["source"]["dmTimeline"]["segments"][0]["firstStampUtc"] = "yesterday".into();
         let errors = schema_errors_for_value(&drift);
         assert!(
             errors.iter().any(|error| error.contains("guessedSpeaker")),
             "{errors:#?}"
         );
-        assert!(errors.iter().any(|error| error.contains("startUtc")), "{errors:#?}");
+        assert!(
+            errors.iter().any(|error| error.contains("firstStampUtc")),
+            "{errors:#?}"
+        );
 
-        // A damaged file read anyway: a short block before the end and an
-        // incomplete last block, each reported.
+        // A damaged file read up to its short block, as SoundSync's player
+        // reads it; what follows is reported, not read.
         let damaged =
             std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../scripts/fixtures/dm/ima-adpcm-damaged.dm");
         let dm = crate::dm::parse_dm(&damaged, &|| false).unwrap();
@@ -1269,11 +1271,38 @@ pub(crate) mod tests {
             schema_errors_for_value(&record)
         );
         let timeline = &record["source"]["dmTimeline"];
-        assert_eq!(timeline["shortBlocksBeforeEnd"], 1);
-        assert_eq!(timeline["shortBlockBytesDropped"], 10);
-        assert_eq!(timeline["truncatedTailBytes"], 108);
-        assert_eq!(timeline["shortFinalBlock"], false);
-        assert_eq!(timeline["warnings"].as_array().unwrap().len(), 3);
+        assert_eq!(timeline["bytesAfterShortBlock"], 2 * 2056 + 108);
+        assert_eq!(timeline["truncatedTailBytes"], 0);
+        assert_eq!(timeline["shortFinalBlock"], true);
+        assert_eq!(timeline["lastBlockBytesDropped"], 10);
+        assert_eq!(timeline["warnings"].as_array().unwrap().len(), 2);
+
+        // The owner's sample with its .bmf: marker counts, never marker text.
+        let sample = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../scripts/fixtures/dm/vendor-notes-samples/tone_gsm.dm");
+        let dm = crate::dm::parse_dm(&sample, &|| false).unwrap();
+        let mut timeline = crate::dm::build_timeline(&dm);
+        timeline.marker_file = crate::bmf::summary_beside(&sample, &dm);
+        let mut manifest = sample_input(&ProbedSource::default(), &[], false);
+        manifest.source.dm_timeline = Some(timeline);
+        let record = serde_json::to_value(&manifest).unwrap();
+        assert!(
+            schema_errors_for_value(&record).is_empty(),
+            "{:#?}",
+            schema_errors_for_value(&record)
+        );
+        let markers = &record["source"]["dmTimeline"]["markerFile"];
+        assert_eq!(markers["status"], "read");
+        assert_eq!(markers["entries"], 2);
+        assert_eq!(markers["entriesWithText"], 2);
+        let text = record.to_string();
+        assert!(!text.contains("Objection") && !text.contains("\"Start\""), "{text}");
+        let mut drift = record.clone();
+        drift["source"]["dmTimeline"]["markerFile"]["text"] = "Objection".into();
+        assert!(
+            !schema_errors_for_value(&drift).is_empty(),
+            "the schema has no place for marker text"
+        );
     }
 
     #[test]

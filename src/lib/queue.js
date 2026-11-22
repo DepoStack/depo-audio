@@ -64,7 +64,8 @@ export function reexportConfirmCopy({ queued, queuedAtOpen, incoming }) {
 // Plain notice for a queued DigitalCAT .dm, from probe_audio_streams_cmd's
 // `dm` answer (read from the file's own block headers): how many
 // recorded-over blocks are skipped, whether stamps go backwards somewhere
-// (only that is known, not why), whether short blocks sit before the end, and
+// (only that is known, not why), whether reading stopped at a short block
+// before the end (as SoundSync's player does) or the last block is short, and
 // whether the file ends partway through a block. Nothing to say, or no
 // answer, means no notice.
 export function dmNotice(info) {
@@ -72,15 +73,17 @@ export function dmNotice(info) {
   if (!dm || typeof dm !== 'object') return ''
   const count = value => (Number.isInteger(value) && value > 0 ? value : 0)
   const erased = count(dm.blocksErased)
-  const shortBefore = count(dm.shortBlocksBeforeEnd)
+  const afterShort = count(dm.bytesAfterShortBlock)
   const parts = [
     erased ? `${erased} recorded-over ${erased === 1 ? 'block' : 'blocks'} skipped.` : '',
     dm.stampsMonotonic === false
       ? 'Time stamps go backwards in places (for example after a record-over or a clock change); audio is kept in file order.'
       : '',
-    shortBefore
-      ? `${shortBefore === 1 ? 'A short block comes' : `${shortBefore} short blocks come`} before the end of the file; the audio after ${shortBefore === 1 ? 'it' : 'them'} is kept.`
-      : '',
+    afterShort
+      ? `A short block comes before the end of the file. The format notes say SoundSync's player stops there, and so does DepoAudio: the ${afterShort === 1 ? 'byte' : `${afterShort} bytes`} after it ${afterShort === 1 ? 'is' : 'are'} not converted.`
+      : dm.shortFinalBlock === true
+        ? "The last block is shorter than the others. The format notes say SoundSync's player does not play it; its whole codec blocks are converted."
+        : '',
     count(dm.truncatedTailBytes)
       ? 'The file ends partway through a block, so it may not have finished recording or copying; the complete blocks are converted and the incomplete one is left out.'
       : '',

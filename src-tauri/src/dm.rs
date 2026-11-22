@@ -16,10 +16,17 @@
 //!
 //! Every count read from the file is bounds-checked against the file's size
 //! and fixed caps before anything is allocated, so a random file gives an
-//! error, never a panic or a huge allocation. A file that ends partway
-//! through a block (a recording or copy that did not finish) keeps every
-//! complete block before that point; the incomplete block is left out and
-//! reported.
+//! error, never a panic or a huge allocation.
+//!
+//! The notes say SoundSync's player stops at the first block that is shorter
+//! than the block size, wherever it is, and at a block the file ends inside
+//! of. DepoAudio reads the same blocks: reading stops after the first short
+//! block and before an incomplete one. What comes after is left out of the
+//! audio and reported, never decoded: SoundSync finds blocks (including the
+//! ones it marks as recorded over) by their fixed spacing, which a short
+//! block breaks, so stamps after one cannot be trusted to say what was
+//! recorded over. The short block's own whole codec blocks are kept, with a
+//! warning, because SoundSync does not play them but has not deleted them.
 
 use std::fs;
 use std::io::{BufReader, Read, Seek, SeekFrom, Write};
@@ -48,11 +55,6 @@ pub(crate) const MAX_RECORDED_SEGMENTS: usize = 1000;
 /// segment (a pause). Stamps have one-second resolution and a block lasts
 /// about a quarter second, so 0 or 1 is the normal step.
 const SEGMENT_GAP_SECONDS: u32 = 2;
-/// Short blocks before the last one that DepoAudio still reads. The notes
-/// describe at most one short block, at the end (from a WAV import); a few
-/// more are kept with a warning, and a file with more than this many is
-/// taken not to match the layout.
-const MAX_SHORT_BLOCKS_BEFORE_END: usize = 16;
 
 pub(crate) const WAVE_FORMAT_PCM: u16 = 0x0001;
 pub(crate) const WAVE_FORMAT_ADPCM: u16 = 0x0002;
@@ -160,17 +162,18 @@ impl DmHeader {
     }
 }
 
-/// A parsed `.dm` file: its header and one time stamp per complete block, in
-/// file order. Blocks are `block_size` bytes long except those listed in
-/// `short_blocks`.
+/// A parsed `.dm` file: its header and one time stamp per block read, in
+/// file order. Every block read is `block_size` bytes long except, possibly,
+/// the last one (`final_short_len`): reading stops after a short block.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct DmFile {
     pub header: DmHeader,
     pub stamps: Vec<u32>,
-    /// `(index, length)` of every block shorter than `block_size`, in file
-    /// order: at most `MAX_SHORT_BLOCKS_BEFORE_END` before the last block,
-    /// and possibly the last block itself.
-    pub short_blocks: Vec<(usize, u32)>,
+    /// Length of the last block read when it is shorter than `block_size`.
+    pub final_short_len: Option<u32>,
+    /// Bytes of the file after that short block, when it is not at the end
+    /// of the file. They are not read as blocks and are left out of the audio.
+    pub bytes_after_short_block: u64,
     /// Bytes after the last complete block: the start of a block the file
     /// ends inside of. They are left out of the audio.
     pub truncated_tail_bytes: u64,
@@ -181,19 +184,15 @@ pub(crate) struct DmFile {
 impl DmFile {
     /// Length in bytes of block `index`'s audio.
     pub(crate) fn block_len(&self, index: usize) -> u32 {
-        match self.short_blocks.binary_search_by_key(&index, |&(at, _)| at) {
-            Ok(found) => self.short_blocks[found].1,
-            Err(_) => self.header.block_size,
+        match self.final_short_len {
+            Some(length) if index + 1 == self.stamps.len() => length,
+            _ => self.header.block_size,
         }
     }
 
-    /// Length of the last block when it is shorter than `block_size`.
+    /// Length of the last block read when it is shorter than `block_size`.
     pub(crate) fn final_block_len(&self) -> Option<u32> {
-        let last = self.stamps.len().checked_sub(1)?;
-        self.short_blocks
-            .last()
-            .filter(|&&(index, _)| index == last)
-            .map(|&(_, length)| length)
+        self.final_short_len
     }
 }
 
@@ -361,7 +360,8 @@ pub(crate) fn parse_dm_reader<R: Read + Seek>(
         ));
     }
     let mut stamps = Vec::with_capacity(most_blocks as usize);
-    let mut short_blocks: Vec<(usize, u32)> = Vec::new();
+    let mut final_short_len: Option<u32> = None;
+    let mut bytes_after_short_block = 0u64;
     let mut truncated_tail_bytes = 0u64;
     let mut position = data_start;
     while position < len {
@@ -379,7 +379,7 @@ pub(crate) fn parse_dm_reader<R: Read + Seek>(
         })?;
         let time = u32_at(&block_header, 0);
         let length = u32_at(&block_header, 4);
-        if length == 0 || length > block_size {
+        if length > block_size {
             return Err(format!(
                 "Block {} of this .dm file has an unexpected length ({length} bytes; blocks are {block_size}).",
                 index + 1
@@ -390,27 +390,14 @@ pub(crate) fn parse_dm_reader<R: Read + Seek>(
             truncated_tail_bytes = len - position;
             break;
         }
-        if let Some(&(before, before_len)) = short_blocks.last() {
-            // The previous short block turned out not to be the last one.
-            if before + 1 == index {
-                if short_blocks.len() > MAX_SHORT_BLOCKS_BEFORE_END {
-                    return Err(format!(
-                        "This .dm file has more than {MAX_SHORT_BLOCKS_BEFORE_END} short blocks before its end, \
-                         which does not match the layout DepoAudio reads; it was not converted."
-                    ));
-                }
-                warnings.push(format!(
-                    "Block {} is shorter than the others ({before_len} of {block_size} bytes) but is not the last \
-                     block. Its whole codec blocks and every block after it were kept; the format notes say \
-                     SoundSync's own player stops at a short block.",
-                    before + 1
-                ));
-            }
-        }
-        if length < block_size {
-            short_blocks.push((index, length));
-        }
         stamps.push(time);
+        if length < block_size {
+            // SoundSync's player stops at a short block wherever it is; so
+            // does this reader (see the module notes).
+            final_short_len = Some(length);
+            bytes_after_short_block = len - end;
+            break;
+        }
         reader
             .seek_relative(i64::from(length))
             .map_err(|error| format!("Could not read the .dm file: {error}"))?;
@@ -435,10 +422,44 @@ pub(crate) fn parse_dm_reader<R: Read + Seek>(
             stamps.len()
         ));
     }
+    if let Some(length) = final_short_len {
+        let number = stamps.len();
+        let align = u32::from(header.wave.block_align);
+        let whole = length / align;
+        let stray = length % align;
+        let erased = stamps[number - 1] == 0;
+        let kept = if erased {
+            "It is marked as recorded over, so none of it is used.".to_string()
+        } else if whole == 0 {
+            format!("It holds less than one codec block, so none of its {length} bytes are used.")
+        } else if stray == 0 {
+            format!(
+                "DepoAudio kept its {whole} whole codec blocks, which the format notes say SoundSync's own \
+                 player does not play."
+            )
+        } else {
+            format!(
+                "DepoAudio kept its {whole} whole codec blocks, which the format notes say SoundSync's own \
+                 player does not play, and left out the {stray} bytes after them."
+            )
+        };
+        if bytes_after_short_block > 0 {
+            warnings.push(format!(
+                "Block {number} is shorter than the others ({length} of {block_size} bytes) and is not at the end \
+                 of the file. {kept} The format notes say SoundSync's player stops at a short block, so the \
+                 {bytes_after_short_block} bytes after it were not read and are not in the converted audio."
+            ));
+        } else if !erased {
+            warnings.push(format!(
+                "The last block is shorter than the others ({length} of {block_size} bytes). {kept}"
+            ));
+        }
+    }
     Ok(DmFile {
         header,
         stamps,
-        short_blocks,
+        final_short_len,
+        bytes_after_short_block,
         truncated_tail_bytes,
         warnings,
     })
@@ -454,6 +475,38 @@ pub(crate) fn parse_dm(path: &Path, cancelled: &dyn Fn() -> bool) -> Result<DmFi
     parse_dm_reader(file, len, cancelled)
 }
 
+/// Bytes of sound SoundSync's loader counts in the `.dm` at `path`, as the
+/// notes describe it: it walks every block header to the end of the file by
+/// its stated length, counting recorded-over blocks, blocks after a short
+/// block, and the stated length of a block the file ends inside of.
+/// SoundSync's timeline (and so the range of bookmarks it keeps) is this
+/// total divided by the byte rate. Only used to count markers; None when the
+/// file cannot be read or walks more blocks than `MAX_BLOCKS`.
+pub(crate) fn soundsync_loader_sound_bytes(path: &Path, header: &DmHeader) -> Option<u64> {
+    let file = fs::File::open(path).ok()?;
+    let len = file.metadata().ok()?.len();
+    let mut reader = BufReader::with_capacity(4096, file);
+    let mut position = header.data_start();
+    reader.seek(SeekFrom::Start(position)).ok()?;
+    let mut total = 0u64;
+    let mut walked = 0usize;
+    while position.checked_add(8)? <= len {
+        walked += 1;
+        if walked > MAX_BLOCKS {
+            return None;
+        }
+        let mut block_header = [0u8; 8];
+        reader.read_exact(&mut block_header).ok()?;
+        let length = u64::from(u32_at(&block_header, 4));
+        total += length;
+        position += 8 + length;
+        if position < len {
+            reader.seek_relative(i64::try_from(length).ok()?).ok()?;
+        }
+    }
+    Some(total)
+}
+
 // ── Timeline ────────────────────────────────────────────────────────────────
 
 /// One run of blocks whose stamps move forward by at most two seconds each.
@@ -464,8 +517,11 @@ pub(crate) struct DmSegment {
     /// resampling or trim), or null when the codec's samples per block are
     /// not known.
     pub start_sample: Option<u64>,
-    /// The stamp of the segment's first block, as UTC.
-    pub start_utc: String,
+    /// The stamp of the segment's first block, as UTC, exactly as stored.
+    /// The notes say a recording stamps a block when its buffer is handed
+    /// back (about the end of the block) and a WAV import stamps the start;
+    /// the file does not say which made it, so nothing is adjusted.
+    pub first_stamp_utc: String,
     /// Blocks of audio in the segment.
     pub blocks: u64,
 }
@@ -480,17 +536,16 @@ pub(crate) struct DmTimeline {
     pub block_size: u32,
     pub blocks_total: u64,
     pub blocks_erased: u64,
-    /// The last block is shorter than `block_size` and was not recorded over
-    /// (a recorded-over short block is counted in `blocks_erased` only).
+    /// The last block read is shorter than `block_size` and was not recorded
+    /// over (a recorded-over short block is counted in `blocks_erased` only).
     pub short_final_block: bool,
     /// Bytes of a kept short last block left out because they are less than
     /// one whole codec block.
     pub last_block_bytes_dropped: u32,
-    /// Short blocks that are not the last block (the notes describe none).
-    pub short_blocks_before_end: u64,
-    /// Bytes of those short blocks, not recorded over, left out because they
-    /// are less than one whole codec block.
-    pub short_block_bytes_dropped: u64,
+    /// Bytes after a short block that is not at the end of the file. Reading
+    /// stops at the short block, as SoundSync's player does, so they were
+    /// left out.
+    pub bytes_after_short_block: u64,
     /// Bytes at the end of the file that are an incomplete block, left out.
     pub truncated_tail_bytes: u64,
     pub stamps_monotonic: bool,
@@ -500,6 +555,10 @@ pub(crate) struct DmTimeline {
     /// Header facts that did not stop the conversion (for example a block
     /// size other than the one the format usually gets).
     pub warnings: Vec<String>,
+    /// The `.bmf` marker file beside the `.dm`, when there is one: counts
+    /// only, never marker text. Filled in by `bmf::summary_beside`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub marker_file: Option<crate::bmf::MarkerFileSummary>,
 }
 
 /// Bytes of block `index` that go into the audio: 0 for an erased block,
@@ -564,7 +623,7 @@ pub(crate) fn build_timeline(dm: &DmFile) -> DmTimeline {
             }
             current = Some(DmSegment {
                 start_sample: sample,
-                start_utc: utc_from_stamp(stamp),
+                first_stamp_utc: utc_from_stamp(stamp),
                 blocks: 0,
             });
         }
@@ -587,12 +646,6 @@ pub(crate) fn build_timeline(dm: &DmFile) -> DmTimeline {
         Some(short) if dm.stamps[last] != 0 => (true, short % align),
         _ => (false, 0),
     };
-    let before_end = dm.short_blocks.iter().filter(|&&(index, _)| index != last);
-    let short_blocks_before_end = before_end.clone().count() as u64;
-    let short_block_bytes_dropped = before_end
-        .filter(|&&(index, _)| dm.stamps[index] != 0)
-        .map(|&(_, length)| u64::from(length % align))
-        .sum();
     DmTimeline {
         format_tag: dm.header.wave.format_tag,
         codec_name: dm.header.wave.codec_name(),
@@ -601,13 +654,13 @@ pub(crate) fn build_timeline(dm: &DmFile) -> DmTimeline {
         blocks_erased: erased,
         short_final_block,
         last_block_bytes_dropped,
-        short_blocks_before_end,
-        short_block_bytes_dropped,
+        bytes_after_short_block: dm.bytes_after_short_block,
         truncated_tail_bytes: dm.truncated_tail_bytes,
         stamps_monotonic: monotonic,
         segments,
         segments_omitted,
         warnings: dm.warnings.clone(),
+        marker_file: None,
     }
 }
 
@@ -619,7 +672,7 @@ pub struct DmQueueInfo {
     pub blocks_total: u64,
     pub blocks_erased: u64,
     pub short_final_block: bool,
-    pub short_blocks_before_end: u64,
+    pub bytes_after_short_block: u64,
     pub truncated_tail_bytes: u64,
     pub stamps_monotonic: bool,
     pub warnings: Vec<String>,
@@ -632,7 +685,7 @@ pub(crate) fn queue_info(dm: &DmFile) -> DmQueueInfo {
         blocks_total: timeline.blocks_total,
         blocks_erased: timeline.blocks_erased,
         short_final_block: timeline.short_final_block,
-        short_blocks_before_end: timeline.short_blocks_before_end,
+        bytes_after_short_block: timeline.bytes_after_short_block,
         truncated_tail_bytes: timeline.truncated_tail_bytes,
         stamps_monotonic: timeline.stamps_monotonic,
         warnings: dm.warnings.clone(),
@@ -881,7 +934,7 @@ pub(crate) mod tests {
         assert_eq!(timeline.blocks_erased, 0);
         assert!(timeline.stamps_monotonic);
         assert_eq!(timeline.segments.len(), 1);
-        assert_eq!(timeline.segments[0].start_utc, "2025-11-22T08:26:40Z");
+        assert_eq!(timeline.segments[0].first_stamp_utc, "2025-11-22T08:26:40Z");
         assert_eq!(timeline.segments[0].start_sample, Some(0));
         assert_eq!(timeline.segments[0].blocks, 3);
         // 8 codec blocks of 320 samples per 520-byte block.
@@ -973,12 +1026,14 @@ pub(crate) mod tests {
         assert_eq!(build_timeline(&dm).truncated_tail_bytes, 0);
         assert!(dm.warnings.is_empty());
 
-        // A short last block before the cut stays a short last block.
+        // Reading stops at a short block, so a cut after it is never reached:
+        // the bytes after the short block are counted as such instead.
         let short = vec![2u8; 130];
         let bytes = dm_bytes(&gsm_format(), 520, &[(T0, &block), (T0, &short), (T0, &block)]);
         let dm = parse(&bytes[..bytes.len() - 10]).unwrap();
         assert_eq!(dm.final_block_len(), Some(130));
-        assert_eq!(dm.truncated_tail_bytes, 518);
+        assert_eq!(dm.truncated_tail_bytes, 0);
+        assert_eq!(dm.bytes_after_short_block, 518);
         assert_eq!(audio_totals(&dm).0, 650);
     }
 
@@ -992,46 +1047,75 @@ pub(crate) mod tests {
         }
         // A file with a header and no blocks.
         assert!(parse(&good[..36]).unwrap_err().contains("no audio blocks"));
-        // A complete block header with a length longer than the block size,
-        // or empty, does not match the layout.
+        // A complete block header with a length longer than the block size
+        // does not match the layout.
         let long = vec![0u8; 585];
         assert!(parse(&dm_bytes(&gsm_format(), 520, &[(T0, &long)]))
             .unwrap_err()
             .contains("unexpected length"));
-        assert!(parse(&dm_bytes(&gsm_format(), 520, &[(T0, &[])]))
-            .unwrap_err()
-            .contains("unexpected length"));
+        // An empty block is a short block like any other: reading stops
+        // there, and here that leaves no audio (preparation then refuses it).
+        let dm = parse(&dm_bytes(&gsm_format(), 520, &[(T0, &[]), (T0, &block)])).unwrap();
+        assert_eq!(dm.final_block_len(), Some(0));
+        assert_eq!(dm.bytes_after_short_block, 528);
+        assert_eq!(audio_totals(&dm).0, 0);
     }
 
     #[test]
-    fn a_short_block_before_the_end_is_kept_with_a_warning() {
+    fn reading_stops_at_a_short_block_before_the_end() {
         let block = vec![1u8; 520];
         // 100 bytes: one 65-byte GSM block and 35 stray bytes.
         let short = vec![2u8; 100];
-        let dm = parse(&dm_bytes(
+        let bytes = dm_bytes(
             &gsm_format(),
             520,
             &[(T0, &block), (T0, &short), (T0 + 1, &block), (T0 + 1, &block)],
-        ))
-        .unwrap();
-        assert_eq!(dm.short_blocks, vec![(1, 100)]);
-        assert_eq!(dm.final_block_len(), None);
+        );
+        let dm = parse(&bytes).unwrap();
+        // SoundSync's player stops at the short block; so does DepoAudio.
+        assert_eq!(dm.stamps, vec![T0, T0]);
+        assert_eq!(dm.final_block_len(), Some(100));
+        assert_eq!(dm.block_len(0), 520);
         assert_eq!(dm.block_len(1), 100);
-        assert_eq!(dm.block_len(2), 520);
+        assert_eq!(dm.bytes_after_short_block, 2 * 528);
+        assert_eq!(dm.truncated_tail_bytes, 0);
         assert_eq!(dm.warnings.len(), 1, "{:?}", dm.warnings);
         assert!(dm.warnings[0].starts_with("Block 2 is shorter"), "{:?}", dm.warnings);
-        assert_eq!(audio_totals(&dm), (3 * 520 + 65, Some((3 * 8 + 1) * 320)));
+        assert!(
+            dm.warnings[0].contains("the 1056 bytes after it were not read"),
+            "{:?}",
+            dm.warnings
+        );
+        assert!(
+            dm.warnings[0].contains("kept its 1 whole codec blocks"),
+            "{:?}",
+            dm.warnings
+        );
+        assert_eq!(audio_totals(&dm), (520 + 65, Some(9 * 320)));
         let timeline = build_timeline(&dm);
-        assert!(!timeline.short_final_block);
-        assert_eq!(timeline.short_blocks_before_end, 1);
-        assert_eq!(timeline.short_block_bytes_dropped, 35);
-        assert_eq!(timeline.last_block_bytes_dropped, 0);
+        assert!(timeline.short_final_block);
+        assert_eq!(timeline.last_block_bytes_dropped, 35);
+        assert_eq!(timeline.bytes_after_short_block, 1056);
+        assert_eq!(timeline.blocks_total, 2);
         assert_eq!(timeline.segments.len(), 1);
-        assert_eq!(timeline.segments[0].blocks, 4);
-        assert_eq!(queue_info(&dm).short_blocks_before_end, 1);
+        assert_eq!(timeline.segments[0].blocks, 2);
+        assert_eq!(queue_info(&dm).bytes_after_short_block, 1056);
 
-        // A recorded-over short block adds nothing and drops no bytes of its
-        // own; it is counted as erased.
+        // What follows a short block is not read at all, so a damaged or
+        // unexpected block after it does not matter, and its stamps (which
+        // SoundSync's record-over, relying on fixed block spacing, may not
+        // have zeroed where they are) never reach the audio.
+        let long = vec![3u8; 600];
+        let dm = parse(&dm_bytes(
+            &gsm_format(),
+            520,
+            &[(T0, &block), (T0, &short), (T0, &long)],
+        ))
+        .unwrap();
+        assert_eq!(dm.stamps.len(), 2);
+        assert_eq!(dm.bytes_after_short_block, 608);
+
+        // A recorded-over short block adds nothing; reading still stops there.
         let dm = parse(&dm_bytes(
             &gsm_format(),
             520,
@@ -1040,29 +1124,10 @@ pub(crate) mod tests {
         .unwrap();
         let timeline = build_timeline(&dm);
         assert_eq!(timeline.blocks_erased, 1);
-        assert_eq!(timeline.short_blocks_before_end, 1);
-        assert_eq!(timeline.short_block_bytes_dropped, 0);
-        assert_eq!(audio_totals(&dm).0, 1040);
-
-        // Up to the cap is read; one more is refused.
-        let mut blocks: Vec<(u32, &[u8])> = Vec::new();
-        for _ in 0..MAX_SHORT_BLOCKS_BEFORE_END {
-            blocks.push((T0, &short));
-            blocks.push((T0, &block));
-        }
-        let dm = parse(&dm_bytes(&gsm_format(), 520, &blocks)).unwrap();
-        assert_eq!(dm.short_blocks.len(), MAX_SHORT_BLOCKS_BEFORE_END);
-        assert_eq!(dm.warnings.len(), MAX_SHORT_BLOCKS_BEFORE_END);
-        blocks.push((T0, &short));
-        blocks.push((T0, &block));
-        assert!(parse(&dm_bytes(&gsm_format(), 520, &blocks))
-            .unwrap_err()
-            .contains("short blocks before its end"));
-        // The cap counts blocks before the end: a short last block after the
-        // cap's worth is still read.
-        blocks.pop();
-        let dm = parse(&dm_bytes(&gsm_format(), 520, &blocks)).unwrap();
-        assert_eq!(dm.final_block_len(), Some(100));
+        assert!(!timeline.short_final_block);
+        assert_eq!(timeline.bytes_after_short_block, 528);
+        assert_eq!(audio_totals(&dm).0, 520);
+        assert!(dm.warnings[0].contains("marked as recorded over"), "{:?}", dm.warnings);
     }
 
     #[test]
@@ -1090,6 +1155,15 @@ pub(crate) mod tests {
         let whole = vec![2u8; 130];
         let dm = parse(&dm_bytes(&gsm_format(), 520, &[(T0, &block), (T0, &whole)])).unwrap();
         assert_eq!(dm.final_block_len(), Some(130));
+        assert_eq!(dm.bytes_after_short_block, 0);
+        // Kept, but not silently: SoundSync's player would not play it.
+        assert_eq!(dm.warnings.len(), 1, "{:?}", dm.warnings);
+        assert!(
+            dm.warnings[0].starts_with("The last block is shorter"),
+            "{:?}",
+            dm.warnings
+        );
+        assert!(dm.warnings[0].contains("does not play"), "{:?}", dm.warnings);
         let timeline = build_timeline(&dm);
         assert!(timeline.short_final_block);
         assert_eq!(timeline.last_block_bytes_dropped, 0);
@@ -1107,6 +1181,7 @@ pub(crate) mod tests {
         // short block whose bytes were cut.
         let dm = parse(&dm_bytes(&gsm_format(), 520, &[(T0, &block), (0, &partial)])).unwrap();
         assert_eq!(dm.final_block_len(), Some(100));
+        assert!(dm.warnings.is_empty(), "{:?}", dm.warnings);
         let timeline = build_timeline(&dm);
         assert!(!timeline.short_final_block);
         assert_eq!(timeline.last_block_bytes_dropped, 0);
@@ -1147,8 +1222,8 @@ pub(crate) mod tests {
             starts,
             vec![(Some(0), 3), (Some(3 * per_block), 2), (Some(5 * per_block), 1)]
         );
-        assert_eq!(timeline.segments[1].start_utc, "2025-11-22T08:27:40Z");
-        assert_eq!(timeline.segments[2].start_utc, "2025-11-22T08:25:00Z");
+        assert_eq!(timeline.segments[1].first_stamp_utc, "2025-11-22T08:27:40Z");
+        assert_eq!(timeline.segments[2].first_stamp_utc, "2025-11-22T08:25:00Z");
         assert!(!queue_info(&dm).stamps_monotonic);
     }
 
@@ -1277,14 +1352,22 @@ pub(crate) mod tests {
         let starts: Vec<_> = gsm.segments.iter().map(|segment| segment.start_sample).collect();
         assert_eq!(starts, vec![Some(0), Some(4 * 2560), Some(6 * 2560)]);
         assert_eq!(totals, (7 * 520 + 130, Some(7 * 2560 + 640)));
-        assert!(gsm.warnings.is_empty(), "{:?}", gsm.warnings);
-        // IMA ADPCM: a short block before the end and a cut-off last block.
+        // The short last block is kept, with a warning that SoundSync's
+        // player would not play it.
+        assert_eq!(gsm.warnings.len(), 1, "{:?}", gsm.warnings);
+        assert!(gsm.warnings[0].starts_with("The last block is shorter"));
+        // IMA ADPCM: a short block before the end (reading stops after it, as
+        // SoundSync's player does) and, after it, a cut-off last block that
+        // is never reached.
         let (ima, totals) = timeline("ima-adpcm-damaged");
-        assert_eq!(ima.blocks_total, 4);
-        assert_eq!((ima.short_blocks_before_end, ima.short_block_bytes_dropped), (1, 10));
-        assert_eq!(ima.truncated_tail_bytes, 108);
-        assert_eq!(totals, (7 * 1024, Some(7 * 2041)));
-        assert_eq!(ima.warnings.len(), 3, "{:?}", ima.warnings);
+        assert_eq!(ima.blocks_total, 2);
+        assert!(ima.short_final_block);
+        assert_eq!(ima.last_block_bytes_dropped, 10);
+        assert_eq!(ima.bytes_after_short_block, 2 * 2056 + 108);
+        assert_eq!(ima.truncated_tail_bytes, 0);
+        assert_eq!(totals, (3 * 1024, Some(3 * 2041)));
+        // The unusual block size, and the short block.
+        assert_eq!(ima.warnings.len(), 2, "{:?}", ima.warnings);
         // MS ADPCM with its 50-byte format: an erased block and a short last
         // block of whole codec blocks.
         let (ms, totals) = timeline("adpcm-ms");

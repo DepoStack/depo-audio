@@ -1776,9 +1776,9 @@ mod tests {
         assert_eq!(
             timeline["segments"],
             serde_json::json!([
-                { "startSample": 0, "startUtc": "2025-11-22T08:26:40Z", "blocks": 4 },
-                { "startSample": 4 * 2756, "startUtc": "2025-11-22T08:27:10Z", "blocks": 2 },
-                { "startSample": 6 * 2756, "startUtc": "2025-11-22T08:25:50Z", "blocks": 2 }
+                { "startSample": 0, "firstStampUtc": "2025-11-22T08:26:40Z", "blocks": 4 },
+                { "startSample": 4 * 2756, "firstStampUtc": "2025-11-22T08:27:10Z", "blocks": 2 },
+                { "startSample": 6 * 2756, "firstStampUtc": "2025-11-22T08:25:50Z", "blocks": 2 }
             ])
         );
 
@@ -1897,7 +1897,16 @@ mod tests {
         let dm = dir.0.join("synthetic_gsm.dm");
         fs::write(&dm, crate::dm::tests::dm_bytes(&format, 390, &blocks)).unwrap();
         let parsed = crate::dm::parse_dm(&dm, &|| false).unwrap();
-        assert!(parsed.warnings.is_empty(), "{:?}", parsed.warnings);
+        // 50 codec blocks in 6-block .dm blocks leave a short last block,
+        // which is kept with a warning.
+        assert!(
+            parsed
+                .warnings
+                .iter()
+                .all(|warning| warning.starts_with("The last block is shorter")),
+            "{:?}",
+            parsed.warnings
+        );
 
         let out = dir.0.join("out");
         fs::create_dir(&out).unwrap();
@@ -1949,6 +1958,64 @@ mod tests {
         let record = checked_dm_record(&conversion.files[0], &dm);
         assert_eq!(record["output"]["sampleRate"], 11025);
         assert_eq!(record["source"]["dmTimeline"]["blockSize"], 520);
+    }
+
+    #[test]
+    fn the_owner_gsm_sample_decodes_to_the_owner_decoded_wav() {
+        // A synthetic tone from the owner's rebuild tool, not a vendor or
+        // court file (scripts/fixtures/dm/vendor-notes-samples/README.md).
+        if !dm_fixture_tools_available() {
+            return;
+        }
+        let samples = Path::new(env!("CARGO_MANIFEST_DIR")).join("../scripts/fixtures/dm/vendor-notes-samples");
+        let dm = samples.join("tone_gsm.dm");
+        let before = sha256_of(&dm);
+        let bmf_before = sha256_of(&samples.join("tone_gsm.bmf"));
+        let parsed = crate::dm::parse_dm(&dm, &|| false).unwrap();
+        assert_eq!(
+            parsed.stamps,
+            [vec![1_700_000_000u32; 5], vec![1_700_000_001; 4]].concat()
+        );
+        assert!(parsed.warnings.is_empty(), "{:?}", parsed.warnings);
+
+        let dir = ConversionTestDir::new();
+        let out = dir.0.join("out");
+        fs::create_dir(&out).unwrap();
+        let conversion = convert_with_system_ffmpeg(&dm_job(&dm, &out, "keep", "wav", "11025"), None).unwrap();
+        let (fmt, converted) = wav_chunks(&fs::read(&conversion.files[0].path).unwrap());
+        let (reference_fmt, reference) = wav_chunks(&fs::read(samples.join("tone_gsm_decoded.wav")).unwrap());
+        assert_eq!(fmt[..16], reference_fmt[..16], "16-bit mono 11025 Hz PCM");
+        assert_eq!(reference.len(), 23040 * 2);
+        assert_eq!(converted.len(), reference.len());
+        let first_difference = converted.iter().zip(&reference).position(|(a, b)| a != b);
+        assert_eq!(first_difference, None, "sample for sample equal to the owner's decode");
+
+        let record = checked_dm_record(&conversion.files[0], &dm);
+        let timeline = &record["source"]["dmTimeline"];
+        assert_eq!(timeline["blocksTotal"], 9);
+        assert_eq!(timeline["blocksErased"], 0);
+        assert_eq!(timeline["shortFinalBlock"], false);
+        assert_eq!(
+            timeline["segments"],
+            serde_json::json!([{ "startSample": 0, "firstStampUtc": "2023-11-14T22:13:20Z", "blocks": 9 }])
+        );
+        let markers = &timeline["markerFile"];
+        assert_eq!(markers["status"], "read");
+        assert_eq!(markers["fileName"], "tone_gsm.bmf");
+        assert_eq!(markers["entries"], 2);
+        assert_eq!(markers["entriesMatchingABlock"], 2);
+        let record_text =
+            fs::read_to_string(manifest::manifest_path_for(Path::new(&conversion.files[0].path))).unwrap();
+        assert!(
+            !record_text.contains("Objection"),
+            "marker text never reaches the record"
+        );
+        assert_eq!(sha256_of(&dm), before, "the original is never modified");
+        assert_eq!(
+            sha256_of(&samples.join("tone_gsm.bmf")),
+            bmf_before,
+            "nor is the marker file"
+        );
     }
 
     /// A synthetic `.mkv` with two audio streams that differ in channel

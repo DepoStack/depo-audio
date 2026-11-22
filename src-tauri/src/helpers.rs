@@ -453,7 +453,9 @@ fn demux_dm_with_cancel(
 ) -> Result<(crate::safety::TempFile, crate::dm::DmTimeline), String> {
     let is_cancelled = || cancelled.is_some_and(|check| check());
     let dm = crate::dm::parse_dm(src, &is_cancelled)?;
-    let timeline = crate::dm::build_timeline(&dm);
+    let mut timeline = crate::dm::build_timeline(&dm);
+    // Counts only; marker text is never kept (see bmf.rs).
+    timeline.marker_file = crate::bmf::summary_beside(src, &dm);
     if crate::dm::audio_totals(&dm).0 == 0 {
         return Err("This .dm file has no audio left to convert: every block was recorded over or empty.".into());
     }
