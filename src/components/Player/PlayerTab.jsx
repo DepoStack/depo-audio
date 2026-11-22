@@ -87,7 +87,7 @@ function loadPlayerStorageState() {
   }
 }
 
-export default function PlayerTab({ dropHandlerRef, onConvertFiles, openRequest, onOpenRequestHandled }) {
+export default function PlayerTab({ dropHandlerRef, onConvertFiles, openRequest, onOpenRequestHandled, playbackKeys }) {
   const [tracks, setTracks] = useState([]) // { path, name, colorIndex, label }
   const [activeTrack, setActiveTrack] = useState(null)
   const [playing, setPlaying] = useState(false)
@@ -347,8 +347,36 @@ export default function PlayerTab({ dropHandlerRef, onConvertFiles, openRequest,
   // Keyboard transport. Registered once; reads latest actions/state via a ref.
   const actionsRef = useRef({})
   useEffect(() => {
-    actionsRef.current = { hasTrack: !!activeTrack, toggle, seekBy, skip, cycleSpeed, addBookmark }
+    actionsRef.current = { hasTrack: !!activeTrack, toggle, seekBy, skip, cycleSpeed, addBookmark, backstep }
   })
+
+  // Playback keys while typing elsewhere (Settings): the same actions as the
+  // transport and the in-app keys, read through actionsRef so they always
+  // act on the current track. Present only while the Player is mounted.
+  const setPlaybackKeysTarget = playbackKeys?.setTarget
+  useEffect(() => {
+    if (!setPlaybackKeysTarget) return undefined
+    const isPlaying = () => !!audioRef.current && !audioRef.current.paused
+    setPlaybackKeysTarget({
+      get hasTrack() {
+        return actionsRef.current.hasTrack
+      },
+      get backstep() {
+        return actionsRef.current.backstep
+      },
+      isPlaying,
+      toggle: () => actionsRef.current.toggle(),
+      play: () => {
+        if (!isPlaying()) actionsRef.current.toggle()
+      },
+      pause: () => {
+        if (isPlaying()) actionsRef.current.toggle()
+      },
+      seekBy: delta => actionsRef.current.seekBy(delta),
+      cycleSpeed: dir => actionsRef.current.cycleSpeed(dir),
+    })
+    return () => setPlaybackKeysTarget(null)
+  }, [setPlaybackKeysTarget])
   useEffect(() => {
     const onKey = e => {
       if (shouldIgnoreNavigationShortcut(e)) return
@@ -596,6 +624,11 @@ export default function PlayerTab({ dropHandlerRef, onConvertFiles, openRequest,
             status="Playback stays on this computer"
             className="mb-4"
           />
+          {playbackKeys?.settings.enabled && (
+            <p role="status" className="mb-3 type-small text-[hsl(var(--sub))]">
+              Playback keys are on, but they do nothing until a recording is loaded here.
+            </p>
+          )}
           <div
             className={cn(
               'grid items-center gap-3 rounded-xl border border-dashed px-4 py-5 transition-colors sm:grid-cols-[auto_minmax(0,1fr)_auto]',

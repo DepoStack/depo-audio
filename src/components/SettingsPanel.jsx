@@ -14,6 +14,7 @@ import {
   AppWindow,
   DownloadCloud,
   HardDrive,
+  Keyboard,
 } from 'lucide-react'
 import { DEPOAUDIO_RELEASES_URL, DEPOSTACK_URL } from '../constants'
 import { LogoSvg } from './common/Icons'
@@ -25,6 +26,7 @@ import { Card, CardHeader, CardTitle, CardContent } from './ui/card'
 import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from './ui/select'
 import DiagnosticsCopy from './common/DiagnosticsCopy'
 import LocalDataSettings from './LocalDataSettings'
+import PlaybackKeysSettings from './PlaybackKeysSettings'
 import { APP_VERSION, buildDiagnostics } from '../lib/diagnostics'
 
 // ── Default values ────────────────────────────────────────────────────────────
@@ -70,6 +72,7 @@ const NAV = [
   { id: 'models', label: 'Model files', Icon: Boxes },
   { id: 'audio', label: 'Audio', Icon: SlidersHorizontal },
   { id: 'app', label: 'App', Icon: AppWindow },
+  { id: 'keys', label: 'Playback keys', Icon: Keyboard },
   { id: 'data', label: 'Your data', Icon: HardDrive },
   { id: 'updates', label: 'Updates', Icon: DownloadCloud },
 ]
@@ -330,6 +333,7 @@ export default function SettingsPanel({
   health = null,
   reloadApp = () => window.location.reload(),
   conversionActive = false,
+  playbackKeys = null,
 }) {
   const {
     status: updateStatus,
@@ -411,7 +415,13 @@ export default function SettingsPanel({
 
   return (
     <Dialog open={open} onOpenChange={handleOpenChange}>
-      <DialogContent className="max-w-[760px] p-0 gap-0 overflow-hidden">
+      <DialogContent
+        className="max-w-[760px] p-0 gap-0 overflow-hidden"
+        onEscapeKeyDown={event => {
+          // Escape cancels the playback-key recorder, not the whole dialog
+          if (playbackKeys?.suspended) event.preventDefault()
+        }}
+      >
         <div className="flex items-center justify-between px-5 py-3.5 border-b border-border">
           <DialogTitle className="type-h3 text-foreground">Settings</DialogTitle>
           <DialogClose />
@@ -456,6 +466,20 @@ export default function SettingsPanel({
             className="flex-1 min-w-0 min-h-0 overflow-y-auto overscroll-contain p-4 md:p-5 flex flex-col gap-3.5 *:shrink-0"
           >
             {section === 'models' && <LegacyModelStorage />}
+
+            {section === 'keys' &&
+              (playbackKeys ? (
+                <PlaybackKeysSettings prefs={prefs} keys={playbackKeys} />
+              ) : (
+                <Card>
+                  <CardHeader>
+                    <CardTitle>Playback keys while typing elsewhere</CardTitle>
+                  </CardHeader>
+                  <CardContent className="p-4 type-small text-[hsl(var(--sub))]">
+                    Playback keys are not available in this window.
+                  </CardContent>
+                </Card>
+              ))}
 
             {section === 'data' && (
               <LocalDataSettings

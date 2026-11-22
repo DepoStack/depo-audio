@@ -1,9 +1,9 @@
 {
   "schemaVersion": 1,
   "generator": "scripts/generate-javascript-notices.mjs",
-  "lockfileSha256": "cc23fb6ae5f3e3128f20f388d333b1a6b1b825850ed3fb0ecd59e4478ebf20ac",
-  "componentCount": 58,
-  "javascriptComponentCount": 56,
+  "lockfileSha256": "ff5a59bd153c0a4e5af335323682d7218d2a5d5904668d9f03bc3d6f41e85aa2",
+  "componentCount": 59,
+  "javascriptComponentCount": 57,
   "generatedCssComponentCount": 2,
   "unresolvedComponentCount": 0,
   "unresolvedComponents": [],
@@ -792,6 +792,43 @@
       "name": "@tauri-apps/plugin-fs",
       "version": "2.7.1",
       "integrity": "sha512-4TBVjpi/q8PuNzjpkAc2iBGXMTLjOrAyfTiiOL8ORaJCZJRG3tjzmQ4sqs2CMG75FvLyRkOkERfP7AyY4iBNwQ==",
+      "license": "MIT OR Apache-2.0",
+      "provenance": [
+        "javascript"
+      ],
+      "status": "resolved",
+      "legalMaterials": [
+        {
+          "displayName": "LICENSE.spdx",
+          "sourceKind": "npm-package",
+          "sourceUrl": null,
+          "sourceRevision": null,
+          "sourceSha256": "eb8a6c84630461b352badcab1dbe5d0168c56d377358b2b8c86b51003272d5ef",
+          "contentSha256": "eb8a6c84630461b352badcab1dbe5d0168c56d377358b2b8c86b51003272d5ef"
+        },
+        {
+          "displayName": "LICENSE_APACHE-2.0 (canonical Tauri v2 supplement)",
+          "sourceKind": "reviewed-override",
+          "sourceUrl": "https://github.com/tauri-apps/plugins-workspace/blob/9d6d03269a3dea3e9dbf4635fe0fd68f23f750fa/LICENSE_APACHE-2.0",
+          "sourceRevision": "9d6d03269a3dea3e9dbf4635fe0fd68f23f750fa",
+          "sourceSha256": "0d542e0c8804e39aa7f37eb00da5a762149dc682d7829451287e11b938e94594",
+          "contentSha256": "0d542e0c8804e39aa7f37eb00da5a762149dc682d7829451287e11b938e94594"
+        },
+        {
+          "displayName": "LICENSE_MIT (canonical Tauri v2 supplement)",
+          "sourceKind": "reviewed-override",
+          "sourceUrl": "https://github.com/tauri-apps/plugins-workspace/blob/9d6d03269a3dea3e9dbf4635fe0fd68f23f750fa/LICENSE_MIT",
+          "sourceRevision": "9d6d03269a3dea3e9dbf4635fe0fd68f23f750fa",
+          "sourceSha256": "9dd42ea92cff2ede5cd477cbfcce051b2d0115c0ac7f368ee88cb545055dff1d",
+          "contentSha256": "9dd42ea92cff2ede5cd477cbfcce051b2d0115c0ac7f368ee88cb545055dff1d"
+        }
+      ],
+      "unresolved": null
+    },
+    {
+      "name": "@tauri-apps/plugin-global-shortcut",
+      "version": "2.4.1",
+      "integrity": "sha512-NVCoQ0ShDFncsj9f8iAzhRBTnsJj5sf60vOjcV6emeQHzmEFd6+RXH+fUHHuJAbEYP4mdT2vGlvVOG7tMr/e8g==",
       "license": "MIT OR Apache-2.0",
       "provenance": [
         "javascript"

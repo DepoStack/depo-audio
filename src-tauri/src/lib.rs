@@ -93,6 +93,12 @@ pub fn run() {
         .manage(AppState::default())
         .setup(|app| {
             setup_persistence(app.handle());
+            // System-wide Player keys. Registering nothing here: the frontend
+            // registers only the keys the person assigned, and only after they
+            // turn "Playback keys while typing elsewhere" on.
+            #[cfg(desktop)]
+            app.handle()
+                .plugin(tauri_plugin_global_shortcut::Builder::new().build())?;
             // Auto-update is available only when the release overlay contains
             // a complete signed-updater configuration. Tauri exposes a missing
             // plugin configuration as JSON null; registering the updater in
@@ -145,8 +151,17 @@ pub fn run() {
             commands::local_data_export_cmd,
             commands::local_data_import_cmd,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|_app, _event| {
+            // Playback keys are taken from every app while they are on; give
+            // them back before the process ends instead of relying on the OS.
+            #[cfg(desktop)]
+            if let tauri::RunEvent::Exit = _event {
+                use tauri_plugin_global_shortcut::GlobalShortcutExt;
+                let _ = _app.global_shortcut().unregister_all();
+            }
+        });
 }
 
 #[cfg(all(test, desktop))]

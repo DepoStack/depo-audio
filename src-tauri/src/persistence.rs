@@ -484,6 +484,47 @@ mod tests {
     }
 
     #[test]
+    fn playback_keys_default_off_and_load_off_from_older_files() {
+        assert!(!Prefs::default().playback_keys.enabled);
+        // A preferences file written before this setting existed
+        let mut old = serde_json::to_value(Prefs::default()).unwrap();
+        old.as_object_mut().unwrap().remove("playbackKeys");
+        let loaded: Prefs = serde_json::from_value(old).unwrap();
+        assert_eq!(loaded.playback_keys, crate::types::PlaybackKeysPrefs::default());
+        // A partial object keeps the missing fields at their defaults
+        let next = merge_prefs(
+            &Prefs::default(),
+            serde_json::json!({ "playbackKeys": { "bindings": { "playPause": "F14" } } }),
+        )
+        .unwrap();
+        assert!(!next.playback_keys.enabled);
+        assert!(!next.playback_keys.hold_to_play);
+        assert_eq!(
+            next.playback_keys.bindings.get("playPause").map(String::as_str),
+            Some("F14")
+        );
+    }
+
+    #[test]
+    fn playback_keys_round_trip_with_camel_case_names() {
+        let next = merge_prefs(
+            &Prefs::default(),
+            serde_json::json!({ "playbackKeys": { "enabled": true, "holdToPlay": true, "bindings": { "back": "F13" } } }),
+        )
+        .unwrap();
+        let wire = serde_json::to_value(&next).unwrap();
+        assert_eq!(wire["playbackKeys"]["enabled"], true);
+        assert_eq!(wire["playbackKeys"]["holdToPlay"], true);
+        assert_eq!(wire["playbackKeys"]["bindings"]["back"], "F13");
+        let error = merge_prefs(
+            &Prefs::default(),
+            serde_json::json!({ "playbackKeys": { "enabled": "yes" } }),
+        )
+        .unwrap_err();
+        assert!(error.contains("Invalid preference update"));
+    }
+
+    #[test]
     fn merge_prefs_rejects_non_object_patch() {
         let error = merge_prefs(&Prefs::default(), serde_json::json!([1, 2, 3])).unwrap_err();
         assert!(error.contains("must be a JSON object"));

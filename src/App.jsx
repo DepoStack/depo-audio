@@ -12,6 +12,7 @@ import { usePreferencesContext } from './hooks/PreferencesContext'
 import useFileDrop from './hooks/useFileDrop'
 import useConversion from './hooks/useConversion'
 import useUpdater from './hooks/useUpdater'
+import usePlaybackKeys from './hooks/usePlaybackKeys'
 import UpdateBanner from './components/UpdateBanner'
 
 import { LogoSvg } from './components/common/Icons'
@@ -52,6 +53,9 @@ export default function App() {
   const { labels, outDir, prefsReady, prefsError } = prefs
   const { themePref, themeLabel, cycleTheme, setThemeDirect } = useTheme(prefs.themePref, prefs.setThemePref)
   const [settingsOpen, setSettingsOpen] = useState(false)
+
+  // System-wide Player keys: registered only while the person has them on
+  const playbackKeys = usePlaybackKeys(prefsReady ? prefs.playbackKeys : null)
 
   // Auto-update via GitHub Releases (checks once on launch)
   const updater = useUpdater()
@@ -271,6 +275,11 @@ export default function App() {
             {health ? (health.ffmpeg ? 'FFmpeg ready' : 'FFmpeg missing') : 'Checking engine…'}
           </div>
           <div className="py-0.5 type-small text-[hsl(var(--sub))]">{updaterLabel}</div>
+          {playbackKeys.settings.enabled && (
+            <div className="py-0.5 type-small text-[hsl(var(--sub))]">
+              {playbackKeys.status ? playbackKeys.status : 'Playback keys on'}
+            </div>
+          )}
         </div>
 
         {/* DepoStack brand link: DepoAudio, powered by DepoStack */}
@@ -433,6 +442,7 @@ export default function App() {
               <Suspense fallback={<WorkspaceLoading label="Loading Player workspace" />}>
                 <PlayerTab
                   dropHandlerRef={dropOverrideRef}
+                  playbackKeys={playbackKeys}
                   openRequest={playerOpenRequest}
                   onOpenRequestHandled={request =>
                     setPlayerOpenRequest(current => (current === request ? null : current))
@@ -491,6 +501,7 @@ export default function App() {
           updater={updater}
           health={health}
           conversionActive={converting || cancelling}
+          playbackKeys={playbackKeys}
         />
       </Suspense>
     </Tabs>
