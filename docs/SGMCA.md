@@ -5,8 +5,17 @@ handling lives in [`src-tauri/src/sgmca.rs`](../src-tauri/src/sgmca.rs).
 
 **Source of the layout.** The container layout below is written in our own words from
 owner-supplied interoperability notes; it is not yet confirmed against a file CATalyst wrote.
-Every test uses synthetic files made by DepoAudio's own code or by FFmpeg (sine tones, no
-speech). The audio inside each recording session is standard **Ogg**
+Every test uses synthetic files (sine tones, no speech): most are made by DepoAudio's own code
+or by FFmpeg, and two came with the notes, made by the owner's own tool rather than by
+DepoAudio or CATalyst
+([`scripts/fixtures/sgmca/vendor-notes-samples/`](../scripts/fixtures/sgmca/vendor-notes-samples/README.md)).
+Those two show that the reader agrees with the notes on bytes DepoAudio did not write: one
+session of 480 000 samples, and two sessions of 480 000 and 240 000 samples (15.000 s joined),
+pre-skip 312, family 255, payload lengths 110 401 and 44 952, starts 10:15:30 and 10:20:00, and
+the notes' timeline expectations (10:15:35 → 5 s, 10:20:02 → 12 s, 10:18:00 in the gap → 10 s)
+(`vendor_notes_samples_read_as_the_notes_describe`). With FFmpeg, the two-session file
+converts to exactly 720 000 samples with each tone in its place
+(`vendor_notes_two_session_sample_decodes_each_tone_in_its_place`). The audio inside each recording session is standard **Ogg**
 ([RFC 3533](https://www.rfc-editor.org/rfc/rfc3533)) carrying **Opus**
 ([RFC 7845](https://www.rfc-editor.org/rfc/rfc7845)), with no encryption and no proprietary
 codec.
@@ -66,12 +75,15 @@ and the example `OpusHead` page's CRC (`0x801384E6`) by
 | Step | How |
 | --- | --- |
 | File header | Must be 40 bytes, version 1 (the notes say CATalyst refuses a higher version and finds no playback position unless it is exactly 1). Any other size or version is refused with the value found. A file that starts with `OggS` is read as the **older bare-Ogg layout** earlier DepoAudio builds wrote: one session, no start time, and a note saying so. Anything else is refused; the earlier "find the stream somewhere in the first 8 KiB" search is gone. |
-| Segments | Walked by their payload lengths with strict bounds. Each header must be 56 bytes, version 1, kind 2; otherwise the segment number and byte are named. |
+| Segments | Walked by their payload lengths with strict bounds. The notes say CATalyst reads a segment header's size and finds the audio right after it, and does not check the version, kind or reserved fields, so DepoAudio does the same: a header size below 56 is refused (the start time and length would not fit); a larger one, or a version other than 1 or kind other than 2, is read and named in a note. A length of 0 followed straight away by another segment header is a session with no audio, noted, and the walk goes on. |
+| Lengths that stop short | If a header's length (0, or short of its pages) leaves Ogg pages that no header counts, DepoAudio walks those pages; if another session's header follows them, the file is **refused**, naming the segment and bytes, because reading on from the headers would leave later sessions out without saying so. Uncounted pages at the very end of the file are the still-recording case below. |
+| Timestamps | A page's granule position must not be past the end of its packets (RFC 7845 §4): a jump means audio is missing or the timestamps are damaged, and the file is refused rather than given a length the audio does not have. Granule positions beyond the signed 64-bit range are refused, and the sums use checked arithmetic. |
 | Each stream | Every page's capture pattern, version, sequence and CRC; packets reassembled across pages; `OpusHead` checked against RFC 7845. Damage is reported as `Segment N: …` with the byte where it is. Bytes after a stream's end-of-stream page are refused. |
 | Layouts read | Family 255 or 1 with one uncoupled stream per channel and an identity mapping, or family 0 (plain mono or stereo). Any other layout is refused. |
-| Joining | All sessions must have the same channel count, and the same Opus stream layout, or the file is refused with a message naming both counts. Sessions are joined in file order with no gap; the queue says so: "This file holds 3 recording sessions; they are joined in order (gaps between them are not kept)." |
-| Still recording | If the last segment is shorter than its header says, only its complete pages are read. If there are bytes after the last segment that no header counts (a page appended before the header was rewritten), they are not read. A last session with no complete audio yet is left out. Each case is flagged (`growing`), noted, and shown in the queue. |
-| Start times | Each segment's text is kept as stored and parsed into a local time and offset when it has the form above; text that does not parse is kept and named in a note. |
+| Joining | All sessions must have the same channel count (the notes say CATalyst refuses to append a different one), and the same Opus stream layout, or the file is refused with a message naming both counts. A different output gain is not refused but named in a note: the sessions are decoded as one feed, and which gain FFmpeg applies to a later session has not been checked. Sessions are joined in file order with no gap; the queue says so: "This file holds 3 recording sessions; they are joined in order (gaps between them are not kept)." |
+| Still recording | If the last segment is shorter than its header says, only its complete pages are read. If there are bytes after the last segment that no header counts (a page appended before the header was rewritten), they are not read. A last session with no complete audio yet is left out, whether or not its header's length covers what is there: one that ends before its `OpusHead` or `OpusTags` page, or holds those and no audio page or end-of-stream page. Each case is flagged (`growing`), noted, and shown in the queue. A test cuts a three-session file at every byte and checks that every session finished before the cut is read and nothing else is an error. |
+| No samples | A file whose sessions together hold no audio samples (only headers and pre-skip) is refused by the reader with its own message, before FFmpeg is asked to read it. |
+| Start times | Each segment's text is kept as stored (bytes that are not printable ASCII are shown as `?`) and parsed into a local time and offset when it has the form above; text that does not parse is kept and named in a note. |
 | Duration | Per session: last granule position minus first sample minus pre-skip. The file's duration is the sum. |
 
 ## Decoding
@@ -92,25 +104,32 @@ arguments). Scan, the waveform and merge were not run against a multi-session fi
 
 ## Writing (Convert → SGMCA)
 
-FFmpeg encodes as before: `libopus`, `-mapping_family 255`, 20 ms frames, `-ar 16000`, 32 kbps
+FFmpeg encodes with `libopus`, `-mapping_family 255`, 20 ms frames, `-ar 48000` (the notes say
+CATalyst's own encoder runs at 48 kHz; earlier DepoAudio builds encoded at 16 kHz), 32 kbps
 per mono stream, Ogg muxing. DepoAudio then writes the Direct Audio file next to it and
 replaces FFmpeg's bare Ogg file with it:
 
 - the 40-byte file header with a fresh random identifier (UUID v4, Windows byte layout) and
   reserved zeros;
 - one segment per recording session, each with its 56-byte header and exact payload length.
-  With one session the Ogg bytes are copied unchanged. With several (an SGMCA source with
-  several sessions), each session is cut out of the encoded stream at the sample where it
-  starts, without re-encoding (80 ms decoder pre-roll, exact pre-skip, end trim, new serial
-  number), so it keeps its own start time.
+  With one session starting at the first sample the Ogg bytes are copied unchanged. Otherwise
+  (an SGMCA source with several sessions, or a BWF start between two seconds), each segment is
+  cut out of the encoded stream at the sample where it starts, without re-encoding (80 ms
+  decoder pre-roll, exact pre-skip, end trim, new serial number), so it keeps its own start
+  time.
 
 Segment start times come from, in this order:
 
 1. the source's own SGMCA segment headers, copied as stored, one output segment per source
-   session (`sgmca-segment-start`);
-2. a BWF source's date plus its bext time reference, in whole seconds, with this computer's UTC
-   offset for that date because BWF stores none (`bwf-bext`). FFmpeg 6.1 reports the bext
-   origination date as the WAV's `date` tag, which a RIFF INFO creation date shares;
+   session (`sgmca-segment-start`). A start text that is not in the form above is never
+   copied, since CATalyst could not place the output against a transcript: the output then
+   falls under 3, as one segment, and the note names the source segment;
+2. a BWF source's date plus its bext time reference, with this computer's UTC offset for that
+   date because BWF stores none (`bwf-bext`). The header holds whole seconds only, so when the
+   time reference falls between two seconds the output starts at the next whole second and the
+   source audio before it (under one second, rounded up to a 48 kHz sample) is left out, so the
+   first sample plays at the time written; the note gives the amount. FFmpeg 6.1 reports the
+   bext origination date as the WAV's `date` tag, which a RIFF INFO creation date shares;
 3. otherwise the time of conversion, in this computer's local time (`conversion-time`). This is
    not when the recording was made, and the export record says so.
 
@@ -121,8 +140,8 @@ DepoAudio reads, so they fall under 3. The local offset comes from the operating
 Linux path has been run here.
 
 Every output is read back through the reader and removed unless it has the file header (version
-1, an identifier), complete segments with the planned start times in order, and family 255 with
-one uncoupled mono stream per channel.
+1, an identifier), complete segments with the planned start times in order, every start time in
+the form above, and family 255 with one uncoupled mono stream per channel.
 
 ## Export record
 
@@ -142,9 +161,11 @@ it but does not compare it.
 `sgmca::slice` copies Opus packets without re-encoding (80 ms pre-roll, exact pre-skip, end
 trim, rebased granules, new CRCs) into a new Direct Audio file with one segment. A cut must stay
 inside one recording session; a range that runs into the next session is refused, because the
-gap between sessions is not in the file. The new segment's start is the session's start plus
-the whole seconds skipped (the header holds no fractions). Not on screen yet: a slice is a new
-output and needs its export record.
+gap between sessions is not in the file. The header holds no fractions of a second, so the cut
+starts at the whole second at or before the requested start (the report gives the start used),
+and the new segment's start is the session's start plus those whole seconds: its first sample
+plays at the time written. Not on screen yet: a slice is a new output and needs its export
+record.
 
 ## Not yet confirmed against a real recording
 

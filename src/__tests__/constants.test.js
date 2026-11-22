@@ -37,7 +37,7 @@ describe('FORMATS_OUT', () => {
 
   it('fixes the rate only for formats that set their own', () => {
     expect(effectiveOutputRate('opus', '44100')).toBe('48000')
-    expect(effectiveOutputRate('sgmca', '44100')).toBe('16000')
+    expect(effectiveOutputRate('sgmca', '44100')).toBe('48000')
     expect(effectiveOutputRate('wav', '44100')).toBe('44100')
   })
 })

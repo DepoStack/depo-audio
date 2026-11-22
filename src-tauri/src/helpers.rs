@@ -529,7 +529,8 @@ pub(crate) fn output_args(format: &str, rate: &str, mp3_bitrate: u32) -> Vec<Str
             "48000".into(),
         ],
         // Stenograph Direct Audio: Ogg Opus with one uncoupled mono stream
-        // per channel (mapping family 255) and a 16 kHz input rate tag. FFmpeg
+        // per channel (mapping family 255), encoded at 48 kHz as the notes
+        // say CATalyst's own encoder runs (so the input rate tag is 48000). FFmpeg
         // writes the bare Ogg stream; the conversion then adds the Direct
         // Audio file and segment headers (`sgmca::write_direct_audio`).
         // The bitrate depends on the channel count, so the conversion plan
@@ -544,7 +545,7 @@ pub(crate) fn output_args(format: &str, rate: &str, mp3_bitrate: u32) -> Vec<Str
             "-vbr".into(),
             "on".into(),
             "-ar".into(),
-            "16000".into(),
+            "48000".into(),
             "-f".into(),
             "ogg".into(),
         ],

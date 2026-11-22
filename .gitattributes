@@ -39,6 +39,7 @@ public/fonts/*.txt text eol=lf
 *.jpg binary
 *.onnx binary
 *.png binary
+*.sgmca binary
 *.tgz binary
 *.wav binary
 *.woff2 binary

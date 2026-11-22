@@ -87,8 +87,8 @@ fn track_planned(cleanup: &mut OutputCleanup, planned: &[PlannedOutput]) {
 // These produce the exact FFmpeg filter strings for each output mode. Their
 // output format is a contract: golden-master tests below pin it down.
 
-/// Opus bitrate per mono stream of an SGMCA output: wideband speech at
-/// 16 kHz is clear well below this.
+/// Opus bitrate per mono stream of an SGMCA output (48 kHz, as the notes say
+/// CATalyst encodes).
 const SGMCA_KBPS_PER_CHANNEL: u32 = 32;
 
 /// Stereo downmix: a unity-gain SUM of all channels on both L and R.
@@ -570,18 +570,41 @@ struct SgmcaOutputPlan {
     segments: Vec<crate::sgmca::PlannedSegment>,
 }
 
-/// The start of a BWF source's first sample as an SGMCA start text: the
-/// origination date plus the time reference in whole seconds, with this
-/// computer's UTC offset for that date (BWF stores none). Also returns the
-/// fraction of a second dropped.
-fn bwf_start_text(timing: manifest::SourceTiming, date: &str) -> Option<(String, f64)> {
+/// Where a BWF source's audio is placed in an SGMCA output.
+#[derive(Debug, Clone, PartialEq)]
+struct BwfStart {
+    /// The start text: the origination date plus the time reference, at the
+    /// first whole second at or after the source's first sample.
+    text: String,
+    /// Seconds of the source before that whole second (0 when the time
+    /// reference falls on a whole second).
+    lead_seconds: f64,
+    /// The same lead in 48 kHz samples, rounded up so the first sample kept
+    /// is at or just after the second written.
+    lead_samples: u64,
+}
+
+/// The start of a BWF source as an SGMCA start text, with this computer's
+/// UTC offset for that date (BWF stores none). The segment header holds
+/// whole seconds only, so when the time reference falls between two seconds
+/// the start is the next whole second and the audio before it is cut, so
+/// that the first sample still plays at the time written.
+fn bwf_start_text(timing: manifest::SourceTiming, date: &str) -> Option<BwfStart> {
     let year: i32 = date.get(0..4)?.parse().ok()?;
     let month = time::Month::try_from(date.get(5..7)?.parse::<u8>().ok()?).ok()?;
     let day: u8 = date.get(8..10)?.parse().ok()?;
     let date = time::Date::from_calendar_date(year, month, day).ok()?;
     let rate = u64::from(timing.sample_rate);
-    let whole = timing.time_reference_samples / rate;
-    let fraction = (timing.time_reference_samples % rate) as f64 / rate as f64;
+    if rate == 0 {
+        return None;
+    }
+    let mut whole = timing.time_reference_samples / rate;
+    let past = timing.time_reference_samples % rate;
+    let lead = if past == 0 { 0 } else { rate - past };
+    if lead > 0 {
+        whole += 1;
+    }
+    let lead_samples = (lead * crate::sgmca::OPUS_RATE).div_ceil(rate);
     let local = time::PrimitiveDateTime::new(date, time::Time::MIDNIGHT)
         .checked_add(time::Duration::seconds(i64::try_from(whole).ok()?))?;
     // The offset in force at that wall-clock time: first guess from the
@@ -589,7 +612,11 @@ fn bwf_start_text(timing: manifest::SourceTiming, date: &str) -> Option<(String,
     let guess = crate::clock::local_offset_at(local.assume_utc()).unwrap_or(time::UtcOffset::UTC);
     let offset = crate::clock::local_offset_at(local.assume_offset(guess)).unwrap_or(guess);
     let text = crate::sgmca::format_start_text(local, i32::from(offset.whole_minutes()))?;
-    Some((text, fraction))
+    Some(BwfStart {
+        text,
+        lead_seconds: lead as f64 / rate as f64,
+        lead_samples,
+    })
 }
 
 const CONVERSION_TIME_EXPLAINED: &str = "It is not when the recording was made. CATalyst lines Direct Audio up with a transcript by matching segment start times with stroke times, so this file will not line up with a transcript until a correct start is known.";
@@ -627,6 +654,23 @@ fn plan_sgmca_output(
     if let Some(info) = source.filter(|info| info.container == crate::sgmca::Container::DirectAudio) {
         let kept: Vec<&crate::sgmca::SegmentInfo> =
             info.segments.iter().filter(|segment| segment.samples > 0).collect();
+        // A start text CATalyst could not parse would leave the output
+        // unplaceable against a transcript, so it is never copied.
+        let unreadable: Vec<String> = kept
+            .iter()
+            .filter(|segment| segment.start.as_ref().is_none_or(|start| start.local.is_none()))
+            .map(|segment| segment.number.to_string())
+            .collect();
+        if !unreadable.is_empty() {
+            let (which, verb) = if unreadable.len() == 1 {
+                (format!("source segment {}", unreadable[0]), "is")
+            } else {
+                (format!("source segments {}", unreadable.join(", ")), "are")
+            };
+            return conversion_time(&format!(
+                "The start text of {which} {verb} not in the YYYY-MM-DDTHH:MM:SS±hhmm form, so it cannot be copied into a header CATalyst reads. The recording sessions are joined into one segment."
+            ));
+        }
         let segments: Vec<crate::sgmca::PlannedSegment> = kept
             .iter()
             .map(|segment| crate::sgmca::PlannedSegment {
@@ -649,17 +693,6 @@ fn plan_sgmca_output(
                 segments.len()
             )
         };
-        let unreadable: Vec<String> = kept
-            .iter()
-            .filter(|segment| segment.start.as_ref().is_none_or(|start| start.local.is_none()))
-            .map(|segment| segment.number.to_string())
-            .collect();
-        if !unreadable.is_empty() {
-            note.push_str(&format!(
-                " The start text of source segment {} is not a time DepoAudio can read; it was copied unchanged.",
-                unreadable.join(", ")
-            ));
-        }
         if info.growing {
             note.push_str(" The source looked still recording or cut short, so only its complete audio was converted.");
         }
@@ -670,15 +703,23 @@ fn plan_sgmca_output(
         });
     }
     if let (Some(timing), Some(date)) = (probed.timing, probed.origination_date.as_deref()) {
-        if let Some((text, fraction)) = bwf_start_text(timing, date) {
+        if let Some(start) = bwf_start_text(timing, date) {
+            let lead = if start.lead_samples == 0 {
+                "The time reference falls on a whole second.".to_string()
+            } else {
+                format!(
+                    "The time reference falls {:.6} s before a whole second, and the segment header holds whole seconds only, so the output starts at that second: the first {:.6} s of the source were left out, so that the first sample plays at the time written.",
+                    start.lead_seconds, start.lead_seconds
+                )
+            };
             return Ok(SgmcaOutputPlan {
                 start_source: "bwf-bext",
                 note: format!(
-                    "The start is the source's date plus its BWF bext time reference, in whole seconds ({fraction:.3} s dropped, because the segment header holds no fractions). The date is the WAV's date tag, which FFmpeg reports for the bext origination date (a RIFF INFO creation date has the same name). BWF stores no UTC offset, so the offset written is this computer's for that date."
+                    "The start is the source's date plus its BWF bext time reference. {lead} The date is the WAV's date tag, which FFmpeg reports for the bext origination date (a RIFF INFO creation date has the same name). BWF stores no UTC offset, so the offset written is this computer's for that date."
                 ),
                 segments: vec![crate::sgmca::PlannedSegment {
-                    start_text: text,
-                    start_sample: 0,
+                    start_text: start.text,
+                    start_sample: start.lead_samples,
                 }],
             });
         }
@@ -2408,12 +2449,12 @@ mod tests {
         assert_eq!(info.segments.len(), 1);
         assert_eq!(info.head.channels, 4);
         assert_eq!(info.head.mapping, [0, 1, 2, 3]);
-        assert_eq!(info.head.input_sample_rate, 16_000);
+        assert_eq!(info.head.input_sample_rate, 48_000);
         assert_sgmca_duration(written, &info);
         assert_audio(written, 4, "48000");
         let record = checked_export_record(file, &wav);
         assert_eq!(record["output"]["format"], "sgmca");
-        assert_eq!(record["output"]["sampleRate"], 16_000);
+        assert_eq!(record["output"]["sampleRate"], 48_000);
         // No source start, so the segment start is the conversion time, and
         // the record says so.
         let layout = &record["output"]["sgmca"];
@@ -2472,31 +2513,31 @@ mod tests {
         let dir = ConversionTestDir::new();
         let (sgmca, _) = synthetic_sgmca(&dir.0);
         let cut = dir.0.join("cut.sgmca");
-        let report = crate::sgmca::slice(&sgmca, &cut, 0.5, Some(1.5), None).unwrap();
-        assert_eq!(report.samples, 48_000);
+        let report = crate::sgmca::slice(&sgmca, &cut, 1.0, Some(1.75), None).unwrap();
+        assert_eq!(report.samples, 36_000);
+        assert_eq!(report.start_seconds, 1.0);
         assert_eq!(report.channels, 4);
 
-        // FFmpeg honours the new pre-skip and end trim: exactly one second.
+        // FFmpeg honours the new pre-skip and end trim: exactly 0.75 s.
         let sliced = decode_f32(&cut, 4);
         let whole = decode_f32(&sgmca, 4);
         assert!(
-            sliced.iter().all(|channel| channel.len() == 48_000),
+            sliced.iter().all(|channel| channel.len() == 36_000),
             "{}",
             sliced[0].len()
         );
         // The copied packets decode to the same audio as the same second of
         // the full recording; the pre-roll lets the decoder converge first.
         for (channel, (cut, full)) in sliced.iter().zip(&whole).enumerate() {
-            let window = &full[24_000..72_000];
+            let window = &full[48_000..84_000];
             let signal: f64 = window.iter().map(|&s| (s as f64).powi(2)).sum();
             let error: f64 = cut.iter().zip(window).map(|(&a, &b)| ((a - b) as f64).powi(2)).sum();
             let ratio_db = 10.0 * (error / signal).log10();
             assert!(ratio_db < -30.0, "channel {channel}: slice differs by {ratio_db:.1} dB");
         }
         // And the slice is a valid Direct Audio file in its own right, whose
-        // start is the session's start plus the half second skipped (whole
-        // seconds only).
-        let start = ["2026-11-22T10:15:30-0500".to_string()];
+        // start is the session's start plus the second skipped.
+        let start = ["2026-11-22T10:15:31-0500".to_string()];
         assert!(crate::sgmca::verify_written(&cut, Some(&start), None).is_ok());
     }
 
@@ -2769,8 +2810,16 @@ mod tests {
         let conversion = convert_with_system_ffmpeg(&court_job(&wav, &out, "keep", "sgmca"), None).unwrap();
         let path = Path::new(&conversion.files[0].path);
         let info = crate::sgmca::verify_written(path, None, None).unwrap();
+        // The header holds whole seconds, so the output starts at 10:15:31
+        // and the 0.75 s before it is cut: the first sample is the one the
+        // source holds at 10:15:31.
         let start = info.segments[0].start.as_ref().unwrap();
-        assert_eq!(start.local.as_deref(), Some("2026-11-22T10:15:30"), "{start:?}");
+        assert_eq!(start.local.as_deref(), Some("2026-11-22T10:15:31"), "{start:?}");
+        assert!(
+            (info.duration_seconds - (SYNTHETIC_SECONDS - 0.75)).abs() <= 0.02,
+            "{}",
+            info.duration_seconds
+        );
         let path_record = manifest::manifest_path_for(path);
         let record: serde_json::Value = serde_json::from_slice(&fs::read(path_record).unwrap()).unwrap();
         assert!(manifest::tests::schema_errors_for_value(&record).is_empty());
@@ -2778,7 +2827,7 @@ mod tests {
         assert!(record["output"]["sgmca"]["startNote"]
             .as_str()
             .unwrap()
-            .contains("0.250 s dropped"));
+            .contains("the first 0.750000 s of the source were left out"));
     }
 
     #[test]
@@ -2807,14 +2856,123 @@ mod tests {
             origination_date: Some("2026-11-22".into()),
             ..timed.clone()
         };
+        // 01:00:00.5: the header holds whole seconds, so the output starts at
+        // 01:00:01 and the half second before it (24 000 samples at 48 kHz)
+        // is planned out.
         let bwf = plan_sgmca_output(None, &dated, false, now).unwrap();
         assert_eq!(bwf.start_source, "bwf-bext");
-        assert!(bwf.segments[0].start_text.starts_with("2026-11-22T01:00:00"));
-        assert!(bwf.note.contains("0.500 s dropped"));
+        assert!(bwf.segments[0].start_text.starts_with("2026-11-22T01:00:01"));
+        assert_eq!(bwf.segments[0].start_sample, 24_000);
+        assert!(bwf.note.contains("the first 0.500000 s of the source were left out"));
+        // On a whole second nothing is cut.
+        let on_second = manifest::ProbedSource {
+            timing: Some(manifest::SourceTiming {
+                time_reference_samples: 3600 * 16_000,
+                sample_rate: 16_000,
+            }),
+            ..dated.clone()
+        };
+        let exact = plan_sgmca_output(None, &on_second, false, now).unwrap();
+        assert!(exact.segments[0].start_text.starts_with("2026-11-22T01:00:00"));
+        assert_eq!(exact.segments[0].start_sample, 0);
+        assert!(exact.note.contains("falls on a whole second"));
+        // One source sample past the second at 44.1 kHz: the lead rounds up,
+        // so the first sample kept is never before the second written.
+        let odd = bwf_start_text(
+            manifest::SourceTiming {
+                time_reference_samples: 44_100 * 7 + 1,
+                sample_rate: 44_100,
+            },
+            "2026-11-22",
+        )
+        .unwrap();
+        assert!(odd.text.starts_with("2026-11-22T00:00:08"), "{odd:?}");
+        assert_eq!(odd.lead_samples, (44_099u64 * 48_000).div_ceil(44_100));
+        assert!(odd.lead_samples as f64 / 48_000.0 >= 44_099.0 / 44_100.0);
         // Trim moves the start, so even a dated source gets the clock.
         assert_eq!(
             plan_sgmca_output(None, &dated, true, now).unwrap().start_source,
             "conversion-time"
         );
+    }
+
+    #[test]
+    fn vendor_notes_two_session_sample_decodes_each_tone_in_its_place() {
+        if !court_fixture_tools_available() {
+            return;
+        }
+        // Synthetic tones wrapped by the owner's tool, not by CATalyst (see
+        // scripts/fixtures/sgmca/vendor-notes-samples/README.md). Converted
+        // from a copy so the committed file is never an input path.
+        let dir = ConversionTestDir::new();
+        let sgmca = dir.0.join("tone_2sessions.sgmca");
+        fs::copy(
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../scripts/fixtures/sgmca/vendor-notes-samples/tone_2sessions.sgmca"),
+            &sgmca,
+        )
+        .unwrap();
+        let original = fs::read(&sgmca).unwrap();
+        let out = dir.0.join("out");
+        fs::create_dir(&out).unwrap();
+        let mut job = court_job(&sgmca, &out, "keep", "wav");
+        job.labels = ["Left", "Right"].map(String::from).to_vec();
+        job.chan_vols = vec![1.0; 2];
+        let conversion = convert_with_system_ffmpeg(&job, None).unwrap();
+        let file = &conversion.files[0];
+        let decoded = decode_f32(Path::new(&file.path), 2);
+        assert_eq!(decoded[0].len(), 720_000, "10 s + 5 s at 48 kHz");
+        // Session 1: 1000 Hz left, 1500 Hz right; session 2 from 10.0 s:
+        // 440 Hz left, 660 Hz right.
+        for (channel, tones) in decoded.iter().zip([[1000.0, 440.0], [1500.0, 660.0]]) {
+            for ((start, end), tone) in [(0, 480_000), (480_000, 720_000)].into_iter().zip(tones) {
+                let found = tone_frequency(&channel[start + 2_400..end - 2_400]);
+                assert!(
+                    (found - tone).abs() < tone * 0.01,
+                    "expected {tone} Hz, found {found:.0} Hz"
+                );
+            }
+        }
+        let record: serde_json::Value =
+            serde_json::from_slice(&fs::read(manifest::manifest_path_for(Path::new(&file.path))).unwrap()).unwrap();
+        assert!(manifest::tests::schema_errors_for_value(&record).is_empty());
+        assert_eq!(record["channel"]["sourceChannelCount"], 2);
+        let segments = record["source"]["sgmca"]["segments"].as_array().unwrap();
+        assert_eq!(segments.len(), 2);
+        assert_eq!(segments[1]["startText"], "2026-11-22T10:20:00-0500");
+        assert_eq!(segments[1]["startSample"], 480_000);
+        assert_eq!(fs::read(&sgmca).unwrap(), original, "the source is never modified");
+    }
+
+    #[test]
+    fn an_sgmca_source_start_catalyst_cannot_parse_is_never_copied() {
+        let dir = ConversionTestDir::new();
+        let path = dir.0.join("odd_start.sgmca");
+        let stream = crate::sgmca::fixtures::synthetic(50, 312, 0, |_| 30);
+        fs::write(
+            &path,
+            crate::sgmca::fixtures::direct_audio(&[
+                ("2026-11-22 10:15:30", &stream),
+                ("2026-11-22T11:00:00-0500", &stream),
+            ]),
+        )
+        .unwrap();
+        let info = crate::sgmca::inspect(&path, None).unwrap();
+        assert_eq!(info.segments.len(), 2);
+        let now = time::macros::datetime!(2026-11-22 18:00:00 UTC);
+        let plan = plan_sgmca_output(Some(&info), &manifest::ProbedSource::default(), false, now).unwrap();
+        assert_eq!(plan.start_source, "conversion-time");
+        assert_eq!(plan.segments.len(), 1);
+        assert_eq!(
+            plan.segments[0].start_text,
+            crate::clock::local_start_text(now).unwrap()
+        );
+        assert!(
+            plan.note
+                .contains("The start text of source segment 1 is not in the YYYY-MM-DDTHH:MM:SS±hhmm form"),
+            "{}",
+            plan.note
+        );
+        assert!(crate::sgmca::parse_start_text(&plan.segments[0].start_text).is_some());
     }
 }

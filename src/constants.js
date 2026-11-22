@@ -10,11 +10,11 @@ export const FORMATS_OUT = [
   { id: 'flac', label: 'FLAC', desc: 'Lossless compressed — archival' },
   { id: 'opus', label: 'Opus', desc: '64 kbps VBR — voice optimized, smallest' },
   { id: 'm4a', label: 'M4A', desc: '128 kbps AAC — Apple devices' },
-  { id: 'sgmca', label: 'SGMCA', desc: 'Case CATalyst Direct Audio — Opus, one stream per channel, 16 kHz' },
+  { id: 'sgmca', label: 'SGMCA', desc: 'Case CATalyst Direct Audio — Opus, one stream per channel, 48 kHz' },
 ]
 
 // Output formats whose sample rate is fixed by the format itself.
-export const FIXED_OUTPUT_RATES = { opus: '48000', sgmca: '16000' }
+export const FIXED_OUTPUT_RATES = { opus: '48000', sgmca: '48000' }
 
 /// The sample rate a conversion to `format` will really use.
 export function effectiveOutputRate(format, rate) {
