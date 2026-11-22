@@ -130,6 +130,7 @@ pub(crate) fn input_codec_args(path: &Path) -> Vec<String> {
     if is_sgmca_concat_feed(path) {
         let mut args = feed_format_args(path);
         args.extend(["-c:a".into(), "libopus".into()]);
+        args.extend(sgmca_feed_start_args(path));
         return args;
     }
     // Extension only: the FTR handler does not depend on file content, and
@@ -392,6 +393,43 @@ fn is_sgmca_concat_feed(path: &Path) -> bool {
             .is_some_and(|name| name.starts_with(SGMCA_FEED_PREFIX))
 }
 
+/// The marker before the first session's pre-skip in a concat script's name.
+const SGMCA_FEED_LEAD_MARKER: &str = "_lead";
+
+/// The first session's Opus pre-skip, from the name of the concat script
+/// `prepare_sgmca_feed` wrote. None for any other path.
+fn sgmca_feed_lead(path: &Path) -> Option<u16> {
+    if !is_sgmca_concat_feed(path) {
+        return None;
+    }
+    let stem = path.file_stem()?.to_str()?;
+    let (_, lead) = stem.rsplit_once(SGMCA_FEED_LEAD_MARKER)?;
+    lead.parse().ok()
+}
+
+/// `-itsoffset` for an SGMCA concat script, so its audio starts at zero as a
+/// bare Ogg file does.
+///
+/// FFmpeg's Ogg demuxer gives a bare Opus stream a start time that already
+/// allows for the pre-skip, so its first decoded sample lands at zero. The
+/// concat demuxer takes the first packet's timestamp instead, which is the
+/// pre-skip *before* zero, and FFmpeg then moves the whole input later by
+/// that much. WAV, FLAC, MP3 and Ogg outputs drop the gap, but MP4 (M4A)
+/// keeps it as a lead-in: every sample came out 312 samples (6.5 ms) late
+/// and the file grew by as much. This moves the input back by exactly the
+/// pre-skip, so the first decoded sample is at zero for every output.
+fn sgmca_feed_start_args(path: &Path) -> Vec<String> {
+    match sgmca_feed_lead(path) {
+        Some(lead) if lead > 0 => vec![
+            "-itsoffset".into(),
+            // Microseconds: within 0.05 of a sample, and FFmpeg rounds to the
+            // nearest sample at 48 kHz.
+            format!("-{}us", (u64::from(lead) * 1_000_000 + 24_000) / 48_000),
+        ],
+        _ => Vec::new(),
+    }
+}
+
 /// Input options (before `-i`) that every ffmpeg and ffprobe call needs to
 /// read `feed`. For an SGMCA concat script: the concat demuxer, `-safe 0`
 /// (its entries are `subfile` URLs into the original file) and a protocol
@@ -443,12 +481,19 @@ pub(crate) fn prepare_sgmca_feed(
         return Ok((src.to_path_buf(), None, info));
     }
     let script = crate::sgmca::concat_script(src, &info)?;
+    // The first session FFmpeg plays carries the pre-skip the input must be
+    // moved back by (see `sgmca_feed_start_args`).
+    let lead = info
+        .segments
+        .iter()
+        .find(|segment| segment.samples > 0)
+        .map_or(0, |segment| segment.head.pre_skip);
     // Security note: UUID-based temp filenames are unpredictable, which is sufficient
     // for a single-user desktop app. The system temp dir inherits OS-level permissions
     // (typically user-only on macOS/Windows). The script names only byte ranges of the
     // file the person selected; `create_new` never follows or replaces an existing file.
     let path = std::env::temp_dir().join(format!(
-        "{SGMCA_FEED_PREFIX}{}.{SGMCA_FEED_EXTENSION}",
+        "{SGMCA_FEED_PREFIX}{}{SGMCA_FEED_LEAD_MARKER}{lead}.{SGMCA_FEED_EXTENSION}",
         Uuid::new_v4().to_string().replace('-', "")
     ));
     let guard = crate::safety::TempFile::new(path.clone());
@@ -815,15 +860,37 @@ mod tests {
                 "-safe",
                 "0",
                 "-c:a",
-                "libopus"
+                "libopus",
+                "-itsoffset",
+                "-6500us"
             ]
         );
+        assert_eq!(sgmca_feed_lead(&feed), Some(312));
         assert_eq!(feed_format_args(&feed)[..2], ["-protocol_whitelist", "file,subfile"]);
         assert!(feed_format_args(&source).is_empty());
         // The original is never touched, and the script goes with its guard.
         assert_eq!(fs::read(&source).unwrap(), bytes);
         drop(guard);
         assert!(!feed.exists());
+    }
+
+    #[test]
+    fn an_sgmca_concat_feed_is_moved_back_by_exactly_its_first_pre_skip() {
+        let feed = |name: &str| std::env::temp_dir().join(name);
+        let args = |name: &str| sgmca_feed_start_args(&feed(name));
+        assert_eq!(args("depoaudio_sgmca_ab12_lead312.ffconcat"), ["-itsoffset", "-6500us"]);
+        // 311 samples are 6479.17 us: the nearest microsecond, which FFmpeg
+        // rounds back to exactly 311 samples.
+        assert_eq!(args("depoaudio_sgmca_ab12_lead311.ffconcat"), ["-itsoffset", "-6479us"]);
+        assert_eq!(
+            args("depoaudio_sgmca_ab12_lead4152.ffconcat"),
+            ["-itsoffset", "-86500us"]
+        );
+        assert!(args("depoaudio_sgmca_ab12_lead0.ffconcat").is_empty());
+        // Not a feed this app wrote, or no pre-skip in its name.
+        assert!(args("other_lead312.ffconcat").is_empty());
+        assert!(args("depoaudio_sgmca_ab12_lead312.wav").is_empty());
+        assert!(args("depoaudio_sgmca_ab12.ffconcat").is_empty());
     }
 
     #[test]

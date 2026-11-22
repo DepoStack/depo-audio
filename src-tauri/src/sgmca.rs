@@ -1462,10 +1462,23 @@ impl Timeline {
         // A page's granule position is where its last finished packet ends
         // (RFC 7845 4). A granule past that means audio is missing, or the
         // timestamps are damaged, and the length they give cannot be
-        // trusted. (The last page may end earlier, to trim the end.)
+        // trusted.
         if let Some(granule) = page.granule.filter(|&granule| granule > cursor) {
             return Err(format!(
                 "The Ogg page at byte {} says the audio reaches sample {granule}, but its packets end at sample {cursor}; part of the recording is missing or its timestamps are damaged.",
+                page.offset
+            ));
+        }
+        // Only the end-of-stream page may end before its packets do, to trim
+        // the end of the stream (RFC 7845 4.5). FFmpeg trims nothing at any
+        // other page and decodes every sample of its packets, so a short
+        // granule there would make the counts here disagree with the audio
+        // FFmpeg plays: every later session would be late by the difference
+        // and the end of the recording would be lost, with the sample counts
+        // still matching.
+        if let Some(granule) = page.granule.filter(|&granule| granule < cursor && !page.eos) {
+            return Err(format!(
+                "The Ogg page at byte {} says the audio ends at sample {granule}, but its packets reach sample {cursor}, and it is not the stream's last page. Only the last page may end the audio early, so the timestamps are damaged and the place of the audio after it cannot be trusted.",
                 page.offset
             ));
         }
@@ -3598,6 +3611,12 @@ mod tests {
     /// A 4-channel stream whose audio pages carry `granules` (one packet
     /// per page), written with the module's own writer.
     fn stream_with_granules(granules: &[u64]) -> Vec<u8> {
+        stream_with_granules_ending(granules, true)
+    }
+
+    /// One 30-byte packet per page at `granules`; the last page carries the
+    /// end-of-stream flag only with `eos`.
+    fn stream_with_granules_ending(granules: &[u64], eos: bool) -> Vec<u8> {
         let mut writer = OggWriter::new(Vec::new(), 9);
         writer.write_packet(&sgmca_head(4, 312).to_bytes(), 0).unwrap();
         writer.flush(false).unwrap();
@@ -3605,9 +3624,40 @@ mod tests {
         writer.flush(false).unwrap();
         for (index, &granule) in granules.iter().enumerate() {
             writer.write_packet(&fake_packet(30, index as u8), granule).unwrap();
-            writer.flush(index + 1 == granules.len()).unwrap();
+            writer.flush(eos && index + 1 == granules.len()).unwrap();
         }
         writer.into_inner()
+    }
+
+    #[test]
+    fn only_the_end_of_stream_page_may_end_the_audio_early() {
+        let dir = tempdir::Dir::new();
+        // The end-of-stream page trims 500 samples off its last packet.
+        let trimmed = direct_audio(&[(START_1, &stream_with_granules(&[960, 1920, 2380]))]);
+        let info = inspect(&write_temp(&dir, "trimmed.sgmca", &trimmed), None).unwrap();
+        assert_eq!(info.samples, 2380 - 312);
+        // The same short granule mid-stream: FFmpeg would play all 960
+        // samples of that packet, so every later sample would be late.
+        for (name, granules, eos) in [
+            ("middle", vec![960, 1500, 2460], true),
+            ("unflagged-last", vec![960, 1920, 2380], false),
+        ] {
+            let file = direct_audio(&[(START_1, &stream_with_granules_ending(&granules, eos))]);
+            let error = inspect(&write_temp(&dir, &format!("{name}.sgmca"), &file), None).unwrap_err();
+            assert!(
+                error.starts_with("Segment 1:") && error.contains("it is not the stream's last page"),
+                "{name}: {error}"
+            );
+        }
+        // A session whose trimmed last page lost its end-of-stream flag,
+        // followed by another session: refused, never read as if the trim
+        // held (FFmpeg would play the trimmed samples and move session 2).
+        let file = direct_audio(&[
+            (START_1, &stream_with_granules_ending(&[960, 1920, 2380], false)),
+            (START_2, &stream_with_granules(&[960, 1920])),
+        ]);
+        let error = inspect(&write_temp(&dir, "noeos.sgmca", &file), None).unwrap_err();
+        assert!(error.contains("it is not the stream's last page"), "{error}");
     }
 
     #[test]

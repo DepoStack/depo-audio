@@ -77,7 +77,7 @@ and the example `OpusHead` page's CRC (`0x801384E6`) by
 | File header | Must be 40 bytes, version 1 (the notes say CATalyst refuses a higher version and finds no playback position unless it is exactly 1). Any other size or version is refused with the value found. A file that starts with `OggS` is read as the **older bare-Ogg layout** earlier DepoAudio builds wrote: one session, no start time, and a note saying so. Anything else is refused; the earlier "find the stream somewhere in the first 8 KiB" search is gone. |
 | Segments | Walked by their payload lengths with strict bounds. The notes say CATalyst reads a segment header's size and finds the audio right after it, and does not check the version, kind or reserved fields, so DepoAudio does the same: a header size below 56 is refused (the start time and length would not fit); a larger one, or a version other than 1 or kind other than 2, is read and named in a note. A length of 0 followed straight away by another segment header is a session with no audio, noted, and the walk goes on. |
 | Lengths that stop short | If a header's length (0, or short of its pages) leaves Ogg pages that no header counts, DepoAudio walks those pages; if another session's header follows them, the file is **refused**, naming the segment and bytes, because reading on from the headers would leave later sessions out without saying so. Uncounted pages at the very end of the file are the still-recording case below. |
-| Timestamps | A page's granule position must not be past the end of its packets (RFC 7845 §4): a jump means audio is missing or the timestamps are damaged, and the file is refused rather than given a length the audio does not have. Granule positions beyond the signed 64-bit range are refused, and the sums use checked arithmetic. |
+| Timestamps | A page's granule position must not be past the end of its packets (RFC 7845 §4): a jump means audio is missing or the timestamps are damaged, and the file is refused rather than given a length the audio does not have. Only the end-of-stream page may end before its packets do, to trim the end (RFC 7845 §4.5); a short granule on any other page, such as a trimmed last page whose end-of-stream flag is missing, is refused, because FFmpeg trims nothing there and would play those samples, moving every later session and losing the end while the counts still matched. Granule positions beyond the signed 64-bit range are refused, and the sums use checked arithmetic. |
 | Each stream | Every page's capture pattern, version, sequence and CRC; packets reassembled across pages; `OpusHead` checked against RFC 7845. Damage is reported as `Segment N: …` with the byte where it is. Bytes after a stream's end-of-stream page are refused. |
 | One stream per session | A page of a second logical stream (another serial number) inside a segment, before the first stream's end-of-stream page, is refused with the byte and both serial numbers: a session holds one Ogg stream, and skipping the other would leave its audio out without a word (`a_second_logical_stream_inside_a_session_is_refused`). |
 | Layouts read | Family 255 or 1 with one uncoupled stream per channel and an identity mapping, or family 0 (plain mono or stereo). Any other layout is refused. |
@@ -95,6 +95,13 @@ made: DepoAudio writes a small temporary FFmpeg concat script (a few hundred byt
 when the job ends) whose entries point at each session's byte range of the original file
 through FFmpeg's `subfile` protocol, with each session's exact duration, and reads it with
 `-f concat -safe 0 -protocol_whitelist file,subfile`. A bare-Ogg file is read in place.
+The concat demuxer starts the audio at minus the first session's pre-skip, where a bare Ogg file
+starts at zero, and FFmpeg then moves the whole input later by that much. WAV, FLAC, MP3 and Ogg
+outputs drop the gap, but M4A keeps it as a lead-in: every sample came out 312 samples (6.5 ms)
+late. FFmpeg gets `-itsoffset` of minus that pre-skip on the concat input (the script's file name
+carries the value), so the first sample is at zero for every output; measured with FFmpeg 6.1 by
+the position of clicks in every output format
+(`every_output_from_a_two_session_sgmca_keeps_each_click_in_place`).
 Every ffprobe and FFmpeg call that reads the source (the probes, Scan, auto-level, the
 waveform, merge and conversion) uses this feed and its input options; the queue's duration and
 WAV size estimate come from the reader's joined duration, because ffprobe cannot read the
@@ -162,13 +169,16 @@ check expects by one sample, or moving 960 samples between sessions, removes the
 (`an_sgmca_output_that_does_not_hold_every_source_sample_is_removed`). For other sources the count
 is not known exactly (a resampled WAV, for example), so only the read-back above applies.
 
-A filter that **delays** the audio keeps the count and so needs its own check: `alimiter` without
-`latency=1` (which Mix to Stereo adds when Normalize Volume is off) outputs its 5 ms look-ahead as
-a delay, so every sample is 240 samples late and the last 5 ms are lost (measured with FFmpeg
-6.1; `adeclip`, `highpass`, `loudnorm` and `afade` were measured and do not shift the audio). An
-SGMCA output through such a chain is refused before FFmpeg runs, and the check after writing
-refuses it too. Fixing the limiter itself is separate work; until it lands, Mix to Stereo to SGMCA
-needs Normalize Volume, and the end-to-end test for the plain mix is marked as waiting for it.
+A filter that **delays** the audio keeps the count and so needs its own check. FFmpeg's
+`alimiter` without `latency=1` outputs its 5 ms look-ahead as a delay, so every sample is 240
+samples late and the last 5 ms are lost (measured with FFmpeg 6.1). Mix to Stereo without
+Normalize Volume now adds it with `latency=1`, which measured 0 samples late with the length
+kept, for every output format. Every conversion chain, in any format, may hold only filters
+measured not to move the audio (`pan`, `volume`, `asplit`, `aformat`, `adeclip`, `highpass`,
+`loudnorm`, `afade`, `alimiter` with `latency=1`, and `silenceremove`, whose start shift is
+recorded separately); any other filter, or the limiter without `latency=1`, is refused before
+FFmpeg runs, and an SGMCA output is checked again after writing. The counts alone cannot see a
+delay; the click test above checks positions in every format, including Mix to Stereo.
 
 ## Export record
 

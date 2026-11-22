@@ -91,6 +91,35 @@ fn track_planned(cleanup: &mut OutputCleanup, planned: &[PlannedOutput]) {
 /// CATalyst encodes).
 const SGMCA_KBPS_PER_CHANNEL: u32 = 32;
 
+/// Peak guard for Mix to Stereo with normalize off. FFmpeg's alimiter looks
+/// 5 ms ahead and, by default (`latency=0`), outputs that lookahead as a
+/// delay: the output keeps the source's length, so the audio starts about
+/// 5 ms late and the last 5 ms of the source are cut. `latency=1` removes the
+/// delay so the output lines up sample for sample with the source. An FFmpeg
+/// without the option fails the conversion instead of shifting the audio.
+const STEREO_PEAK_LIMITER: &str = "alimiter=limit=0.97:level=false:latency=1";
+
+/// Filters a conversion chain may hold, each measured not to delay or move
+/// the audio (with FFmpeg 6.1, by the position of clicks in a test file):
+/// the mixers and gain, de-clip, high-pass, loudnorm (which compensates its
+/// own look-ahead), fades, sample-format conversion, and alimiter only with
+/// `latency=1` (see `STEREO_PEAK_LIMITER`). `silenceremove` moves the start
+/// on purpose; that is handled and recorded separately (see
+/// `manifest::filters_shift_start`). Any other filter is refused, so one
+/// that delays the audio cannot be added without being measured here first.
+const TIMING_SAFE_FILTERS: [&str; 10] = [
+    "pan",
+    "volume",
+    "asplit",
+    "aformat",
+    "adeclip",
+    "highpass",
+    "loudnorm",
+    "afade",
+    "silenceremove",
+    "alimiter",
+];
+
 /// Stereo downmix: a unity-gain SUM of all channels on both L and R.
 /// `vols` are per-channel volumes already multiplied by 1/num_ch; missing
 /// entries fall back to an equal-weight mix.
@@ -468,7 +497,7 @@ fn plan_conversion(
             // 20*log10(N) dB. loudnorm true-peak-limits when normalize is on;
             // otherwise cap peaks ourselves so the encode doesn't hard-clip.
             if !job.normalize {
-                all.push("alimiter=limit=0.97:level=false".into());
+                all.push(STEREO_PEAK_LIMITER.into());
             }
             planned = reserve_output_paths([(out_dir.join(format!("{}{}", base, ext)), None, None)])?;
             track_planned(cleanup, &planned);
@@ -540,12 +569,12 @@ fn plan_conversion(
         _ => return Err(format!("Unknown mode: {}", job.mode)),
     }
 
-    // A delayed SGMCA output would no longer line up with a transcript;
-    // refuse it before FFmpeg runs (the check after writing refuses it too).
-    if job.format == "sgmca" {
-        if let Some(filter) = filter_chain.as_deref().and_then(delaying_filter) {
-            return Err(format!("{} Nothing was converted.", sgmca_delay_message(filter)));
-        }
+    // A delayed output, in any format, would no longer line up with the
+    // recording or a transcript, and its record would say the timeline was
+    // kept; refuse it before FFmpeg runs (an SGMCA output is checked again
+    // after writing).
+    if let Some(filter) = filter_chain.as_deref().and_then(delaying_filter) {
+        return Err(format!("{} Nothing was converted.", delay_message(filter)));
     }
 
     let sgmca_output = if job.format == "sgmca" {
@@ -600,23 +629,35 @@ struct ExpectedSamples {
     segments: Vec<u64>,
 }
 
-/// A filter in `chain` that delays the audio without saying so:
-/// `alimiter` without `latency=1` outputs its 5 ms look-ahead as a delay and
-/// keeps the length, so every sample after it is late and the last 5 ms of
-/// the source are lost. None when no such filter is in the chain.
+/// A filter in `chain` that may delay or move the audio without saying so:
+/// one not in `TIMING_SAFE_FILTERS`, or `alimiter` without `latency=1`,
+/// which outputs its 5 ms look-ahead as a delay and keeps the length, so
+/// every sample after it is late and the last 5 ms of the source are lost.
+/// None when every filter in the chain keeps the audio in place.
 fn delaying_filter(chain: &str) -> Option<&str> {
     chain.split([',', ';']).find(|filter| {
-        // Drop the input pad labels, such as `[sp0]`, before the name.
-        let mut name = filter.trim();
-        while let Some(rest) = name.strip_prefix('[') {
-            name = rest.split_once(']').map_or("", |(_, after)| after);
+        let (filter_name, options) = filter_name_and_options(filter);
+        if filter_name.is_empty() {
+            return false;
         }
-        let (filter_name, options) = name.split_once('=').unwrap_or((name, ""));
+        if !TIMING_SAFE_FILTERS.contains(&filter_name) {
+            return true;
+        }
         filter_name == "alimiter"
             && !options
                 .split(':')
                 .any(|option| matches!(option.split('[').next(), Some("latency=1" | "latency=true")))
     })
+}
+
+/// One filter's name and options, without its pad labels (`[sp0]...[op0]`).
+fn filter_name_and_options(filter: &str) -> (&str, &str) {
+    let mut name = filter.trim();
+    while let Some(rest) = name.strip_prefix('[') {
+        name = rest.split_once(']').map_or("", |(_, after)| after);
+    }
+    let (filter_name, options) = name.split_once('=').unwrap_or((name, ""));
+    (filter_name.split('[').next().unwrap_or("").trim(), options)
 }
 
 /// The check after an SGMCA output is written: no audio dropped, padded,
@@ -629,7 +670,7 @@ fn check_sgmca_samples(
     written: &crate::sgmca::SgmcaInfo,
 ) -> Result<(), String> {
     if let Some(filter) = filter_chain.and_then(delaying_filter) {
-        return Err(sgmca_delay_message(filter));
+        return Err(delay_message(filter));
     }
     let Some(expected) = expected else {
         return Ok(());
@@ -666,11 +707,17 @@ fn check_sgmca_samples(
     Ok(())
 }
 
-fn sgmca_delay_message(filter: &str) -> String {
-    let name = filter.split('=').next().unwrap_or(filter);
-    format!(
-        "The processing chain includes {name} without latency compensation, which delays every sample by its look-ahead and drops the same length from the end. CATalyst places Direct Audio against a transcript by time, so an SGMCA output must not be delayed. To convert to SGMCA, turn on Normalize Volume, or use Keep Original or Split Channels."
-    )
+fn delay_message(filter: &str) -> String {
+    let (name, _) = filter_name_and_options(filter);
+    if name == "alimiter" {
+        format!(
+            "The processing chain includes {name} without latency compensation, which delays every sample by its look-ahead and drops the same length from the end, so the output would no longer line up with the recording or its transcript."
+        )
+    } else {
+        format!(
+            "The processing chain includes {name}, a filter DepoAudio has not checked for delaying or moving the audio, so the output might no longer line up with the recording or its transcript."
+        )
+    }
 }
 
 /// Where a BWF source's audio is placed in an SGMCA output.
@@ -3330,6 +3377,19 @@ mod tests {
         assert_eq!(delaying_filter("alimiter=limit=0.97:level=false:latency=1"), None);
         assert_eq!(delaying_filter("alimiter=latency=true:limit=0.97"), None);
         assert_eq!(delaying_filter("loudnorm=I=-16:TP=-1.5:LRA=11,afade=t=in:d=0.5"), None);
+        assert_eq!(delaying_filter(STEREO_PEAK_LIMITER), None);
+        // A filter nobody measured is refused, so a delay cannot slip in
+        // unseen: the counts would still match.
+        for (chain, filter) in [
+            ("highpass=f=80,adelay=delays=5", "adelay=delays=5"),
+            ("[sp0]pan=mono|c0=c0,apad[op0]", "apad[op0]"),
+            ("asetpts=PTS+0.01/TB", "asetpts=PTS+0.01/TB"),
+        ] {
+            assert_eq!(delaying_filter(chain), Some(filter), "{chain}");
+        }
+        assert!(delay_message("[sp0]adelay=delays=5[op0]").starts_with(
+            "The processing chain includes adelay, a filter DepoAudio has not checked for delaying or moving the audio"
+        ));
         let joined = ExpectedSamples {
             total: 720_000,
             segments: vec![720_000],
@@ -3354,21 +3414,62 @@ mod tests {
             duration_secs: Some(15.0),
             sgmca_source: Some(crate::sgmca::inspect(&sgmca, None).unwrap()),
         };
-        let mut cleanup = OutputCleanup::default();
-        let result = plan_conversion(&job, &sgmca, &probes, &mut cleanup);
-        if let Some(chain) = result.as_ref().ok().and_then(|plan| plan.filter_chain.clone()) {
-            // The limiter compensates its look-ahead once that fix lands.
-            assert_eq!(delaying_filter(&chain), None, "{chain}");
-        } else {
-            let error = result.err().unwrap();
-            assert!(error.contains("alimiter without latency compensation"), "{error}");
+        // Every format: the limiter compensates its look-ahead.
+        for format in ["sgmca", "wav", "flac", "mp3", "m4a", "opus"] {
+            let mut job = job.clone();
+            job.format = format.into();
+            let mut cleanup = OutputCleanup::default();
+            let plan = plan_conversion(&job, &sgmca, &probes, &mut cleanup).unwrap();
+            let chain = plan.filter_chain.clone().unwrap();
+            assert!(chain.ends_with(STEREO_PEAK_LIMITER), "{format}: {chain}");
+            assert_eq!(delaying_filter(&chain), None, "{format}: {chain}");
+            drop(cleanup);
         }
-        drop(cleanup);
+        // A chain with a filter that delays the audio is refused for every
+        // format before FFmpeg runs, not only for SGMCA.
+        for format in ["sgmca", "wav", "m4a"] {
+            let job = two_channel_job(&sgmca, &out, "keep", format);
+            let probes = ConversionProbes {
+                channels: Some(2),
+                channel_gains: None,
+                proc: vec!["alimiter=limit=0.97".into()],
+                probed: manifest::ProbedSource::default(),
+                duration_secs: Some(15.0),
+                sgmca_source: Some(crate::sgmca::inspect(&sgmca, None).unwrap()),
+            };
+            let mut cleanup = OutputCleanup::default();
+            let error = plan_conversion(&job, &sgmca, &probes, &mut cleanup).err().unwrap();
+            assert!(
+                error.starts_with("The processing chain includes alimiter without latency compensation")
+                    && error.ends_with("Nothing was converted."),
+                "{format}: {error}"
+            );
+            drop(cleanup);
+        }
         assert_eq!(fs::read_dir(&out).unwrap().count(), 0);
     }
 
     #[test]
-    #[ignore = "needs the alimiter latency fix (separate PR): Mix to Stereo without Normalize Volume adds alimiter without latency=1, which delays every sample by 5 ms, so the SGMCA check refuses this conversion"]
+    fn every_processing_option_builds_a_chain_that_keeps_the_audio_in_place() {
+        let mut job = valid_job();
+        job.declip = true;
+        job.hpf = true;
+        job.normalize = true;
+        job.fade = true;
+        job.trim = true;
+        job.mode = "stereo".into();
+        let proc = crate::ffmpeg::proc_filters(&job, Some(2.0), Some(60.0));
+        let stereo = std::iter::once(stereo_pan_filter(4, &[0.25; 4]))
+            .chain(proc.iter().cloned())
+            .chain([STEREO_PEAK_LIMITER.to_string()])
+            .collect::<Vec<_>>()
+            .join(",");
+        assert_eq!(delaying_filter(&stereo), None, "{stereo}");
+        let split = split_filter_complex(4, true, Some(&vec![2.0, 1.0, 0.5, 1.0]), &proc);
+        assert_eq!(delaying_filter(&split), None, "{split}");
+    }
+
+    #[test]
     fn vendor_notes_two_session_sample_mixes_to_a_stereo_sgmca_with_every_sample_in_place() {
         if !court_fixture_tools_available() {
             return;
@@ -3432,5 +3533,137 @@ mod tests {
             .as_str()
             .unwrap()
             .contains("only its complete audio was converted"));
+    }
+
+    /// One 2-channel Opus session of `samples` at 48 kHz with a click (one
+    /// sample at 0.9) at each position in `clicks` on its channel.
+    fn click_session(dir: &Path, name: &str, samples: u64, clicks: [&[u64]; 2]) -> Vec<u8> {
+        let expression = |positions: &[u64]| {
+            let terms: Vec<String> = positions.iter().map(|at| format!("eq(n\\,{at})")).collect();
+            if terms.is_empty() {
+                "0".to_string()
+            } else {
+                format!("0.9*({})", terms.join("+"))
+            }
+        };
+        let ogg = dir.join(format!("{name}.ogg"));
+        run_ffmpeg(&[
+            "-f".into(),
+            "lavfi".into(),
+            "-i".into(),
+            format!(
+                "aevalsrc=exprs={}|{}:s=48000:d={}",
+                expression(clicks[0]),
+                expression(clicks[1]),
+                samples as f64 / 48_000.0
+            ),
+            "-c:a".into(),
+            "libopus".into(),
+            "-mapping_family".into(),
+            "255".into(),
+            "-frame_duration".into(),
+            "20".into(),
+            "-b:a".into(),
+            "128k".into(),
+            "-f".into(),
+            "ogg".into(),
+            "-y".into(),
+            ogg.to_string_lossy().to_string(),
+        ]);
+        let stream = fs::read(&ogg).unwrap();
+        fs::remove_file(&ogg).unwrap();
+        stream
+    }
+
+    /// Where each click in `samples` starts: the first sample past half the
+    /// click's level, one per group (clicks are far apart).
+    fn click_positions(samples: &[f32], threshold: f32) -> Vec<i64> {
+        let mut found: Vec<i64> = Vec::new();
+        for (index, sample) in samples.iter().enumerate() {
+            let index = index as i64;
+            if sample.abs() > threshold && found.last().is_none_or(|&last| index - last > 4_800) {
+                found.push(index);
+            }
+        }
+        found
+    }
+
+    fn assert_clicks_at(samples: &[f32], threshold: f32, expected: &[i64], label: &str) {
+        let found = click_positions(samples, threshold);
+        assert_eq!(
+            found.len(),
+            expected.len(),
+            "{label}: clicks at {found:?}, expected {expected:?}"
+        );
+        for (&got, &want) in found.iter().zip(expected) {
+            // Opus smears a one-sample click over a few samples either side;
+            // 1 ms still tells the 6.5 ms pre-skip and 5 ms limiter delays apart.
+            assert!(
+                (got - want).abs() < 48,
+                "{label}: a click at {got} where the source has {want} ({found:?})"
+            );
+        }
+    }
+
+    #[test]
+    fn every_output_from_a_two_session_sgmca_keeps_each_click_in_place() {
+        if !court_fixture_tools_available() {
+            return;
+        }
+        let dir = ConversionTestDir::new();
+        // Session 1: 3 s, clicks on channel 1 at 0.5 s and 1.5 s and on
+        // channel 2 at 1 s. Session 2: 2 s, a click on channel 1 at 0.5 s,
+        // which is 3.5 s into the joined audio.
+        let first = click_session(&dir.0, "first", 144_000, [&[24_000, 72_000], &[48_000]]);
+        let second = click_session(&dir.0, "second", 96_000, [&[24_000], &[]]);
+        let sgmca = dir.0.join("clicks.sgmca");
+        fs::write(
+            &sgmca,
+            crate::sgmca::fixtures::direct_audio(&[
+                ("2026-11-22T10:15:30-0500", &first),
+                ("2026-11-22T10:20:00-0500", &second),
+            ]),
+        )
+        .unwrap();
+        let left = [24_000, 72_000, 168_000];
+        let right = [48_000];
+        let mixed = [24_000, 48_000, 72_000, 168_000];
+        for format in ["m4a", "wav", "flac", "mp3", "opus", "sgmca"] {
+            for mode in ["keep", "split", "stereo"] {
+                let label = format!("{format} {mode}");
+                let out = dir.0.join(format!("{format}-{mode}"));
+                fs::create_dir(&out).unwrap();
+                // Mix to Stereo without Normalize Volume: the peak limiter.
+                let job = two_channel_job(&sgmca, &out, mode, format);
+                let conversion =
+                    convert_with_system_ffmpeg(&job, None).unwrap_or_else(|error| panic!("{label}: {error}"));
+                let decoded: Vec<Vec<f32>> = conversion
+                    .files
+                    .iter()
+                    .flat_map(|file| decode_f32(Path::new(&file.path), if mode == "split" { 1 } else { 2 }))
+                    .collect();
+                match mode {
+                    "stereo" => {
+                        // Each channel is half of each source channel.
+                        assert_clicks_at(&decoded[0], 0.2, &mixed, &label);
+                        assert_clicks_at(&decoded[1], 0.2, &mixed, &label);
+                    }
+                    _ => {
+                        assert_clicks_at(&decoded[0], 0.4, &left, &label);
+                        assert_clicks_at(&decoded[1], 0.4, &right, &label);
+                    }
+                }
+                for channel in &decoded {
+                    // Nothing added before the audio or cut from its end
+                    // (AAC pads its last frame, up to 1024 samples).
+                    let len = channel.len() as i64;
+                    let slack = if format == "m4a" { 1_024 } else { 0 };
+                    assert!(
+                        (240_000..=240_000 + slack).contains(&len),
+                        "{label}: {len} samples where the source holds 240000"
+                    );
+                }
+            }
+        }
     }
 }
