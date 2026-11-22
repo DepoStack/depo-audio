@@ -412,6 +412,13 @@ jobs:
               test -s "$output" || { echo "ERROR: $arch produced no $extension output"; exit 1; }
               rm -f -- "$output"
             done
+            # Trim silence and Mix to Stereo's peak limiter need these exact
+            # options (peak detection with no window, lookahead compensation),
+            # or the audio is cut or shifted. An FFmpeg without them fails here.
+            "$ffmpeg" -hide_banner -v error -xerror \
+              -c:a ftr -t 1 -i "$fixture_path" -map 0:a:0 \
+              -af 'silenceremove=start_periods=1:start_threshold=-50dB:start_mode=any:detection=peak:window=0,alimiter=limit=0.97:level=false:latency=1' \
+              -f null - || { echo "ERROR: $arch lacks the alignment-safe filter options"; exit 1; }
           done
 
       - name: Smoke-test native FTR decoding and released encoders (Windows)
@@ -444,6 +451,13 @@ jobs:
             }
             Remove-Item -LiteralPath $output -Force
           }
+          # Trim silence and Mix to Stereo's peak limiter need these exact
+          # options (peak detection with no window, lookahead compensation),
+          # or the audio is cut or shifted. An FFmpeg without them fails here.
+          & $ffmpeg -hide_banner -v error -xerror -c:a ftr -t 1 -i $fixturePath -map 0:a:0 `
+            -af 'silenceremove=start_periods=1:start_threshold=-50dB:start_mode=any:detection=peak:window=0,alimiter=limit=0.97:level=false:latency=1' `
+            -f null NUL
+          if ($LASTEXITCODE -ne 0) { throw "Bundled FFmpeg lacks the alignment-safe filter options" }
 
       - name: Remove synthetic FTR fixture from the release workspace
         if: always()

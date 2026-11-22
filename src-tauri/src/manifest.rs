@@ -798,7 +798,7 @@ pub(crate) mod tests {
             "afade=t=in:d=0.5".into()
         ]));
         assert!(filters_shift_start(&[
-            "silenceremove=start_periods=1:start_duration=0.3:start_threshold=-50dB:start_mode=any".into()
+            "silenceremove=start_periods=1:start_threshold=-50dB:start_mode=any:detection=peak:window=0".into()
         ]));
     }
 
@@ -1325,7 +1325,7 @@ pub(crate) mod tests {
         );
         assert_eq!(time_reference_tags(&probe_json(&copied)), vec!["158760000".to_string()]);
 
-        let trim_filter = "silenceremove=start_periods=1:start_duration=0.3:start_threshold=-50dB:start_mode=any";
+        let trim_filter = "silenceremove=start_periods=1:start_threshold=-50dB:start_mode=any:detection=peak:window=0";
         let cases: [(&str, Option<&str>); 7] = [
             ("flac", None),
             ("mp3", None),

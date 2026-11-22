@@ -406,9 +406,16 @@ pub(crate) fn proc_filters(opts: &ConvertJob, auto_gain: Option<f64>, duration: 
     // Split mode applies this filter chain independently to each channel. Even
     // leading-only trimming can then produce different start times, so retain
     // the original shared timeline for split outputs.
+    //
+    // Trim stops at the first sample above the threshold on any channel
+    // (`detection=peak:window=0`), so only audio below the threshold is
+    // removed. FFmpeg 6.1 and newer also drop the `start_duration` of sound
+    // they use to confirm the silence has ended, and the default 20 ms RMS
+    // window ends the silence a few samples late, so neither is used: an
+    // earlier `start_duration=0.3` cut the first 0.3 s of speech.
     if opts.trim && opts.mode != "split" {
         filters.push(format!(
-            "silenceremove=start_periods=1:start_duration=0.3:start_threshold={}dB:start_mode=any",
+            "silenceremove=start_periods=1:start_threshold={}dB:start_mode=any:detection=peak:window=0",
             opts.silence_thresh
         ));
     }
@@ -654,7 +661,7 @@ Decoders:
     fn trim_uses_default_silence_threshold() {
         assert_eq!(
             proc_filters(&job(r#", "trim": true"#), None, None),
-            vec!["silenceremove=start_periods=1:start_duration=0.3:start_threshold=-50dB:start_mode=any"]
+            vec!["silenceremove=start_periods=1:start_threshold=-50dB:start_mode=any:detection=peak:window=0"]
         );
     }
 
@@ -715,7 +722,7 @@ Decoders:
             proc_filters(&job(r#", "trim": true, "fade": true"#), None, Some(10.0)),
             vec![
                 "afade=t=out:st=9.500:d=0.5",
-                "silenceremove=start_periods=1:start_duration=0.3:start_threshold=-50dB:start_mode=any",
+                "silenceremove=start_periods=1:start_threshold=-50dB:start_mode=any:detection=peak:window=0",
                 "afade=t=in:d=0.5",
             ]
         );
@@ -733,7 +740,7 @@ Decoders:
                 "volume=2.0000",
                 "loudnorm=I=-16:TP=-1.5:LRA=11",
                 "afade=t=out:st=59.500:d=0.5",
-                "silenceremove=start_periods=1:start_duration=0.3:start_threshold=-50dB:start_mode=any",
+                "silenceremove=start_periods=1:start_threshold=-50dB:start_mode=any:detection=peak:window=0",
                 "afade=t=in:d=0.5",
             ]
         );

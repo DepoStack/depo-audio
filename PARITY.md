@@ -74,7 +74,7 @@ These define what converted files sound like. Changing them changes output
 for identical inputs — never do it silently.
 
 - ★ Filter order: de-clip → high-pass → auto-level gain → loudnorm → source-relative fade-out → leading trim → fade-in (`proc_filters` tests).
-- ★ Stereo mode: unity-gain SUM of all channels on both L/R via `pan=stereo` + `volume=N` compensation; `alimiter=limit=0.97` appended when normalize is off (peak guard for correlated content).
+- ★ Stereo mode: unity-gain SUM of all channels on both L/R via `aformat=sample_fmts=fltp` (mix in float, so a sum past full scale cannot wrap) + `pan=stereo` + `volume=N` compensation; `alimiter=limit=0.97:level=false:latency=1` appended when normalize is off (peak guard for correlated content; `latency=1` cancels the limiter's 5 ms lookahead delay so the mix lines up sample for sample with the source).
 - ★ Split mode: `asplit` + `pan=mono|c0=cN` per channel (NOT `channelsplit`, which assumes a stereo layout); auto-level injects each channel's own gain right after isolation; near-unity gains (±0.01) skipped.
 - ★ Keep Original mode rejects auto-leveling at the backend boundary; one shared gain cannot perform the documented per-channel balancing while preserving the channel layout.
 - ★ MP3 bitrates limited to 128/192/320 kbps, off-menu values fall back to 192.
