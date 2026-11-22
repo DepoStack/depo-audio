@@ -105,9 +105,10 @@ export function dcrQueueNotices(info) {
   const changes = Array.isArray(dcr.conferenceChanges) ? dcr.conferenceChanges : []
   for (const change of changes.slice(0, DCR_CHANGES_LISTED)) {
     const kind = change?.kind === 'joined' || change?.kind === 'left' ? change.kind : 'joined or left'
-    notices.push(
-      `A remote participant ${kind} at ${clockTime(change?.atSeconds)}; DepoAudio's channel order after that point is a best guess.`,
-    )
+    const after = Number.isInteger(change?.channelsAfter)
+      ? ` (${change.channelsAfter} ${change.channelsAfter === 1 ? 'channel' : 'channels'} recorded from then on)`
+      : ''
+    notices.push(`A remote participant ${kind} at ${clockTime(change?.atSeconds)}${after}.`)
   }
   const total = Number.isInteger(dcr.conferenceChangeCount) ? dcr.conferenceChangeCount : changes.length
   const unlisted = total - Math.min(changes.length, DCR_CHANGES_LISTED)
@@ -124,6 +125,13 @@ export function dcrQueueNotices(info) {
   }
   if (dcr.videoFrames > 0 || dcr.attachments > 0) {
     notices.push('This recording also holds video frames or attachments; only the audio is converted.')
+  }
+  // Redactions, password-protected sections, checksums and the like, worded
+  // by the reader (never from the recording's notes).
+  if (Array.isArray(dcr.notices)) {
+    for (const notice of dcr.notices) {
+      if (typeof notice === 'string' && notice) notices.push(notice)
+    }
   }
   return notices
 }

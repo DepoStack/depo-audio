@@ -34,7 +34,7 @@ fn date_regex() -> &'static Regex {
 // - .dcr without the Liberty / BIS Digital signature: not a layout DepoAudio
 //   reads; the recorder software is named only as an example.
 const DCR_NOTE: &str = "DCR recordings use a closed format. Export to WAV from the software that recorded it (for example Liberty Court Recorder or BIS Digital), then add the WAV.";
-const DCR_READER_NOTE: &str = "Reads unencrypted recordings; tested with synthetic files only. The layout comes from interoperability notes and has not been checked against a real recording.";
+const DCR_READER_NOTE: &str = "Applies marked redactions; password-protected parts are silent; tested with synthetic files only. The layout comes from interoperability notes and has not been checked against a real recording.";
 const DCR_IMAGE_NOTE: &str = "This .dcr starts like a camera raw image (TIFF), not like court audio. Check that you picked the right file. If it is a court recording, export it to WAV from the software that recorded it.";
 const DS2_NOTE: &str = "DS2 (DSS Pro) dictation files cannot be opened here. Export to WAV with OM System / Olympus dictation software (for example ODMS), then add the WAV. An encrypted DS2 also needs its password in that software.";
 const WEBEX_NOTE: &str = "Webex network recordings (.arf, .wrf) cannot be opened here. Convert an .arf to MP4 with the Webex Recording Converter, or a .wrf to WMV with the Webex WRF2WMV Converter (both Windows only), then add the converted file.";

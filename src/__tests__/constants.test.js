@@ -85,7 +85,9 @@ describe('FORMAT_ROWS intake rows', () => {
   it('lists Liberty / BIS Digital .dcr as an experimental court format tested with synthetic files only', () => {
     const row = FORMAT_ROWS.find(r => r.ext === '.dcr')
     expect(row).toMatchObject({ vendor: 'Liberty / BIS Digital', status: 'experimental', group: 'court' })
-    expect(row.note).toBe('Reads unencrypted recordings; tested with synthetic files only')
+    expect(row.note).toBe(
+      'Applies marked redactions; password-protected parts are silent; tested with synthetic files only',
+    )
   })
 })
 

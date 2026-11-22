@@ -344,7 +344,11 @@ describe('Closed-format guidance', () => {
       expect(screen.getByText(ext, { normalizer: text => text })).toBeVisible()
     }
     expect(screen.getByText('Liberty / BIS Digital')).toBeVisible()
-    expect(screen.getByText('Reads unencrypted recordings; tested with synthetic files only')).toBeVisible()
+    expect(
+      screen.getByText(
+        'Applies marked redactions; password-protected parts are silent; tested with synthetic files only',
+      ),
+    ).toBeVisible()
     expect(screen.queryByText(/High Criteria/)).not.toBeInTheDocument()
   })
 })

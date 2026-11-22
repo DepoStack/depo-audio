@@ -104,7 +104,7 @@ Scanning is a bounded, cancellable local analysis pass. FFmpeg performs the sele
 | **FTR / TRM**                                | For The Record             | 🧪 Experimental                    |
 | **BWF**                                      | CourtSmart · Various       | ✅ Supported                       |
 | **DigitalCAT (.dm)**                         | Stenovations               | 🧪 Experimental                    |
-| **DCR**                                      | Liberty / BIS Digital      | 🧪 Experimental — unencrypted only |
+| **DCR**                                      | Liberty / BIS Digital      | 🧪 Experimental                    |
 | **WAV, MP3, FLAC, M4A, OGG, Opus, WMA, AIF** | Standard                   | ✅ Supported                       |
 | **Video (MP4, MOV, MKV, AVI, WebM)**         | — audio track extracted    | ✅ Supported                       |
 | **Video (MPG, VOB, TS, MTS, M2TS, WMV, ASF)** | — audio track extracted   | ✅ Supported                       |
@@ -117,14 +117,19 @@ The MPG, VOB, TS, MTS, M2TS, WMV and ASF rows are smoke-tested at each
 release with synthetic files carrying MP2, AC-3 or WMAv2 audio. No real
 deposition recording in these containers has been tried yet.
 
-DCR support reads unencrypted Liberty / BIS Digital recordings and has been
-tested with synthetic files only. The layout it reads comes from
-owner-supplied interoperability notes and has not been confirmed against a
-real recording. Password-protected or encrypted recordings, Speex audio,
-other unknown codecs and recordings whose layout DepoAudio cannot follow are
-refused with a message; export those to WAV in the software that recorded
-them. A `.dcr` without the Liberty / BIS Digital signature gets export
-guidance, and a camera raw image named `.dcr` is called out as an image.
+DCR support reads Liberty / BIS Digital recordings and has been tested with
+synthetic files only, including two synthetic tones the owner made with a
+rebuild tool. The layout it reads comes from owner-supplied interoperability
+notes and has not been confirmed against a recording made by the vendor's
+software (see `docs/DCR.md`). Redactions marked in the recording are applied:
+skipped segments are left out and blacked-out ones are silent.
+Password-protected sections are silent in the output, with a warning before
+export. The recording's checksums are checked and the result is shown.
+Speex audio, other unknown codecs and recordings whose layout DepoAudio cannot
+follow are refused with a message; export those to WAV in the software that
+recorded them. A `.dcr` without the Liberty / BIS Digital signature gets
+export guidance, and a camera raw image named `.dcr` is called out as an
+image.
 
 ---
 

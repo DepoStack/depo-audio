@@ -123,22 +123,45 @@ describe('dcrQueueNotices', () => {
     ])
   })
 
-  it('flags each remote-participant change as a best guess, and counts the rest', () => {
-    const change = (atSeconds, kind = 'joined') => ({ atSeconds, kind, channelsAfter: 3, bitGuessed: true })
+  it('lists each remote-participant change with the channel count after it, and counts the rest', () => {
+    const change = (atSeconds, kind = 'joined', channelsAfter = 3) => ({
+      atSeconds,
+      kind,
+      channelMask: 4,
+      channelsAfter,
+    })
     const notices = dcrQueueNotices(
       dcr({
-        conferenceChanges: [change(754), change(3600, 'left'), change(3725.5, 'other'), change(4000)],
+        conferenceChanges: [change(754), change(3600, 'left', 1), change(3725.5, 'other', null), change(4000)],
         conferenceChangeCount: 5,
         videoFrames: 2,
       }),
     )
     expect(notices.slice(1, 4)).toEqual([
-      "A remote participant joined at 00:12:34; DepoAudio's channel order after that point is a best guess.",
-      "A remote participant left at 01:00:00; DepoAudio's channel order after that point is a best guess.",
-      "A remote participant joined or left at 01:02:05; DepoAudio's channel order after that point is a best guess.",
+      'A remote participant joined at 00:12:34 (3 channels recorded from then on).',
+      'A remote participant left at 01:00:00 (1 channel recorded from then on).',
+      'A remote participant joined or left at 01:02:05.',
     ])
     expect(notices[4]).toBe('2 more remote-participant changes follow; the export record lists them.')
     expect(notices[5]).toBe('This recording also holds video frames or attachments; only the audio is converted.')
+    expect(notices.join(' ')).not.toContain('guess')
+  })
+
+  it("shows the reader's redaction, protection and checksum notices after the others", () => {
+    const notices = dcrQueueNotices(
+      dcr({
+        notices: [
+          '2 redacted segments: 1 left out, 1 silenced, as marked in the recording.',
+          'This recording has password-protected sections; they are silent in the output.',
+          42,
+          '',
+        ],
+      }),
+    )
+    expect(notices.slice(1)).toEqual([
+      '2 redacted segments: 1 left out, 1 silenced, as marked in the recording.',
+      'This recording has password-protected sections; they are silent in the output.',
+    ])
   })
 
   it('says when bytes at the end of the audio are left out', () => {
@@ -150,7 +173,7 @@ describe('dcrQueueNotices', () => {
 
   it('shows only the reason when the recording cannot be converted', () => {
     const problem =
-      "This recording is password protected; DepoAudio can't open protected recordings. Export it to WAV in the software that recorded it (for example Liberty Court Recorder or BIS Digital), then add the WAV."
+      "A redaction in this recording has no position, so DepoAudio can't tell which audio it covers. Export it to WAV in the software that recorded it (for example Liberty Court Recorder or BIS Digital), then add the WAV."
     expect(dcrQueueNotices(dcr({ problem }))).toEqual([problem])
   })
 })

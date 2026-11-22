@@ -31,6 +31,8 @@ public/fonts/*.txt text eol=lf
 *.ps1 text eol=crlf
 
 # Media, models, installer art, and archives are binary.
+# Synthetic DCR test tones (see scripts/fixtures/dcr/vendor-notes-samples/README.md).
+*.dcr binary
 *.dll binary
 *.dylib binary
 *.exe binary

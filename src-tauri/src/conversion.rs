@@ -2344,7 +2344,14 @@ mod tests {
         assert_eq!(record["channel"]["sourceChannelCount"], channels);
         let dcr = &record["source"]["dcr"];
         assert_eq!(dcr["channels"], channels);
-        assert_eq!(dcr["checksum"], "not checked");
+        // Version 21.00 and later end with checksums; the builder writes
+        // correct ones.
+        let checksum = if dcr["version"].as_u64().unwrap() >= 2100 {
+            crate::dcr::CHECKSUMS_MATCH
+        } else {
+            crate::dcr::CHECKSUMS_ABSENT
+        };
+        assert_eq!(dcr["checksum"], checksum);
         assert_eq!(
             dcr["layoutSource"],
             "owner-supplied interoperability notes; not yet confirmed against a recorded file"
@@ -2534,7 +2541,8 @@ mod tests {
         builder.marker(b"audi#mrk");
         for block in 0..blocks {
             if joins_at == Some(block) {
-                builder.participant(true, "1");
+                // The participant brings the next channel bit.
+                builder.participant(true, &(1u64 << initial).to_string());
             }
             let present = if joins_at.is_some_and(|at| block < at) {
                 initial
@@ -2617,7 +2625,7 @@ mod tests {
         let change = &dcr["conferenceChanges"][0];
         assert_eq!(change["kind"], "joined");
         assert_eq!(change["channelsAfter"], 3);
-        assert_eq!(change["bitGuessed"], true);
+        assert_eq!(change["channelMask"], 4);
         assert_eq!(change["atPerChannelByte"], (joins_at * align) as u64);
 
         // Keep Original and Mix to Stereo read the same merged feed.
@@ -2833,31 +2841,158 @@ mod tests {
     }
 
     #[test]
-    fn protected_and_unsupported_dcrs_fail_before_any_output() {
+    fn unsupported_dcrs_fail_before_any_output_and_sealed_audio_is_silent() {
         if !court_fixture_tools_available() {
             return;
         }
         let dir = ConversionTestDir::new();
-        let mut protected = DcrBuilder::new(crate::dcr::tests::pcm16_format(DCR_RATE), 0b1, &["Judge"]);
-        protected.have_rec = "1";
-        protected.atom(&[&[0, 0]]);
-        let mut encrypted = DcrBuilder::new(crate::dcr::tests::pcm16_format(DCR_RATE), 0b1, &["Judge"]);
-        encrypted.atom(&[&[0, 0]]).marker(b"audi#crp").atom(&[&[9, 9]]);
         let mut speex = DcrBuilder::new(waveformatex(0xA109, 8000, 1000, 20, 16, &[0; 4]), 0b1, &[]);
         speex.atom(&[&[0; 20]]);
-        for (name, builder, expected) in [
-            ("protected.dcr", protected, crate::dcr::PROTECTED_MESSAGE),
-            ("encrypted.dcr", encrypted, crate::dcr::PROTECTED_MESSAGE),
-            ("speex.dcr", speex, crate::dcr::SPEEX_MESSAGE),
-        ] {
-            let source = builder.write(&dir.0, name);
-            let out = dir.0.join(format!("out-{name}"));
-            fs::create_dir(&out).unwrap();
-            let error = convert_with_system_ffmpeg(&court_job(&source, &out, "split", "wav"), None)
-                .err()
-                .unwrap_or_else(|| panic!("{name} converted"));
-            assert_eq!(error, expected, "{name}");
-            assert_eq!(fs::read_dir(&out).unwrap().count(), 0, "{name}: something was written");
+        let source = speex.write(&dir.0, "speex.dcr");
+        let out = dir.0.join("out-speex");
+        fs::create_dir(&out).unwrap();
+        let error = convert_with_system_ffmpeg(&court_job(&source, &out, "split", "wav"), None)
+            .err()
+            .unwrap();
+        assert_eq!(error, crate::dcr::SPEEX_MESSAGE);
+        assert_eq!(fs::read_dir(&out).unwrap().count(), 0, "something was written");
+
+        // A tone whose middle third is a password-protected section.
+        let mut sealed = DcrBuilder::new(crate::dcr::tests::pcm16_format(DCR_RATE), 0b1, &["Judge"]);
+        sealed.have_rec = "1";
+        let frames = (SYNTHETIC_SECONDS * f64::from(DCR_RATE)) as u64;
+        sealed.marker(b"audi#mrk");
+        for frame in 0..frames {
+            if frame == frames / 3 {
+                sealed.marker(b"audi#crp");
+            }
+            if frame == 2 * frames / 3 {
+                sealed.marker(b"audi#mrk");
+            }
+            sealed.atom(&[&dcr_tone(0, frame).to_le_bytes()]);
         }
+        let source = sealed.write(&dir.0, "sealed.dcr");
+        let out = dir.0.join("out-sealed");
+        fs::create_dir(&out).unwrap();
+        let conversion = convert_with_system_ffmpeg(&court_job(&source, &out, "keep", "wav"), None).unwrap();
+        let output = Path::new(&conversion.files[0].path);
+        assert_duration_near(output, SYNTHETIC_SECONDS, 0.01);
+        let third = SYNTHETIC_SECONDS / 3.0;
+        assert!(max_volume_db_between(output, third + 0.01, 2.0 * third - 0.01) < -80.0);
+        assert!(max_volume_db_between(output, 0.0, third - 0.01) > -20.0);
+        let record = checked_dcr_record(&conversion.files[0], &source, 1);
+        assert_eq!(record["source"]["dcr"]["sealedSections"], 1);
+        assert_eq!(record["source"]["dcr"]["passwordSet"], true);
+    }
+
+    /// The 16-bit samples of a PCM WAV output, interleaved.
+    fn wav_i16(path: &Path) -> Vec<i16> {
+        let bytes = fs::read(path).unwrap();
+        let mut at = 12;
+        while at + 8 <= bytes.len() {
+            let size = u32::from_le_bytes(bytes[at + 4..at + 8].try_into().unwrap()) as usize;
+            if &bytes[at..at + 4] == b"data" {
+                let end = (at + 8 + size).min(bytes.len());
+                return bytes[at + 8..end]
+                    .chunks_exact(2)
+                    .map(|pair| i16::from_le_bytes([pair[0], pair[1]]))
+                    .collect();
+            }
+            at += 8 + size + size % 2;
+        }
+        panic!("{} has no data chunk", path.display());
+    }
+
+    // ── The owner's two synthetic DCR samples (rebuild-tool tones) ─────────
+
+    #[test]
+    fn the_owners_plain_dcr_sample_converts_to_twelve_seconds_of_judge_and_witness() {
+        if !court_fixture_tools_available() {
+            return;
+        }
+        let dir = ConversionTestDir::new();
+        let source = crate::dcr::tests::fixture(crate::dcr::tests::PLAIN_SAMPLE);
+        let original = fs::read(&source).unwrap();
+        let out = dir.0.join("split");
+        fs::create_dir(&out).unwrap();
+        let conversion = convert_with_system_ffmpeg(&court_job(&source, &out, "split", "wav"), None).unwrap();
+        let names: Vec<&str> = conversion.files.iter().map(|file| file.name.as_str()).collect();
+        assert_eq!(
+            names,
+            ["test_tone_2ch_8k_pcm16_Judge.wav", "test_tone_2ch_8k_pcm16_Witness.wav"]
+        );
+        for file in &conversion.files {
+            let output = Path::new(&file.path);
+            let samples = wav_i16(output).len() as i64;
+            assert!((samples - 12 * 48_000).abs() <= 48, "{}: {samples} samples", file.name);
+            assert_duration_near(output, 12.0, 0.002);
+            let path = manifest::manifest_path_for(output);
+            let record: serde_json::Value = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+            assert!(manifest::tests::schema_errors_for_value(&record).is_empty());
+            let dcr = &record["source"]["dcr"];
+            assert_eq!(dcr["checksum"], "checksums match");
+            assert_eq!(dcr["version"], 2700);
+            assert_eq!(dcr["timeZone"]["display"], "GMT+0:00");
+            assert!(dcr.get("redactions").is_none());
+        }
+        assert_eq!(fs::read(&source).unwrap(), original, "the sample is never modified");
+    }
+
+    #[test]
+    fn the_owners_redacted_dcr_sample_is_silent_from_four_to_six_seconds_on_both_channels() {
+        if !court_fixture_tools_available() {
+            return;
+        }
+        let dir = ConversionTestDir::new();
+        let convert = |name: &str| {
+            let source = crate::dcr::tests::fixture(name);
+            let out = dir.0.join(name);
+            fs::create_dir(&out).unwrap();
+            let conversion = convert_with_system_ffmpeg(&court_job(&source, &out, "keep", "wav"), None).unwrap();
+            assert_eq!(conversion.files.len(), 1);
+            conversion.files[0].clone()
+        };
+        let plain = convert(crate::dcr::tests::PLAIN_SAMPLE);
+        let redacted = convert(crate::dcr::tests::REDACTED_SAMPLE);
+        let plain_samples = wav_i16(Path::new(&plain.path));
+        let redacted_samples = wav_i16(Path::new(&redacted.path));
+        assert_eq!(
+            plain_samples.len(),
+            redacted_samples.len(),
+            "a blacked-out segment keeps its length"
+        );
+        // 48 kHz stereo; 10 ms either side of each edge is left to the
+        // resampler's filter.
+        let frame = |seconds: f64| (seconds * 48_000.0) as usize;
+        for (index, (a, b)) in plain_samples
+            .chunks_exact(2)
+            .zip(redacted_samples.chunks_exact(2))
+            .enumerate()
+        {
+            if (frame(4.01)..frame(5.99)).contains(&index) {
+                assert_eq!(b, [0, 0], "frame {index} is not silent");
+            } else if index < frame(3.99) || index >= frame(6.01) {
+                assert_eq!(a, b, "frame {index} differs from the plain sample");
+            }
+        }
+        assert!(
+            plain_samples[frame(4.01) * 2..frame(5.99) * 2]
+                .iter()
+                .any(|sample| *sample != 0),
+            "the plain sample has audio there"
+        );
+        let record: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(manifest::manifest_path_for(Path::new(&redacted.path))).unwrap())
+                .unwrap();
+        assert!(manifest::tests::schema_errors_for_value(&record).is_empty());
+        assert_eq!(
+            record["source"]["dcr"]["redactions"],
+            serde_json::json!([{ "startSecs": 4.0, "endSecs": 6.0, "action": "black", "applied": true }])
+        );
+        let text = record.to_string();
+        assert!(
+            !text.contains("Begin Redaction") && !text.contains("play_black"),
+            "{text}"
+        );
     }
 }

@@ -309,7 +309,7 @@ describe('DCR queue notices', () => {
 
   it('shows two identical remote-participant notices without a duplicate-key warning', () => {
     const errors = vi.spyOn(console, 'error').mockImplementation(() => {})
-    const change = { atSeconds: 754, kind: 'joined', channelsAfter: 3, bitGuessed: true }
+    const change = { atSeconds: 754, kind: 'joined', channelMask: 4, channelsAfter: 3 }
     const streams = {
       convertedIndex: 0,
       streams: [{ channels: 4, sampleRate: 8000 }],
@@ -340,9 +340,7 @@ describe('DCR queue notices', () => {
       />,
     )
     expect(
-      screen.getAllByText(
-        "A remote participant joined at 00:12:34; DepoAudio's channel order after that point is a best guess.",
-      ),
+      screen.getAllByText('A remote participant joined at 00:12:34 (3 channels recorded from then on).'),
     ).toHaveLength(2)
     expect(errors.mock.calls.some(call => String(call[0]).includes('same key'))).toBe(false)
     errors.mockRestore()

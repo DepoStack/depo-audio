@@ -91,7 +91,7 @@ export const FORMAT_ROWS = [
     ch: '1–16 ch',
     status: 'experimental',
     group: 'court',
-    note: 'Reads unencrypted recordings; tested with synthetic files only',
+    note: 'Applies marked redactions; password-protected parts are silent; tested with synthetic files only',
   },
   // Closed formats — recognized, never decoded; export to WAV in the recording software first
   { ext: '.aes', vendor: 'Eclipse CAT · AudioSync', ch: '—', status: 'unsupported', group: 'export' },
