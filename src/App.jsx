@@ -13,6 +13,8 @@ import useFileDrop from './hooks/useFileDrop'
 import useConversion from './hooks/useConversion'
 import useUpdater from './hooks/useUpdater'
 import UpdateBanner from './components/UpdateBanner'
+import EngineHealthBanner from './components/EngineHealthBanner'
+import { engineProblem } from './lib/engineHealth'
 
 import { LogoSvg } from './components/common/Icons'
 import { DepoStackMark, DepoStackWordmark } from './components/common/DepoStackMark'
@@ -82,16 +84,37 @@ export default function App() {
 
   const [systemError, setSystemError] = useState('')
 
-  // Sidebar health card: bundled audio engine
+  // Bundled audio engine check. Nothing is shown while it passes; a failure
+  // puts a warning on Convert and Player, and Settings > About has the details.
   const [health, setHealth] = useState(null)
+  const [healthError, setHealthError] = useState('')
+  const [healthChecking, setHealthChecking] = useState(true)
+  const [engineWarningDismissed, setEngineWarningDismissed] = useState(false)
+  const checkHealth = useCallback(
+    () =>
+      invoke('health_check')
+        .then(value => {
+          rememberEngineInfo(value)
+          setHealth(value)
+          setHealthError('')
+          // A re-check that still fails brings the warning back
+          if (engineProblem(value, '')) setEngineWarningDismissed(false)
+        })
+        .catch(error => {
+          setHealthError(`Audio engine health could not be checked: ${String(error)}`)
+          setEngineWarningDismissed(false)
+        })
+        .finally(() => setHealthChecking(false)),
+    [],
+  )
+  const runHealthCheck = useCallback(() => {
+    setHealthChecking(true)
+    return checkHealth()
+  }, [checkHealth])
   useEffect(() => {
-    invoke('health_check')
-      .then(value => {
-        rememberEngineInfo(value)
-        setHealth(value)
-      })
-      .catch(error => setSystemError(`Audio engine health could not be checked: ${String(error)}`))
-  }, [])
+    checkHealth()
+  }, [checkHealth])
+  const engineIssue = engineProblem(health, healthError)
 
   // Library state
   const [cases, setCases] = useState([])
@@ -188,20 +211,15 @@ export default function App() {
 
   const ThemeIcon = themeIcons[themeLabel] || Monitor
   const libCount = cases.filter(c => !c.archived).length
-  const updaterLabel = updater.error
-    ? 'Update check unavailable'
-    : updater.status === 'available'
-      ? 'Update available'
-      : updater.status === 'checking'
-        ? 'Checking updates…'
-        : updater.status === 'downloading' || updater.status === 'ready'
-          ? 'Installing update…'
-          : 'Up to date'
 
   const storageSummary = [prefsError && 'preferences', libraryReadError && 'Library data'].filter(Boolean).join(' and ')
-  const systemErrorSummary = systemError.startsWith('Could not open DepoStack')
-    ? 'The DepoStack website could not be opened. Check your connection or open depostack.com in a browser.'
-    : 'The audio engine check is unavailable. Verify the engine status before starting a conversion.'
+  const systemErrorSummary =
+    'The DepoStack website could not be opened. Check your connection or open depostack.com in a browser.'
+  const [settingsSection, setSettingsSection] = useState(undefined)
+  const openSettings = section => {
+    setSettingsSection(section)
+    setSettingsOpen(true)
+  }
 
   return (
     <Tabs
@@ -255,24 +273,6 @@ export default function App() {
 
         <div className="app-sidebar-spacer flex-1" />
 
-        {/* System health */}
-        <div
-          role="status"
-          aria-live="polite"
-          aria-atomic="true"
-          aria-label="Audio engine and update status"
-          className="hidden sm:block mx-3 mb-2 border-y border-border/70 py-2.5"
-        >
-          <div className="flex items-center gap-2 py-0.5 type-small font-medium text-[hsl(var(--text2))]">
-            <span
-              aria-hidden="true"
-              className={`w-1.5 h-1.5 rounded-full ${health ? (health.ffmpeg ? 'bg-[hsl(var(--success))]' : 'bg-destructive') : 'bg-[hsl(var(--sub))]'}`}
-            />
-            {health ? (health.ffmpeg ? 'FFmpeg ready' : 'FFmpeg missing') : 'Checking engine…'}
-          </div>
-          <div className="py-0.5 type-small text-[hsl(var(--sub))]">{updaterLabel}</div>
-        </div>
-
         {/* DepoStack brand link: DepoAudio, powered by DepoStack */}
         <button
           type="button"
@@ -301,7 +301,7 @@ export default function App() {
             title={prefsError ? 'Settings disabled because preference storage could not be loaded' : 'Settings'}
             aria-label="Settings"
             disabled={!prefsReady || !!prefsError}
-            onClick={() => setSettingsOpen(true)}
+            onClick={() => openSettings(undefined)}
           >
             <Settings size={16} aria-hidden="true" />
           </Button>
@@ -364,6 +364,16 @@ export default function App() {
                 </p>
               </details>
             </div>
+          )}
+
+          {(tab === 'convert' || tab === 'player') && !engineWarningDismissed && (
+            <EngineHealthBanner
+              problem={engineIssue}
+              rechecking={healthChecking}
+              onRecheck={runHealthCheck}
+              onOpenDetails={() => openSettings('about')}
+              onDismiss={() => setEngineWarningDismissed(true)}
+            />
           )}
 
           {systemError && (
@@ -490,6 +500,10 @@ export default function App() {
           prefs={{ ...prefs, cycleThemeTo: setThemeDirect }}
           updater={updater}
           health={health}
+          healthError={healthError}
+          healthChecking={healthChecking}
+          onRecheckHealth={runHealthCheck}
+          initialSection={settingsSection}
           conversionActive={converting || cancelling}
         />
       </Suspense>
