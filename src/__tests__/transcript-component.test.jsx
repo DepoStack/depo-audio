@@ -84,6 +84,16 @@ describe('Transcript proofing', () => {
     expect(screen.queryByRole('button', { name: /add line|start typing|stamp|export srt/i })).not.toBeInTheDocument()
   })
 
+  it('shows markup-looking cue text as plain text, never as HTML', async () => {
+    renderPanel()
+    await importText(
+      '1\n00:00:01,000 --> 00:00:02,000\n<scr<script>ipt>alert(1)</script> <img src=x onerror=alert(1)>\n',
+    )
+    const list = await screen.findByRole('listbox')
+    expect(within(list).getByText(/<scr<script>ipt>alert\(1\)<\/script> <img src=x onerror=alert\(1\)>/)).toBeVisible()
+    expect(document.querySelectorAll('script, img')).toHaveLength(0)
+  })
+
   it('highlights the line at the playhead, with the sync shift applied', async () => {
     const { rerender } = renderPanel({ currentTime: 6 })
     await importText(SRT)

@@ -4,7 +4,10 @@ import { fileURLToPath } from 'node:url'
 
 const distDirectory = fileURLToPath(new URL('../dist/', import.meta.url))
 const budgets = {
-  javascript: 560 * 1024,
+  // Raised from 560 KiB with the transcript proofing view: it already sat at
+  // 559.9 KiB, and the cue-tag tokenizer that replaced the regex tag stripper
+  // (src/lib/transcript.js stripCueTags) adds ~0.2 KiB.
+  javascript: 561 * 1024,
   // Raised from 64 KiB with the DepoStack brand foundation: the bundled
   // Archivo/Fragment Mono @font-face rules with their size-adjusted fallbacks
   // (src/styles/fonts.css) and the type-role utilities add ~2 KiB over main

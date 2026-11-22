@@ -17,6 +17,7 @@ import {
   normalizeSync,
   parseClockInput,
   parseCues,
+  stripCueTags,
   parseStampedText,
   parseTime,
   parseTranscript,
@@ -131,6 +132,22 @@ describe('SRT and WebVTT', () => {
   })
   it('sniffs cues in a .txt file', () => {
     expect(parseTranscript(SRT, 'txt').format).toBe('srt')
+  })
+  it('removes only cue markup tags and keeps other angle-bracket text as written', () => {
+    expect(stripCueTags('<c.yellow.bg_blue>Hi</c> <i>there</i> <00:00:01.500>now <lang en-GB>ok</lang>')).toBe(
+      'Hi there now ok',
+    )
+    expect(stripCueTags('<font color="#ff0000">Red</font>')).toBe('Red')
+    expect(stripCueTags('a < b and c > d')).toBe('a < b and c > d')
+    expect(stripCueTags('<script>alert(1)</script>')).toBe('<script>alert(1)</script>')
+  })
+  it('does not assemble a tag out of nested or obfuscated markup', () => {
+    expect(stripCueTags('<scr<script>ipt>x')).toBe('<scr<script>ipt>x')
+    expect(stripCueTags('<scr<i>ipt>x')).toBe('<script>x')
+    expect(stripCueTags('<<b>b>bold</b>')).toBe('<b>bold')
+    expect(stripCueTags('<b')).toBe('<b')
+    const segs = parseCues('1\n00:00:01,000 --> 00:00:02,000\n<scr<script>ipt>alert(1)</scr</b>ipt>\n')
+    expect(segs[0].text).toBe('<scr<script>ipt>alert(1)</script>')
   })
   it('keeps a cue with an unreadable time as an untimed line', () => {
     const segs = parseCues('1\nxx:yy --> 00:00:02,000\nKept text\n')

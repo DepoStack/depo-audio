@@ -92,6 +92,25 @@ export function splitSpeaker(line) {
 
 const segment = (start, line) => ({ id: uid(), start, ...splitSpeaker(line) })
 
+// The inside of a markup tag a cue may carry: WebVTT's c, i, b, u, ruby, rt,
+// v and lang tags (with .classes and an annotation) and their end tags, SRT's
+// <font ...>, and inline timestamps.
+const CUE_TAG = /^(?:\/?(?:[cibuv]|ruby|rt|lang|font)(?:[.\s][^<]*)?|[\d:.,]+)$/i
+
+// Cue text without its WebVTT/SRT markup tags. Each tag is taken from the text
+// as written, in one pass; anything else between < and > is kept as written.
+// The transcript is shown as plain text, never as HTML, so this does not need
+// to make markup safe.
+export function stripCueTags(text) {
+  return String(text ?? '')
+    .split('<')
+    .map((part, i) => {
+      const close = part.indexOf('>')
+      return i && close >= 0 && CUE_TAG.test(part.slice(0, close)) ? part.slice(close + 1) : (i ? '<' : '') + part
+    })
+    .join('')
+}
+
 // SRT or WebVTT cues. VTT headers, NOTE/STYLE/REGION blocks, cue settings and
 // voice tags (<v Name>) are handled; a cue whose start time cannot be read is
 // kept as an untimed line so no text is dropped.
@@ -118,7 +137,7 @@ export function parseCues(text) {
       }
       let joined = body.join(' ').trim()
       const voice = joined.match(/^<v(?:\.[^\s>]*)?\s+([^>]+)>/)
-      joined = joined.replace(/<[^>]+>/g, '').trim()
+      joined = stripCueTags(joined).replace(/\s+/g, ' ').trim()
       const parsed = voice ? { id: uid(), start, speaker: voice[1].trim(), text: joined } : segment(start, joined)
       if (parsed.text || parsed.speaker) segs.push(parsed)
     } else {
