@@ -197,6 +197,6 @@ describe('Player auto-backstep', () => {
       fireEvent.change(screen.getByRole('combobox', { name: 'Backstep on resume' }), { target: { value: '3' } })
     })
     expect(screen.getByRole('combobox', { name: 'Backstep on resume' })).toHaveValue('3')
-    expect(screen.getByText(/speed, volume and backstep cannot be saved/)).toBeInTheDocument()
+    expect(screen.getByText(/speed, volume, backstep and pane sizes cannot be saved/)).toBeInTheDocument()
   })
 })

@@ -1,4 +1,5 @@
-import { useState, useRef, useEffect, useLayoutEffect, useMemo, useId } from 'react'
+import { useState, useRef, useEffect, useMemo, useId } from 'react'
+import { createPortal } from 'react-dom'
 import { open, save } from '@tauri-apps/plugin-dialog'
 import { readTextFile, writeTextFile } from '@tauri-apps/plugin-fs'
 import { Upload, Copy, Check, Flag, Locate, Trash2, Download, X } from 'lucide-react'
@@ -92,15 +93,33 @@ function loadTrackState(path) {
 }
 
 const PAGE_LINES = 8
-// The line list gets the height left in the window, but at least this much,
-// and at least LIST_SHARE of the Player's scrolling area (the page scrolls
-// a little in a short window, rather than showing only a few lines).
-const MIN_LIST_HEIGHT = 124
-const LIST_SHARE = 0.4
-// Flags shown before the flag list scrolls (it says how many there are).
+// Flags shown before the flag list scrolls (it says how many there are), when
+// the flags sit under the lines. In the Player's right pane the pane scrolls.
 const FLAG_ROWS_SHOWN = 5
 
-export default function Transcript({ trackPath, currentTime, playing, duration, onSeek, onPlayFrom, onStorageError }) {
+// The file types the picker offers, said the same way in the empty state.
+const TRANSCRIPT_EXTENSIONS = ['srt', 'vtt', 'txt', 'asc', 'ascii']
+const SUPPORTED_FORMATS = [
+  ['SRT', '.srt'],
+  ['WebVTT', '.vtt'],
+  ['Time-stamped text, such as a CAT ASCII export', '.txt, .asc, .ascii'],
+]
+
+// The card fills the height it is given: the line list takes all the room
+// left under the detection and sync rows and scrolls inside itself. With
+// `flagsContainer` (a DOM node, the Player's right pane), the flags list is
+// shown there instead of under the lines.
+export default function Transcript({
+  trackPath,
+  currentTime,
+  playing,
+  duration,
+  onSeek,
+  onPlayFrom,
+  onStorageError,
+  onClockChange,
+  flagsContainer = null,
+}) {
   const [state, setState] = useState(() => loadTrackState(trackPath))
   if (state.path !== trackPath) setState(loadTrackState(trackPath))
   const { segments, sync, detection, storageError } = state.path === trackPath ? state : loadTrackState(trackPath)
@@ -115,7 +134,6 @@ export default function Transcript({ trackPath, currentTime, playing, duration, 
     if (playing) setHeld(false)
   }
   const following = follow && !held
-  const [listHeight, setListHeight] = useState(MIN_LIST_HEIGHT)
   const [copied, setCopied] = useState(false)
   const [message, setMessage] = useState('')
   const [operationError, setOperationError] = useState('')
@@ -125,13 +143,20 @@ export default function Transcript({ trackPath, currentTime, playing, duration, 
   const [startDraft, setStartDraft] = useState('')
   const [startError, setStartError] = useState('')
   const listRef = useRef(null)
-  const cardRef = useRef(null)
   const startId = useId()
   const rowRefs = useRef([])
 
   useEffect(() => {
     onStorageError?.(storageError)
   }, [onStorageError, storageError])
+
+  // The recording's start time of day, when the person entered one, so the
+  // Player can show the time of day at the playhead.
+  const clockStart =
+    sync.timeKind === 'time-of-day' && segments.some(s => s.start != null) ? (sync.recordingStart ?? null) : null
+  useEffect(() => {
+    onClockChange?.(trackPath, clockStart)
+  }, [onClockChange, trackPath, clockStart])
 
   // Every change is written at once. When storage fails, the state is kept in
   // memory for this session (also across track switches) and the person is told.
@@ -183,31 +208,9 @@ export default function Transcript({ trackPath, currentTime, playing, duration, 
     if (top < list.scrollTop || top + row.offsetHeight > list.scrollTop + list.clientHeight) {
       list.scrollTop = Math.max(0, top - list.clientHeight / 3)
     }
-    // In a short window part of the list can be below the fold.
+    // In a very short window the list can sit partly below its pane's fold.
     row.scrollIntoView?.({ block: 'nearest' })
   }, [activeIndex, following, playing])
-
-  // Give the line list the height left above the bottom of the Player's
-  // scrolling area (its content's bottom padding kept). ResizeObserver calls
-  // back once at the start, and again when the window or the content resizes.
-  useLayoutEffect(() => {
-    const list = listRef.current
-    const card = cardRef.current
-    const scroller = card?.parentElement?.closest('.overflow-y-auto')
-    const content = scroller?.firstElementChild
-    if (!list || !content || typeof ResizeObserver !== 'function') return
-    const observer = new ResizeObserver(() => {
-      const box = list.getBoundingClientRect()
-      const below =
-        card.getBoundingClientRect().bottom - box.bottom + parseFloat(getComputedStyle(content).paddingBottom)
-      const top = box.top - scroller.getBoundingClientRect().top + scroller.scrollTop
-      const room = scroller.clientHeight
-      setListHeight(Math.floor(Math.max(MIN_LIST_HEIGHT, room * LIST_SHARE, room - top - below)))
-    })
-    observer.observe(scroller)
-    observer.observe(content)
-    return () => observer.disconnect()
-  }, [hasLines])
 
   const focusRow = index => {
     const next = Math.max(0, Math.min(segments.length - 1, index))
@@ -302,7 +305,7 @@ export default function Transcript({ trackPath, currentTime, playing, duration, 
     try {
       const sel = await open({
         multiple: false,
-        filters: [{ name: 'Transcript', extensions: ['srt', 'vtt', 'txt', 'asc', 'ascii'] }],
+        filters: [{ name: 'Transcript', extensions: TRANSCRIPT_EXTENSIONS }],
       })
       if (!sel) return
       const path = typeof sel === 'string' ? sel : sel.path
@@ -420,11 +423,110 @@ export default function Transcript({ trackPath, currentTime, playing, duration, 
 
   const status = copied ? 'Lines and times copied to the clipboard.' : message
 
+  // The flags list: under the lines, or (in the Player) in the right pane,
+  // where each flag gets two rows and the pane scrolls.
+  const inPane = flagsContainer != null
+  const flagsPanel = (
+    <section
+      aria-label="Flags for review"
+      className={cn(inPane ? 'flex flex-col gap-1.5' : 'shrink-0 border-t border-border/60 px-3 py-1')}
+    >
+      <div className="flex items-center justify-between gap-2">
+        <h3 className="shrink-0 text-[12px] font-medium text-[hsl(var(--text2))]">
+          Flags for review{flags.length ? ` (${flags.length})` : ''}
+          {!inPane && flags.length > FLAG_ROWS_SHOWN && (
+            <span className="font-normal"> · scroll for {flags.length - FLAG_ROWS_SHOWN} more</span>
+          )}
+        </h3>
+        {flags.length > 0 && (
+          <Button size="sm" variant="ghost" className="h-6" onClick={exportFlags} title="Save flags as CSV or text">
+            <Download size={12} /> Export flags
+          </Button>
+        )}
+      </div>
+      {!hasLines ? (
+        <p className="type-small text-[hsl(var(--sub))]">
+          Open a transcript to flag lines for review. Flags never change the transcript.
+        </p>
+      ) : flags.length === 0 ? (
+        <p className="type-small text-[hsl(var(--sub))]">
+          Press <kbd className="tabular-nums">F</kbd> on a line, or click its flag, to mark it for review. Flags never
+          change the transcript.
+        </p>
+      ) : (
+        <ul
+          className={cn('flex flex-col', inPane ? 'gap-2' : 'mt-0.5 gap-1 overflow-y-auto')}
+          style={inPane ? undefined : { maxHeight: `${FLAG_ROWS_SHOWN * 1.625}rem` }}
+        >
+          {flags.map(f => {
+            const jump = (
+              <button
+                className="w-14 shrink-0 text-left tabular-nums text-[hsl(var(--text2))] hover:text-foreground"
+                onClick={() => playLine(f.index)}
+                aria-label={`Play from ${f.name}, ${fmtElapsed(f.audioTime)}`}
+              >
+                {f.audioTime == null ? '—' : fmtElapsed(f.audioTime)}
+              </button>
+            )
+            const note = (
+              <input
+                className="h-5 min-w-0 flex-1 rounded-none border-0 border-b border-[hsl(var(--sub))] bg-transparent px-0.5 text-[12px] text-foreground placeholder:text-[hsl(var(--sub))] focus:border-foreground"
+                aria-label={`Note for flag on ${f.name}`}
+                placeholder="Add a note…"
+                maxLength={MAX_FLAG_NOTE_CHARS}
+                value={f.note}
+                onChange={e => commit({ segments: setFlagNote(segments, f.id, e.target.value) })}
+              />
+            )
+            const remove = (
+              <button
+                className="shrink-0 rounded text-[hsl(var(--sub))] opacity-0 transition-opacity hover:text-destructive group-hover:opacity-100 group-focus-within:opacity-100"
+                aria-label={`Remove flag from ${f.name}`}
+                onClick={() => flagLine(f.index)}
+              >
+                <X size={10} />
+              </button>
+            )
+            const ref = (
+              <span aria-hidden="true" className={gutter}>
+                {lineRef(segments[f.index], f.index)}
+              </span>
+            )
+            return inPane ? (
+              <li key={f.id} className="group flex flex-col gap-0.5 text-[12px]">
+                <div className="flex items-center gap-2 min-w-0">
+                  {ref}
+                  {jump}
+                  <span className="flex-1" />
+                  {remove}
+                </div>
+                <span className="text-foreground line-clamp-2 break-words" title={f.excerpt}>
+                  {f.excerpt}
+                </span>
+                <div className="flex">{note}</div>
+              </li>
+            ) : (
+              <li key={f.id} className="group flex items-center gap-2 text-[12px]">
+                {ref}
+                {jump}
+                <span className="w-2/5 min-w-0 shrink truncate text-foreground" title={f.excerpt}>
+                  {f.excerpt}
+                </span>
+                {note}
+                {remove}
+              </li>
+            )
+          })}
+        </ul>
+      )}
+    </section>
+  )
+
   return (
-    <Card ref={cardRef}>
-      <CardHeader className="py-2">
-        <CardTitle>Transcript proofing</CardTitle>
-        <div className="flex items-center gap-1.5">
+    <Card className="flex h-full min-h-0 flex-col">
+      <CardHeader className="shrink-0 py-2">
+        <CardTitle as="h2">Transcript proofing</CardTitle>
+        <div className="flex flex-wrap items-center justify-end gap-1.5">
           {segments.length > 0 && hasTimes && (
             <button
               onClick={held ? goToPlaying : () => setFollow(f => !f)}
@@ -435,11 +537,11 @@ export default function Transcript({ trackPath, currentTime, playing, duration, 
               <Locate size={11} /> {held ? 'Follow paused: back to playing line' : 'Follow audio'}
             </button>
           )}
-          <Button size="sm" variant="ghost" onClick={importFile}>
-            <Upload size={12} /> {segments.length > 0 ? 'Open another' : 'Open transcript'}
-          </Button>
-          {segments.length > 0 && (
+          {hasLines && (
             <>
+              <Button size="sm" variant="ghost" onClick={importFile}>
+                <Upload size={12} /> Open another
+              </Button>
               <Button size="sm" variant="ghost" onClick={copyText}>
                 {copied ? <Check size={12} /> : <Copy size={12} />} {copied ? 'Copied' : 'Copy with times'}
               </Button>
@@ -495,17 +597,33 @@ export default function Transcript({ trackPath, currentTime, playing, duration, 
         </p>
       )}
 
-      {segments.length === 0 ? (
-        <div className="px-4 py-3">
-          <p className="text-[13px] font-medium text-foreground">Proof a transcript against this recording</p>
-          <p className="mt-1 type-small leading-relaxed text-[hsl(var(--sub))]">
-            Open an SRT, WebVTT or time-stamped text file, such as an ASCII export from your CAT software. The line at
-            the playhead is highlighted, and you can flag lines to check. DepoAudio does not change the transcript; make
-            corrections in your CAT software.
-          </p>
+      {!hasLines ? (
+        <div className="flex min-h-0 flex-1 overflow-y-auto">
+          <div className="m-auto flex w-full max-w-[34rem] flex-col items-start gap-4 px-6 py-8">
+            <p className="type-h3 text-foreground">Proof a transcript against this recording</p>
+            <p className="type-small leading-relaxed text-[hsl(var(--text2))]">
+              Open the transcript of this recording. The line at the playhead is highlighted as the audio plays, you can
+              play from any line, and you can flag lines to check. DepoAudio does not change the transcript; make
+              corrections in your CAT software.
+            </p>
+            <Button variant="primary" onClick={importFile}>
+              <Upload size={14} /> Open transcript
+            </Button>
+            <div className="w-full">
+              <p className="type-label text-[hsl(var(--text2))]">Formats you can open</p>
+              <ul className="mt-1.5 flex flex-col gap-1 type-small text-foreground">
+                {SUPPORTED_FORMATS.map(([label, ext]) => (
+                  <li key={ext} className="flex items-baseline gap-2">
+                    <span className="w-28 shrink-0 tabular-nums text-[hsl(var(--text2))]">{ext}</span>
+                    <span>{label}</span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          </div>
         </div>
       ) : (
-        <div className="flex flex-col">
+        <div className="flex min-h-0 flex-1 flex-col">
           {/* Detection + sync */}
           <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 border-b border-border/60 px-3 py-1 text-[12px] text-[hsl(var(--text2))]">
             <span className="min-w-0">
@@ -615,8 +733,7 @@ export default function Transcript({ trackPath, currentTime, playing, duration, 
             ref={listRef}
             role="listbox"
             aria-label="Transcript lines. Enter plays a line, F flags it, period goes to the playing line."
-            className="overflow-y-auto px-1.5 py-1"
-            style={{ maxHeight: listHeight }}
+            className="relative min-h-[124px] flex-1 overflow-y-auto px-1.5 py-1"
           >
             {segments.map((s, index) => {
               const active = index === activeIndex
@@ -674,74 +791,10 @@ export default function Transcript({ trackPath, currentTime, playing, duration, 
             })}
           </div>
 
-          {/* Flags */}
-          <div className="border-t border-border/60 px-3 py-1">
-            <div className="flex items-center justify-between gap-2">
-              <h4 className="shrink-0 text-[12px] font-medium text-[hsl(var(--text2))]">
-                Flags for review{flags.length ? ` (${flags.length})` : ''}
-                {flags.length > FLAG_ROWS_SHOWN && (
-                  <span className="font-normal"> · scroll for {flags.length - FLAG_ROWS_SHOWN} more</span>
-                )}
-              </h4>
-              {flags.length > 0 && (
-                <Button
-                  size="sm"
-                  variant="ghost"
-                  className="h-6"
-                  onClick={exportFlags}
-                  title="Save flags as CSV or text"
-                >
-                  <Download size={12} /> Export flags
-                </Button>
-              )}
-            </div>
-            {flags.length === 0 ? (
-              <p className="type-small text-[hsl(var(--sub))]">
-                Press <kbd className="tabular-nums">F</kbd> on a line, or click its flag, to mark it for review. Flags
-                never change the transcript.
-              </p>
-            ) : (
-              <ul
-                className="mt-0.5 flex flex-col gap-1 overflow-y-auto"
-                style={{ maxHeight: `${FLAG_ROWS_SHOWN * 1.625}rem` }}
-              >
-                {flags.map(f => (
-                  <li key={f.id} className="group flex items-center gap-2 text-[12px]">
-                    <span aria-hidden="true" className={gutter}>
-                      {lineRef(segments[f.index], f.index)}
-                    </span>
-                    <button
-                      className="w-14 shrink-0 text-left tabular-nums text-[hsl(var(--text2))] hover:text-foreground"
-                      onClick={() => playLine(f.index)}
-                      aria-label={`Play from ${f.name}, ${fmtElapsed(f.audioTime)}`}
-                    >
-                      {f.audioTime == null ? '—' : fmtElapsed(f.audioTime)}
-                    </button>
-                    <span className="w-2/5 min-w-0 shrink truncate text-foreground" title={f.excerpt}>
-                      {f.excerpt}
-                    </span>
-                    <input
-                      className="h-5 min-w-0 flex-1 rounded-none border-0 border-b border-[hsl(var(--sub))] bg-transparent px-0.5 text-[12px] text-foreground placeholder:text-[hsl(var(--sub))] focus:border-foreground"
-                      aria-label={`Note for flag on ${f.name}`}
-                      placeholder="Add a note…"
-                      maxLength={MAX_FLAG_NOTE_CHARS}
-                      value={f.note}
-                      onChange={e => commit({ segments: setFlagNote(segments, f.id, e.target.value) })}
-                    />
-                    <button
-                      className="shrink-0 rounded text-[hsl(var(--sub))] opacity-0 transition-opacity hover:text-destructive group-hover:opacity-100 group-focus-within:opacity-100"
-                      aria-label={`Remove flag from ${f.name}`}
-                      onClick={() => flagLine(f.index)}
-                    >
-                      <X size={10} />
-                    </button>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </div>
+          {!flagsContainer && flagsPanel}
         </div>
       )}
+      {flagsContainer && createPortal(flagsPanel, flagsContainer)}
     </Card>
   )
 }

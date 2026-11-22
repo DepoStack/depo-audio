@@ -16,6 +16,7 @@ export const WEB_STORAGE_KEYS = [
   'player-speed',
   'player-backstep',
   'player-volume',
+  'player-layout',
   'depoaudio-theme',
 ]
 const BOOKMARKS_KEY = 'player-bookmarks'

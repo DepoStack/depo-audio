@@ -58,6 +58,7 @@ export default function ListeningMix({
   probeAvailable,
   probed = true,
   stripsCleared = false,
+  compact = false,
   stripsFromPreviousCleared = false,
   notice = '',
 }) {
@@ -76,7 +77,8 @@ export default function ListeningMix({
   const showStrips = mixOn && shown.length > 0
   // Up to 4 channels: Mute, Solo and volume on one line per strip. More: a
   // narrower strip so 4 fit across and 16 channels take 4 rows.
-  const wide = shown.length <= 4
+  // In a narrow pane (`compact`) each strip stacks: Mute and Solo, then a full-width volume.
+  const wide = !compact && shown.length <= 4
   const note = mixOn
     ? noStripsNote({ fileChannels, probed }) || separationNote({ fileChannels, heardChannels, probeAvailable })
     : ''
@@ -173,7 +175,11 @@ export default function ListeningMix({
           aria-describedby={noteId}
           className={cn(
             'grid gap-2',
-            wide ? 'grid-cols-[repeat(auto-fill,minmax(17rem,1fr))]' : 'grid-cols-[repeat(auto-fill,minmax(8rem,1fr))]',
+            compact
+              ? 'grid-cols-1'
+              : wide
+                ? 'grid-cols-[repeat(auto-fill,minmax(min(17rem,100%),1fr))]'
+                : 'grid-cols-[repeat(auto-fill,minmax(8rem,1fr))]',
           )}
         >
           {shown.map((strip, i) => {

@@ -1,7 +1,24 @@
-import { useState, useRef, useEffect, useId, useMemo } from 'react'
+import { useState, useRef, useEffect, useLayoutEffect, useId, useMemo } from 'react'
 import { convertFileSrc, invoke } from '@tauri-apps/api/core'
 import { open } from '@tauri-apps/plugin-dialog'
-import { Play, Pause, SkipBack, SkipForward, Bookmark, X, Plus, Repeat, Copy, Check } from 'lucide-react'
+import {
+  Play,
+  Pause,
+  SkipBack,
+  SkipForward,
+  Bookmark,
+  X,
+  Plus,
+  Repeat,
+  Copy,
+  Check,
+  ListMusic,
+  PanelLeftClose,
+  PanelLeftOpen,
+  PanelRightClose,
+  PanelRightOpen,
+  AudioLines,
+} from 'lucide-react'
 import { cn, shouldIgnoreNavigationShortcut } from '../../lib/utils'
 import { fmtTime, sortRecordingChunks } from '../../utils'
 import { useSpeakerColors, speakerColorAt, SPEAKER_COUNT } from '../../lib/speakerColors'
@@ -27,6 +44,9 @@ import { WaveformIcon } from '../common/Icons'
 import WorkspaceHeader from '../common/WorkspaceHeader'
 import Transcript from './Transcript'
 import ListeningMix from './ListeningMix'
+import PaneSplitter from './PaneSplitter'
+import { fmtClock } from '../../lib/transcript'
+import { isNarrow, paneWidths, readLayout, writeLayout, clampPane, SPLITTER_WIDTH } from '../../lib/playerLayout'
 import {
   CHANNEL_PROBE_URL,
   createChannelMixer,
@@ -44,10 +64,13 @@ const NO_STRIPS = []
 // Play any audio file directly — no conversion needed. Playlist tracks get
 // colors from the existing --speaker-N design tokens without inferring who is speaking.
 //
-// Layout: a Now Playing surface (large seekable waveform) + a playlist/
-// bookmarks rail scroll above a PERSISTENT transport bar (controls + a thin
-// progress scrubber) that never scrolls away, so play/pause and position
-// stay reachable no matter how far you scroll.
+// Layout: three panes over a PERSISTENT transport bar (controls + a thin
+// progress scrubber). Left: Playlist and Bookmarks. Centre, the largest:
+// transcript proofing. Right: Now Playing (compact waveform), the listening
+// mix and the flags. Each pane scrolls inside itself, so the page does not.
+// The side panes resize (drag or keyboard on the splitter) or collapse, and
+// their sizes are kept per viewer (lib/playerLayout.js). Below 1100px they
+// become drawers opened from a toolbar, and the transcript keeps the width.
 //
 // Keyboard transport (when not typing in a field):
 //   Space / K  play-pause      ← / →  seek ±5s       J / L  seek ±10s
@@ -65,7 +88,21 @@ const NO_STRIPS = []
 // track and are not saved. Nothing here changes any file.
 
 const PLAYER_STORAGE_WARNING =
-  'Player bookmarks, speed, volume and backstep cannot be saved in this session. Export important bookmark notes before closing DepoAudio.'
+  'Player bookmarks, speed, volume, backstep and pane sizes cannot be saved in this session. Export important bookmark notes before closing DepoAudio.'
+
+const PANE_NAMES = { left: 'Playlist and bookmarks', right: 'Now playing, listening mix and flags' }
+
+function browserStorage() {
+  try {
+    return window.localStorage
+  } catch {
+    return null
+  }
+}
+
+function viewportWidth() {
+  return typeof window === 'undefined' ? Infinity : window.innerWidth
+}
 
 function loadPlayerStorageState() {
   try {
@@ -74,7 +111,10 @@ function loadPlayerStorageState() {
       backstep: loadBackstep(window.localStorage.getItem('player-backstep')),
       volume: loadVolume(window.localStorage.getItem('player-volume')),
       bookmarks: loadBookmarks(window.localStorage.getItem('player-bookmarks')),
-      error: '',
+      ...(() => {
+        const { layout, error } = readLayout(window.localStorage)
+        return { layout, error: error ? PLAYER_STORAGE_WARNING : '' }
+      })(),
     }
   } catch {
     return {
@@ -82,6 +122,7 @@ function loadPlayerStorageState() {
       backstep: loadBackstep(null),
       volume: loadVolume(null),
       bookmarks: [],
+      layout: readLayout(null).layout,
       error: PLAYER_STORAGE_WARNING,
     }
   }
@@ -614,6 +655,133 @@ export default function PlayerTab({ dropHandlerRef, onConvertFiles, openRequest,
   const activeColor = colorOf(activeTrack)
   const loopActive = loopA != null && loopB != null && loopB > loopA
 
+  // ── Pane layout ───────────────────────────────────────────────────────────
+  const [layout, setLayout] = useState(initialStorage.layout)
+  const [narrow, setNarrow] = useState(() => isNarrow(viewportWidth()))
+  const [drawer, setDrawer] = useState(null) // 'left' | 'right' in a narrow window
+  const [workspaceWidth, setWorkspaceWidth] = useState(() => viewportWidth())
+  const [flagsNode, setFlagsNode] = useState(null)
+  const [clock, setClockState] = useState({ path: null, start: null })
+  const workspaceRef = useRef(null)
+  const drawerButtonRefs = useRef({})
+  const paneBaseId = useId()
+  const paneIds = { left: `${paneBaseId}-left`, right: `${paneBaseId}-right` }
+  const setClock = (path, start) =>
+    setClockState(prev => (prev.path === path && prev.start === start ? prev : { path, start }))
+  const clockStart = clock.path === activeTrack?.path ? clock.start : null
+
+  useEffect(() => {
+    const onResize = () => {
+      const next = isNarrow(viewportWidth())
+      setNarrow(next)
+      if (!next) setDrawer(null)
+    }
+    window.addEventListener('resize', onResize)
+    return () => window.removeEventListener('resize', onResize)
+  }, [])
+
+  // The panes' real width, so the centre keeps the largest share.
+  const hasTracks = tracks.length > 0
+  useLayoutEffect(() => {
+    const el = workspaceRef.current
+    if (!el) return undefined
+    const measure = () => setWorkspaceWidth(el.clientWidth || viewportWidth())
+    measure()
+    if (typeof ResizeObserver !== 'function') return undefined
+    const observer = new ResizeObserver(measure)
+    observer.observe(el)
+    return () => observer.disconnect()
+  }, [narrow, hasTracks])
+
+  const saveLayout = next => {
+    if (!writeLayout(browserStorage(), next)) setStorageError(PLAYER_STORAGE_WARNING)
+  }
+  const updateLayout = (patch, save = true) => {
+    setLayout(prev => {
+      const next = { ...prev, ...patch }
+      if (save) saveLayout(next)
+      return next
+    })
+  }
+  const resizePane = (side, width, save) => updateLayout({ [side]: clampPane(side, width) }, save)
+
+  const widths = paneWidths(layout, workspaceWidth)
+  const gridColumns = [
+    `${widths.left}px`,
+    layout.leftOpen ? `${SPLITTER_WIDTH}px` : null,
+    'minmax(0,1fr)',
+    layout.rightOpen ? `${SPLITTER_WIDTH}px` : null,
+    `${widths.right}px`,
+  ]
+    .filter(Boolean)
+    .join(' ')
+
+  const closeDrawer = () => {
+    const open = drawer
+    setDrawer(null)
+    if (open) drawerButtonRefs.current[open]?.focus()
+  }
+  // Opening a drawer moves the keyboard into it.
+  useEffect(() => {
+    if (!drawer) return
+    document.getElementById(paneIds[drawer])?.querySelector('button, input, select, [tabindex="0"]')?.focus()
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- only when a drawer opens
+  }, [drawer])
+
+  const iconButton =
+    'h-7 w-7 shrink-0 inline-flex items-center justify-center rounded-md text-[hsl(var(--text2))] transition-colors hover:bg-secondary hover:text-foreground'
+  // The button that hides or shows a side pane (or closes its drawer).
+  const paneToggle = side => {
+    const name = PANE_NAMES[side].toLowerCase()
+    if (narrow) {
+      return (
+        <button
+          type="button"
+          className={iconButton}
+          aria-label={`Close ${name}`}
+          title="Close (Esc)"
+          onClick={closeDrawer}
+        >
+          <X size={14} />
+        </button>
+      )
+    }
+    const open = side === 'left' ? layout.leftOpen : layout.rightOpen
+    const Icon = side === 'left' ? (open ? PanelLeftClose : PanelLeftOpen) : open ? PanelRightClose : PanelRightOpen
+    return (
+      <button
+        type="button"
+        className={iconButton}
+        aria-label={`${open ? 'Hide' : 'Show'} ${name}`}
+        title={`${open ? 'Hide' : 'Show'} ${name}`}
+        aria-expanded={open}
+        aria-controls={paneIds[side]}
+        onClick={() => updateLayout(side === 'left' ? { leftOpen: !open } : { rightOpen: !open })}
+      >
+        <Icon size={15} />
+      </button>
+    )
+  }
+  const drawerButton = side => {
+    const Icon = side === 'left' ? ListMusic : AudioLines
+    const open = drawer === side
+    return (
+      <Button
+        ref={el => {
+          drawerButtonRefs.current[side] = el
+        }}
+        size="sm"
+        variant="outline"
+        className={cn(open && 'bg-secondary text-foreground ring-1 ring-inset ring-foreground')}
+        aria-expanded={open}
+        aria-controls={paneIds[side]}
+        onClick={() => (open ? closeDrawer() : setDrawer(side))}
+      >
+        <Icon size={13} /> {side === 'left' ? 'Playlist and bookmarks' : 'Now playing and flags'}
+      </Button>
+    )
+  }
+
   const speedOptions = SPEED_STEPS.map(s => ({ value: s, label: `${s}×`, title: `${s}× playback speed` }))
 
   const convertFirstNotice = (convertFirstPaths.length > 0 || playbackError) && (
@@ -739,243 +907,371 @@ export default function PlayerTab({ dropHandlerRef, onConvertFiles, openRequest,
     )
   }
 
-  // ── Workspace (Now Playing + playlist rail) over a fixed transport bar ────
-  return (
-    <>
-      <div className="flex-1 overflow-y-auto overflow-x-hidden">
-        <div className="w-full max-w-[1100px] mx-auto px-4 sm:px-6 lg:px-8 py-5 grid gap-4 md:grid-cols-[minmax(0,1fr)_300px]">
-          <WorkspaceHeader
-            eyebrow="Local review"
-            title="Review a recording"
-            description="Use the waveform, playlist and bookmarks to work through the record, and proof a transcript against it."
-            status={`${tracks.length} track${tracks.length === 1 ? '' : 's'} loaded locally`}
-            className="md:col-span-2"
-          />
-          {storageNotice && <div className="md:col-span-2">{storageNotice}</div>}
-          {transcriptStorageNotice && <div className="md:col-span-2">{transcriptStorageNotice}</div>}
-          {convertFirstNotice && <div className="md:col-span-2">{convertFirstNotice}</div>}
+  const flagsCard = (
+    <Card>
+      <CardContent ref={setFlagsNode} className="p-3" />
+    </Card>
+  )
 
-          {/* Now Playing — the main surface: a large seekable waveform */}
-          {activeTrack && (
-            <div className="md:order-1 order-2 min-w-0">
-              <Card>
-                <CardHeader>
-                  <CardTitle>Now Playing</CardTitle>
-                </CardHeader>
-                <CardContent className="p-4 flex flex-col gap-3">
-                  <div className="flex items-baseline gap-2 min-w-0">
-                    <span className="w-2 h-2 rounded-full shrink-0 self-center" style={{ background: activeColor }} />
-                    <span className="text-[15px] font-semibold text-foreground truncate">{activeTrack.name}</span>
-                    <span className="text-[12px] tabular-nums text-[hsl(var(--sub))] shrink-0">
-                      · {activeTrack.label}
-                    </span>
-                  </div>
-                  <Waveform
-                    audioPath={activeTrack.path}
-                    color={activeColor}
-                    currentTime={currentTime}
-                    duration={duration}
-                    height={96}
-                    onSeek={seekTo}
-                    markers={trackBookmarks}
-                    loop={loopActive ? { a: loopA, b: loopB } : null}
-                  />
-                  <div className="flex items-center justify-between tabular-nums text-[12px] text-[hsl(var(--sub))]">
-                    <span>{fmtTime(currentTime)}</span>
-                    <span>{fmtTime(duration)}</span>
-                  </div>
-                  <ListeningMix
-                    volume={volume}
-                    onVolume={applyVolume}
-                    fileChannels={fileChannels}
-                    mixOn={mixOn}
-                    onToggleMix={toggleMix}
-                    strips={strips}
-                    onStrips={setStrips}
-                    heardChannels={heardChannels}
-                    probeAvailable={probeAvailable}
-                    probed={probe.path === activePath}
-                    stripsCleared={stripsCleared}
-                    stripsFromPreviousCleared={stripsFromPreviousCleared}
-                    notice={mixNotice}
-                  />
-                </CardContent>
-              </Card>
+  const nowPlaying = activeTrack && (
+    <Card>
+      <CardHeader className="py-2">
+        <CardTitle as="h2">Now Playing</CardTitle>
+        {paneToggle('right')}
+      </CardHeader>
+      <CardContent className="p-3 flex flex-col gap-2.5">
+        <div className="flex items-baseline gap-2 min-w-0">
+          <span className="w-2 h-2 rounded-full shrink-0 self-center" style={{ background: activeColor }} />
+          <span className="text-[14px] font-semibold text-foreground truncate" title={activeTrack.name}>
+            {activeTrack.name}
+          </span>
+        </div>
+        <span className="-mt-2 text-[12px] tabular-nums text-[hsl(var(--sub))] truncate">{activeTrack.label}</span>
+        <Waveform
+          audioPath={activeTrack.path}
+          color={activeColor}
+          currentTime={currentTime}
+          duration={duration}
+          height={56}
+          onSeek={seekTo}
+          markers={trackBookmarks}
+          loop={loopActive ? { a: loopA, b: loopB } : null}
+        />
+        <div className="flex items-center justify-between tabular-nums text-[12px] text-[hsl(var(--sub))]">
+          <span>{fmtTime(currentTime)}</span>
+          <span>{fmtTime(duration)}</span>
+        </div>
+        {clockStart != null && (
+          <p
+            className="flex items-baseline justify-between gap-2 text-[12px] text-[hsl(var(--text2))]"
+            title="From the recording start time you entered for the transcript"
+          >
+            <span>Time of day</span>
+            <span className="tabular-nums font-medium text-foreground">{fmtClock(clockStart + currentTime)}</span>
+          </p>
+        )}
+        <ListeningMix
+          volume={volume}
+          onVolume={applyVolume}
+          fileChannels={fileChannels}
+          mixOn={mixOn}
+          onToggleMix={toggleMix}
+          strips={strips}
+          onStrips={setStrips}
+          heardChannels={heardChannels}
+          probeAvailable={probeAvailable}
+          probed={probe.path === activePath}
+          stripsCleared={stripsCleared}
+          stripsFromPreviousCleared={stripsFromPreviousCleared}
+          notice={mixNotice}
+          compact
+        />
+      </CardContent>
+    </Card>
+  )
+
+  const leftContent = (
+    <div className="flex flex-col gap-3 p-3">
+      <Card>
+        <CardHeader>
+          <CardTitle>Playlist</CardTitle>
+          <div className="flex items-center gap-1">
+            <Button size="sm" onClick={browseFiles}>
+              <Plus size={12} /> Add
+            </Button>
+            {paneToggle('left')}
+          </div>
+        </CardHeader>
+        <CardContent className="p-1.5">
+          {tracks.map((t, i) => (
+            <div
+              key={t.path}
+              className={cn(
+                'group flex items-center gap-2 px-2 py-1.5 rounded-md transition-colors hover:bg-secondary/50',
+                activeTrack?.path === t.path && 'bg-secondary',
+                dragIdx === i && 'opacity-50',
+              )}
+              draggable
+              onDragStart={() => setDragIdx(i)}
+              onDragOver={e => {
+                e.preventDefault()
+              }}
+              onDrop={e => {
+                e.preventDefault()
+                if (dragIdx !== null && dragIdx !== i) {
+                  setTracks(prev => {
+                    const next = [...prev]
+                    const [moved] = next.splice(dragIdx, 1)
+                    next.splice(i, 0, moved)
+                    tracksRef.current = next
+                    return next
+                  })
+                }
+                setDragIdx(null)
+              }}
+              onDragEnd={() => setDragIdx(null)}
+            >
+              <div className="flex flex-col flex-1 min-w-0">
+                <button
+                  type="button"
+                  className="flex items-center gap-2 min-w-0 text-left rounded"
+                  aria-current={activeTrack?.path === t.path ? 'true' : undefined}
+                  onClick={() => selectTrack(t)}
+                >
+                  <span className="w-2 h-2 rounded-full shrink-0" style={{ background: colorOf(t) }} />
+                  <span className="type-small text-foreground truncate" title={t.name}>
+                    {t.name}
+                  </span>
+                </button>
+                <input
+                  className="text-[12px] text-[hsl(var(--text2))] bg-transparent border-none p-0 tabular-nums w-full focus:text-foreground"
+                  value={t.label}
+                  aria-label={`Track label for ${t.name}`}
+                  placeholder="Track or participant name"
+                  onClick={e => e.stopPropagation()}
+                  onChange={e => {
+                    const label = e.target.value
+                    setTracks(prev => prev.map((tr, j) => (j === i ? { ...tr, label } : tr)))
+                    if (activeTrack?.path === t.path) setActiveTrack(prev => ({ ...prev, label }))
+                  }}
+                />
+              </div>
+              {activeTrack?.path === t.path && playing ? (
+                <Pause size={10} fill="currentColor" className="text-foreground shrink-0" />
+              ) : (
+                <span className="tabular-nums text-[12px] text-[hsl(var(--sub))] shrink-0 group-hover:hidden">
+                  {i + 1}
+                </span>
+              )}
+              <button
+                className="text-[hsl(var(--sub))] opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-opacity hover:text-destructive shrink-0"
+                aria-label={`Remove ${t.name}`}
+                onClick={e => {
+                  e.stopPropagation()
+                  removeTrack(t.path)
+                }}
+              >
+                <X size={11} />
+              </button>
             </div>
-          )}
+          ))}
+        </CardContent>
+      </Card>
 
-          {/* Rail: playlist + bookmarks */}
-          <aside className="md:order-2 order-1 flex flex-col gap-3.5 min-w-0">
-            <Card>
-              <CardHeader>
-                <CardTitle>Playlist</CardTitle>
-                <Button size="sm" onClick={browseFiles}>
-                  <Plus size={12} /> Add
-                </Button>
-              </CardHeader>
-              <CardContent className="p-1.5">
-                {tracks.map((t, i) => (
-                  <div
-                    key={t.path}
-                    className={cn(
-                      'group flex items-center gap-2 px-2 py-1.5 rounded-md transition-colors hover:bg-secondary/50',
-                      activeTrack?.path === t.path && 'bg-secondary',
-                      dragIdx === i && 'opacity-50',
-                    )}
-                    draggable
-                    onDragStart={() => setDragIdx(i)}
-                    onDragOver={e => {
-                      e.preventDefault()
-                    }}
-                    onDrop={e => {
-                      e.preventDefault()
-                      if (dragIdx !== null && dragIdx !== i) {
-                        setTracks(prev => {
-                          const next = [...prev]
-                          const [moved] = next.splice(dragIdx, 1)
-                          next.splice(i, 0, moved)
-                          tracksRef.current = next
-                          return next
-                        })
-                      }
-                      setDragIdx(null)
-                    }}
-                    onDragEnd={() => setDragIdx(null)}
-                  >
-                    <div className="flex flex-col flex-1 min-w-0">
-                      <button
-                        type="button"
-                        className="flex items-center gap-2 min-w-0 text-left rounded"
-                        aria-current={activeTrack?.path === t.path ? 'true' : undefined}
-                        onClick={() => selectTrack(t)}
-                      >
-                        <span className="w-2 h-2 rounded-full shrink-0" style={{ background: colorOf(t) }} />
-                        <span className="type-small text-foreground truncate" title={t.name}>
-                          {t.name}
-                        </span>
-                      </button>
-                      <input
-                        className="text-[12px] text-[hsl(var(--text2))] bg-transparent border-none p-0 tabular-nums w-full focus:text-foreground"
-                        value={t.label}
-                        aria-label={`Track label for ${t.name}`}
-                        placeholder="Track or participant name"
-                        onClick={e => e.stopPropagation()}
-                        onChange={e => {
-                          const label = e.target.value
-                          setTracks(prev => prev.map((tr, j) => (j === i ? { ...tr, label } : tr)))
-                          if (activeTrack?.path === t.path) setActiveTrack(prev => ({ ...prev, label }))
-                        }}
-                      />
-                    </div>
-                    {activeTrack?.path === t.path && playing ? (
-                      <Pause size={10} fill="currentColor" className="text-foreground shrink-0" />
-                    ) : (
-                      <span className="tabular-nums text-[12px] text-[hsl(var(--sub))] shrink-0 group-hover:hidden">
-                        {i + 1}
-                      </span>
-                    )}
-                    <button
-                      className="text-[hsl(var(--sub))] opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-opacity hover:text-destructive shrink-0"
-                      aria-label={`Remove ${t.name}`}
-                      onClick={e => {
-                        e.stopPropagation()
-                        removeTrack(t.path)
-                      }}
-                    >
-                      <X size={11} />
-                    </button>
-                  </div>
-                ))}
-              </CardContent>
-            </Card>
-
-            {/* Bookmarks for the active track */}
-            {activeTrack && (
-              <Card>
-                <CardHeader>
-                  <CardTitle>Bookmarks</CardTitle>
-                  {trackBookmarks.length > 0 && (
+      {/* Bookmarks for the active track */}
+      {activeTrack && (
+        <Card>
+          <CardHeader>
+            <CardTitle>Bookmarks</CardTitle>
+            {trackBookmarks.length > 0 && (
+              <>
+                <button
+                  onClick={copyBookmarks}
+                  title="Copy bookmarks to clipboard as timestamped lines"
+                  className="flex items-center gap-1 type-small text-[hsl(var(--sub))] hover:text-foreground transition-colors rounded px-1"
+                >
+                  {copied ? (
                     <>
-                      <button
-                        onClick={copyBookmarks}
-                        title="Copy bookmarks to clipboard as timestamped lines"
-                        className="flex items-center gap-1 type-small text-[hsl(var(--sub))] hover:text-foreground transition-colors rounded px-1"
-                      >
-                        {copied ? (
-                          <>
-                            <Check size={11} /> Copied
-                          </>
-                        ) : (
-                          <>
-                            <Copy size={11} /> Copy
-                          </>
-                        )}
-                      </button>
-                      <span role="status" aria-live="polite" className="sr-only">
-                        {copied ? 'Bookmarks copied to clipboard.' : ''}
-                      </span>
+                      <Check size={11} /> Copied
+                    </>
+                  ) : (
+                    <>
+                      <Copy size={11} /> Copy
                     </>
                   )}
-                </CardHeader>
-                <CardContent className="p-2">
-                  {trackBookmarks.length === 0 ? (
-                    <p className="px-1 py-1 type-small text-[hsl(var(--sub))]">
-                      Press <kbd className="tabular-nums">B</kbd> or the bookmark button to mark the current spot.
-                    </p>
-                  ) : (
-                    <div className="flex flex-col gap-0.5">
-                      {trackBookmarks
-                        .slice()
-                        .sort((a, b) => a.time - b.time)
-                        .map(b => (
-                          <div key={`${b.time}-${b.trackPath}`} className="flex items-center gap-2 group px-1">
-                            <button
-                              className="tabular-nums text-[12px] text-[hsl(var(--text2))] hover:text-foreground shrink-0 w-11 text-left rounded"
-                              title="Jump to bookmark"
-                              onClick={() => seekTo(b.time)}
-                            >
-                              {fmtTime(b.time)}
-                            </button>
-                            <input
-                              className="flex-1 min-w-0 bg-transparent border-none p-0 type-small text-foreground"
-                              value={b.label}
-                              placeholder="Add a note…"
-                              onChange={e =>
-                                setBookmarks(prev => prev.map(x => (x === b ? { ...x, label: e.target.value } : x)))
-                              }
-                            />
-                            <button
-                              className="text-[hsl(var(--sub))] opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 hover:text-destructive transition-all shrink-0 rounded"
-                              aria-label="Remove bookmark"
-                              onClick={() => setBookmarks(prev => prev.filter(x => x !== b))}
-                            >
-                              <X size={10} />
-                            </button>
-                          </div>
-                        ))}
-                    </div>
-                  )}
-                </CardContent>
-              </Card>
+                </button>
+                <span role="status" aria-live="polite" className="sr-only">
+                  {copied ? 'Bookmarks copied to clipboard.' : ''}
+                </span>
+              </>
             )}
-          </aside>
+          </CardHeader>
+          <CardContent className="p-2">
+            {trackBookmarks.length === 0 ? (
+              <p className="px-1 py-1 type-small text-[hsl(var(--sub))]">
+                Press <kbd className="tabular-nums">B</kbd> or the bookmark button to mark the current spot.
+              </p>
+            ) : (
+              <div className="flex flex-col gap-0.5">
+                {trackBookmarks
+                  .slice()
+                  .sort((a, b) => a.time - b.time)
+                  .map(b => (
+                    <div key={`${b.time}-${b.trackPath}`} className="flex items-center gap-2 group px-1">
+                      <button
+                        className="tabular-nums text-[12px] text-[hsl(var(--text2))] hover:text-foreground shrink-0 w-11 text-left rounded"
+                        title="Jump to bookmark"
+                        onClick={() => seekTo(b.time)}
+                      >
+                        {fmtTime(b.time)}
+                      </button>
+                      <input
+                        className="flex-1 min-w-0 bg-transparent border-none p-0 type-small text-foreground"
+                        value={b.label}
+                        placeholder="Add a note…"
+                        onChange={e =>
+                          setBookmarks(prev => prev.map(x => (x === b ? { ...x, label: e.target.value } : x)))
+                        }
+                      />
+                      <button
+                        className="text-[hsl(var(--sub))] opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 hover:text-destructive transition-all shrink-0 rounded"
+                        aria-label="Remove bookmark"
+                        onClick={() => setBookmarks(prev => prev.filter(x => x !== b))}
+                      >
+                        <X size={10} />
+                      </button>
+                    </div>
+                  ))}
+              </div>
+            )}
+          </CardContent>
+        </Card>
+      )}
+    </div>
+  )
 
-          {activeTrack && (
-            <div className="md:order-3 order-3 md:col-span-2 min-w-0">
-              <Transcript
-                key={activeTrack.path}
-                trackPath={activeTrack.path}
-                currentTime={currentTime}
-                playing={playing}
-                duration={duration}
-                onSeek={seekTo}
-                onPlayFrom={playFrom}
-                onStorageError={setTranscriptStorageError}
-              />
-            </div>
-          )}
+  const rightContent = (
+    <div className="flex flex-col gap-3 p-3">
+      {nowPlaying}
+      {flagsCard}
+    </div>
+  )
+
+  const centre = activeTrack && (
+    <Transcript
+      key={activeTrack.path}
+      trackPath={activeTrack.path}
+      currentTime={currentTime}
+      playing={playing}
+      duration={duration}
+      onSeek={seekTo}
+      onPlayFrom={playFrom}
+      onStorageError={setTranscriptStorageError}
+      onClockChange={setClock}
+      flagsContainer={flagsNode}
+    />
+  )
+
+  const notices = (storageNotice || transcriptStorageNotice || convertFirstNotice) && (
+    <div className="shrink-0 px-3 pt-3 [&>[role=alert]]:mb-0 flex flex-col gap-2">
+      {storageNotice}
+      {transcriptStorageNotice}
+      {convertFirstNotice}
+    </div>
+  )
+
+  // Side pane: open (content, scrolling inside itself) or a collapsed rail
+  // with the button that opens it again.
+  const sidePane = side => {
+    const content = side === 'left' ? leftContent : rightContent
+    const open = side === 'left' ? layout.leftOpen : layout.rightOpen
+    return (
+      <aside
+        id={paneIds[side]}
+        aria-label={PANE_NAMES[side]}
+        className={cn(
+          'relative min-h-0 min-w-0 bg-[hsl(var(--surface))]',
+          side === 'left' ? 'border-r border-border/60' : 'border-l border-border/60',
+          open ? 'overflow-y-auto overflow-x-hidden' : 'flex flex-col items-center py-3',
+        )}
+      >
+        {open ? content : paneToggle(side)}
+      </aside>
+    )
+  }
+
+  // ── Workspace: three panes over a fixed transport bar ─────────────────────
+  return (
+    <>
+      {narrow ? (
+        <div
+          className="relative flex min-h-0 flex-1 flex-col overflow-hidden"
+          data-testid="player-workspace"
+          data-layout="narrow"
+        >
+          {notices}
+          <div
+            className="shrink-0 flex items-center gap-2 border-b border-border/60 px-3 py-1.5"
+            role="toolbar"
+            aria-label="Player panes"
+          >
+            {drawerButton('left')}
+            <span className="flex-1" />
+            {drawerButton('right')}
+          </div>
+          <div className="relative min-h-0 flex-1">
+            <section aria-label="Transcript" className="h-full min-h-0 overflow-y-auto p-3">
+              {centre}
+            </section>
+            {['left', 'right'].map(side => (
+              <div
+                key={side}
+                id={paneIds[side]}
+                role="region"
+                aria-label={PANE_NAMES[side]}
+                hidden={drawer !== side}
+                onKeyDown={e => {
+                  if (e.key === 'Escape') {
+                    e.preventDefault()
+                    e.stopPropagation()
+                    closeDrawer()
+                  }
+                }}
+                className={cn(
+                  'absolute inset-y-0 z-20 w-[min(22rem,88%)] overflow-y-auto overflow-x-hidden border-border bg-[hsl(var(--surface))] shadow-xl',
+                  side === 'left' ? 'left-0 border-r' : 'right-0 border-l',
+                )}
+              >
+                {side === 'left' ? leftContent : rightContent}
+              </div>
+            ))}
+          </div>
         </div>
-      </div>
+      ) : (
+        <div
+          className="flex min-h-0 flex-1 flex-col overflow-hidden"
+          data-testid="player-workspace"
+          data-layout="panes"
+        >
+          {notices}
+          <div
+            ref={workspaceRef}
+            className="relative grid min-h-0 flex-1"
+            style={{ gridTemplateColumns: gridColumns }}
+            data-testid="player-panes"
+          >
+            {sidePane('left')}
+            {layout.leftOpen && (
+              <PaneSplitter
+                side="left"
+                label="Resize the playlist and bookmarks pane"
+                controls={paneIds.left}
+                value={widths.left}
+                onChange={w => resizePane('left', w, false)}
+                onCommit={w => resizePane('left', w, true)}
+              />
+            )}
+            <section
+              aria-label="Transcript"
+              className="relative min-h-0 min-w-0 overflow-y-auto p-3"
+              data-testid="player-centre"
+            >
+              {centre}
+            </section>
+            {layout.rightOpen && (
+              <PaneSplitter
+                side="right"
+                label="Resize the now playing and flags pane"
+                controls={paneIds.right}
+                value={widths.right}
+                onChange={w => resizePane('right', w, false)}
+                onCommit={w => resizePane('right', w, true)}
+              />
+            )}
+            {sidePane('right')}
+          </div>
+        </div>
+      )}
 
       {/* ── Persistent transport bar ─────────────────────────────────────── */}
       {activeTrack && (

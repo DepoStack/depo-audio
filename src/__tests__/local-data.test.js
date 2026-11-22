@@ -113,6 +113,7 @@ describe('clearing web data', () => {
       'player-speed': '2',
       'player-backstep': '3',
       'player-volume': '0.8',
+      'player-layout': '{"left":260}',
       'depoaudio-theme': 'dark',
       'not-depoaudio': 'kept',
     })
@@ -124,9 +125,10 @@ describe('clearing web data', () => {
       'player-speed',
       'player-backstep',
       'player-volume',
+      'player-layout',
       'depoaudio-theme',
     ])
-    expect(clearWebData(storage)).toEqual({ removed: 8, failed: 0 })
+    expect(clearWebData(storage)).toEqual({ removed: 9, failed: 0 })
     expect([...storage.data.keys()]).toEqual(['not-depoaudio'])
   })
 
@@ -134,7 +136,7 @@ describe('clearing web data', () => {
     storage.removeItem = () => {
       throw new Error('blocked')
     }
-    expect(clearWebData(storage)).toEqual({ removed: 0, failed: 7 })
+    expect(clearWebData(storage)).toEqual({ removed: 0, failed: 9 })
   })
 })
 
