@@ -1188,6 +1188,13 @@ expect(
     releaseWorkflow.split(`-af '${trimFilter},${stereoLimiter}'`).length === 3,
   'release.yml must smoke-test the exact trim and stereo limiter filters on the macOS and Windows FFmpeg',
 )
+// Fade's fade-out is placed from a decoded-length pass; both smoke tests run
+// its exact filter so an FFmpeg without astats cannot ship.
+const decodedLengthFilter = ffmpegSource.match(/const DECODED_LENGTH_FILTER: &str =\s*"([^"]+)";/)?.[1]
+expect(
+  decodedLengthFilter && releaseWorkflow.split(`-af '${decodedLengthFilter}'`).length === 3,
+  'release.yml must smoke-test the exact decoded-length filter (ffmpeg.rs DECODED_LENGTH_FILTER) on the macOS and Windows FFmpeg',
+)
 
 if (failures.length > 0) {
   console.error('Release contract check failed:')
