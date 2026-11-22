@@ -10,8 +10,8 @@ use crate::ffmpeg::{
     probe_manifest_source_cancellable, run_ffmpeg_with_timeout,
 };
 use crate::helpers::{
-    basename, input_codec_args, output_args, output_ext, prepare_audio_feed_with_cancel, safe_ffmpeg_input_prelude,
-    safe_label, source_audio_map_args, wav_estimated_bytes, wav_rf64_args,
+    basename, input_codec_args, output_args, output_ext, prepare_audio_feed_with_cancel, prepare_sgmca_feed,
+    safe_ffmpeg_input_prelude, safe_label, source_audio_map_args, wav_estimated_bytes, wav_rf64_args,
 };
 use crate::manifest::{self, FileRecord, ManifestInput, OutputFacts};
 use crate::safety::TempFile;
@@ -284,28 +284,39 @@ pub(crate) async fn do_convert(
     .await
     .map_err(|error| format!("Audio preparation task failed: {error}"))?;
     cancel.check()?;
-    let (feed_path, _feed_guard, source) = prepared?;
+    let (feed_path, _feed_guard, source, sgmca_source) = prepared?;
 
-    do_convert_inner(app, job, &feed_path, max_bytes, cancel, source).await
+    do_convert_inner(app, job, &feed_path, max_bytes, cancel, source, sgmca_source).await
 }
 
-/// Prepare the selected file for FFmpeg (an SGMCA loses its vendor prefix in a
-/// temporary Ogg copy; every other format is used as is) and fingerprint the
-/// original file as the person selected it, before any preparation, for the
-/// export record (DA-08). The temporary copy, if any, lives as long as the
+/// Prepare the selected file for FFmpeg (a Direct Audio SGMCA is read in place
+/// through a small temporary concat script naming each recording session's
+/// byte range; every other format is used as is), read an SGMCA's layout,
+/// and fingerprint the original file as the person selected it, for the
+/// export record (DA-08). The temporary script, if any, lives as long as the
 /// returned guard.
-fn prepare_source(
-    src: &Path,
-    cancelled: &(dyn Fn() -> bool + Send + Sync),
-) -> Result<(PathBuf, Option<TempFile>, FileRecord), String> {
-    let (feed, guard) = prepare_audio_feed_with_cancel(src, Some(cancelled))?;
+type PreparedSource = (PathBuf, Option<TempFile>, FileRecord, Option<crate::sgmca::SgmcaInfo>);
+
+fn prepare_source(src: &Path, cancelled: &(dyn Fn() -> bool + Send + Sync)) -> Result<PreparedSource, String> {
+    let is_sgmca = src
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("sgmca"));
+    let (feed, guard, sgmca) = if is_sgmca {
+        let (feed, guard, info) = prepare_sgmca_feed(src, Some(cancelled))?;
+        (feed, guard, Some(info))
+    } else {
+        let (feed, guard) = prepare_audio_feed_with_cancel(src, Some(cancelled))?;
+        (feed, guard, None)
+    };
     let (sha256, size_bytes) = manifest::sha256_file(src, cancelled)?;
     let source = FileRecord {
         file_name: basename(&src.to_string_lossy()),
         sha256,
         size_bytes,
+        sgmca: sgmca.as_ref().map(manifest::sgmca_source_record),
     };
-    Ok((feed, guard, source))
+    Ok((feed, guard, source, sgmca))
 }
 
 /// What the probes found before the FFmpeg command is planned.
@@ -321,6 +332,9 @@ struct ConversionProbes {
     /// Duration of the converted stream, for the WAV size estimate that
     /// decides on `-rf64 auto`.
     duration_secs: Option<f64>,
+    /// The layout of an SGMCA source, read before conversion: its recording
+    /// sessions and their start times.
+    sgmca_source: Option<crate::sgmca::SgmcaInfo>,
 }
 
 /// The exact FFmpeg command for one conversion and the outputs it writes.
@@ -337,6 +351,9 @@ struct ConversionPlan {
     /// channel's filter branch (`-map [opN]`) for Split.
     map_args: Vec<Vec<String>>,
     start_shifted: bool,
+    /// For an SGMCA output: its segments and where their start times come
+    /// from, applied when each output is wrapped in its Direct Audio header.
+    sgmca_output: Option<SgmcaOutputPlan>,
 }
 
 /// Pure core of a conversion once the input has been probed: reserve every
@@ -520,6 +537,17 @@ fn plan_conversion(
         _ => return Err(format!("Unknown mode: {}", job.mode)),
     }
 
+    let sgmca_output = if job.format == "sgmca" {
+        Some(plan_sgmca_output(
+            probes.sgmca_source.as_ref(),
+            &probes.probed,
+            start_shifted,
+            crate::clock::now_utc(),
+        )?)
+    } else {
+        None
+    };
+
     Ok(ConversionPlan {
         planned,
         args,
@@ -528,6 +556,166 @@ fn plan_conversion(
         encoder_args,
         map_args,
         start_shifted,
+        sgmca_output,
+    })
+}
+
+// ── SGMCA output ─────────────────────────────────────────────────────────────
+
+/// The segments an SGMCA output gets and where their start times come from.
+#[derive(Debug, Clone, PartialEq)]
+struct SgmcaOutputPlan {
+    start_source: &'static str,
+    note: String,
+    segments: Vec<crate::sgmca::PlannedSegment>,
+}
+
+/// The start of a BWF source's first sample as an SGMCA start text: the
+/// origination date plus the time reference in whole seconds, with this
+/// computer's UTC offset for that date (BWF stores none). Also returns the
+/// fraction of a second dropped.
+fn bwf_start_text(timing: manifest::SourceTiming, date: &str) -> Option<(String, f64)> {
+    let year: i32 = date.get(0..4)?.parse().ok()?;
+    let month = time::Month::try_from(date.get(5..7)?.parse::<u8>().ok()?).ok()?;
+    let day: u8 = date.get(8..10)?.parse().ok()?;
+    let date = time::Date::from_calendar_date(year, month, day).ok()?;
+    let rate = u64::from(timing.sample_rate);
+    let whole = timing.time_reference_samples / rate;
+    let fraction = (timing.time_reference_samples % rate) as f64 / rate as f64;
+    let local = time::PrimitiveDateTime::new(date, time::Time::MIDNIGHT)
+        .checked_add(time::Duration::seconds(i64::try_from(whole).ok()?))?;
+    // The offset in force at that wall-clock time: first guess from the
+    // instant as if it were UTC, then once more from the instant it names.
+    let guess = crate::clock::local_offset_at(local.assume_utc()).unwrap_or(time::UtcOffset::UTC);
+    let offset = crate::clock::local_offset_at(local.assume_offset(guess)).unwrap_or(guess);
+    let text = crate::sgmca::format_start_text(local, i32::from(offset.whole_minutes()))?;
+    Some((text, fraction))
+}
+
+const CONVERSION_TIME_EXPLAINED: &str = "It is not when the recording was made. CATalyst lines Direct Audio up with a transcript by matching segment start times with stroke times, so this file will not line up with a transcript until a correct start is known.";
+
+/// Where an SGMCA output's segment start times come from, in order of
+/// preference: the source's own SGMCA segment headers (one output segment
+/// per source session, each starting where that session starts in the
+/// joined audio), the source's BWF origination date and bext time
+/// reference, or the time of conversion. Leading-silence trim moves the
+/// first sample by an amount FFmpeg does not report, so after it only the
+/// conversion time is used.
+fn plan_sgmca_output(
+    source: Option<&crate::sgmca::SgmcaInfo>,
+    probed: &manifest::ProbedSource,
+    shifted: bool,
+    now: time::OffsetDateTime,
+) -> Result<SgmcaOutputPlan, String> {
+    let conversion_time = |reason: &str| -> Result<SgmcaOutputPlan, String> {
+        let text = crate::clock::local_start_text(now)
+            .ok_or("The time of conversion cannot be written as an SGMCA start time.")?;
+        Ok(SgmcaOutputPlan {
+            start_source: "conversion-time",
+            note: format!("{reason} The segment start is the time of this conversion. {CONVERSION_TIME_EXPLAINED}"),
+            segments: vec![crate::sgmca::PlannedSegment {
+                start_text: text,
+                start_sample: 0,
+            }],
+        })
+    };
+    if shifted {
+        return conversion_time(
+            "Leading-silence trim removed audio from the start by an amount FFmpeg does not report, so no source start time describes this output.",
+        );
+    }
+    if let Some(info) = source.filter(|info| info.container == crate::sgmca::Container::DirectAudio) {
+        let kept: Vec<&crate::sgmca::SegmentInfo> =
+            info.segments.iter().filter(|segment| segment.samples > 0).collect();
+        let segments: Vec<crate::sgmca::PlannedSegment> = kept
+            .iter()
+            .map(|segment| crate::sgmca::PlannedSegment {
+                start_text: segment
+                    .start
+                    .as_ref()
+                    .map(|start| start.text.clone())
+                    .unwrap_or_default(),
+                start_sample: segment.start_sample,
+            })
+            .collect();
+        if segments.is_empty() {
+            return Err("The SGMCA source holds no audio.".into());
+        }
+        let mut note = if segments.len() == 1 {
+            "The segment keeps the start time from the source's segment header.".to_string()
+        } else {
+            format!(
+                "Each of the {} recording sessions keeps its start time from the source's segment headers, and starts at the same point of the audio as in the source.",
+                segments.len()
+            )
+        };
+        let unreadable: Vec<String> = kept
+            .iter()
+            .filter(|segment| segment.start.as_ref().is_none_or(|start| start.local.is_none()))
+            .map(|segment| segment.number.to_string())
+            .collect();
+        if !unreadable.is_empty() {
+            note.push_str(&format!(
+                " The start text of source segment {} is not a time DepoAudio can read; it was copied unchanged.",
+                unreadable.join(", ")
+            ));
+        }
+        if info.growing {
+            note.push_str(" The source looked still recording or cut short, so only its complete audio was converted.");
+        }
+        return Ok(SgmcaOutputPlan {
+            start_source: "sgmca-segment-start",
+            note,
+            segments,
+        });
+    }
+    if let (Some(timing), Some(date)) = (probed.timing, probed.origination_date.as_deref()) {
+        if let Some((text, fraction)) = bwf_start_text(timing, date) {
+            return Ok(SgmcaOutputPlan {
+                start_source: "bwf-bext",
+                note: format!(
+                    "The start is the source's date plus its BWF bext time reference, in whole seconds ({fraction:.3} s dropped, because the segment header holds no fractions). The date is the WAV's date tag, which FFmpeg reports for the bext origination date (a RIFF INFO creation date has the same name). BWF stores no UTC offset, so the offset written is this computer's for that date."
+                ),
+                segments: vec![crate::sgmca::PlannedSegment {
+                    start_text: text,
+                    start_sample: 0,
+                }],
+            });
+        }
+    }
+    if probed.timing.is_some() {
+        return conversion_time(
+            "The source's BWF time reference has no usable origination date, so the start date is not known.",
+        );
+    }
+    conversion_time("The source carries no start time DepoAudio can read.")
+}
+
+/// Wrap the bare Ogg Opus stream FFmpeg wrote at `path` in the Direct Audio
+/// headers, in a temporary file next to it that then replaces it, and read
+/// the result back. Any failure leaves the output for `OutputCleanup` to
+/// remove.
+fn write_sgmca_output(
+    path: &Path,
+    plan: &SgmcaOutputPlan,
+    cancelled: crate::sgmca::CancelCheck<'_>,
+) -> Result<manifest::SgmcaOutputRecord, String> {
+    let name = path.file_name().and_then(|name| name.to_str()).unwrap_or("output");
+    let temp = path.with_file_name(format!(
+        ".{name}.{}.part",
+        uuid::Uuid::new_v4().to_string().replace('-', "")
+    ));
+    let _guard = TempFile::new(temp.clone());
+    crate::sgmca::write_direct_audio(path, &temp, &plan.segments, cancelled)?;
+    fs::rename(&temp, path).map_err(|error| format!("Could not finish the SGMCA output: {error}"))?;
+    let expected: Vec<String> = plan.segments.iter().map(|segment| segment.start_text.clone()).collect();
+    let info = crate::sgmca::verify_written(path, Some(&expected), cancelled)?;
+    Ok(manifest::SgmcaOutputRecord {
+        file_version: 1,
+        guid_present: info.guid_present,
+        start_source: plan.start_source,
+        start_note: plan.note.clone(),
+        segments: manifest::sgmca_segment_records(&info),
     })
 }
 
@@ -575,6 +763,7 @@ fn output_facts<'a>(
         source_channel_index: plan.planned[index].channel_index,
         label: plan.planned[index].label.clone(),
         wav_header,
+        sgmca: None,
     }
 }
 
@@ -592,21 +781,29 @@ fn finish_outputs(
     cancel: &ConversionCancel,
 ) -> Result<Vec<OutputFile>, String> {
     cancel.check()?;
-    let files = collect_outputs(&plan.planned)?;
-    if job.format == "sgmca" {
-        // Every SGMCA output must really be Direct Audio: a sound Ogg Opus
-        // stream with one uncoupled mono stream per channel.
-        for file in &files {
+    // FFmpeg wrote each SGMCA output as a bare Ogg Opus stream: give it the
+    // Direct Audio headers, then read it back. Every SGMCA output must really
+    // be Direct Audio, with one uncoupled mono stream per channel and the
+    // planned segment start times, or it is removed.
+    let mut sgmca_records: Vec<Option<manifest::SgmcaOutputRecord>> = vec![None; plan.planned.len()];
+    if let Some(sgmca) = &plan.sgmca_output {
+        collect_outputs(&plan.planned)?;
+        for (output, record) in plan.planned.iter().zip(sgmca_records.iter_mut()) {
             let cancelled = || cancel.cancelled();
-            crate::sgmca::verify_written(Path::new(&file.path), Some(&cancelled)).map_err(|error| {
-                format!(
-                    "{} failed the SGMCA format check, so the output was removed: {error}",
-                    file.name
-                )
-            })?;
+            *record = Some(
+                write_sgmca_output(&output.path, sgmca, Some(&cancelled)).map_err(|error| {
+                    cancel.check().err().unwrap_or_else(|| {
+                        format!(
+                            "{} failed the SGMCA format check, so the output was removed: {error}",
+                            basename(&output.path.to_string_lossy())
+                        )
+                    })
+                })?,
+            );
         }
     }
-    for (index, (output, file)) in plan.planned.iter().zip(&files).enumerate() {
+    let files = collect_outputs(&plan.planned)?;
+    for (index, ((output, file), sgmca)) in plan.planned.iter().zip(&files).zip(sgmca_records).enumerate() {
         let hashed = manifest::sha256_file(&output.path, &|| cancel.cancelled());
         cancel.check()?;
         let (sha256, size_bytes) = hashed?;
@@ -616,10 +813,9 @@ fn finish_outputs(
         } else {
             None
         };
-        let record = manifest::build_manifest(
-            input,
-            output_facts(job, plan, index, file, sha256, size_bytes, wav_header),
-        );
+        let mut facts = output_facts(job, plan, index, file, sha256, size_bytes, wav_header);
+        facts.sgmca = sgmca;
+        let record = manifest::build_manifest(input, facts);
         manifest::write_manifest(&output.manifest, &record).map_err(|error| {
             format!(
                 "The audio was converted, but its export record could not be saved, so the output was removed: {error}"
@@ -638,6 +834,7 @@ async fn do_convert_inner(
     max_input_size: u64,
     cancel: &ConversionCancel,
     source: FileRecord,
+    sgmca_source: Option<crate::sgmca::SgmcaInfo>,
 ) -> Result<Vec<OutputFile>, String> {
     cancel.check()?;
     let is_cancelled = || cancel.cancelled();
@@ -705,6 +902,7 @@ async fn do_convert_inner(
         proc,
         probed,
         duration_secs: total_secs,
+        sgmca_source,
     };
     let mut output_cleanup = OutputCleanup::default();
     let plan = plan_conversion(job, effective_feed, &probes, &mut output_cleanup)?;
@@ -1076,8 +1274,7 @@ mod tests {
     const SYNTHETIC_CHANNEL_VOLUMES: [f64; 4] = [0.5, 0.25, 0.125, 0.0625];
     const SYNTHETIC_SECONDS: f64 = 2.0;
 
-    /// A made-up vendor prefix. It only has to be non-Ogg bytes in front of the
-    /// stream, inside the 8 KiB region the SGMCA handler scans.
+    /// Made-up bytes that are not a Direct Audio header (nor an Ogg page).
     fn synthetic_vendor_prefix() -> Vec<u8> {
         let mut prefix = b"DEPOAUDIO SYNTHETIC TEST PREFIX - NOT A REAL SGMCA HEADER\n".to_vec();
         prefix.resize(1024, 0x5a);
@@ -1147,8 +1344,9 @@ mod tests {
         );
     }
 
-    /// A synthetic SGMCA with the made-up prefix in front of its stream (some
-    /// exports carry one). Returns the .sgmca path and the bare Ogg bytes.
+    /// A synthetic SGMCA laid out as the interoperability notes describe it:
+    /// the 40-byte file header and one segment (56-byte header, then the Ogg
+    /// Opus stream). Returns the .sgmca path and the bare Ogg bytes.
     fn synthetic_sgmca(dir: &Path) -> (PathBuf, Vec<u8>) {
         let ogg = dir.join("synthetic_stream.ogg");
         synthetic_direct_audio(&ogg);
@@ -1156,33 +1354,41 @@ mod tests {
         assert_eq!(&stream[..4], b"OggS");
         fs::remove_file(&ogg).unwrap();
         let sgmca = dir.join("synthetic_session.sgmca");
-        let mut bytes = synthetic_vendor_prefix();
-        bytes.extend_from_slice(&stream);
-        fs::write(&sgmca, bytes).unwrap();
+        fs::write(
+            &sgmca,
+            crate::sgmca::fixtures::direct_audio(&[("2026-11-22T10:15:30-0500", &stream)]),
+        )
+        .unwrap();
         (sgmca, stream)
     }
 
-    /// A synthetic SGMCA as the format describes it: the Ogg stream from byte
-    /// 0, no prefix.
+    /// A synthetic SGMCA in the older layout earlier DepoAudio builds wrote:
+    /// a bare Ogg stream from byte 0, no headers.
     fn synthetic_plain_sgmca(dir: &Path) -> PathBuf {
         let sgmca = dir.join("synthetic_session.sgmca");
         synthetic_direct_audio(&sgmca);
         sgmca
     }
 
+    /// FFmpeg input arguments for `path` (`... -i <input>`): an SGMCA goes
+    /// through the app's own feed (its concat script and decoder options),
+    /// anything else is read directly. The guard keeps the script alive.
+    fn ffmpeg_input(path: &Path) -> (Vec<String>, Option<TempFile>) {
+        let (feed, guard) = prepare_audio_feed_with_cancel(path, None).unwrap();
+        let mut args = input_codec_args(&feed);
+        if args.is_empty() && path.extension().is_some_and(|extension| extension == "sgmca") {
+            args = vec!["-c:a".into(), "libopus".into()];
+        }
+        args.extend(["-i".into(), feed.to_string_lossy().to_string()]);
+        (args, guard)
+    }
+
     /// Interleaved 32-bit float PCM at 48 kHz, decoded by FFmpeg.
     fn decode_f32(path: &Path, channels: usize) -> Vec<Vec<f32>> {
+        let (input, _guard) = ffmpeg_input(path);
         let output = std::process::Command::new("ffmpeg")
-            .args([
-                "-nostdin",
-                "-hide_banner",
-                "-loglevel",
-                "error",
-                "-c:a",
-                "libopus",
-                "-i",
-            ])
-            .arg(path)
+            .args(["-nostdin", "-hide_banner", "-loglevel", "error"])
+            .args(&input)
             .args(["-f", "f32le", "-ar", "48000", "-"])
             .output()
             .unwrap();
@@ -1221,10 +1427,12 @@ mod tests {
     }
 
     fn ffprobe_json(path: &Path, args: &[&str]) -> serde_json::Value {
+        let (feed, _guard) = prepare_audio_feed_with_cancel(path, None).unwrap();
         let output = std::process::Command::new("ffprobe")
             .args(["-v", "quiet", "-print_format", "json"])
             .args(args)
-            .arg(path)
+            .args(crate::helpers::feed_format_args(&feed))
+            .arg(&feed)
             .output()
             .unwrap();
         assert!(output.status.success(), "ffprobe failed on {}", path.display());
@@ -1242,9 +1450,10 @@ mod tests {
     }
 
     fn max_volume_db_with(path: &Path, filter: &str) -> f64 {
+        let (input, _guard) = ffmpeg_input(path);
         let output = std::process::Command::new("ffmpeg")
-            .args(["-nostdin", "-hide_banner", "-i"])
-            .arg(path)
+            .args(["-nostdin", "-hide_banner"])
+            .args(&input)
             .args(["-af", filter, "-f", "null", "-"])
             .output()
             .unwrap();
@@ -1290,7 +1499,7 @@ mod tests {
             !matches!(format.handler.as_str(), "rejected" | "ftr"),
             "this harness covers container formats only"
         );
-        let (feed, _feed_guard, source) = prepare_source(Path::new(&job.src_path), &|| false)?;
+        let (feed, _feed_guard, source, sgmca_source) = prepare_source(Path::new(&job.src_path), &|| false)?;
 
         let probe = |args: Vec<String>| {
             let output = std::process::Command::new("ffprobe").args(args).output().unwrap();
@@ -1310,6 +1519,7 @@ mod tests {
                 .map(|value| manifest::parse_probe(&value))
                 .unwrap_or_default(),
             duration_secs: total_secs,
+            sgmca_source,
         };
 
         let mut output_cleanup = OutputCleanup::default();
@@ -1437,8 +1647,8 @@ mod tests {
         let conversion = convert_with_system_ffmpeg(&court_job(&sgmca, &out, "split", "wav"), None).unwrap();
         assert_split_outputs(&conversion, &sgmca, ".wav");
 
-        // The record fingerprints the .sgmca as selected, not the stripped
-        // Ogg feed; the original is untouched; the temporary feed is gone.
+        // The record fingerprints the .sgmca as selected, not its Ogg
+        // stream; the original is untouched; the temporary script is gone.
         let record = checked_export_record(&conversion.files[0], &sgmca);
         let stream_digest = {
             let bare = dir.0.join("bare_stream.ogg");
@@ -1448,7 +1658,17 @@ mod tests {
         assert_ne!(record["source"]["sha256"], stream_digest);
         assert_eq!(fs::read(&sgmca).unwrap(), original);
         assert_ne!(conversion.feed, sgmca);
-        assert!(!conversion.feed.exists(), "the stripped Ogg feed was left behind");
+        assert!(!conversion.feed.exists(), "the concat script was left behind");
+        let layout = &record["source"]["sgmca"];
+        assert_eq!(layout["fileVersion"], 1);
+        assert_eq!(layout["guidPresent"], true);
+        assert_eq!(layout["growing"], false);
+        assert_eq!(layout["legacyBareOgg"], false);
+        assert_eq!(layout["segments"].as_array().unwrap().len(), 1);
+        assert_eq!(layout["segments"][0]["startLocal"], "2026-11-22T10:15:30");
+        assert_eq!(layout["segments"][0]["utcOffset"], "-05:00");
+        assert_eq!(layout["segments"][0]["mappingFamily"], 255);
+        assert!(record["output"].get("sgmca").is_none());
     }
 
     #[test]
@@ -1463,7 +1683,7 @@ mod tests {
 
         let conversion = convert_with_system_ffmpeg(&court_job(&sgmca, &out, "stereo", "wav"), None).unwrap();
         assert_mix_output(&conversion, &sgmca, "synthetic_session.wav");
-        assert!(!conversion.feed.exists(), "the stripped Ogg feed was left behind");
+        assert!(!conversion.feed.exists(), "the concat script was left behind");
     }
 
     #[test]
@@ -1533,8 +1753,8 @@ mod tests {
 
         let error = convert_with_system_ffmpeg(&court_job(&sgmca, &out, "split", "wav"), None)
             .err()
-            .expect("a file with no Ogg stream must not convert");
-        assert!(error.contains("does not contain an Ogg audio stream"), "{error}");
+            .expect("a file with no Direct Audio header must not convert");
+        assert!(error.contains("not a Direct Audio file"), "{error}");
         assert_eq!(fs::read_dir(&out).unwrap().count(), 0);
     }
 
@@ -1723,6 +1943,7 @@ mod tests {
             proc: Vec::new(),
             probed: manifest::ProbedSource::default(),
             duration_secs: None,
+            sgmca_source: None,
         };
         let feed_arg = feed.to_string_lossy().to_string();
         for mode in ["stereo", "keep"] {
@@ -1778,6 +1999,7 @@ mod tests {
                     ..manifest::ProbedSource::default()
                 },
                 duration_secs,
+                sgmca_source: None,
             };
             let mut cleanup = OutputCleanup::default();
             plan_conversion(&job, &feed, &probes, &mut cleanup).unwrap()
@@ -1822,6 +2044,7 @@ mod tests {
             proc: Vec::new(),
             probed: manifest::ProbedSource::default(),
             duration_secs: None,
+            sgmca_source: None,
         };
         let mut cleanup = OutputCleanup::default();
         let plan = plan_conversion(&job, &source, &probes, &mut cleanup).unwrap();
@@ -1835,6 +2058,7 @@ mod tests {
                 file_name: "session.wav".into(),
                 sha256: "a".repeat(64),
                 size_bytes: 12,
+                sgmca: None,
             },
             probed: &probes.probed,
             labels: &job.labels,
@@ -2119,7 +2343,7 @@ mod tests {
     }
 
     #[test]
-    fn plain_family_255_sgmca_is_read_in_place_and_split() {
+    fn bare_ogg_family_255_sgmca_is_read_in_place_and_split() {
         if !court_fixture_tools_available() {
             return;
         }
@@ -2138,7 +2362,14 @@ mod tests {
 
         let conversion = convert_with_system_ffmpeg(&court_job(&sgmca, &out, "split", "wav"), None).unwrap();
         assert_split_outputs(&conversion, &sgmca, ".wav");
-        assert_eq!(conversion.feed, sgmca, "a plain SGMCA needs no temporary copy");
+        assert_eq!(conversion.feed, sgmca, "a bare Ogg SGMCA is read in place");
+        let record = checked_export_record(&conversion.files[0], &sgmca);
+        assert_eq!(record["source"]["sgmca"]["legacyBareOgg"], true);
+        assert_eq!(record["source"]["sgmca"]["fileVersion"], serde_json::Value::Null);
+        assert_eq!(
+            record["source"]["sgmca"]["segments"][0]["startText"],
+            serde_json::Value::Null
+        );
     }
 
     #[test]
@@ -2157,7 +2388,24 @@ mod tests {
         let file = &conversion.files[0];
         assert_eq!(file.name, "synthetic_session_orig.sgmca");
         let written = Path::new(&file.path);
-        let info = crate::sgmca::verify_written(written, None).unwrap();
+        let info = crate::sgmca::verify_written(written, None, None).unwrap();
+        // The Direct Audio layout, byte for byte: file header, one segment
+        // header with the local start and the exact payload length, then the
+        // Ogg stream.
+        let bytes = fs::read(written).unwrap();
+        assert_eq!(&bytes[0..8], &[0x28, 0, 0, 0, 1, 0, 0, 0]);
+        assert!(bytes[8..24].iter().any(|&byte| byte != 0));
+        assert_eq!(&bytes[24..40], &[0; 16]);
+        assert_eq!(&bytes[40..56], &[0x38, 0, 0, 0, 1, 0, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0]);
+        let start = std::str::from_utf8(&bytes[56..80]).unwrap();
+        assert!(crate::sgmca::parse_start_text(start).is_some(), "{start}");
+        assert_eq!(&bytes[80..88], &[0; 8]);
+        assert_eq!(
+            u64::from_le_bytes(bytes[88..96].try_into().unwrap()),
+            bytes.len() as u64 - 96
+        );
+        assert_eq!(&bytes[96..100], b"OggS");
+        assert_eq!(info.segments.len(), 1);
         assert_eq!(info.head.channels, 4);
         assert_eq!(info.head.mapping, [0, 1, 2, 3]);
         assert_eq!(info.head.input_sample_rate, 16_000);
@@ -2166,6 +2414,17 @@ mod tests {
         let record = checked_export_record(file, &wav);
         assert_eq!(record["output"]["format"], "sgmca");
         assert_eq!(record["output"]["sampleRate"], 16_000);
+        // No source start, so the segment start is the conversion time, and
+        // the record says so.
+        let layout = &record["output"]["sgmca"];
+        assert_eq!(layout["startSource"], "conversion-time");
+        assert!(layout["startNote"]
+            .as_str()
+            .unwrap()
+            .contains("not when the recording was made"));
+        assert_eq!(layout["segments"][0]["startText"], start);
+        assert_eq!(layout["segments"][0]["mappingFamily"], 255);
+        assert!(record["source"].get("sgmca").is_none());
         // 32 kbps for each of the four mono streams.
         let encoder: Vec<String> = serde_json::from_value(record["processing"]["encoderArgs"].clone()).unwrap();
         assert!(encoder.windows(2).any(|pair| pair == ["-b:a", "128k"]), "{encoder:?}");
@@ -2188,15 +2447,20 @@ mod tests {
             return;
         }
         let dir = ConversionTestDir::new();
-        let sgmca = synthetic_plain_sgmca(&dir.0);
+        let (sgmca, _) = synthetic_sgmca(&dir.0);
         let out = dir.0.join("out");
         fs::create_dir(&out).unwrap();
 
         let conversion = convert_with_system_ffmpeg(&court_job(&sgmca, &out, "split", "sgmca"), None).unwrap();
         assert_split_outputs(&conversion, &sgmca, ".sgmca");
         for file in &conversion.files {
-            let info = crate::sgmca::verify_written(Path::new(&file.path), None).unwrap();
+            let info = crate::sgmca::verify_written(Path::new(&file.path), None, None).unwrap();
             assert_eq!((info.head.channels, info.head.stream_count), (1, 1));
+            // The source's segment start is kept.
+            let start = info.segments[0].start.as_ref().unwrap();
+            assert_eq!(start.text, "2026-11-22T10:15:30-0500");
+            let record = checked_export_record(file, &sgmca);
+            assert_eq!(record["output"]["sgmca"]["startSource"], "sgmca-segment-start");
         }
     }
 
@@ -2206,7 +2470,7 @@ mod tests {
             return;
         }
         let dir = ConversionTestDir::new();
-        let sgmca = synthetic_plain_sgmca(&dir.0);
+        let (sgmca, _) = synthetic_sgmca(&dir.0);
         let cut = dir.0.join("cut.sgmca");
         let report = crate::sgmca::slice(&sgmca, &cut, 0.5, Some(1.5), None).unwrap();
         assert_eq!(report.samples, 48_000);
@@ -2229,7 +2493,328 @@ mod tests {
             let ratio_db = 10.0 * (error / signal).log10();
             assert!(ratio_db < -30.0, "channel {channel}: slice differs by {ratio_db:.1} dB");
         }
-        // And the slice is a valid Direct Audio file in its own right.
-        assert!(crate::sgmca::verify_written(&cut, None).is_ok());
+        // And the slice is a valid Direct Audio file in its own right, whose
+        // start is the session's start plus the half second skipped (whole
+        // seconds only).
+        let start = ["2026-11-22T10:15:30-0500".to_string()];
+        assert!(crate::sgmca::verify_written(&cut, Some(&start), None).is_ok());
+    }
+
+    /// One 4-channel session of a `frequency` tone lasting `seconds`, encoded
+    /// as family 255 (one mono stream per channel). With `family_one`, the
+    /// OpusHead mapping family byte is changed to 1 with the same uncoupled
+    /// layout, which is what the notes say CATalyst's import writes; FFmpeg's
+    /// encoder would couple streams in family 1.
+    fn tone_session(dir: &Path, frequency: u32, seconds: f64, family_one: bool) -> Vec<u8> {
+        let ogg = dir.join(format!("tone_{frequency}.ogg"));
+        run_ffmpeg(&[
+            "-f".into(),
+            "lavfi".into(),
+            "-i".into(),
+            format!("sine=frequency={frequency}:duration={seconds}:sample_rate=48000"),
+            "-af".into(),
+            "pan=4c|c0=c0|c1=c0|c2=c0|c3=c0".into(),
+            "-c:a".into(),
+            "libopus".into(),
+            "-mapping_family".into(),
+            "255".into(),
+            "-frame_duration".into(),
+            "20".into(),
+            "-b:a".into(),
+            "128k".into(),
+            "-ar".into(),
+            "16000".into(),
+            "-f".into(),
+            "ogg".into(),
+            "-y".into(),
+            ogg.to_string_lossy().to_string(),
+        ]);
+        let mut bytes = fs::read(&ogg).unwrap();
+        fs::remove_file(&ogg).unwrap();
+        if family_one {
+            // First page: 27-byte header, one lacing value, then OpusHead,
+            // whose mapping family is byte 18.
+            let page_len = 28 + bytes[27] as usize;
+            assert_eq!(&bytes[28..36], b"OpusHead");
+            assert_eq!(bytes[28 + 18], 255);
+            bytes[28 + 18] = 1;
+            bytes[22..26].copy_from_slice(&[0; 4]);
+            let crc = crate::sgmca::ogg_crc(&bytes[..page_len]);
+            bytes[22..26].copy_from_slice(&crc.to_le_bytes());
+        }
+        bytes
+    }
+
+    const SESSION_TONES: [(u32, f64); 3] = [(300, 1.0), (700, 1.5), (1500, 0.8)];
+    const SESSION_STARTS: [&str; 3] = [
+        "2026-11-22T10:15:30-0500",
+        "2026-11-22T11:02:05-0500",
+        "2026-11-22T13:40:00-0500",
+    ];
+
+    /// Three recording sessions of different tones (family 255, then family
+    /// 1, then 255) in one Direct Audio file.
+    fn three_session_sgmca(dir: &Path) -> PathBuf {
+        let streams: Vec<Vec<u8>> = SESSION_TONES
+            .iter()
+            .enumerate()
+            .map(|(index, (frequency, seconds))| tone_session(dir, *frequency, *seconds, index == 1))
+            .collect();
+        let segments: Vec<(&str, &[u8])> = SESSION_STARTS
+            .iter()
+            .zip(&streams)
+            .map(|(start, stream)| (*start, stream.as_slice()))
+            .collect();
+        let path = dir.join("synthetic_session.sgmca");
+        fs::write(&path, crate::sgmca::fixtures::direct_audio(&segments)).unwrap();
+        path
+    }
+
+    /// The tone frequency of `samples` (48 kHz), from its zero crossings.
+    fn tone_frequency(samples: &[f32]) -> f64 {
+        let crossings = samples
+            .windows(2)
+            .filter(|pair| (pair[0] < 0.0) != (pair[1] < 0.0))
+            .count();
+        crossings as f64 / 2.0 / (samples.len() as f64 / 48_000.0)
+    }
+
+    /// Every session's tone is in the decoded audio, in file order, for the
+    /// whole of its length.
+    fn assert_sessions_in_order(decoded: &[f32], boundaries: &[u64]) {
+        for (index, (frequency, _)) in SESSION_TONES.iter().enumerate().take(boundaries.len()) {
+            let start = boundaries[index] as usize;
+            let end = boundaries.get(index + 1).map_or(decoded.len(), |&end| end as usize);
+            // Leave 50 ms at each edge for the codec's transition.
+            let window = &decoded[start + 2_400..end - 2_400];
+            let found = tone_frequency(window);
+            assert!(
+                (found - f64::from(*frequency)).abs() < f64::from(*frequency) * 0.03,
+                "session {}: expected {frequency} Hz, found {found:.0} Hz",
+                index + 1
+            );
+        }
+    }
+
+    #[test]
+    fn every_recording_session_is_converted_in_file_order() {
+        if !court_fixture_tools_available() {
+            return;
+        }
+        let dir = ConversionTestDir::new();
+        let sgmca = three_session_sgmca(&dir.0);
+        let info = crate::sgmca::inspect(&sgmca, None).unwrap();
+        assert_eq!(info.segments.len(), 3);
+        assert_eq!(
+            info.segments
+                .iter()
+                .map(|segment| segment.head.mapping_family)
+                .collect::<Vec<_>>(),
+            [255, 1, 255]
+        );
+        for (segment, (_, seconds)) in info.segments.iter().zip(SESSION_TONES) {
+            assert!((segment.duration_seconds - seconds).abs() <= 0.02, "{segment:?}");
+        }
+        let out = dir.0.join("out");
+        fs::create_dir(&out).unwrap();
+
+        let conversion = convert_with_system_ffmpeg(&court_job(&sgmca, &out, "keep", "wav"), None).unwrap();
+        let file = &conversion.files[0];
+        let decoded = decode_f32(Path::new(&file.path), 4);
+        // Exactly the sessions' samples, joined with no gap and nothing lost.
+        assert_eq!(decoded[0].len() as u64, info.samples);
+        let boundaries: Vec<u64> = info.segments.iter().map(|segment| segment.start_sample).collect();
+        for channel in &decoded {
+            assert_sessions_in_order(channel, &boundaries);
+        }
+        let record = checked_export_record(file, &sgmca);
+        let segments = record["source"]["sgmca"]["segments"].as_array().unwrap();
+        assert_eq!(segments.len(), 3);
+        for (segment, (recorded, start)) in info.segments.iter().zip(segments.iter().zip(SESSION_STARTS)) {
+            assert_eq!(recorded["startText"], start);
+            assert_eq!(recorded["startSample"], segment.start_sample);
+            assert_eq!(recorded["mappingFamily"], segment.head.mapping_family);
+        }
+        assert!(!conversion.feed.exists(), "the concat script was left behind");
+    }
+
+    #[test]
+    fn a_still_recording_sgmca_converts_its_complete_audio_and_says_so() {
+        if !court_fixture_tools_available() {
+            return;
+        }
+        let dir = ConversionTestDir::new();
+        // Two sessions, the second (1.5 s, two Ogg audio pages) cut 300
+        // bytes before its end, as a file still being written would be.
+        let streams: Vec<Vec<u8>> = SESSION_TONES[..2]
+            .iter()
+            .map(|(frequency, seconds)| tone_session(&dir.0, *frequency, *seconds, false))
+            .collect();
+        let bytes =
+            crate::sgmca::fixtures::direct_audio(&[(SESSION_STARTS[0], &streams[0]), (SESSION_STARTS[1], &streams[1])]);
+        let growing = dir.0.join("synthetic_session.sgmca");
+        fs::write(&growing, &bytes[..bytes.len() - 300]).unwrap();
+        let info = crate::sgmca::inspect(&growing, None).unwrap();
+        assert!(info.growing);
+        assert_eq!(info.segments.len(), 2);
+        assert!(!info.segments[1].complete);
+        assert!(info.segments[1].samples > 0 && info.segments[1].duration_seconds < 1.5);
+        let out = dir.0.join("out");
+        fs::create_dir(&out).unwrap();
+
+        let conversion = convert_with_system_ffmpeg(&court_job(&growing, &out, "keep", "wav"), None).unwrap();
+        let file = &conversion.files[0];
+        let decoded = decode_f32(Path::new(&file.path), 4);
+        // FFmpeg is handed only the complete pages, and decodes up to the
+        // last of them (its last packet may run past that page's granule).
+        let decoded_samples = decoded[0].len() as u64;
+        assert!(
+            decoded_samples >= info.samples && decoded_samples <= info.samples + 960,
+            "decoded {decoded_samples}, the reader counts {}",
+            info.samples
+        );
+        let boundaries: Vec<u64> = info.segments.iter().map(|segment| segment.start_sample).collect();
+        assert_sessions_in_order(&decoded[0], &boundaries);
+        let record = checked_export_record(file, &growing);
+        assert_eq!(record["source"]["sgmca"]["growing"], true);
+        let queue = manifest::sgmca_audio_streams(&info);
+        assert_eq!(queue.recording_sessions, Some(2));
+        assert_eq!(queue.still_recording, Some(true));
+        assert_eq!(queue.streams[0].channels, Some(4));
+    }
+
+    #[test]
+    fn a_multi_session_sgmca_output_keeps_each_session_and_its_start() {
+        if !court_fixture_tools_available() {
+            return;
+        }
+        let dir = ConversionTestDir::new();
+        let sgmca = three_session_sgmca(&dir.0);
+        let source = crate::sgmca::inspect(&sgmca, None).unwrap();
+        let out = dir.0.join("out");
+        fs::create_dir(&out).unwrap();
+
+        let conversion = convert_with_system_ffmpeg(&court_job(&sgmca, &out, "keep", "sgmca"), None).unwrap();
+        let written = Path::new(&conversion.files[0].path);
+        let starts: Vec<String> = SESSION_STARTS.iter().map(|start| start.to_string()).collect();
+        let info = crate::sgmca::verify_written(written, Some(&starts), None).unwrap();
+        assert_eq!(info.segments.len(), 3);
+        // Each output session starts where the source's did; the sessions
+        // before the last have exactly the source's length.
+        for (output, input) in info.segments.iter().zip(&source.segments) {
+            assert_eq!(output.start_sample, input.start_sample);
+        }
+        for (output, input) in info.segments[..2].iter().zip(&source.segments) {
+            assert_eq!(output.samples, input.samples);
+        }
+        assert!((info.duration_seconds - source.duration_seconds).abs() <= 0.02);
+        // Decoded through the reader, the tones come back in order.
+        let decoded = decode_f32(written, 4);
+        let boundaries: Vec<u64> = info.segments.iter().map(|segment| segment.start_sample).collect();
+        assert_sessions_in_order(&decoded[0], &boundaries);
+
+        let record = checked_export_record(&conversion.files[0], &sgmca);
+        let layout = &record["output"]["sgmca"];
+        assert_eq!(layout["startSource"], "sgmca-segment-start");
+        assert!(layout["startNote"]
+            .as_str()
+            .unwrap()
+            .contains("Each of the 3 recording sessions"));
+        assert_eq!(layout["segments"].as_array().unwrap().len(), 3);
+        assert_eq!(layout["segments"][2]["startText"], SESSION_STARTS[2]);
+
+        // With leading-silence trim the start moves by an unknown amount, so
+        // the output is one session dated at conversion time.
+        let trimmed_out = dir.0.join("trimmed");
+        fs::create_dir(&trimmed_out).unwrap();
+        let mut job = court_job(&sgmca, &trimmed_out, "keep", "sgmca");
+        job.trim = true;
+        let trimmed = convert_with_system_ffmpeg(&job, None).unwrap();
+        let info = crate::sgmca::verify_written(Path::new(&trimmed.files[0].path), None, None).unwrap();
+        assert_eq!(info.segments.len(), 1);
+        let record = checked_export_record(&trimmed.files[0], &sgmca);
+        assert_eq!(record["output"]["sgmca"]["startSource"], "conversion-time");
+        assert!(record["output"]["sgmca"]["startNote"]
+            .as_str()
+            .unwrap()
+            .contains("Leading-silence trim"));
+    }
+
+    #[test]
+    fn a_bwf_source_dates_its_sgmca_output_from_the_bext_chunk() {
+        if !court_fixture_tools_available() {
+            return;
+        }
+        let dir = ConversionTestDir::new();
+        let wav = dir.0.join("synthetic_session.wav");
+        // 10:15:30.25 after midnight at 48 kHz.
+        let reference = (10 * 3600 + 15 * 60 + 30) * 48_000 + 12_000;
+        synthetic_four_channel(
+            &wav,
+            &[
+                "-c:a",
+                "pcm_s16le",
+                "-write_bext",
+                "1",
+                "-metadata",
+                &format!("time_reference={reference}"),
+                "-metadata",
+                "origination_date=2026-11-22",
+                "-f",
+                "wav",
+            ],
+        );
+        let out = dir.0.join("out");
+        fs::create_dir(&out).unwrap();
+        let conversion = convert_with_system_ffmpeg(&court_job(&wav, &out, "keep", "sgmca"), None).unwrap();
+        let path = Path::new(&conversion.files[0].path);
+        let info = crate::sgmca::verify_written(path, None, None).unwrap();
+        let start = info.segments[0].start.as_ref().unwrap();
+        assert_eq!(start.local.as_deref(), Some("2026-11-22T10:15:30"), "{start:?}");
+        let path_record = manifest::manifest_path_for(path);
+        let record: serde_json::Value = serde_json::from_slice(&fs::read(path_record).unwrap()).unwrap();
+        assert!(manifest::tests::schema_errors_for_value(&record).is_empty());
+        assert_eq!(record["output"]["sgmca"]["startSource"], "bwf-bext");
+        assert!(record["output"]["sgmca"]["startNote"]
+            .as_str()
+            .unwrap()
+            .contains("0.250 s dropped"));
+    }
+
+    #[test]
+    fn sgmca_output_start_plans_prefer_the_source_then_bwf_then_the_clock() {
+        let now = time::macros::datetime!(2026-11-22 18:00:00 UTC);
+        let probed = manifest::ProbedSource::default();
+        let clock = plan_sgmca_output(None, &probed, false, now).unwrap();
+        assert_eq!(clock.start_source, "conversion-time");
+        assert_eq!(clock.segments.len(), 1);
+        assert_eq!(
+            clock.segments[0].start_text,
+            crate::clock::local_start_text(now).unwrap()
+        );
+
+        let timed = manifest::ProbedSource {
+            timing: Some(manifest::SourceTiming {
+                time_reference_samples: 3600 * 16_000 + 8_000,
+                sample_rate: 16_000,
+            }),
+            ..manifest::ProbedSource::default()
+        };
+        let undated = plan_sgmca_output(None, &timed, false, now).unwrap();
+        assert_eq!(undated.start_source, "conversion-time");
+        assert!(undated.note.contains("no usable origination date"));
+        let dated = manifest::ProbedSource {
+            origination_date: Some("2026-11-22".into()),
+            ..timed.clone()
+        };
+        let bwf = plan_sgmca_output(None, &dated, false, now).unwrap();
+        assert_eq!(bwf.start_source, "bwf-bext");
+        assert!(bwf.segments[0].start_text.starts_with("2026-11-22T01:00:00"));
+        assert!(bwf.note.contains("0.500 s dropped"));
+        // Trim moves the start, so even a dated source gets the clock.
+        assert_eq!(
+            plan_sgmca_output(None, &dated, true, now).unwrap().start_source,
+            "conversion-time"
+        );
     }
 }

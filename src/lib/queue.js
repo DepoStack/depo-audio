@@ -76,3 +76,22 @@ export function audioTrackNotice(info) {
     tags.length ? ` (${tags.join(', ')})` : ''
   }. The other ${others === 1 ? 'track is' : `${others} tracks are`} not converted.`
 }
+
+// Plain notices for an SGMCA (Direct Audio) file, from probe_audio_streams_cmd:
+// how many recording sessions it holds (they are joined in file order), and
+// whether it looked still recording or cut short. No answer means no notice.
+export function recordingSessionNotice(info) {
+  const notices = []
+  const sessions = info?.recordingSessions
+  if (Number.isInteger(sessions) && sessions > 1) {
+    notices.push(
+      `This file holds ${sessions} recording sessions; they are joined in order (gaps between them are not kept).`,
+    )
+  }
+  if (info?.stillRecording === true) {
+    notices.push(
+      'This file looks like it is still being recorded, or it was cut short; only its complete audio is converted.',
+    )
+  }
+  return notices.join(' ')
+}

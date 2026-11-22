@@ -117,6 +117,14 @@ The MPG, VOB, TS, MTS, M2TS, WMV and ASF rows are smoke-tested at each
 release with synthetic files carrying MP2, AC-3 or WMAv2 audio. No real
 deposition recording in these containers has been tried yet.
 
+An SGMCA (Direct Audio) file can hold several recording sessions; DepoAudio
+reads every one and joins them in order (the gaps between them are not
+kept), and SGMCA files it writes carry the Direct Audio file and segment
+headers with each session's start time. That layout comes from
+owner-supplied interoperability notes and has not yet been confirmed
+against a file CATalyst wrote, nor has CATalyst been shown to open a file
+DepoAudio wrote. See [`docs/SGMCA.md`](docs/SGMCA.md).
+
 ---
 
 ## Learned-model boundary

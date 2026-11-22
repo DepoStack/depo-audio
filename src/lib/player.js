@@ -23,7 +23,8 @@ export const AUDIO_EXTS = [
   'bwf',
 ]
 // These containers need native preprocessing before a browser media element
-// can decode them. SGMCA may contain an Ogg stream behind a vendor prefix.
+// can decode them. An SGMCA holds Direct Audio headers and one Ogg stream per
+// recording session.
 export const CONVERSION_REQUIRED_EXTS = new Set(['sgmca', 'trm', 'ftr'])
 export const SPEED_STEPS = [0.5, 0.75, 1, 1.25, 1.5, 2]
 

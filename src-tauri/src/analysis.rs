@@ -466,7 +466,7 @@ async fn analyze_single_channel(
 // ── Sample rate probing ─────────────────────────────────────────────────────
 
 async fn probe_sample_rate(app: &AppHandle, feed: &Path, ctx: Option<&ScanCtx>) -> Option<u32> {
-    let args: Vec<String> = vec![
+    let mut args: Vec<String> = vec![
         "-v".into(),
         "quiet".into(),
         "-print_format".into(),
@@ -474,8 +474,9 @@ async fn probe_sample_rate(app: &AppHandle, feed: &Path, ctx: Option<&ScanCtx>) 
         "-show_streams".into(),
         "-select_streams".into(),
         crate::helpers::source_audio_stream_specifier(),
-        feed.to_string_lossy().to_string(),
     ];
+    args.extend(crate::helpers::feed_format_args(feed));
+    args.push(feed.to_string_lossy().to_string());
 
     let is_cancelled = || ctx.map(|context| context.cancelled()).unwrap_or(false);
     let output =

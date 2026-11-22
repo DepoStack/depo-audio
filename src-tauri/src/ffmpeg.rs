@@ -227,7 +227,7 @@ pub(crate) async fn probe_duration_cancellable(
 /// A video with a shorter first audio track, or a file with a longer second
 /// track, reports a container duration past the end of the converted stream.
 pub(crate) fn duration_probe_args(feed: &Path) -> Vec<String> {
-    vec![
+    let mut args: Vec<String> = vec![
         "-v".into(),
         "quiet".into(),
         "-protocol_whitelist".into(),
@@ -238,8 +238,11 @@ pub(crate) fn duration_probe_args(feed: &Path) -> Vec<String> {
         crate::helpers::source_audio_stream_specifier(),
         "-show_entries".into(),
         "stream=duration:stream_tags=DURATION:format=duration".into(),
-        feed.to_string_lossy().to_string(),
-    ]
+    ];
+    // An SGMCA concat script needs its demuxer options before the input.
+    args.extend(crate::helpers::feed_format_args(feed));
+    args.push(feed.to_string_lossy().to_string());
+    args
 }
 
 /// Duration in seconds from `duration_probe_args` output, if readable: the
@@ -262,7 +265,7 @@ pub(crate) async fn probe_channels_cancellable(
 /// ffprobe arguments for the channel count of the converted audio stream
 /// (`SOURCE_AUDIO_STREAM`, the same stream every FFmpeg pass maps).
 pub(crate) fn channel_probe_args(feed: &Path) -> Vec<String> {
-    vec![
+    let mut args: Vec<String> = vec![
         "-v".into(),
         "quiet".into(),
         "-protocol_whitelist".into(),
@@ -272,8 +275,11 @@ pub(crate) fn channel_probe_args(feed: &Path) -> Vec<String> {
         "-show_streams".into(),
         "-select_streams".into(),
         crate::helpers::source_audio_stream_specifier(),
-        feed.to_string_lossy().to_string(),
-    ]
+    ];
+    // An SGMCA concat script needs its demuxer options before the input.
+    args.extend(crate::helpers::feed_format_args(feed));
+    args.push(feed.to_string_lossy().to_string());
+    args
 }
 
 /// Channel count from `channel_probe_args` output; zero or unreadable is None.
@@ -310,7 +316,7 @@ pub(crate) async fn probe_manifest_source_cancellable(
 /// converted stream and the array length is the input's audio stream count.
 /// The Convert queue's multi-track notice reads the same document.
 pub(crate) fn manifest_probe_args(feed: &Path) -> Vec<String> {
-    vec![
+    let mut args: Vec<String> = vec![
         "-v".into(),
         "quiet".into(),
         "-protocol_whitelist".into(),
@@ -321,8 +327,11 @@ pub(crate) fn manifest_probe_args(feed: &Path) -> Vec<String> {
         "-show_streams".into(),
         "-select_streams".into(),
         "a".into(),
-        feed.to_string_lossy().to_string(),
-    ]
+    ];
+    // An SGMCA concat script needs its demuxer options before the input.
+    args.extend(crate::helpers::feed_format_args(feed));
+    args.push(feed.to_string_lossy().to_string());
+    args
 }
 
 /// Audio streams of a queued file for the Convert queue's notice (the same

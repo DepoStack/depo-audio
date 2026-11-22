@@ -30,7 +30,37 @@
       "properties": {
         "fileName": { "type": "string", "description": "File name only, never a folder path." },
         "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$", "description": "SHA-256 of the original file as selected, before any format preparation." },
-        "sizeBytes": { "type": "integer", "minimum": 0 }
+        "sizeBytes": { "type": "integer", "minimum": 0 },
+        "sgmca": {
+          "type": "object",
+          "description": "Present for an SGMCA (Direct Audio) source. The recording identifier in its file header is not recorded. Written by versions after 1.1.0.",
+          "additionalProperties": false,
+          "required": ["fileVersion", "guidPresent", "segments", "growing", "legacyBareOgg"],
+          "properties": {
+            "fileVersion": { "type": ["integer", "null"], "minimum": 1, "description": "The file header's format version; null for a bare Ogg file." },
+            "guidPresent": { "type": "boolean", "description": "The file header carries a non-zero recording identifier." },
+            "segments": {
+              "type": "array",
+              "description": "Every recording session that was converted, in file order.",
+              "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["startText", "startLocal", "utcOffset", "startSample", "durationSecs", "channels", "mappingFamily"],
+              "properties": {
+                "startText": { "type": ["string", "null"], "description": "The segment header's start text as stored (printable ASCII; other bytes shown as ?). Null for a bare Ogg file, which has no header." },
+                "startLocal": { "type": ["string", "null"], "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}$", "description": "Local wall-clock start, when startText is in the form YYYY-MM-DDTHH:MM:SS+hhmm or -hhmm." },
+                "utcOffset": { "type": ["string", "null"], "pattern": "^[+-][0-9]{2}:[0-9]{2}$", "description": "The UTC offset stored with the start. CATalyst is said to read it but not apply it." },
+                "startSample": { "type": "integer", "minimum": 0, "description": "Where this recording session starts in the joined audio, in 48 kHz samples. Sessions are joined in file order with no gap." },
+                "durationSecs": { "type": "number", "minimum": 0 },
+                "channels": { "type": "integer", "minimum": 1, "maximum": 255 },
+                "mappingFamily": { "enum": [0, 1, 255], "description": "Opus channel mapping family of the session's stream." }
+              }
+            }
+            },
+            "growing": { "type": "boolean", "description": "The file looked still recording or cut short (its last session shorter than its header says, or bytes after the last session); only complete Ogg pages were converted." },
+            "legacyBareOgg": { "type": "boolean", "description": "The file had no Direct Audio header: a bare Ogg Opus stream, the layout earlier DepoAudio builds wrote." }
+          }
+        }
       }
     },
     "output": {
@@ -43,7 +73,37 @@
         "sizeBytes": { "type": "integer", "minimum": 1 },
         "format": { "enum": ["wav", "mp3", "flac", "opus", "m4a", "sgmca"] },
         "sampleRate": { "type": ["integer", "null"], "minimum": 8000, "maximum": 192000 },
-        "wavHeader": { "enum": ["riff", "rf64", null], "description": "For a WAV output, the header read from the file's first four bytes after encoding: riff (plain RIFF) or rf64 (written once a file passes the 4 GiB RIFF limit). Null for other formats. Written by versions after 1.1.0." }
+        "wavHeader": { "enum": ["riff", "rf64", null], "description": "For a WAV output, the header read from the file's first four bytes after encoding: riff (plain RIFF) or rf64 (written once a file passes the 4 GiB RIFF limit). Null for other formats. Written by versions after 1.1.0." },
+        "sgmca": {
+          "type": "object",
+          "description": "Present for an SGMCA output. Written by versions after 1.1.0.",
+          "additionalProperties": false,
+          "required": ["fileVersion", "guidPresent", "startSource", "startNote", "segments"],
+          "properties": {
+            "fileVersion": { "const": 1 },
+            "guidPresent": { "const": true, "description": "The output's file header carries a fresh random recording identifier, which is not recorded here." },
+            "startSource": { "enum": ["sgmca-segment-start", "bwf-bext", "conversion-time"], "description": "Where the segment start times came from: the source's own SGMCA segment headers, the source's BWF origination date and time reference, or the time of conversion when the source has no start DepoAudio can read (or leading-silence trim moved the start)." },
+            "startNote": { "type": "string" },
+            "segments": {
+              "type": "array",
+              "description": "The output's segments, as read back from the written file.",
+              "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["startText", "startLocal", "utcOffset", "startSample", "durationSecs", "channels", "mappingFamily"],
+              "properties": {
+                "startText": { "type": ["string", "null"], "description": "The segment header's start text as stored (printable ASCII; other bytes shown as ?). Null for a bare Ogg file, which has no header." },
+                "startLocal": { "type": ["string", "null"], "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}$", "description": "Local wall-clock start, when startText is in the form YYYY-MM-DDTHH:MM:SS+hhmm or -hhmm." },
+                "utcOffset": { "type": ["string", "null"], "pattern": "^[+-][0-9]{2}:[0-9]{2}$", "description": "The UTC offset stored with the start. CATalyst is said to read it but not apply it." },
+                "startSample": { "type": "integer", "minimum": 0, "description": "Where this recording session starts in the joined audio, in 48 kHz samples. Sessions are joined in file order with no gap." },
+                "durationSecs": { "type": "number", "minimum": 0 },
+                "channels": { "type": "integer", "minimum": 1, "maximum": 255 },
+                "mappingFamily": { "enum": [0, 1, 255], "description": "Opus channel mapping family of the session's stream." }
+              }
+            }
+            }
+          }
+        }
       },
       "if": { "required": ["format"], "properties": { "format": { "const": "wav" } } },
       "then": { "properties": { "wavHeader": { "enum": ["riff", "rf64"] } } },

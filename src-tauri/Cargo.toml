@@ -42,7 +42,12 @@ tauri-plugin-updater = "2"
 tauri-plugin-process = "2"
 
 [target.'cfg(target_os = "windows")'.dependencies]
-windows-sys = { version = "0.61", features = ["Win32_System_SystemInformation"] }
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_SystemInformation", "Win32_System_Time"] }
+
+# The local UTC offset for SGMCA segment start times (src/clock.rs);
+# already in the Tauri build graph.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
 
 [dev-dependencies]
 # Tests parse RFC 3339 strings and build fixed instants; the app itself only

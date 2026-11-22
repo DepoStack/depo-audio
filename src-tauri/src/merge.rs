@@ -143,9 +143,10 @@ fn validate_merge_job(job: &MergeJob) -> Result<ValidatedMergeJob, String> {
     })
 }
 
-/// Strip an SGMCA vendor prefix once and keep the temporary Ogg feed alive for
-/// the whole merge. Reusing it avoids copying a potentially large recording
-/// for duration probing, sync detection, and final decoding independently.
+/// Read an SGMCA's layout once and keep its temporary concat script alive for
+/// the whole merge. Reusing it avoids reading every page of a potentially
+/// large recording again for duration probing, sync detection, and decoding
+/// for the merge.
 async fn prepare_merge_source(path: PathBuf) -> Result<(PathBuf, Option<TempFile>), String> {
     crate::helpers::prepare_audio_feed_cancellable(path, Arc::new(|| false)).await
 }

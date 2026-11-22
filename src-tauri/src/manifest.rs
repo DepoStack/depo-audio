@@ -77,8 +77,35 @@ pub(crate) struct ProbedSource {
     /// Channels of the converted stream (`SOURCE_AUDIO_STREAM`).
     pub channels: Option<u32>,
     pub timing: Option<SourceTiming>,
+    /// The BWF bext origination date as `YYYY-MM-DD`, read only from a WAV
+    /// that also has a bext time reference. FFmpeg 6.1 reports the bext
+    /// OriginationDate as the format tag `date` (checked with a file FFmpeg
+    /// wrote); a RIFF INFO creation date (ICRD) has the same tag name, so the
+    /// export record calls it the file's date. With `timing` it dates the
+    /// start of an SGMCA output.
+    pub origination_date: Option<String>,
     /// How many audio streams the input has; None when the probe failed.
     pub audio_stream_count: Option<u32>,
+}
+
+/// A bext origination date (`yyyy-mm-dd`; EBU Tech 3285 allows any
+/// separator) as `YYYY-MM-DD`, or None unless it is a real date.
+fn origination_date(text: &str) -> Option<String> {
+    let text = text.trim();
+    let bytes = text.as_bytes();
+    if bytes.len() != 10 || bytes[4].is_ascii_digit() || bytes[7].is_ascii_digit() {
+        return None;
+    }
+    let number = |from: usize, to: usize| -> Option<u32> {
+        let part = text.get(from..to)?;
+        part.bytes()
+            .all(|byte| byte.is_ascii_digit())
+            .then(|| part.parse().ok())?
+    };
+    let (year, month, day) = (number(0, 4)?, number(5, 7)?, number(8, 10)?);
+    let month = time::Month::try_from(u8::try_from(month).ok()?).ok()?;
+    time::Date::from_calendar_date(i32::try_from(year).ok()?, month, u8::try_from(day).ok()?).ok()?;
+    Some(format!("{year:04}-{:02}-{day:02}", u8::from(month)))
 }
 
 fn tag<'a>(tags: &'a serde_json::Value, key: &str) -> Option<&'a str> {
@@ -124,6 +151,9 @@ pub(crate) fn parse_probe(probe: &serde_json::Value) -> ProbedSource {
         .map(str::trim)
         .filter(|value| !value.is_empty() && value.bytes().all(|byte| byte.is_ascii_digit()))
         .and_then(|value| value.parse::<u64>().ok());
+    let origination_date = tag(&probe["format"]["tags"], "date")
+        .filter(|_| from_wav && time_reference.is_some())
+        .and_then(origination_date);
     let timing = match (time_reference, sample_rate) {
         (Some(time_reference_samples), Some(sample_rate)) => Some(SourceTiming {
             time_reference_samples,
@@ -134,6 +164,7 @@ pub(crate) fn parse_probe(probe: &serde_json::Value) -> ProbedSource {
     ProbedSource {
         channels,
         timing,
+        origination_date,
         audio_stream_count: audio_stream_count(probe),
     }
 }
@@ -163,6 +194,31 @@ pub struct AudioStreamsInfo {
     pub converted_index: u32,
     pub streams: Vec<AudioStreamSummary>,
     pub duration_secs: Option<f64>,
+    /// For an SGMCA file: how many recording sessions (segments) it holds.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub recording_sessions: Option<u32>,
+    /// For an SGMCA file: it looked still recording or cut short.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub still_recording: Option<bool>,
+}
+
+/// The queue's view of an SGMCA file, from its own headers and pages (ffprobe
+/// cannot read the Direct Audio layout): one audio stream, the joined
+/// duration of every recording session, and how many sessions there are.
+pub(crate) fn sgmca_audio_streams(info: &crate::sgmca::SgmcaInfo) -> AudioStreamsInfo {
+    AudioStreamsInfo {
+        converted_index: crate::helpers::SOURCE_AUDIO_STREAM,
+        streams: vec![AudioStreamSummary {
+            channels: Some(u32::from(info.head.channels)),
+            // Opus always decodes at 48 kHz.
+            sample_rate: Some(48_000),
+            language: None,
+            title: None,
+        }],
+        duration_secs: (info.duration_seconds > 0.0).then_some(info.duration_seconds),
+        recording_sessions: Some(info.segments.len() as u32),
+        still_recording: Some(info.growing),
+    }
 }
 
 fn bounded_tag(tags: &serde_json::Value, key: &str) -> Option<String> {
@@ -236,6 +292,8 @@ pub(crate) fn parse_audio_streams(probe: &serde_json::Value) -> AudioStreamsInfo
         converted_index: crate::helpers::SOURCE_AUDIO_STREAM,
         streams,
         duration_secs,
+        recording_sessions: None,
+        still_recording: None,
     }
 }
 
@@ -318,6 +376,86 @@ pub(crate) struct FileRecord {
     pub file_name: String,
     pub sha256: String,
     pub size_bytes: u64,
+    /// For an SGMCA source: its layout and recording sessions.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sgmca: Option<SgmcaSourceRecord>,
+}
+
+// ── SGMCA (Direct Audio) ────────────────────────────────────────────────────
+
+/// One recording session (segment) of an SGMCA file. The recording
+/// identifier in the file header is not recorded: it identifies a recording
+/// session, and the source is already identified by its SHA-256.
+#[derive(Debug, Serialize, Clone, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct SgmcaSegmentRecord {
+    /// The segment header's start text as stored; null for a bare Ogg file.
+    pub start_text: Option<String>,
+    /// Local wall-clock start `YYYY-MM-DDTHH:MM:SS`, when the text parses.
+    pub start_local: Option<String>,
+    /// The stored UTC offset `±HH:MM`, when the text parses.
+    pub utc_offset: Option<String>,
+    /// Where the session starts in the joined audio, in 48 kHz samples.
+    pub start_sample: u64,
+    pub duration_secs: f64,
+    pub channels: u32,
+    pub mapping_family: u32,
+}
+
+#[derive(Debug, Serialize, Clone, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct SgmcaSourceRecord {
+    /// The file header's format version; null for a bare Ogg file.
+    pub file_version: Option<u32>,
+    pub guid_present: bool,
+    pub segments: Vec<SgmcaSegmentRecord>,
+    /// The file looked still recording or cut short; only complete pages
+    /// were converted.
+    pub growing: bool,
+    /// No Direct Audio header: a bare Ogg Opus stream (older DepoAudio).
+    pub legacy_bare_ogg: bool,
+}
+
+#[derive(Debug, Serialize, Clone, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct SgmcaOutputRecord {
+    pub file_version: u32,
+    pub guid_present: bool,
+    /// Where the segment start times came from: `sgmca-segment-start`,
+    /// `bwf-bext` or `conversion-time`.
+    pub start_source: &'static str,
+    pub start_note: String,
+    /// The output's segments as read back from the written file.
+    pub segments: Vec<SgmcaSegmentRecord>,
+}
+
+fn microseconds(seconds: f64) -> f64 {
+    (seconds * 1_000_000.0).round() / 1_000_000.0
+}
+
+pub(crate) fn sgmca_segment_records(info: &crate::sgmca::SgmcaInfo) -> Vec<SgmcaSegmentRecord> {
+    info.segments
+        .iter()
+        .map(|segment| SgmcaSegmentRecord {
+            start_text: segment.start.as_ref().map(|start| start.text.clone()),
+            start_local: segment.start.as_ref().and_then(|start| start.local.clone()),
+            utc_offset: segment.start.as_ref().and_then(|start| start.utc_offset.clone()),
+            start_sample: segment.start_sample,
+            duration_secs: microseconds(segment.duration_seconds),
+            channels: u32::from(segment.head.channels),
+            mapping_family: u32::from(segment.head.mapping_family),
+        })
+        .collect()
+}
+
+pub(crate) fn sgmca_source_record(info: &crate::sgmca::SgmcaInfo) -> SgmcaSourceRecord {
+    SgmcaSourceRecord {
+        file_version: info.file_version,
+        guid_present: info.guid_present,
+        segments: sgmca_segment_records(info),
+        growing: info.growing,
+        legacy_bare_ogg: info.container == crate::sgmca::Container::BareOgg,
+    }
 }
 
 #[derive(Debug, Serialize, Clone, PartialEq)]
@@ -331,6 +469,10 @@ pub(crate) struct OutputRecord {
     /// "riff" or "rf64", read from a WAV output's first four bytes after
     /// encoding; None for every other format.
     pub wav_header: Option<&'static str>,
+    /// For an SGMCA output: its segments and where their start times came
+    /// from.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sgmca: Option<SgmcaOutputRecord>,
 }
 
 #[derive(Debug, Serialize, Clone, PartialEq)]
@@ -410,6 +552,8 @@ pub(crate) struct OutputFacts<'a> {
     pub label: Option<String>,
     /// From `wav_header_kind`, for WAV outputs only.
     pub wav_header: Option<&'static str>,
+    /// For SGMCA outputs only.
+    pub sgmca: Option<SgmcaOutputRecord>,
 }
 
 /// The header a finished WAV output was written with, from its first four
@@ -519,6 +663,7 @@ pub(crate) fn build_manifest(input: &ManifestInput<'_>, facts: OutputFacts<'_>) 
             format: facts.format.into(),
             sample_rate,
             wav_header: facts.wav_header,
+            sgmca: facts.sgmca,
         },
         processing: ProcessingRecord {
             mode: facts.mode.into(),
@@ -615,6 +760,7 @@ pub(crate) mod tests {
                 file_name: "synthetic_session.wav".into(),
                 sha256: "a".repeat(64),
                 size_bytes: 1024,
+                sgmca: None,
             },
             probed,
             labels,
@@ -637,8 +783,118 @@ pub(crate) mod tests {
                 source_channel_index: Some(1),
                 label: Some("Witness".into()),
                 wav_header: Some("riff"),
+                sgmca: None,
             },
         )
+    }
+
+    fn sgmca_segment(start: &str, start_sample: u64, duration_secs: f64) -> SgmcaSegmentRecord {
+        let parsed = crate::sgmca::SegmentStart::from_text(start.into());
+        SgmcaSegmentRecord {
+            start_text: Some(start.into()),
+            start_local: parsed.local,
+            utc_offset: parsed.utc_offset,
+            start_sample,
+            duration_secs,
+            channels: 4,
+            mapping_family: 255,
+        }
+    }
+
+    #[test]
+    fn sgmca_source_and_output_records_match_the_schema() {
+        let mut manifest = sample_input(&ProbedSource::default(), &[], false);
+        manifest.source.sgmca = Some(SgmcaSourceRecord {
+            file_version: Some(1),
+            guid_present: true,
+            segments: vec![
+                sgmca_segment("2026-11-22T10:15:30-0500", 0, 1.5),
+                sgmca_segment("2026-11-22T11:02:05-0500", 72_000, 2.25),
+                SgmcaSegmentRecord {
+                    mapping_family: 1,
+                    ..sgmca_segment("not a time", 180_000, 0.5)
+                },
+            ],
+            growing: true,
+            legacy_bare_ogg: false,
+        });
+        manifest.output.format = "sgmca".into();
+        manifest.output.wav_header = None;
+        manifest.output.sgmca = Some(SgmcaOutputRecord {
+            file_version: 1,
+            guid_present: true,
+            start_source: "sgmca-segment-start",
+            start_note: "kept".into(),
+            segments: vec![sgmca_segment("2026-11-22T10:15:30-0500", 0, 1.5)],
+        });
+        let errors = schema_errors(&manifest);
+        assert!(errors.is_empty(), "{errors:#?}");
+        let json = serde_json::to_value(&manifest).unwrap();
+        assert_eq!(
+            json["source"]["sgmca"]["segments"][1]["startLocal"],
+            "2026-11-22T11:02:05"
+        );
+        assert_eq!(json["source"]["sgmca"]["segments"][1]["utcOffset"], "-05:00");
+        assert_eq!(
+            json["source"]["sgmca"]["segments"][2]["startLocal"],
+            serde_json::Value::Null
+        );
+        assert!(
+            json["source"]["sgmca"].get("guid").is_none(),
+            "the identifier itself is never recorded"
+        );
+
+        // A bare Ogg source has no header, so no version and no start texts.
+        manifest.source.sgmca = Some(SgmcaSourceRecord {
+            file_version: None,
+            guid_present: false,
+            segments: vec![SgmcaSegmentRecord {
+                start_text: None,
+                start_local: None,
+                utc_offset: None,
+                ..sgmca_segment("", 0, 1.0)
+            }],
+            growing: false,
+            legacy_bare_ogg: true,
+        });
+        assert!(schema_errors(&manifest).is_empty());
+
+        // Records without the objects (every non-SGMCA conversion) omit them.
+        let plain = serde_json::to_value(sample_input(&ProbedSource::default(), &[], false)).unwrap();
+        assert!(plain["source"].get("sgmca").is_none());
+        assert!(plain["output"].get("sgmca").is_none());
+
+        let mut bad = json.clone();
+        bad["output"]["sgmca"]["startSource"] = "guessed".into();
+        assert!(!schema_errors_for_value(&bad).is_empty());
+    }
+
+    #[test]
+    fn origination_date_is_read_only_as_a_real_date_from_a_bwf() {
+        let probed = parse_probe(&probe(
+            serde_json::json!({ "time_reference": "48000", "date": "2026:11:22" }),
+            "48000",
+            1,
+        ));
+        assert_eq!(probed.origination_date.as_deref(), Some("2026-11-22"));
+        for bad in ["2026-13-01", "2026-02-30", "20261122", "2026-1-22", ""] {
+            let probed = parse_probe(&probe(
+                serde_json::json!({ "time_reference": "48000", "date": bad }),
+                "48000",
+                1,
+            ));
+            assert_eq!(probed.origination_date, None, "{bad}");
+        }
+        // Without a bext time reference a date tag is not used.
+        let undated = parse_probe(&probe(serde_json::json!({ "date": "2026-11-22" }), "48000", 1));
+        assert_eq!(undated.origination_date, None);
+        let mut flac = probe(
+            serde_json::json!({ "time_reference": "48000", "date": "2026-11-22" }),
+            "48000",
+            1,
+        );
+        flac["format"]["format_name"] = "flac".into();
+        assert_eq!(parse_probe(&flac).origination_date, None);
     }
 
     #[test]

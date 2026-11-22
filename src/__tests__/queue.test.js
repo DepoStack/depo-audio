@@ -1,5 +1,12 @@
 import { describe, expect, it } from 'vitest'
-import { audioTrackNotice, catJobPaths, mergeQueuedFiles, partitionQueuePaths, reexportConfirmCopy } from '../lib/queue'
+import {
+  audioTrackNotice,
+  catJobPaths,
+  mergeQueuedFiles,
+  partitionQueuePaths,
+  recordingSessionNotice,
+  reexportConfirmCopy,
+} from '../lib/queue'
 
 describe('partitionQueuePaths', () => {
   it('separates TRS companions without discarding any dropped TRM chunks', () => {
@@ -85,5 +92,36 @@ describe('audioTrackNotice', () => {
     expect(audioTrackNotice(null)).toBe('')
     expect(audioTrackNotice(undefined)).toBe('')
     expect(audioTrackNotice([])).toBe('')
+  })
+})
+
+describe('recordingSessionNotice', () => {
+  const sgmca = (recordingSessions, stillRecording = false) => ({
+    convertedIndex: 0,
+    streams: [{ channels: 4, sampleRate: 48000, language: null, title: null }],
+    durationSecs: 10,
+    recordingSessions,
+    stillRecording,
+  })
+
+  it('says how many sessions are joined, and that gaps are not kept', () => {
+    expect(recordingSessionNotice(sgmca(3))).toBe(
+      'This file holds 3 recording sessions; they are joined in order (gaps between them are not kept).',
+    )
+  })
+
+  it('says when the file looks still recording or cut short', () => {
+    expect(recordingSessionNotice(sgmca(1, true))).toBe(
+      'This file looks like it is still being recorded, or it was cut short; only its complete audio is converted.',
+    )
+    expect(recordingSessionNotice(sgmca(2, true))).toContain('2 recording sessions')
+    expect(recordingSessionNotice(sgmca(2, true))).toContain('still being recorded')
+  })
+
+  it('stays quiet for one complete session and for any other file', () => {
+    expect(recordingSessionNotice(sgmca(1))).toBe('')
+    expect(recordingSessionNotice({ convertedIndex: 0, streams: [] })).toBe('')
+    expect(recordingSessionNotice(null)).toBe('')
+    expect(recordingSessionNotice(undefined)).toBe('')
   })
 })
