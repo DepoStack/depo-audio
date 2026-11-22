@@ -778,6 +778,25 @@ pub(crate) fn parse_start_text(text: &str) -> Option<(time::PrimitiveDateTime, i
     Some((time::PrimitiveDateTime::new(date, clock), offset))
 }
 
+/// `samples` of a second at `rate` samples per second, in milliseconds to
+/// the microsecond: how far a first sample falls after the whole second a
+/// segment header can hold.
+pub(crate) fn offset_ms(samples: u64, rate: u64) -> f64 {
+    if rate == 0 {
+        return 0.0;
+    }
+    (samples as f64 * 1_000_000.0 / rate as f64).round() / 1_000.0
+}
+
+/// The export-record sentence for a start that falls `offset_ms` after the
+/// whole second written: "CATalyst stores whole seconds; this recording's
+/// first sample is 0.42 s after the time written."
+pub(crate) fn whole_second_note(offset_ms: f64) -> String {
+    let seconds = format!("{:.6}", offset_ms / 1_000.0);
+    let seconds = seconds.trim_end_matches('0').trim_end_matches('.');
+    format!("CATalyst stores whole seconds; this recording's first sample is {seconds} s after the time written.")
+}
+
 /// `YYYY-MM-DDTHH:MM:SS±hhmm` for a local wall-clock time and its offset in
 /// minutes. None when the year does not fit in four digits or the offset is
 /// a day or more, because the text would then not be 24 characters.
@@ -1707,10 +1726,19 @@ pub(crate) fn concat_script(path: &Path, info: &SgmcaInfo) -> Result<String, Str
 #[serde(rename_all = "camelCase")]
 pub(crate) struct SliceReport {
     pub channels: u8,
-    /// The start actually used (see `slice`) and the end reached, in seconds
-    /// of the joined recording.
+    /// The requested start, where the cut was made, and the end reached, in
+    /// seconds of the joined recording.
     pub start_seconds: f64,
     pub end_seconds: f64,
+    /// The new segment's start text.
+    pub start_text: String,
+    /// How far the slice's first sample falls after the whole second in
+    /// `start_text`, in milliseconds (the header holds whole seconds only).
+    /// None when the session had no readable start, so the text is the time
+    /// of slicing.
+    pub start_offset_ms: Option<f64>,
+    /// What the start text means for this slice.
+    pub start_note: String,
     /// Playable samples at 48 kHz in the new file.
     pub samples: u64,
     pub pre_skip: u16,
@@ -1909,13 +1937,13 @@ fn write_error(error: std::io::Error) -> String {
 /// end) into a new Direct Audio file at `dst`, without re-encoding (see
 /// `copy_range`). The cut must stay inside one recording session: a range
 /// that runs into the next session is refused, because the sessions are
-/// separate streams with a gap of unknown length between them. The segment
-/// header holds whole seconds only, so when the session has a readable start
-/// time the cut starts at the whole second at or before `start_seconds`
-/// (the report gives the start actually used), and the new segment's start
-/// is the session's start plus those whole seconds: its first sample then
-/// falls on the second written. A session with no readable start time gets
-/// the time of slicing and an exact cut. `dst` must not exist yet.
+/// separate streams with a gap of unknown length between them. The cut is
+/// made exactly at `start_seconds`; no audio is left out to make the start
+/// round. The segment header holds whole seconds only, so the new segment's
+/// start is the session's start plus the whole seconds skipped (the second
+/// at or before the first sample), and the report gives the fraction left
+/// over (`start_offset_ms`) and says so. A session with no readable start
+/// time gets the time of slicing. `dst` must not exist yet.
 ///
 /// Not yet offered in the app: a slice is a new output, and every output
 /// needs its export record and a way to choose the range on screen.
@@ -1957,17 +1985,28 @@ pub(crate) fn slice(
             segment.number
         ));
     }
-    let requested = start - segment.start_sample;
-    let whole_seconds = requested / OPUS_RATE;
-    let (skipped, start_text) = match segment
+    let skipped = start - segment.start_sample;
+    let (start_text, start_offset_ms, start_note) = match segment
         .start
         .as_ref()
-        .and_then(|start| start.shifted_text(whole_seconds))
+        .and_then(|start| start.shifted_text(skipped / OPUS_RATE))
     {
-        Some(text) => (whole_seconds * OPUS_RATE, text),
+        Some(text) => {
+            let offset = offset_ms(skipped % OPUS_RATE, OPUS_RATE);
+            let note = if offset == 0.0 {
+                "The slice starts on a whole second of the session's start time.".to_string()
+            } else {
+                format!(
+                    "{} The slice starts exactly where it was asked to; no audio was left out.",
+                    whole_second_note(offset)
+                )
+            };
+            (text, Some(offset), note)
+        }
         None => (
-            requested,
             crate::clock::local_start_text_now().ok_or("The slice's start time could not be written.")?,
+            None,
+            "The recording session has no readable start time, so the slice's start is the time of slicing, which is not when the recording was made.".to_string(),
         ),
     };
     let stream = open_stream(src, segment.data_offset, segment.bytes_read).map_err(|error| error.message)?;
@@ -1995,11 +2034,14 @@ pub(crate) fn slice(
             return Err(error);
         }
     };
-    let start_seconds = (segment.start_sample + skipped) as f64 / OPUS_RATE as f64;
+    let start_seconds = start as f64 / OPUS_RATE as f64;
     Ok(SliceReport {
         channels,
         start_seconds,
         end_seconds: start_seconds + copied.samples as f64 / OPUS_RATE as f64,
+        start_text,
+        start_offset_ms,
+        start_note,
         samples: copied.samples,
         pre_skip: copied.pre_skip,
         audio_packets: copied.audio_packets,
@@ -2019,17 +2061,23 @@ pub(crate) struct PlannedSegment {
 
 /// Turn the bare Ogg Opus stream FFmpeg wrote (`ogg`) into a new Direct
 /// Audio file at `dst`: the file header with a fresh random identifier, then
-/// one segment per planned segment. One segment starting at sample 0 gets
-/// the Ogg bytes unchanged. Otherwise each segment is its part of the stream
-/// cut out without re-encoding (see `copy_range`), as its own Ogg stream
-/// with a new serial number; audio before the first planned segment is left
-/// out. `dst` must not exist; on any failure it is removed.
+/// one segment per planned segment. With one segment the Ogg bytes are
+/// copied unchanged. With more, each segment is that part of the stream cut
+/// out without re-encoding (see `copy_range`), as its own Ogg stream with a
+/// new serial number. The first segment must start at sample 0, so no
+/// encoded audio is ever left out. `dst` must not exist; on any failure it
+/// is removed.
 pub(crate) fn write_direct_audio(
     ogg: &Path,
     dst: &Path,
     segments: &[PlannedSegment],
     cancelled: CancelCheck<'_>,
 ) -> Result<(), String> {
+    if segments.first().is_some_and(|first| first.start_sample != 0) {
+        return Err(
+            "The SGMCA output's first segment does not start at the first sample, so audio would be left out.".into(),
+        );
+    }
     if segments.is_empty()
         || segments
             .windows(2)
@@ -2054,7 +2102,7 @@ fn fill_direct_audio(
     let length = fs::metadata(ogg)
         .map_err(|error| format!("Could not read the encoded audio: {error}"))?
         .len();
-    if let [only @ PlannedSegment { start_sample: 0, .. }] = segments {
+    if let [only] = segments {
         out.begin_segment(&only.start_text)?;
         let mut input = fs::File::open(ogg).map_err(|error| format!("Could not read the encoded audio: {error}"))?;
         let mut chunk = vec![0u8; 1 << 16];
@@ -2826,6 +2874,9 @@ mod tests {
         let report = slice(&src, &dst, 2.0, Some(3.5), None).unwrap();
         assert_eq!(report.samples, 72_000);
         assert!((report.end_seconds - 3.5).abs() < 1e-9);
+        assert_eq!(report.start_text, "2026-11-22T10:15:32-0500");
+        assert_eq!(report.start_offset_ms, Some(0.0));
+        assert!(report.start_note.contains("whole second"), "{}", report.start_note);
         assert!(report.pre_skip as u64 >= PREROLL_SAMPLES);
 
         let info = verify_written(&dst, Some(&["2026-11-22T10:15:32-0500".to_string()]), None).unwrap();
@@ -2859,6 +2910,20 @@ mod tests {
     }
 
     #[test]
+    fn whole_second_offsets_are_given_in_milliseconds_with_a_plain_note() {
+        assert_eq!(offset_ms(0, 48_000), 0.0);
+        assert_eq!(offset_ms(20_160, 48_000), 420.0);
+        assert_eq!(offset_ms(1, 44_100), 0.023);
+        assert_eq!(offset_ms(44_099, 44_100), 999.977);
+        assert_eq!(offset_ms(5, 0), 0.0);
+        assert_eq!(
+            whole_second_note(420.0),
+            "CATalyst stores whole seconds; this recording's first sample is 0.42 s after the time written."
+        );
+        assert!(whole_second_note(999.977).contains(" 0.999977 s "));
+    }
+
+    #[test]
     fn slice_from_zero_keeps_the_original_pre_skip_and_runs_to_the_end() {
         let dir = tempdir::Dir::new();
         let src = write_temp(&dir, "src.sgmca", &synthetic_direct(100, 3840, 300, |_| 25));
@@ -2886,13 +2951,24 @@ mod tests {
         let second_end = (second.start_sample + second.samples) as f64 / 48_000.0;
 
         // Inside the second session: its own start time, moved by the whole
-        // seconds skipped (2.5 s in, so 2 s).
+        // seconds skipped (2.5 s in, so 2 s). The cut is exactly where it was
+        // asked for: half a second, nothing before 2.5 s added or removed, and
+        // the half second left over is reported, not cut.
         let inside = dir.0.join("inside.sgmca");
         let report = slice(&src, &inside, second_start + 2.5, Some(second_start + 3.0), None).unwrap();
-        // The cut starts at the whole second written (2 s in), not 2.5 s.
-        assert_eq!(report.samples, 48_000);
-        assert_eq!(report.start_seconds, (second.start_sample + 96_000) as f64 / 48_000.0);
+        assert_eq!(report.samples, 24_000);
+        assert_eq!(report.start_seconds, (second.start_sample + 120_000) as f64 / 48_000.0);
+        assert_eq!(report.start_offset_ms, Some(500.0));
+        assert!(
+            report.start_note.contains(
+                "CATalyst stores whole seconds; this recording's first sample is 0.5 s after the time written."
+            ),
+            "{}",
+            report.start_note
+        );
+        assert!(report.start_note.contains("no audio was left out"));
         let written = inspect(&inside, None).unwrap();
+        assert_eq!(written.samples, 24_000);
         assert_eq!(
             written.segments[0].start.as_ref().unwrap().text,
             "2026-11-22T11:02:07-0500"
@@ -3006,7 +3082,7 @@ mod tests {
         assert!(write_direct_audio(&ogg, &past, &bad, None).is_err());
         assert!(!past.exists());
         assert!(
-            write_direct_audio(&ogg, &past, &[plan[1].clone(), plan[0].clone()], None)
+            write_direct_audio(&ogg, &past, &[plan[0].clone(), plan[2].clone(), plan[1].clone()], None)
                 .unwrap_err()
                 .contains("not in order")
         );
@@ -3015,13 +3091,13 @@ mod tests {
             .contains("not in order"));
         assert!(!past.exists());
 
-        // One segment that starts after sample 0: the audio before it is left
-        // out, so the segment's first sample is the planned one.
+        // A plan whose first segment starts after sample 0 would leave the
+        // audio before it out, so it is refused and nothing is written.
         let later = dir.0.join("later.sgmca");
-        write_direct_audio(&ogg, &later, &[plan[1].clone()], None).unwrap();
-        let info = verify_written(&later, Some(&[START_2.to_string()]), None).unwrap();
-        assert_eq!(info.segments.len(), 1);
-        assert_eq!(info.samples, total - 70_001);
+        assert!(write_direct_audio(&ogg, &later, &[plan[1].clone()], None)
+            .unwrap_err()
+            .contains("audio would be left out"));
+        assert!(!later.exists());
     }
 
     #[test]
@@ -3165,14 +3241,20 @@ mod tests {
             40 + 56 + 110_401 + 56 + 44_952
         );
 
-        // A slice from 2.7 s starts at the whole second written (2 s), so its
-        // first sample plays at 10:15:32, the time in its header.
+        // A slice from 2.7 s to 4.0 s is cut exactly there (1.3 s of audio);
+        // its header names 10:15:32, the whole second before its first
+        // sample, and the 0.7 s left over is reported.
         let dir = tempdir::Dir::new();
         let cut = dir.0.join("cut.sgmca");
         let report = slice(&vendor_sample("tone_1segment.sgmca"), &cut, 2.7, Some(4.0), None).unwrap();
-        assert_eq!(report.start_seconds, 2.0);
-        assert_eq!(report.samples, 96_000);
-        verify_written(&cut, Some(&["2026-11-22T10:15:32-0500".to_string()]), None).unwrap();
+        assert!((report.start_seconds - 2.7).abs() < 1e-9);
+        assert_eq!(report.samples, 62_400);
+        assert_eq!(report.start_offset_ms, Some(700.0));
+        assert!(report
+            .start_note
+            .contains("first sample is 0.7 s after the time written"));
+        let written = verify_written(&cut, Some(&["2026-11-22T10:15:32-0500".to_string()]), None).unwrap();
+        assert_eq!(written.samples, 62_400);
     }
 
     #[test]

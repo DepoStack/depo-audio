@@ -425,6 +425,12 @@ pub(crate) struct SgmcaOutputRecord {
     /// `bwf-bext` or `conversion-time`.
     pub start_source: &'static str,
     pub start_note: String,
+    /// How far the output's first sample falls after the whole second its
+    /// first segment header names, in milliseconds: the header holds whole
+    /// seconds, and no audio is cut to make the start round. Null when the
+    /// start was copied from the source's own segment headers or is the
+    /// time of conversion.
+    pub start_offset_ms: Option<f64>,
     /// The output's segments as read back from the written file.
     pub segments: Vec<SgmcaSegmentRecord>,
 }
@@ -825,6 +831,7 @@ pub(crate) mod tests {
             guid_present: true,
             start_source: "sgmca-segment-start",
             start_note: "kept".into(),
+            start_offset_ms: Some(420.0),
             segments: vec![sgmca_segment("2026-11-22T10:15:30-0500", 0, 1.5)],
         });
         let errors = schema_errors(&manifest);

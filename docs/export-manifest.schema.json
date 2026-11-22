@@ -84,6 +84,7 @@
             "guidPresent": { "const": true, "description": "The output's file header carries a fresh random recording identifier, which is not recorded here." },
             "startSource": { "enum": ["sgmca-segment-start", "bwf-bext", "conversion-time"], "description": "Where the segment start times came from: the source's own SGMCA segment headers, the source's BWF origination date and time reference, or the time of conversion when the source has no start DepoAudio can read (or leading-silence trim moved the start)." },
             "startNote": { "type": "string" },
+            "startOffsetMs": { "type": ["number", "null"], "minimum": 0, "maximum": 1000, "description": "How far the output's first sample falls after the whole second its first segment header names, in milliseconds. The header holds whole seconds only, and DepoAudio keeps every source sample rather than cutting audio to make the start round. Null when the start was copied from the source's own segment headers or is the time of conversion. Absent in records written before it was added." },
             "segments": {
               "type": "array",
               "description": "The output's segments, as read back from the written file.",

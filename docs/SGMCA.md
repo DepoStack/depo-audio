@@ -112,11 +112,11 @@ replaces FFmpeg's bare Ogg file with it:
 - the 40-byte file header with a fresh random identifier (UUID v4, Windows byte layout) and
   reserved zeros;
 - one segment per recording session, each with its 56-byte header and exact payload length.
-  With one session starting at the first sample the Ogg bytes are copied unchanged. Otherwise
-  (an SGMCA source with several sessions, or a BWF start between two seconds), each segment is
-  cut out of the encoded stream at the sample where it starts, without re-encoding (80 ms
+  With one session the Ogg bytes are copied unchanged. With several (an SGMCA source with
+  several sessions), each segment is cut out of the encoded stream at the sample where it starts, without re-encoding (80 ms
   decoder pre-roll, exact pre-skip, end trim, new serial number), so it keeps its own start
-  time.
+  time. The first segment always starts at the first sample: the writer refuses any plan that
+  would leave encoded audio out.
 
 Segment start times come from, in this order:
 
@@ -126,9 +126,11 @@ Segment start times come from, in this order:
    falls under 3, as one segment, and the note names the source segment;
 2. a BWF source's date plus its bext time reference, with this computer's UTC offset for that
    date because BWF stores none (`bwf-bext`). The header holds whole seconds only, so when the
-   time reference falls between two seconds the output starts at the next whole second and the
-   source audio before it (under one second, rounded up to a 48 kHz sample) is left out, so the
-   first sample plays at the time written; the note gives the amount. FFmpeg 6.1 reports the
+   time reference falls between two seconds the start text is the whole second at or before the
+   first sample (rounded down). **No source audio is ever left out to make the time round:**
+   every sample is kept, and the export record gives the fraction as `startOffsetMs` and in the
+   note, for example "CATalyst stores whole seconds; this recording's first sample is 0.42 s
+   after the time written." FFmpeg 6.1 reports the
    bext origination date as the WAV's `date` tag, which a RIFF INFO creation date shares;
 3. otherwise the time of conversion, in this computer's local time (`conversion-time`). This is
    not when the recording was made, and the export record says so.
@@ -148,8 +150,10 @@ the form above, and family 255 with one uncoupled mono stream per channel.
 An SGMCA source adds an optional `source.sgmca` object: `fileVersion`, `guidPresent`,
 `segments` (each with `startText`, `startLocal`, `utcOffset`, `startSample` in 48 kHz samples of
 the joined audio, `durationSecs`, `channels`, `mappingFamily`), `growing` and `legacyBareOgg`.
-An SGMCA output adds `output.sgmca`: `fileVersion`, `guidPresent`, `startSource`, `startNote`
-and its segments as read back.
+An SGMCA output adds `output.sgmca`: `fileVersion`, `guidPresent`, `startSource`, `startNote`,
+`startOffsetMs` (how far the first sample falls after the whole second the first header names,
+in milliseconds; null when the start was copied from the source's headers or is the conversion
+time) and its segments as read back.
 
 The recording identifier itself is **not** recorded, only whether one is present. It identifies
 one recording, the record already identifies the source by its SHA-256, and records travel
@@ -161,10 +165,11 @@ it but does not compare it.
 `sgmca::slice` copies Opus packets without re-encoding (80 ms pre-roll, exact pre-skip, end
 trim, rebased granules, new CRCs) into a new Direct Audio file with one segment. A cut must stay
 inside one recording session; a range that runs into the next session is refused, because the
-gap between sessions is not in the file. The header holds no fractions of a second, so the cut
-starts at the whole second at or before the requested start (the report gives the start used),
-and the new segment's start is the session's start plus those whole seconds: its first sample
-plays at the time written. Not on screen yet: a slice is a new output and needs its export
+gap between sessions is not in the file. The cut is made exactly at the requested start and
+end; no audio is added or removed to make the start round. The header holds no fractions of a
+second, so the new segment's start is the session's start plus the whole seconds skipped (the
+second at or before the first sample), and the report gives the fraction left over as
+`startOffsetMs` with the same kind of note as the export record. Not on screen yet: a slice is a new output and needs its export
 record.
 
 ## Not yet confirmed against a real recording
