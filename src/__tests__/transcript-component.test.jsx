@@ -115,8 +115,9 @@ describe('Transcript proofing', () => {
     renderPanel({ currentTime: 12.5 })
     await importText(SRT)
     fireEvent.focus((await screen.findAllByRole('option'))[2])
-    fireEvent.click(screen.getByRole('button', { name: 'Set this line to now' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Set row 3 to now' }))
     expect(screen.getByText('Transcript is ahead by 2.5 s')).toBeVisible()
+    expect(screen.getByRole('status')).toHaveTextContent('Set row 3 to play from 0:00:12.')
     fireEvent.click(screen.getByRole('button', { name: 'Clear shift' }))
     expect(screen.getByText('No sync shift')).toBeVisible()
   })
@@ -126,7 +127,7 @@ describe('Transcript proofing', () => {
     await importText(SRT)
     const before = JSON.parse(localStorage.getItem(storageKey(PATH)) ?? '[]')
     fireEvent.keyDown((await screen.findAllByRole('option'))[1], { key: 'f' })
-    const note = screen.getByRole('textbox', { name: 'Note for flag on line 2' })
+    const note = screen.getByRole('textbox', { name: 'Note for flag on row 2' })
     fireEvent.change(note, { target: { value: 'speaker?' } })
     const after = JSON.parse(localStorage.getItem(storageKey(PATH)))
     expect(after[1].flag).toEqual({ note: 'speaker?' })
@@ -146,7 +147,7 @@ describe('Transcript proofing', () => {
     await waitFor(() => expect(fileMocks.writeTextFile).toHaveBeenCalled())
     const [path, content] = fileMocks.writeTextFile.mock.calls[0]
     expect(path).toBe('C:\\out\\flags.csv')
-    expect(content).toMatch(/^Line,Audio time,Time of day,Excerpt,Note\r\n1,0:00:01,,Q: Good morning\.,/)
+    expect(content).toMatch(/^Page,Line,Row,Audio time,Time of day,Excerpt,Note\r\n,,1,0:00:01,,Q: Good morning\.,/)
     expect(dialogMocks.save.mock.calls[0][0].defaultPath).toBe('synthetic-hearing proofing flags.csv')
   })
 
@@ -179,6 +180,87 @@ describe('Transcript proofing', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'time into recording' }))
     expect(screen.queryByLabelText('Recording started at')).not.toBeInTheDocument()
     expect(lines()[0]).toHaveTextContent('9:00:10')
+  })
+
+  it('F flags the line being heard: the focus follows the playing line, and the flag is shown', async () => {
+    const { rerender } = renderPanel()
+    await importText(SRT)
+    lines()[0].focus()
+    const props = { trackPath: PATH, duration: 600, onSeek: vi.fn(), onPlayFrom: vi.fn() }
+    rerender(<Transcript {...props} currentTime={0.5} playing />)
+    rerender(<Transcript {...props} currentTime={10.5} playing />)
+    expect(lines()[2]).toHaveAttribute('aria-current', 'true')
+    expect(lines()[2]).toHaveFocus()
+    fireEvent.keyDown(lines()[2], { key: 'f' })
+    expect(screen.getByRole('status')).toHaveTextContent('Flagged row 3 for review.')
+    expect(screen.getByRole('status')).toBeVisible()
+    expect(JSON.parse(localStorage.getItem(storageKey(PATH)))[2].flag).toEqual({ note: '' })
+  })
+
+  it('pauses following while the person moves through the lines, and goes back with "."', async () => {
+    const { rerender } = renderPanel()
+    await importText(SRT)
+    const props = { trackPath: PATH, duration: 600, onSeek: vi.fn(), onPlayFrom: vi.fn() }
+    rerender(<Transcript {...props} currentTime={0.5} playing />)
+    lines()[0].focus()
+    fireEvent.keyDown(lines()[0], { key: 'ArrowDown' })
+    rerender(<Transcript {...props} currentTime={10.5} playing />)
+    // The focus stays where the person put it.
+    expect(lines()[1]).toHaveFocus()
+    expect(screen.getByRole('button', { name: /back to playing line/i })).toHaveAttribute('aria-pressed', 'false')
+    fireEvent.keyDown(lines()[1], { key: '.' })
+    expect(lines()[2]).toHaveFocus()
+    expect(screen.getByRole('button', { name: 'Follow audio' })).toHaveAttribute('aria-pressed', 'true')
+  })
+
+  it('reads the flag as part of the line, with no button inside the line', async () => {
+    renderPanel()
+    await importText(SRT)
+    fireEvent.keyDown((await screen.findAllByRole('option'))[1], { key: 'f' })
+    expect(within(screen.getByRole('listbox')).queryAllByRole('button')).toHaveLength(0)
+    expect(lines()[1]).toHaveAccessibleName(/^row 2:.*Morning\., flagged$/)
+    expect(lines()[1]).not.toHaveAttribute('aria-selected')
+    expect(screen.getByRole('button', { name: 'Play from row 2, 0:00:05' })).toBeVisible()
+  })
+
+  it('names lines by page and line from a CAT file', async () => {
+    renderPanel()
+    await importText('                  4\n  7  00:00:05  Q.  On page four.', 'C:\\transcripts\\day1.txt')
+    expect(await screen.findByRole('option', { name: /^page 4, line 7:/ })).toBeVisible()
+    expect(screen.getByText('4:7')).toBeVisible()
+    expect(lines()).toHaveLength(1)
+  })
+
+  it('says when a time-of-day line cannot be placed, instead of playing from the start', async () => {
+    const { onPlayFrom } = renderPanel()
+    await importText('09:00:10  Q.  Morning.\n21:30:00  A.  Evening.', 'C:\\transcripts\\day1.txt')
+    fireEvent.change(await screen.findByLabelText('Recording started at'), { target: { value: '9:00:00' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+    fireEvent.click(lines()[1])
+    expect(onPlayFrom).not.toHaveBeenCalled()
+    expect(screen.getByRole('status')).toHaveTextContent(/outside the recording/)
+  })
+
+  it('copies the lines with their times', async () => {
+    const writeText = vi.fn().mockResolvedValue()
+    Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true })
+    renderPanel()
+    await importText(SRT)
+    fireEvent.click(await screen.findByRole('button', { name: /copy with times/i }))
+    await waitFor(() => expect(writeText).toHaveBeenCalled())
+    expect(writeText.mock.calls[0][0].split('\n')[0]).toBe('0:00:01.000\tQ: Good morning.')
+  })
+
+  it('reads a transcript saved by an earlier version as time into the recording, whatever its first time', () => {
+    localStorage.setItem(
+      storageKey(PATH),
+      JSON.stringify([{ id: 'a', start: 10 * 3600, speaker: '', text: 'Broadcast timecode' }]),
+    )
+    const { onPlayFrom } = renderPanel()
+    expect(screen.getByRole('button', { name: 'time into recording' })).toHaveAttribute('aria-pressed', 'true')
+    expect(screen.queryByLabelText('Recording started at')).not.toBeInTheDocument()
+    fireEvent.click(lines()[0])
+    expect(onPlayFrom).toHaveBeenLastCalledWith(10 * 3600)
   })
 
   it('opens a transcript saved by an earlier version, read-only', () => {

@@ -7,16 +7,21 @@
 //   • reading SRT, WebVTT and timestamped plain text (CAT ASCII/TXT exports),
 //     and telling elapsed-time stamps from time-of-day stamps;
 //   • mapping a line's time to a position in the audio (sync shift, and the
-//     recording's start time for time-of-day stamps, across sessions);
+//     recording's start time for time-of-day stamps). The mapping can join
+//     several sessions, but the panel has one start time only, so it maps
+//     every line against one session;
 //   • finding the line at the playhead;
 //   • proofing flags (stored on the line, never touching its text) and their
-//     export as text or CSV;
+//     export as text or CSV, with the page and line number from the file;
 //   • the per-track storage (localStorage) that earlier versions also used.
 
 export const uid = () => Math.random().toString(36).slice(2, 10)
 
 const DAY = 86400
 const HALF_DAY = DAY / 2
+// A time-of-day stamp up to an hour before the recording started is taken as
+// a clock that runs behind the recorder, not as a time that cannot be placed.
+const EARLY_LIMIT = 3600
 export const MAX_FLAG_NOTE_CHARS = 200
 
 const validTime = value => typeof value === 'number' && Number.isFinite(value) && value >= 0
@@ -29,6 +34,8 @@ export function parseTime(str) {
   if (!/^\d+(?::\d{1,2}){0,2}(?:[.,]\d+)?$/.test(text)) return null
   const parts = text.replace(',', '.').split(':').map(Number)
   if (parts.some(Number.isNaN)) return null
+  // Minutes and seconds after the first field must be under 60 ("1:75" is not a time).
+  if (parts.slice(1).some(n => n >= 60)) return null
   if (parts.length === 3) return parts[0] * 3600 + parts[1] * 60 + parts[2]
   if (parts.length === 2) return parts[0] * 60 + parts[1]
   return parts[0]
@@ -122,25 +129,63 @@ export function parseCues(text) {
 }
 
 // A line stamp in a CAT ASCII/TXT export: "[09:31:02]", "09:31:02", or
-// "00:01:02.500", optionally after a page/line number and before a line
-// number ("  4  09:31:02   Q.  Did you..." or "09:31:02  4  Q. ...").
+// "00:01:02.500", optionally after a line number and before a line number
+// ("  4  09:31:02   Q.  Did you..." or "09:31:02  4  Q. ...").
 const STAMPED_LINE =
-  /^\s*(?:\d{1,5}\s+)?\[?(\d{1,2}:\d{2}:\d{2}(?:[.,]\d{1,3})?)\]?(?=\s|$)\s*(?:\d{1,2}(?=\s{2,}|\t)\s*)?(.*)$/
+  /^\s*(?:(\d{1,5})\s+)?\[?(\d{1,2}:\d{2}:\d{2}(?:[.,]\d{1,3})?)\]?(?=\s|$)\s*(?:(\d{1,2})(?=\s{2,}|\t|$)\s*)?(.*)$/
+// A line with no stamp that starts with its line number: "  3        continuing".
+const NUMBERED_LINE = /^\s*(\d{1,2})(?:\s{2,}|\t)\s*(\S.*)$/
+// A row holding only a number: a page number, or a numbered line with no text.
+const NUMBER_ONLY = /^(\s*)(\d{1,5})\s*$/
 
+// Each line keeps the page and line number it has in the file (`page`,
+// `lineNo`), so a flag can be found again in the CAT file. A row holding only
+// a number is not a transcript line: it is the next line number on the page
+// when it follows the last one and is not indented far, and a page number
+// otherwise. Either way it sets where the next lines are, and is not listed.
 export function parseStampedText(text) {
   const segs = []
+  let page = null
+  let lastLine = null
   for (const raw of String(text ?? '')
     .replace(/^\uFEFF/, '')
     .replace(/\r/g, '')
     .split('\n')) {
     if (!raw.trim()) continue
-    const match = raw.match(STAMPED_LINE)
-    if (match) {
-      const body = match[2].trim()
-      segs.push(segment(parseTime(match[1]), body))
-    } else {
-      segs.push(segment(null, raw.trim()))
+    const only = raw.match(NUMBER_ONLY)
+    if (only) {
+      const n = Number(only[2])
+      if (only[1].length < 8 && lastLine != null && n === lastLine + 1) {
+        lastLine = n
+      } else {
+        page = n
+        lastLine = null
+      }
+      continue
     }
+    let start = null
+    let lineNo = null
+    let body = raw
+    const stamped = raw.match(STAMPED_LINE)
+    const stamp = stamped ? parseTime(stamped[2]) : null
+    if (stamped && stamp != null) {
+      start = stamp
+      lineNo = stamped[3] ?? stamped[1] ?? null
+      body = stamped[4]
+    } else {
+      const numbered = raw.match(NUMBERED_LINE)
+      if (numbered) {
+        lineNo = numbered[1]
+        body = numbered[2]
+      }
+    }
+    const line = segment(start, body.trim())
+    if (page != null) line.page = page
+    if (lineNo != null) {
+      line.lineNo = Number(lineNo)
+      lastLine = line.lineNo
+    }
+    segs.push(line)
   }
   return segs
 }
@@ -205,26 +250,29 @@ export function normalizeSync(value) {
 
 // Map a time of day to a position in the audio. `sessions` is the recording's
 // sessions in order, each { start: seconds after midnight, duration: seconds }
-// (the last may be open-ended: duration Infinity). The timeline joins the
-// sessions end to end. A time between two sessions goes to the start of the
-// next session, and a time before the first goes to 0 (how CATalyst places a
-// time stamp that falls in a gap). A time after the last session ends returns
-// null. Times are taken to fall within 12 hours after the first session's
-// start, so a recording that runs past midnight still maps.
+// (the last may be open-ended: duration Infinity, taken as at most 12 hours).
+// The timeline joins the sessions end to end. A time between two sessions
+// goes to the start of the next session (how CATalyst places a time stamp
+// that falls in a gap). A time up to an hour before the first session gives a
+// negative position, so a sync shift can still correct a clock that runs
+// behind; linePosition clamps it to 0 after the shift. A time earlier than
+// that, or after the last session ends, returns null: the line cannot be
+// placed. A recording that runs past midnight still maps.
 export function timeOfDayToAudio(timeOfDay, sessions) {
   if (!Number.isFinite(timeOfDay) || !Array.isArray(sessions) || sessions.length === 0) return null
   const origin = sessions[0].start
   if (!Number.isFinite(origin)) return null
-  // Seconds from the first session's start, in [-12 h, +12 h).
-  const fromOrigin = t => ((((t - origin + HALF_DAY) % DAY) + DAY) % DAY) - HALF_DAY
+  // Seconds from the first session's start, in [-1 h, +23 h).
+  const fromOrigin = t => ((((t - origin + EARLY_LIMIT) % DAY) + DAY) % DAY) - EARLY_LIMIT
   const target = fromOrigin(timeOfDay)
+  if (target < 0) return target
   let elapsed = 0
   let previousEnd = -Infinity
   for (const session of sessions) {
     if (!Number.isFinite(session?.start)) return null
     let start = fromOrigin(session.start)
     while (start < previousEnd) start += DAY
-    const duration = session.duration > 0 ? session.duration : 0
+    const duration = session.duration > 0 ? Math.min(session.duration, HALF_DAY) : 0
     if (target < start) return elapsed
     if (target < start + duration) return elapsed + (target - start)
     elapsed += duration
@@ -233,8 +281,9 @@ export function timeOfDayToAudio(timeOfDay, sessions) {
   return target === previousEnd ? elapsed : null
 }
 
-// The audio position a line plays from, before the sync shift. Null when the
-// line has no time, or its time of day cannot be placed yet.
+// The audio position a line plays from, before the sync shift (negative for a
+// time-of-day stamp a little before the recording started). Null when the
+// line has no time, or its time of day cannot be placed.
 export function lineBasePosition(start, sync, sessions = null) {
   if (!validTime(start)) return null
   const { timeKind, recordingStart } = normalizeSync(sync)
@@ -255,12 +304,15 @@ export function audioToTimeOfDay(position, sync) {
 }
 
 // Each line's audio position, or null. Lines without a time play from the
-// nearest timed line above them (CAT exports often stamp only some lines).
+// nearest timed line above them (CAT exports often stamp only some lines). A
+// line whose time cannot be placed in the audio is marked `unplaced` and has
+// nowhere to play from.
 export function linePositions(segments, sync, sessions = null) {
   let previous = null
   return (Array.isArray(segments) ? segments : []).map(s => {
     const own = linePosition(s?.start, sync, sessions)
     if (own != null) previous = own
+    if (own == null && validTime(s?.start)) return { own, playFrom: null, unplaced: true }
     return { own, playFrom: own ?? previous }
   })
 }
@@ -324,6 +376,33 @@ export function setFlagNote(segments, id, note) {
 
 const lineText = s => (s.speaker ? `${s.speaker}: ` : '') + s.text
 
+// How a line is named on screen and in exports: by its page and line number
+// in the file when it has them, else by its row in DepoAudio's list.
+export const lineName = (s, index) =>
+  s?.lineNo == null ? `row ${index + 1}` : `${s.page == null ? '' : `page ${s.page}, `}line ${s.lineNo}`
+
+// The short form shown beside each line: "12:4", "4" or the row number.
+export const lineRef = (s, index) =>
+  s?.lineNo == null ? index + 1 : `${s.page == null ? '' : `${s.page}:`}${s.lineNo}`
+
+const capitalize = text => text.charAt(0).toUpperCase() + text.slice(1)
+
+const withMillis = (formatted, seconds) =>
+  `${formatted}.${pad(Math.min(999, Math.floor((seconds % 1) * 1000 + 1e-6)), 3)}`
+
+// The transcript as plain text, each timed line after its time as shown in
+// the panel, to the millisecond. Copy with times uses it, so the times of
+// transcripts saved by earlier versions can still be taken out of DepoAudio.
+export function transcriptText(segments, timeKind) {
+  return (Array.isArray(segments) ? segments : [])
+    .map(s => {
+      if (!validTime(s.start)) return lineText(s)
+      const time = timeKind === 'time-of-day' ? fmtClock(s.start) : fmtElapsed(s.start)
+      return `${withMillis(time, s.start)}\t${lineText(s)}`
+    })
+    .join('\n')
+}
+
 export function excerpt(text, max = 80) {
   const flat = String(text ?? '')
     .replace(/\s+/g, ' ')
@@ -331,15 +410,19 @@ export function excerpt(text, max = 80) {
   return flat.length > max ? `${flat.slice(0, max - 1).trimEnd()}…` : flat
 }
 
-export function flagRows(segments, sync) {
-  const positions = linePositions(segments, sync)
+// `sessions` must be what the panel maps with, so exported audio times match it.
+export function flagRows(segments, sync, sessions = null) {
+  const positions = linePositions(segments, sync, sessions)
   const normalized = normalizeSync(sync)
   return segments
     .map((s, index) => ({ s, index, position: positions[index].playFrom }))
     .filter(({ s }) => s.flag)
     .map(({ s, index, position }) => ({
       id: s.id,
-      line: index + 1,
+      index,
+      page: s.page,
+      lineNo: s.lineNo,
+      name: lineName(s, index),
       excerpt: excerpt(lineText(s)),
       audioTime: position,
       timeOfDay:
@@ -361,9 +444,11 @@ function csvCell(value) {
 }
 
 export function flagsToCsv(rows) {
-  const header = ['Line', 'Audio time', 'Time of day', 'Excerpt', 'Note']
+  const header = ['Page', 'Line', 'Row', 'Audio time', 'Time of day', 'Excerpt', 'Note']
   const body = rows.map(r => [
-    r.line,
+    r.page ?? '',
+    r.lineNo ?? '',
+    r.index + 1,
     fmtElapsed(r.audioTime),
     r.timeOfDay == null ? '' : fmtClock(r.timeOfDay),
     r.excerpt,
@@ -377,7 +462,7 @@ export function flagsToText(rows, trackName = '') {
   const body = rows.map(r => {
     const times = [`audio ${fmtElapsed(r.audioTime)}`]
     if (r.timeOfDay != null) times.push(`time of day ${fmtClock(r.timeOfDay)}`)
-    return [`Line ${r.line} · ${times.join(' · ')}`, `  ${r.excerpt}`, r.note ? `  Note: ${r.note}` : null]
+    return [`${capitalize(r.name)} · ${times.join(' · ')}`, `  ${r.excerpt}`, r.note ? `  Note: ${r.note}` : null]
       .filter(Boolean)
       .join('\n')
   })
@@ -387,7 +472,8 @@ export function flagsToText(rows, trackName = '') {
 // ── Storage (per track, localStorage) ───────────────────────────────────────
 //
 // "transcript:<track path>" holds the lines as earlier versions saved them
-// ([{ id, start, speaker, text }]), now with an optional `flag: { note }`.
+// ([{ id, start, speaker, text }]), now with an optional `flag: { note }` and
+// the line's `page` and `lineNo` in the file when it had them.
 // Backups carry this key unchanged. "transcript-sync:<track path>" holds the
 // sync settings for that track.
 
@@ -423,6 +509,9 @@ export function loadSegments(raw) {
           start: validTime(segment.start) ? segment.start : null,
           speaker: typeof segment.speaker === 'string' ? segment.speaker : '',
           text: typeof segment.text === 'string' ? segment.text : '',
+        }
+        for (const key of ['page', 'lineNo']) {
+          if (Number.isInteger(segment[key]) && segment[key] >= 0) line[key] = segment[key]
         }
         if (segment.flag && typeof segment.flag === 'object') line.flag = { note: cleanNote(segment.flag.note) }
         return line
