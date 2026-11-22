@@ -1885,7 +1885,7 @@ impl Drop for ChannelFiles {
     }
 }
 
-/// The name prefix of every temporary channel file, for the startup sweep.
+/// The name prefix of every temporary channel file.
 pub(crate) const CHANNEL_FILE_PREFIX: &str = "depoaudio_trm_";
 
 /// Write each stream of a `.trm` to its own new ADTS `.aac` file in
@@ -3620,7 +3620,7 @@ pub(crate) mod tests {
     }
 
     /// ADTS frames by the standard 13-bit length.
-    fn split_adts_13(bytes: &[u8]) -> Vec<Vec<u8>> {
+    pub(crate) fn split_adts_13(bytes: &[u8]) -> Vec<Vec<u8>> {
         let mut frames = Vec::new();
         let mut pos = 0;
         while pos + 7 <= bytes.len() {

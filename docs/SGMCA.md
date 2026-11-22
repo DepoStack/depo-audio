@@ -40,6 +40,7 @@ the whole page with its CRC field set to zero.
 | Step | How |
 | --- | --- |
 | Find the stream | The first CRC-correct beginning-of-stream page that carries `OpusHead`, at byte 0 or inside the first 8 KiB (a prefix some exports carry is skipped; stray `OggS` bytes are not mistaken for it). A file holding another codec, or a damaged header, gets its own message. |
+| One session per file | Every CRC-correct `OpusHead` beginning-of-stream page in the file is counted, including any behind a segment header (a 56-byte block with a NUL-padded start text that some files carry in front of each session). A file with more than one is refused, naming each session's start text and length: played as one stream, later sessions would follow the first with the time between them removed. The segment header layout comes from test files, not a published specification, and is only shown, never used to place audio. |
 | Check it | Every page's capture pattern, version, sequence and CRC; packets reassembled across pages; `OpusHead` fields checked against RFC 7845 (channel count, stream and coupled counts, mapping table). Damage is reported with the page and byte where it is. |
 | Duration | Exact, from the last granule position minus pre-skip, not from an estimate. |
 | Decode, mix, split | FFmpeg with the **libopus** decoder. FFmpeg 6.1's built-in Opus decoder turned one channel of a 16 kHz family-255 test stream into full-scale noise; libopus decodes it cleanly. Split Channels gives one file per court channel. |

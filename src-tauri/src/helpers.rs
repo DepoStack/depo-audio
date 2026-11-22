@@ -5,7 +5,6 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
 
 use regex::Regex;
-use uuid::Uuid;
 
 use crate::types::FormatInfo;
 
@@ -37,6 +36,8 @@ const DCR_NOTE: &str = "DCR recordings use a closed format. Export to WAV from t
 const DCR_IMAGE_NOTE: &str = "This .dcr starts like a camera raw image (TIFF), not like court audio. Check that you picked the right file. If it is a court recording, export it to WAV from the software that recorded it.";
 const DS2_NOTE: &str = "DS2 (DSS Pro) dictation files cannot be opened here. Export to WAV with OM System / Olympus dictation software (for example ODMS), then add the WAV. An encrypted DS2 also needs its password in that software.";
 const WEBEX_NOTE: &str = "Webex network recordings (.arf, .wrf) cannot be opened here. Convert an .arf to MP4 with the Webex Recording Converter, or a .wrf to WMV with the Webex WRF2WMV Converter (both Windows only), then add the converted file.";
+const DM_NOTE: &str = "Reads the audio inside; tested with synthetic files only. Recorded-over blocks are skipped and the audio is kept in file order.";
+const DM_UNRECOGNIZED_NOTE: &str = "This .dm file's header isn't one DepoAudio recognizes. DepoAudio reads .dm audio files written by DigitalCAT / SoundSync; check that you picked the right file.";
 const SONY_VOICE_NOTE: &str = "Sony IC recorder files (.msv, .dvf) cannot be opened here. Convert to WAV with Sony Digital Voice Editor, then add the WAV. Sony no longer offers it for download, so an existing copy is needed.";
 
 pub(crate) fn get_formats() -> Vec<FormatInfo> {
@@ -72,9 +73,14 @@ pub(crate) fn get_formats() -> Vec<FormatInfo> {
             note: Some("FTR interleaves one AAC stream per microphone (or per pair of microphones). DepoAudio reads a file with FFmpeg's native FTR decoder when its layout allows, and otherwise splits the streams itself first; the export record says which. This reading is based on interoperability notes and has not yet been checked against a recording made by FTR. Add all .trm, .ftr or .tll files of a session together.".into()) },
         FormatInfo { key: "bwf".into(), name: "Broadcast WAV".into(), vendor: "CourtSmart / Various".into(),
             status: "supported".into(), handler: "passthrough".into(), channels: None, note: None },
-        FormatInfo { key: "digitalcat".into(), name: "DigitalCAT Audio".into(), vendor: "Stenovations".into(),
-            status: "experimental".into(), handler: "passthrough".into(), channels: None,
-            note: Some("No public spec — conversion may fail. Please report results on GitHub.".into()) },
+        // The audio is read out of the .dm into a temporary WAV (dm.rs).
+        FormatInfo { key: "digitalcat".into(), name: "DigitalCAT Audio".into(), vendor: "Stenovations · DigitalCAT / SoundSync".into(),
+            status: "experimental".into(), handler: "digitalcat".into(), channels: None,
+            note: Some(DM_NOTE.into()) },
+        // A .dm whose first bytes are not the SoundSync audio header.
+        FormatInfo { key: "digitalcat-unrecognized".into(), name: "DigitalCAT Audio (unrecognized)".into(), vendor: "Stenovations".into(),
+            status: "unsupported".into(), handler: "rejected".into(), channels: None,
+            note: Some(DM_UNRECOGNIZED_NOTE.into()) },
         FormatInfo { key: "aes".into(), name: "Eclipse AudioSync".into(), vendor: "Eclipse CAT".into(),
             status: "unsupported".into(), handler: "rejected".into(), channels: None,
             note: Some("AES-128 encrypted. Open in Eclipse → File → Export Audio → WAV first.".into()) },
@@ -193,6 +199,7 @@ pub(crate) fn detect_format_for_path(path: &str) -> Option<FormatInfo> {
         .unwrap_or_default();
     match ext.as_str() {
         "dcr" if looks_like_tiff(Path::new(path)) => get_formats().into_iter().find(|f| f.key == "dcr-image"),
+        "dm" if !could_be_dm(Path::new(path)) => get_formats().into_iter().find(|f| f.key == "digitalcat-unrecognized"),
         // .ts is also a TypeScript source extension.
         "ts" if !could_be_transport_stream(Path::new(path)) => None,
         _ => Some(format),
@@ -240,6 +247,16 @@ fn looks_like_tiff(path: &Path) -> bool {
         leading_bytes::<4>(path),
         Some((bytes, 4)) if *bytes == *b"II*\0" || *bytes == *b"MM\0*"
     )
+}
+
+/// True unless the file is readable and does not start with the `.dm` audio
+/// header (header size 8 and a plausible WAVEFORMATEX). Unreadable files
+/// pass, so the extension decides and the conversion reports the problem.
+fn could_be_dm(path: &Path) -> bool {
+    match leading_bytes::<64>(path) {
+        Some((bytes, filled)) => crate::dm::looks_like_dm(&bytes[..filled]),
+        None => true,
+    }
 }
 
 /// How many bytes of a `.ts` file the transport-stream check reads.
@@ -375,7 +392,7 @@ pub(crate) const AUDIO_PREPARATION_CANCELLED_MESSAGE: &str = "Audio preparation 
 fn strip_sgmca_header_with_cancel(
     src: &Path,
     cancelled: Option<&(dyn Fn() -> bool + Send + Sync)>,
-) -> Result<(PathBuf, bool), String> {
+) -> Result<(PathBuf, Option<crate::safety::TempFile>), String> {
     let is_cancelled = || cancelled.is_some_and(|check| check());
     if is_cancelled() {
         return Err(AUDIO_PREPARATION_CANCELLED_MESSAGE.into());
@@ -395,52 +412,50 @@ fn strip_sgmca_header_with_cancel(
     if is_cancelled() {
         return Err(AUDIO_PREPARATION_CANCELLED_MESSAGE.into());
     }
+    // FFmpeg plays a file with several sessions (one Ogg stream each) as one
+    // stream with the gaps between them closed, which moves every later
+    // session to the wrong time. Such a file is refused, by name of each
+    // session, until sessions can be handled one at a time.
+    crate::sgmca::ensure_single_session(&mut file, offset, cancelled).map_err(|error| {
+        if is_cancelled() {
+            AUDIO_PREPARATION_CANCELLED_MESSAGE.to_string()
+        } else {
+            error
+        }
+    })?;
+    if is_cancelled() {
+        return Err(AUDIO_PREPARATION_CANCELLED_MESSAGE.into());
+    }
     if offset == 0 {
-        return Ok((src.to_path_buf(), false));
+        return Ok((src.to_path_buf(), None));
     }
 
-    // Security note: UUID-based temp filenames are unpredictable, which is sufficient
-    // for a single-user desktop app. The system temp dir inherits OS-level permissions
-    // (typically user-only on macOS/Windows). For multi-user or server contexts, consider
-    // creating a private subdirectory with restrictive permissions (0o700).
-    // The copy keeps the .sgmca extension so every later step treats it as
-    // SGMCA (decoder choice included); FFmpeg finds the Ogg stream by content.
-    let tmp = std::env::temp_dir().join(format!(
-        "depoaudio_{}.sgmca",
-        Uuid::new_v4().to_string().replace('-', "")
-    ));
+    // The copy goes in DepoAudio's private work folder (workdir.rs). It
+    // keeps the .sgmca extension so every later step treats it as SGMCA
+    // (decoder choice included); FFmpeg finds the Ogg stream by content.
     file.seek(SeekFrom::Start(offset)).map_err(|e| e.to_string())?;
-    let copy_result = (|| -> Result<(), String> {
-        let mut out = fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&tmp)
-            .map_err(|error| error.to_string())?;
-        let mut chunk = vec![0u8; 65536];
-        loop {
-            if is_cancelled() {
-                return Err(AUDIO_PREPARATION_CANCELLED_MESSAGE.into());
-            }
-            let n = file.read(&mut chunk).map_err(|error| error.to_string())?;
-            if n == 0 {
-                break;
-            }
-            out.write_all(&chunk[..n]).map_err(|error| error.to_string())?;
-        }
+    let (guard, mut out) = crate::workdir::new_temp_file("depoaudio_", "sgmca")?;
+    // On any error or cancellation the guard drops and removes the copy.
+    let mut chunk = vec![0u8; 65536];
+    loop {
         if is_cancelled() {
             return Err(AUDIO_PREPARATION_CANCELLED_MESSAGE.into());
         }
-        out.sync_all().map_err(|error| error.to_string())
-    })();
-    if let Err(error) = copy_result {
-        let _ = fs::remove_file(&tmp);
-        return Err(error.to_string());
+        let n = file.read(&mut chunk).map_err(|error| error.to_string())?;
+        if n == 0 {
+            break;
+        }
+        out.write_all(&chunk[..n]).map_err(|error| error.to_string())?;
     }
-    Ok((tmp, true))
+    if is_cancelled() {
+        return Err(AUDIO_PREPARATION_CANCELLED_MESSAGE.into());
+    }
+    // Read back by this run only: no sync_all.
+    Ok((guard.path.clone(), Some(guard)))
 }
 
 #[cfg(test)]
-pub(crate) fn strip_sgmca_header(src: &Path) -> Result<(PathBuf, bool), String> {
+pub(crate) fn strip_sgmca_header(src: &Path) -> Result<(PathBuf, Option<crate::safety::TempFile>), String> {
     strip_sgmca_header_with_cancel(src, None)
 }
 
@@ -457,10 +472,12 @@ const MERGED_SOURCE_LABEL: &str = "[da_src]";
 const MERGED_OUTPUT_LABEL: &str = "[da_out]";
 
 /// The audio FFmpeg reads for one selected file: usually the file itself; an
-/// SGMCA's Ogg stream in a temporary copy; or, for an FTR recording that
+/// SGMCA's Ogg stream in a temporary copy; a `.dm`'s audio read into a
+/// temporary WAV; or, for an FTR recording that
 /// FFmpeg's native decoder cannot take as it is, one temporary mono ADTS file
 /// per channel, joined back in channel order with `amerge`. Temporary files
-/// live exactly as long as the feed.
+/// live exactly as long as the feed, in DepoAudio's private work folder
+/// (workdir.rs).
 #[derive(Debug)]
 pub(crate) struct AudioFeed {
     inputs: Vec<PathBuf>,
@@ -473,9 +490,11 @@ pub(crate) struct AudioFeed {
     /// An FTR recording DepoAudio could not read, handed to FFmpeg's native
     /// decoder as it is: why the inspection failed.
     trm_inspection_error: Option<String>,
+    /// For a `.dm`: its blocks and time stamps, for the export record.
+    dm_timeline: Option<crate::dm::DmTimeline>,
     _guards: Vec<crate::safety::TempFile>,
     /// The folder holding the channel files; dropped after them.
-    _channel_dir: Option<ChannelDir>,
+    _channel_dir: Option<crate::workdir::TempDir>,
 }
 
 impl AudioFeed {
@@ -495,6 +514,7 @@ impl AudioFeed {
             trm: None,
             channels_per_input: 1,
             trm_inspection_error: None,
+            dm_timeline: None,
             _guards: Vec::new(),
             _channel_dir: None,
         }
@@ -508,6 +528,11 @@ impl AudioFeed {
     /// The FTR route taken, for the export record.
     pub(crate) fn trm(&self) -> Option<&crate::trm::TrmRoute> {
         self.trm.as_ref()
+    }
+
+    /// For a `.dm`: its blocks and time stamps, for the export record.
+    pub(crate) fn dm_timeline(&self) -> Option<&crate::dm::DmTimeline> {
+        self.dm_timeline.as_ref()
     }
 
     /// Why DepoAudio could not read this FTR recording itself, when it was
@@ -652,160 +677,9 @@ impl AudioFeed {
     }
 }
 
-/// The name prefix of each conversion's own channel-file folder inside the
-/// system temporary folder: `depoaudio_trm_run_<32 hex>`.
+/// The name prefix of each conversion's own channel-file folder inside
+/// this run's private work folder: `depoaudio_trm_run_<32 hex>`.
 const CHANNEL_DIR_PREFIX: &str = "depoaudio_trm_run_";
-/// Channel files older than this are left over from a run that was killed
-/// or crashed: a live conversion's files are far younger.
-pub(crate) const STALE_CHANNEL_FILE_AGE: std::time::Duration = std::time::Duration::from_secs(24 * 60 * 60);
-
-/// A folder this conversion created for its channel files, removed with
-/// everything in it when the feed is dropped.
-#[derive(Debug)]
-pub(crate) struct ChannelDir(PathBuf);
-
-impl ChannelDir {
-    pub(crate) fn path(&self) -> &Path {
-        &self.0
-    }
-}
-
-impl Drop for ChannelDir {
-    fn drop(&mut self) {
-        // The folder is this run's own (random name, created here, owner
-        // only); remove_dir_all does not follow links inside it.
-        let _ = fs::remove_dir_all(&self.0);
-    }
-}
-
-/// Create a new folder for one conversion's channel files in `parent`: a
-/// random name that must not exist yet (an existing folder or link is never
-/// reused), and on Unix readable, writable and listable by its owner only
-/// (0o700), so another local user can neither read the decoded audio nor
-/// replace a channel file before FFmpeg reads it.
-pub(crate) fn create_channel_dir_in(parent: &Path) -> Result<ChannelDir, String> {
-    let fail = |error: std::io::Error| format!("Could not create a temporary folder for channel files: {error}");
-    let dir = parent.join(format!("{CHANNEL_DIR_PREFIX}{}", Uuid::new_v4().simple()));
-    let mut builder = fs::DirBuilder::new();
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::DirBuilderExt;
-        builder.mode(0o700);
-    }
-    builder.create(&dir).map_err(fail)?;
-    let guard = ChannelDir(dir);
-    let metadata = fs::symlink_metadata(guard.path()).map_err(fail)?;
-    if !metadata.is_dir() {
-        return Err("The temporary folder for channel files is not a plain folder.".into());
-    }
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        if metadata.permissions().mode() & 0o077 != 0 {
-            return Err("The temporary folder for channel files could be read by other users.".into());
-        }
-    }
-    Ok(guard)
-}
-
-fn is_channel_dir_name(name: &str) -> bool {
-    name.strip_prefix(CHANNEL_DIR_PREFIX)
-        .is_some_and(|id| id.len() == 32 && id.bytes().all(|byte| byte.is_ascii_hexdigit()))
-}
-
-/// A file name the channel split writes: `depoaudio_trm_<32 hex>_ch<N>.aac`.
-fn is_channel_file_name(name: &str) -> bool {
-    let Some(rest) = name
-        .strip_prefix(crate::trm::CHANNEL_FILE_PREFIX)
-        .and_then(|rest| rest.strip_suffix(".aac"))
-    else {
-        return false;
-    };
-    let Some((id, channel)) = rest.split_once("_ch") else {
-        return false;
-    };
-    id.len() == 32
-        && id.bytes().all(|byte| byte.is_ascii_hexdigit())
-        && !channel.is_empty()
-        && channel.bytes().all(|byte| byte.is_ascii_digit())
-}
-
-/// Remove channel files that a killed or crashed run left in `dir`: regular
-/// files named as the channel split names them and last written more than
-/// `max_age` ago, so a conversion still running in another DepoAudio window
-/// keeps its files. Returns how many were removed. Never touches anything
-/// else, and never follows a link.
-pub(crate) fn sweep_stale_channel_files_in(dir: &Path, max_age: std::time::Duration) -> usize {
-    let Ok(entries) = fs::read_dir(dir) else {
-        return 0;
-    };
-    let now = std::time::SystemTime::now();
-    let mut removed = 0;
-    for entry in entries.filter_map(Result::ok) {
-        let name = entry.file_name();
-        if !is_channel_file_name(&name.to_string_lossy()) {
-            continue;
-        }
-        let Ok(metadata) = fs::symlink_metadata(entry.path()) else {
-            continue;
-        };
-        let stale = metadata
-            .modified()
-            .ok()
-            .and_then(|modified| now.duration_since(modified).ok())
-            .is_some_and(|age| age > max_age);
-        if metadata.is_file() && stale && fs::remove_file(entry.path()).is_ok() {
-            removed += 1;
-        }
-    }
-    removed
-}
-
-/// Remove the channel-file folders that killed or crashed runs left in
-/// `parent`: folders (never links) named as [`create_channel_dir_in`] names
-/// them, on Unix private to their owner, and last changed more than
-/// `max_age` ago. Only stale channel files are removed from each, then the
-/// folder if it is empty. Returns how many channel files were removed.
-pub(crate) fn sweep_stale_channel_dirs_in(parent: &Path, max_age: std::time::Duration) -> usize {
-    let Ok(entries) = fs::read_dir(parent) else {
-        return 0;
-    };
-    let now = std::time::SystemTime::now();
-    let mut removed = 0;
-    for entry in entries.filter_map(Result::ok) {
-        if !is_channel_dir_name(&entry.file_name().to_string_lossy()) {
-            continue;
-        }
-        let Ok(metadata) = fs::symlink_metadata(entry.path()) else {
-            continue;
-        };
-        if !metadata.is_dir() {
-            continue;
-        }
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            if metadata.permissions().mode() & 0o077 != 0 {
-                continue;
-            }
-        }
-        let stale = metadata
-            .modified()
-            .ok()
-            .and_then(|modified| now.duration_since(modified).ok())
-            .is_some_and(|age| age > max_age);
-        if stale {
-            removed += sweep_stale_channel_files_in(&entry.path(), max_age);
-            let _ = fs::remove_dir(entry.path());
-        }
-    }
-    removed
-}
-
-/// The startup sweep of DepoAudio's own channel-file folders.
-pub(crate) fn sweep_stale_channel_files() -> usize {
-    sweep_stale_channel_dirs_in(&std::env::temp_dir(), STALE_CHANNEL_FILE_AGE)
-}
 
 /// The selected file is an FTR recording (`.trm`, `.ftr`, `.tll`).
 pub(crate) fn is_trm_path(path: &Path) -> bool {
@@ -821,6 +695,7 @@ fn native_as_is(src: &Path, reason: String) -> AudioFeed {
         trm: None,
         channels_per_input: 1,
         trm_inspection_error: Some(reason),
+        dm_timeline: None,
         _guards: Vec::new(),
         _channel_dir: None,
     }
@@ -864,6 +739,7 @@ fn prepare_trm_feed(
             trm: Some(crate::trm::TrmRoute::new(info, decode_path, reasons)),
             channels_per_input: 1,
             trm_inspection_error: None,
+            dm_timeline: None,
             _guards: Vec::new(),
             _channel_dir: None,
         }),
@@ -873,7 +749,7 @@ fn prepare_trm_feed(
             ..AudioFeed::plain(src.to_path_buf())
         }),
         crate::trm::DecodePath::Deinterleaved => {
-            let channel_dir = create_channel_dir_in(&std::env::temp_dir())?;
+            let channel_dir = crate::workdir::new_temp_dir(CHANNEL_DIR_PREFIX)?;
             let (written, files) =
                 crate::trm::deinterleave_trm_with_cancel(src, channel_dir.path(), Some(&info), cancelled)?;
             let guards = files.iter().cloned().map(crate::safety::TempFile::new).collect();
@@ -884,11 +760,49 @@ fn prepare_trm_feed(
                 trm: Some(crate::trm::TrmRoute::new(written, decode_path, reasons)),
                 channels_per_input,
                 trm_inspection_error: None,
+                dm_timeline: None,
                 _guards: guards,
                 _channel_dir: Some(channel_dir),
             })
         }
     }
+}
+
+// ── DigitalCAT .dm demux ──────────────────────────────────────────────────────
+
+/// Read the audio of a `.dm` into a new temporary RIFF WAVE file (see
+/// `dm.rs`). The original is only read. The copy is removed when the
+/// returned guard drops, and on any error or cancellation before that.
+fn demux_dm_with_cancel(
+    src: &Path,
+    cancelled: Option<&(dyn Fn() -> bool + Send + Sync)>,
+) -> Result<(crate::safety::TempFile, crate::dm::DmTimeline), String> {
+    let is_cancelled = || cancelled.is_some_and(|check| check());
+    let dm = crate::dm::parse_dm(src, &is_cancelled)?;
+    let mut timeline = crate::dm::build_timeline(&dm);
+    // Counts only; marker text is never kept (see bmf.rs).
+    timeline.marker_file = crate::bmf::summary_beside(src, &dm);
+    if crate::dm::audio_totals(&dm).0 == 0 {
+        return Err("This .dm file has no audio left to convert: every block was recorded over or empty.".into());
+    }
+    // In the private work folder, like the SGMCA copy above.
+    let (guard, file) = crate::workdir::new_temp_file("depoaudio_", "wav")?;
+    let mut writer = std::io::BufWriter::with_capacity(256 * 1024, file);
+    crate::dm::write_wav(src, &dm, &mut writer, &is_cancelled)?;
+    // Read back by this run only: flushed, not sync_all'ed.
+    writer
+        .into_inner()
+        .map_err(|error| format!("Could not write the temporary audio copy: {error}"))?;
+    if is_cancelled() {
+        return Err(AUDIO_PREPARATION_CANCELLED_MESSAGE.into());
+    }
+    Ok((guard, timeline))
+}
+
+fn has_extension(src: &Path, wanted: &str) -> bool {
+    src.extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| extension.eq_ignore_ascii_case(wanted))
 }
 
 pub(crate) fn prepare_audio_feed_with_cancel(
@@ -902,19 +816,20 @@ pub(crate) fn prepare_audio_feed_with_cancel(
     if is_trm_path(src) {
         return prepare_trm_feed(src, options, cancelled);
     }
-    let is_sgmca = src
-        .extension()
-        .and_then(|extension| extension.to_str())
-        .is_some_and(|extension| extension.eq_ignore_ascii_case("sgmca"));
-    if !is_sgmca {
+    if has_extension(src, "dm") {
+        let (guard, timeline) = demux_dm_with_cancel(src, cancelled)?;
+        let mut prepared = AudioFeed::plain(guard.path.clone());
+        prepared.dm_timeline = Some(timeline);
+        prepared._guards.push(guard);
+        return Ok(prepared);
+    }
+    if !has_extension(src, "sgmca") {
         return Ok(AudioFeed::plain(src.to_path_buf()));
     }
 
-    let (feed, is_temp) = strip_sgmca_header_with_cancel(src, cancelled)?;
-    let mut prepared = AudioFeed::plain(feed.clone());
-    if is_temp {
-        prepared._guards.push(crate::safety::TempFile::new(feed));
-    }
+    let (feed, guard) = strip_sgmca_header_with_cancel(src, cancelled)?;
+    let mut prepared = AudioFeed::plain(feed);
+    prepared._guards.extend(guard);
     Ok(prepared)
 }
 
@@ -929,6 +844,15 @@ pub(crate) async fn prepare_audio_feed_cancellable(
     cancelled: Arc<dyn Fn() -> bool + Send + Sync>,
 ) -> Result<AudioFeed, String> {
     let options = crate::ffmpeg::feed_options(app, &src).await;
+    prepare_audio_feed_with_options(src, options, cancelled).await
+}
+
+/// [`prepare_audio_feed_cancellable`] with the feed options already known.
+pub(crate) async fn prepare_audio_feed_with_options(
+    src: PathBuf,
+    options: FeedOptions,
+    cancelled: Arc<dyn Fn() -> bool + Send + Sync>,
+) -> Result<AudioFeed, String> {
     tauri::async_runtime::spawn_blocking(move || {
         prepare_audio_feed_with_cancel(&src, options, Some(cancelled.as_ref()))
     })
@@ -947,11 +871,7 @@ pub(crate) async fn prepare_audio_feed_after_native_failure(
         native_ftr: true,
         native_failed: true,
     };
-    tauri::async_runtime::spawn_blocking(move || {
-        prepare_audio_feed_with_cancel(&src, options, Some(cancelled.as_ref()))
-    })
-    .await
-    .map_err(|error| format!("Audio preparation task failed: {error}"))?
+    prepare_audio_feed_with_options(src, options, cancelled).await
 }
 
 // ── Output format helpers ─────────────────────────────────────────────────────
@@ -1241,6 +1161,7 @@ mod tests {
             trm: None,
             channels_per_input: 1,
             trm_inspection_error: None,
+            dm_timeline: None,
             _guards: Vec::new(),
             _channel_dir: None,
         };
@@ -1305,6 +1226,7 @@ mod tests {
             input_codec: feed.input_codec.clone(),
             trm: None,
             trm_inspection_error: None,
+            dm_timeline: None,
             _guards: Vec::new(),
             _channel_dir: None,
         };
@@ -1438,8 +1360,18 @@ mod tests {
         assert_eq!(feed.trm().unwrap().decode_path, crate::trm::DecodePath::Deinterleaved);
         let folder = feed.inputs[0].parent().unwrap().to_path_buf();
         assert!(feed.inputs.iter().all(|input| input.parent() == Some(folder.as_path())));
-        assert!(is_channel_dir_name(&folder.file_name().unwrap().to_string_lossy()));
-        assert_eq!(folder.parent(), Some(std::env::temp_dir().as_path()));
+        assert!(folder
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .starts_with(CHANNEL_DIR_PREFIX));
+        // In this run's private work folder (workdir.rs), not the shared
+        // system temporary folder.
+        assert!(folder.starts_with(crate::workdir::tests::test_root()));
+        assert_eq!(
+            crate::workdir::tests::thread_run_files(),
+            [folder.file_name().unwrap().to_string_lossy().to_string()]
+        );
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
@@ -1450,77 +1382,12 @@ mod tests {
             }
         }
         // A second conversion gets a folder of its own.
-        let other = create_channel_dir_in(&std::env::temp_dir()).unwrap();
+        let other = crate::workdir::new_temp_dir(CHANNEL_DIR_PREFIX).unwrap();
         assert_ne!(other.path(), folder);
         drop(other);
         drop(feed);
         assert!(!folder.exists());
-    }
-
-    #[test]
-    fn an_existing_folder_or_link_is_never_reused_for_channel_files() {
-        let dir = ReservationTestDir::new();
-        let made = create_channel_dir_in(dir.path()).unwrap();
-        assert!(made.path().is_dir());
-        // Creation never accepts a folder that is already there.
-        assert!(fs::DirBuilder::new().create(made.path()).is_err());
-        let path = made.path().to_path_buf();
-        drop(made);
-        assert!(!path.exists());
-        // A missing parent is an error, not a folder made elsewhere.
-        assert!(create_channel_dir_in(&dir.path().join("missing")).is_err());
-    }
-
-    #[test]
-    fn the_startup_sweep_removes_only_stale_channel_folders_of_its_own() {
-        let dir = ReservationTestDir::new();
-        let old = std::time::SystemTime::now() - std::time::Duration::from_secs(3 * 24 * 60 * 60);
-        let id = "0123456789abcdef0123456789abcdef";
-        let set_old = |path: &Path| {
-            fs::File::open(path).unwrap().set_modified(old).unwrap();
-        };
-        let stale = create_channel_dir_in(dir.path()).unwrap();
-        let stale_file = stale.path().join(format!("depoaudio_trm_{id}_ch0.aac"));
-        fs::write(&stale_file, b"x").unwrap();
-        set_old(&stale_file);
-        set_old(stale.path());
-        let fresh = create_channel_dir_in(dir.path()).unwrap();
-        let fresh_file = fresh.path().join(format!("depoaudio_trm_{id}_ch0.aac"));
-        fs::write(&fresh_file, b"x").unwrap();
-        set_old(&fresh_file);
-        // Not named as DepoAudio names its folders.
-        let other = dir.path().join("depoaudio_trm_run_notours");
-        fs::create_dir(&other).unwrap();
-        let other_file = other.join(format!("depoaudio_trm_{id}_ch0.aac"));
-        fs::write(&other_file, b"x").unwrap();
-        set_old(&other_file);
-        set_old(&other);
-        #[cfg(unix)]
-        let (open_folder, open_file, link) = {
-            use std::os::unix::fs::PermissionsExt;
-            // A folder others can write to is not one DepoAudio made.
-            let open_folder = dir.path().join(format!("depoaudio_trm_run_{}", "f".repeat(32)));
-            fs::create_dir(&open_folder).unwrap();
-            fs::set_permissions(&open_folder, fs::Permissions::from_mode(0o777)).unwrap();
-            let open_file = open_folder.join(format!("depoaudio_trm_{id}_ch0.aac"));
-            fs::write(&open_file, b"x").unwrap();
-            set_old(&open_file);
-            set_old(&open_folder);
-            // A link named like a folder of DepoAudio's is never followed.
-            let link = dir.path().join(format!("depoaudio_trm_run_{}", "e".repeat(32)));
-            std::os::unix::fs::symlink(&other, &link).unwrap();
-            (open_folder, open_file, link)
-        };
-
-        assert_eq!(sweep_stale_channel_dirs_in(dir.path(), STALE_CHANNEL_FILE_AGE), 1);
-        assert!(!stale_file.exists() && !stale.path().exists());
-        assert!(fresh_file.exists() && other_file.exists());
-        #[cfg(unix)]
-        {
-            assert!(open_file.exists() && open_folder.exists());
-            assert!(fs::symlink_metadata(&link).unwrap().file_type().is_symlink());
-        }
-        drop(fresh);
+        assert!(crate::workdir::tests::thread_run_files().is_empty());
     }
 
     #[test]
@@ -1559,35 +1426,6 @@ mod tests {
     }
 
     #[test]
-    fn the_startup_sweep_removes_only_stale_channel_files() {
-        let dir = ReservationTestDir::new();
-        let old = std::time::SystemTime::now() - std::time::Duration::from_secs(3 * 24 * 60 * 60);
-        let id = "0123456789abcdef0123456789abcdef";
-        let stale = dir.path().join(format!("depoaudio_trm_{id}_ch0.aac"));
-        let fresh = dir.path().join(format!("depoaudio_trm_{id}_ch1.aac"));
-        let other = dir.path().join(format!("depoaudio_trm_{id}_ch2.wav"));
-        let named = dir.path().join("depoaudio_trm_notours_ch0.aac");
-        for path in [&stale, &fresh, &other, &named] {
-            fs::write(path, b"x").unwrap();
-        }
-        for path in [&stale, &other, &named] {
-            fs::File::options()
-                .write(true)
-                .open(path)
-                .unwrap()
-                .set_modified(old)
-                .unwrap();
-        }
-        assert_eq!(sweep_stale_channel_files_in(dir.path(), STALE_CHANNEL_FILE_AGE), 1);
-        assert!(!stale.exists());
-        assert!(fresh.exists() && other.exists() && named.exists());
-        assert_eq!(
-            sweep_stale_channel_files_in(&dir.path().join("missing"), STALE_CHANNEL_FILE_AGE),
-            0
-        );
-    }
-
-    #[test]
     fn sgmca_header_strip_rejects_missing_ogg_stream() {
         let dir = ReservationTestDir::new();
         let source = dir.path().join("broken.sgmca");
@@ -1608,10 +1446,32 @@ mod tests {
         bytes.extend_from_slice(&stream);
         fs::write(&source, bytes).unwrap();
 
-        let (prepared, is_temp) = strip_sgmca_header(&source).unwrap();
-        assert!(is_temp);
+        let (prepared, guard) = strip_sgmca_header(&source).unwrap();
+        assert!(guard.is_some());
+        assert!(prepared.starts_with(crate::workdir::tests::test_root()));
         assert_eq!(fs::read(&prepared).unwrap(), stream);
-        fs::remove_file(prepared).unwrap();
+        drop(guard);
+        assert!(!prepared.exists(), "the copy goes with its guard");
+    }
+
+    #[test]
+    fn a_multi_session_sgmca_is_refused_with_or_without_a_header() {
+        let dir = ReservationTestDir::new();
+        let one = crate::sgmca::fixtures::synthetic(50, 312, 0, |_| 30);
+        let segmented = crate::sgmca::fixtures::segmented(&[
+            ("2026-11-22T10:15:30-0500", &one),
+            ("2026-11-22T10:20:00-0500", &one),
+        ]);
+        let mut chained = one.clone();
+        chained.extend_from_slice(&one);
+        for (name, bytes) in [("segmented.sgmca", segmented), ("chained.sgmca", chained)] {
+            let source = dir.path().join(name);
+            fs::write(&source, bytes).unwrap();
+            let error = prepare_audio_feed_with_cancel(&source, FeedOptions::default(), None).unwrap_err();
+            assert!(error.contains("2 recording sessions"), "{name}: {error}");
+        }
+        let entries: Vec<_> = fs::read_dir(dir.path()).unwrap().collect();
+        assert_eq!(entries.len(), 2, "no temporary copy is left beside the sources");
     }
 
     #[test]
@@ -1620,8 +1480,8 @@ mod tests {
         let source = dir.path().join("plain.sgmca");
         fs::write(&source, crate::sgmca::fixtures::synthetic(5, 312, 0, |_| 30)).unwrap();
 
-        let (prepared, is_temp) = strip_sgmca_header(&source).unwrap();
-        assert!(!is_temp);
+        let (prepared, guard) = strip_sgmca_header(&source).unwrap();
+        assert!(guard.is_none());
         assert_eq!(prepared, source);
     }
 
@@ -1652,6 +1512,95 @@ mod tests {
 
         assert_eq!(error, AUDIO_PREPARATION_CANCELLED_MESSAGE);
         assert!(checks.load(Ordering::Relaxed) >= 5);
+        assert!(
+            crate::workdir::tests::thread_run_files().is_empty(),
+            "a cancelled copy is removed"
+        );
+    }
+
+    #[test]
+    fn a_dm_is_detected_by_its_header_and_prepared_as_a_temporary_wav() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let dir = ReservationTestDir::new();
+        let block = vec![3u8; 520];
+        let source = dir.path().join("Session 1.DM");
+        let bytes = crate::dm::tests::dm_bytes(
+            &crate::dm::tests::gsm_format(),
+            520,
+            &[(1_763_800_000, &block), (0, &block), (1_763_800_001, &block)],
+        );
+        fs::write(&source, &bytes).unwrap();
+        let format = detect_format_for_path(&source.to_string_lossy()).unwrap();
+        assert_eq!(format.key, "digitalcat");
+        assert_eq!(format.handler, "digitalcat");
+        // A path that cannot be read keeps the extension's answer.
+        assert_eq!(detect_format_by_extension("missing.dm").unwrap().key, "digitalcat");
+        assert_eq!(
+            detect_format_for_path("/no/such/dir/missing.dm").unwrap().key,
+            "digitalcat"
+        );
+
+        let prepared = prepare_audio_feed_with_cancel(&source, FeedOptions::default(), None).unwrap();
+        assert_ne!(prepared.path(), source);
+        assert!(prepared.path().starts_with(crate::workdir::tests::test_root()));
+        assert_eq!(prepared.path().extension().unwrap(), "wav");
+        let wav = fs::read(prepared.path()).unwrap();
+        assert_eq!(&wav[..4], b"RIFF");
+        assert_eq!(&wav[8..16], b"WAVEfmt ");
+        let timeline = prepared.dm_timeline().cloned().unwrap();
+        assert_eq!(timeline.blocks_erased, 1);
+        let feed = prepared.path().to_path_buf();
+        drop(prepared);
+        assert!(!feed.exists(), "the temporary WAV goes with its guard");
+        assert_eq!(fs::read(&source).unwrap(), bytes, "the original is only read");
+
+        let checks = AtomicUsize::new(0);
+        let cancelled = || checks.fetch_add(1, Ordering::Relaxed) >= 2;
+        let error = prepare_audio_feed_with_cancel(&source, FeedOptions::default(), Some(&cancelled)).unwrap_err();
+        assert_eq!(error, AUDIO_PREPARATION_CANCELLED_MESSAGE);
+        assert!(
+            crate::workdir::tests::thread_run_files().is_empty(),
+            "nothing is left after success or cancellation"
+        );
+
+        // A .dm whose every block is recorded over is refused, and leaves
+        // nothing behind.
+        let erased = dir.path().join("erased.dm");
+        fs::write(
+            &erased,
+            crate::dm::tests::dm_bytes(&crate::dm::tests::gsm_format(), 520, &[(0, &block), (0, &block)]),
+        )
+        .unwrap();
+        let error = prepare_audio_feed_with_cancel(&erased, FeedOptions::default(), None)
+            .err()
+            .unwrap();
+        assert!(error.contains("no audio left"), "{error}");
+        assert!(crate::workdir::tests::thread_run_files().is_empty());
+
+        // A copy cut off 300 bytes into its last block still gives the
+        // complete blocks before it, and the queue still gets a duration.
+        let cut = dir.path().join("Session 1 (cut).dm");
+        fs::write(&cut, &bytes[..bytes.len() - 220]).unwrap();
+        let prepared = prepare_audio_feed_with_cancel(&cut, FeedOptions::default(), None).unwrap();
+        let timeline = prepared.dm_timeline().cloned().unwrap();
+        assert_eq!(timeline.blocks_total, 2);
+        assert_eq!(timeline.truncated_tail_bytes, 308);
+        let wav = fs::read(prepared.path()).unwrap();
+        // One kept block (the other is recorded over): 520 bytes of data.
+        assert_eq!(
+            u32::from_le_bytes(wav[wav.len() - 524..wav.len() - 520].try_into().unwrap()),
+            520
+        );
+        drop(prepared);
+        let info = crate::dm::streams_info(&cut).unwrap();
+        assert_eq!(info.dm.unwrap().truncated_tail_bytes, 308);
+        assert!((info.duration_secs.unwrap() - 2560.0 / 11025.0).abs() < 1e-9);
+        assert_eq!(
+            fs::read(&cut).unwrap(),
+            &bytes[..bytes.len() - 220],
+            "the original is only read"
+        );
     }
 
     #[test]

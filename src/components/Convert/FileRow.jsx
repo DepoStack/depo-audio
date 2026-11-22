@@ -13,7 +13,7 @@ import {
   compareTarget,
   isPlayerPlayable,
 } from '../../lib/player'
-import { audioTrackNotice, trmRecordingNotice } from '../../lib/queue'
+import { audioTrackNotice, dmNotice, trmRecordingNotice } from '../../lib/queue'
 
 export default function FileRow({ file, streams, sessionNotice = '', job, onRemove, converting, onOpenInPlayer }) {
   const [expanded, setExpanded] = useState(false)
@@ -25,6 +25,7 @@ export default function FileRow({ file, streams, sessionNotice = '', job, onRemo
   const isRej = file.fmt?.status === 'unsupported'
   const trackNotice = isRej ? '' : audioTrackNotice(streams)
   const recordingNotice = isRej ? '' : trmRecordingNotice(streams)
+  const dmRowNotice = isRej ? '' : dmNotice(streams)
 
   return (
     <div
@@ -66,6 +67,7 @@ export default function FileRow({ file, streams, sessionNotice = '', job, onRemo
             <span className="type-small text-[hsl(var(--text2))] block mt-0.5">{recordingNotice}</span>
           )}
           {sessionNotice && <span className="type-small text-[hsl(var(--text2))] block mt-0.5">{sessionNotice}</span>}
+          {dmRowNotice && <span className="type-small text-[hsl(var(--text2))] block mt-0.5">{dmRowNotice}</span>}
         </div>
         <div className="flex items-center gap-2 shrink-0">
           <StatusChip status={status} />

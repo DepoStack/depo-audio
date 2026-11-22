@@ -1,7 +1,16 @@
 import { useState, useEffect, useRef } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
-import { MODES, FORMATS_OUT, MP3_BITRATES, CH_COLORS, FIXED_OUTPUT_RATES, effectiveOutputRate } from '../../constants'
+import {
+  MODES,
+  FORMATS_OUT,
+  MP3_BITRATES,
+  CH_COLORS,
+  FIXED_OUTPUT_RATES,
+  KEEP_STEREO_ONLY_FORMATS,
+  KEEP_STEREO_ONLY_NOTE,
+  effectiveOutputRate,
+} from '../../constants'
 import { openUrl } from '@tauri-apps/plugin-opener'
 import {
   PRESETS,
@@ -755,6 +764,14 @@ export default function ConvertTab({
                   className="mx-3 mb-3 px-3 py-2 rounded-md border border-warning/30 bg-warning/10 type-small text-foreground"
                 >
                   {OPUS_CATALYST_NOTE}
+                </p>
+              )}
+              {mode === 'keep' && KEEP_STEREO_ONLY_FORMATS.includes(formatOut) && (
+                <p
+                  data-testid="keep-stereo-only-note"
+                  className="mx-3 mb-3 px-3 py-2 rounded-md border border-warning/30 bg-warning/10 type-small text-foreground"
+                >
+                  {KEEP_STEREO_ONLY_NOTE}
                 </p>
               )}
               <div className="flex items-end gap-3 flex-wrap px-3 pb-3">

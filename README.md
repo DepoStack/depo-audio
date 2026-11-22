@@ -103,7 +103,7 @@ Scanning is a bounded, cancellable local analysis pass. FFmpeg performs the sele
 | **SGMCA**                                    | Stenograph · Case CATalyst | ✅ Supported                       |
 | **FTR / TRM / TLL**                          | For The Record             | 🧪 Experimental                    |
 | **BWF**                                      | CourtSmart · Various       | ✅ Supported                       |
-| **DigitalCAT (.dm)**                         | Stenovations               | 🧪 Experimental                    |
+| **DigitalCAT / SoundSync (.dm)**             | Stenovations               | 🧪 Experimental                    |
 | **WAV, MP3, FLAC, M4A, OGG, Opus, WMA, AIF** | Standard                   | ✅ Supported                       |
 | **Video (MP4, MOV, MKV, AVI, WebM)**         | — audio track extracted    | ✅ Supported                       |
 | **Video (MPG, VOB, TS, MTS, M2TS, WMV, ASF)** | — audio track extracted   | ✅ Supported                       |
@@ -127,6 +127,15 @@ chunks are never copied, only noted as present. This has been checked with
 synthetic files and with one sample made by the owner's rebuild tool
 (`scripts/fixtures/trm/vendor-notes-samples/`), not with a recording made by
 FTR.
+
+DigitalCAT / SoundSync `.dm` files: DepoAudio reads the audio inside into a
+temporary WAV for FFmpeg, skips blocks that were recorded over, keeps the
+audio in file order and stops at a short block, where the notes say
+SoundSync's player stops; anything left out is reported. A `.bmf` marker file
+beside it is counted in the export record, without its text. It has been
+tested with synthetic files only, built from owner-supplied notes on the
+layout ([`docs/formats/dm.md`](docs/formats/dm.md)) that have not yet been
+checked against a file SoundSync recorded.
 
 ---
 

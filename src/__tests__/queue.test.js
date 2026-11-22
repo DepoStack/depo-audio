@@ -6,6 +6,7 @@ import {
   TRM_START_BOUNDARY_MISSING,
   audioTrackNotice,
   catJobPaths,
+  dmNotice,
   mergeQueuedFiles,
   partitionQueuePaths,
   reexportConfirmCopy,
@@ -228,5 +229,47 @@ describe('FTR recording notices', () => {
       {},
     )
     expect(trmSessionNotices([{ path: '/case/hearing.wav' }], {})).toEqual({})
+  })
+})
+
+describe('dmNotice', () => {
+  it('says how many recorded-over blocks are skipped', () => {
+    const dm = { blocksErased: 12, stampsMonotonic: true }
+    expect(dmNotice({ streams: [{}], dm })).toBe('12 recorded-over blocks skipped.')
+    expect(dmNotice({ dm: { blocksErased: 1, stampsMonotonic: true } })).toBe('1 recorded-over block skipped.')
+  })
+  it('says when stamps go backwards and audio stays in file order, without naming a cause', () => {
+    const backwards = 'Time stamps go backwards in places; the file does not say why. Audio is kept in file order.'
+    expect(dmNotice({ dm: { blocksErased: 0, stampsMonotonic: false } })).toBe(backwards)
+    // The notes say a record-over appends later stamps, so it is not offered as a cause.
+    expect(dmNotice({ dm: { blocksErased: 0, stampsMonotonic: false } })).not.toMatch(/record/i)
+    expect(dmNotice({ dm: { blocksErased: 3, stampsMonotonic: false } })).toBe(
+      `3 recorded-over blocks skipped. ${backwards}`,
+    )
+  })
+  it('says when a file ends partway through a block or reading stopped at a short block', () => {
+    expect(dmNotice({ dm: { blocksErased: 0, stampsMonotonic: true, truncatedTailBytes: 300 } })).toBe(
+      'The file ends partway through a block, so it may not have finished recording or copying; the complete blocks are converted and the incomplete one is left out.',
+    )
+    expect(dmNotice({ dm: { stampsMonotonic: true, shortFinalBlock: true, bytesAfterShortBlock: 4220 } })).toBe(
+      "A short block comes before the end of the file. The format notes say SoundSync's player stops there, and so does DepoAudio: the 4220 bytes after it are not converted.",
+    )
+    expect(dmNotice({ dm: { stampsMonotonic: true, bytesAfterShortBlock: 1 } })).toBe(
+      "A short block comes before the end of the file. The format notes say SoundSync's player stops there, and so does DepoAudio: the byte after it is not converted.",
+    )
+    expect(dmNotice({ dm: { stampsMonotonic: true, shortFinalBlock: true, bytesAfterShortBlock: 0 } })).toBe(
+      "The last block is shorter than the others. The format notes say SoundSync's player does not play it; its whole codec blocks are converted.",
+    )
+    expect(
+      dmNotice({
+        dm: { stampsMonotonic: true, shortFinalBlock: false, bytesAfterShortBlock: 0, truncatedTailBytes: 0 },
+      }),
+    ).toBe('')
+  })
+  it('is empty with nothing to report or no answer', () => {
+    expect(dmNotice({ dm: { blocksErased: 0, stampsMonotonic: true } })).toBe('')
+    expect(dmNotice({ streams: [{}] })).toBe('')
+    expect(dmNotice(null)).toBe('')
+    expect(dmNotice({ dm: { blocksErased: 'many' } })).toBe('')
   })
 })
