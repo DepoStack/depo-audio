@@ -1727,8 +1727,10 @@ mod tests {
             DM_T0 + 2,
             DM_T0 + 30, // pause
             DM_T0 + 30,
-            DM_T0 - 50, // recorded over later, appended at the end
-            DM_T0 - 50,
+            // The record-over that erased blocks 3 and 4: its new blocks are
+            // appended at the end with the later clock (the notes' rule).
+            DM_T0 + 120,
+            DM_T0 + 120,
         ];
         let layout: Vec<(u32, &[u8])> = stamps.iter().zip(&blocks).map(|(s, b)| (*s, b.as_slice())).collect();
         let dm = dir.0.join("synthetic_session.dm");
@@ -1747,7 +1749,10 @@ mod tests {
         let streams = crate::dm::streams_info(&dm).unwrap();
         assert_eq!(streams.streams[0].sample_rate, Some(11025));
         assert_eq!(streams.dm.as_ref().unwrap().blocks_erased, 2);
-        assert!(!streams.dm.as_ref().unwrap().stamps_monotonic);
+        assert!(
+            streams.dm.as_ref().unwrap().stamps_monotonic,
+            "a record-over alone does not make the kept stamps go backwards"
+        );
         assert!((streams.duration_secs.unwrap() - 8.0 * 2756.0 / 11025.0).abs() < 1e-9);
 
         let keep_out = dir.0.join("keep");
@@ -1772,13 +1777,13 @@ mod tests {
         assert_eq!(timeline["blocksTotal"], 10);
         assert_eq!(timeline["blocksErased"], 2);
         assert_eq!(timeline["shortFinalBlock"], false);
-        assert_eq!(timeline["stampsMonotonic"], false);
+        assert_eq!(timeline["stampsMonotonic"], true);
         assert_eq!(
             timeline["segments"],
             serde_json::json!([
                 { "startSample": 0, "firstStampUtc": "2025-11-22T08:26:40Z", "blocks": 4 },
                 { "startSample": 4 * 2756, "firstStampUtc": "2025-11-22T08:27:10Z", "blocks": 2 },
-                { "startSample": 6 * 2756, "firstStampUtc": "2025-11-22T08:25:50Z", "blocks": 2 }
+                { "startSample": 6 * 2756, "firstStampUtc": "2025-11-22T08:28:40Z", "blocks": 2 }
             ])
         );
 

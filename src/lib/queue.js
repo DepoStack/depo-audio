@@ -77,7 +77,7 @@ export function dmNotice(info) {
   const parts = [
     erased ? `${erased} recorded-over ${erased === 1 ? 'block' : 'blocks'} skipped.` : '',
     dm.stampsMonotonic === false
-      ? 'Time stamps go backwards in places (for example after a record-over or a clock change); audio is kept in file order.'
+      ? 'Time stamps go backwards in places; the file does not say why. Audio is kept in file order.'
       : '',
     afterShort
       ? `A short block comes before the end of the file. The format notes say SoundSync's player stops there, and so does DepoAudio: the ${afterShort === 1 ? 'byte' : `${afterShort} bytes`} after it ${afterShort === 1 ? 'is' : 'are'} not converted.`

@@ -84,24 +84,41 @@ pub(crate) struct WaveFormat {
 
 impl WaveFormat {
     /// Samples (per channel) in one `block_align` codec block, where the
-    /// format makes it knowable.
+    /// format makes it knowable. These are the counts FFmpeg's decoders
+    /// produce, worked out from the block alignment, channels and bits the
+    /// same way they do; the header's `wSamplesPerBlock` field is not used
+    /// for the count (FFmpeg ignores it too), and a disagreeing field is
+    /// reported as a warning when the file is read.
     pub(crate) fn samples_per_codec_block(&self) -> Option<u32> {
+        let align = u32::from(self.block_align);
+        let channels = u32::from(self.channels);
         match self.format_tag {
             WAVE_FORMAT_PCM
             | WAVE_FORMAT_IEEE_FLOAT
             | WAVE_FORMAT_ALAW
             | WAVE_FORMAT_MULAW
             | WAVE_FORMAT_EXTENSIBLE => Some(1),
-            WAVE_FORMAT_GSM610 => Some(
-                self.samples_per_block_field
-                    .map(u32::from)
-                    .filter(|samples| *samples > 0)
-                    .unwrap_or(GSM_SAMPLES_PER_BLOCK),
-            ),
-            WAVE_FORMAT_ADPCM | WAVE_FORMAT_IMA_ADPCM => self
-                .samples_per_block_field
-                .map(u32::from)
-                .filter(|samples| *samples > 0),
+            // gsm_ms: always two 160-sample frames per 65-byte block.
+            WAVE_FORMAT_GSM610 => Some(GSM_SAMPLES_PER_BLOCK),
+            // adpcm_ms: a 7-byte header per channel holding two samples,
+            // then two samples per byte.
+            WAVE_FORMAT_ADPCM => align
+                .checked_sub(6 * channels)
+                .filter(|_| align >= 7 * channels)
+                .map(|rest| rest * 2 / channels),
+            // adpcm_ima_wav: a 4-byte header per channel holding one sample,
+            // then groups of `chunk` bytes per channel holding `samples`.
+            WAVE_FORMAT_IMA_ADPCM => {
+                let (chunk, samples) = match self.bits_per_sample {
+                    2 => (4, 16),
+                    3 => (12, 32),
+                    4 => (4, 8),
+                    5 => (20, 32),
+                    _ => return None,
+                };
+                let rest = align.checked_sub(4 * channels)?;
+                Some(1 + rest / (chunk * channels) * samples)
+            }
             _ => None,
         }
     }
@@ -242,13 +259,23 @@ fn parse_wave_format(bytes: &[u8], format_size: u32) -> Result<WaveFormat, Strin
     let avg_bytes_per_sec = u32_at(bytes, 8);
     let block_align = u16_at(bytes, 12);
     let bits_per_sample = u16_at(bytes, 14);
-    let cb_size = if format_size >= 18 && bytes.len() >= 18 {
-        u16_at(bytes, 16)
-    } else {
-        0
-    };
-    if format_size >= 18 && 18 + u32::from(cb_size) > format_size {
+    let has_cb_size = format_size >= 18 && bytes.len() >= 18;
+    let cb_size = if has_cb_size { u16_at(bytes, 16) } else { 0 };
+    if has_cb_size && 18 + u32::from(cb_size) > format_size {
         return Err(unrecognized("the audio format's extra bytes do not fit"));
+    }
+    // The notes: the format size is 18 for PCM and 18 + cbSize otherwise. A
+    // 16-byte PCM format (no cbSize) is the older Windows layout and is
+    // taken too. Any other size would leave bytes the format does not
+    // describe between it and the first block.
+    if has_cb_size && 18 + u32::from(cb_size) != format_size {
+        return Err(unrecognized("the audio format's size does not match its extra bytes"));
+    }
+    if format_size < 18 && format_tag != WAVE_FORMAT_PCM {
+        return Err(unrecognized("the audio format is cut short"));
+    }
+    if format_size == 17 {
+        return Err(unrecognized("the audio format is cut short"));
     }
     if format_tag == 0 {
         return Err(unrecognized("no audio format tag"));
@@ -262,11 +289,29 @@ fn parse_wave_format(bytes: &[u8], format_size: u32) -> Result<WaveFormat, Strin
     if avg_bytes_per_sec == 0 || block_align == 0 {
         return Err(unrecognized("no byte rate or block alignment"));
     }
-    if format_tag == WAVE_FORMAT_PCM {
-        let valid_bits = matches!(bits_per_sample, 8 | 16 | 24 | 32);
-        if !valid_bits || u32::from(block_align) != u32::from(channels) * u32::from(bits_per_sample) / 8 {
-            return Err(unrecognized("inconsistent PCM format"));
+    let channels_wide = u32::from(channels);
+    let align = u32::from(block_align);
+    let consistent = match format_tag {
+        WAVE_FORMAT_PCM => {
+            matches!(bits_per_sample, 8 | 16 | 24 | 32) && align == channels_wide * u32::from(bits_per_sample) / 8
         }
+        WAVE_FORMAT_IEEE_FLOAT => {
+            matches!(bits_per_sample, 32 | 64) && align == channels_wide * u32::from(bits_per_sample) / 8
+        }
+        // One byte per sample.
+        WAVE_FORMAT_ALAW | WAVE_FORMAT_MULAW => align == channels_wide,
+        // FFmpeg's gsm_ms decodes mono 65-byte blocks only.
+        WAVE_FORMAT_GSM610 => channels == 1 && block_align == 65,
+        // adpcm_ms needs 4-bit samples and room for each channel's header.
+        WAVE_FORMAT_ADPCM => bits_per_sample == 4 && align >= 7 * channels_wide,
+        // adpcm_ima_wav takes 2 to 5 bits and needs each channel's header.
+        WAVE_FORMAT_IMA_ADPCM => (2..=5).contains(&bits_per_sample) && align > 4 * channels_wide,
+        // WAVEFORMATEXTENSIBLE carries 22 extra bytes.
+        WAVE_FORMAT_EXTENSIBLE => !has_cb_size || cb_size >= 22,
+        _ => true,
+    };
+    if !consistent {
+        return Err(unrecognized("the audio format's fields do not fit together"));
     }
     let samples_per_block_field = (cb_size >= 2 && bytes.len() >= 20).then(|| u16_at(bytes, 18));
     Ok(WaveFormat {
@@ -348,6 +393,22 @@ pub(crate) fn parse_dm_reader<R: Read + Seek>(
             "The header's block size is {block_size} bytes; this audio format usually uses {expected}."
         ));
     }
+    let counted_from_alignment = matches!(
+        header.wave.format_tag,
+        WAVE_FORMAT_GSM610 | WAVE_FORMAT_ADPCM | WAVE_FORMAT_IMA_ADPCM
+    );
+    if let (true, Some(field), Some(decoded)) = (
+        counted_from_alignment,
+        header.wave.samples_per_block_field,
+        header.wave.samples_per_codec_block(),
+    ) {
+        if u32::from(field) != decoded {
+            warnings.push(format!(
+                "The header says {field} samples per codec block; its block alignment gives {decoded}, which is \
+                 what the decoder produces, so DepoAudio counts {decoded}."
+            ));
+        }
+    }
 
     let data_start = header.data_start();
     let stride = 8 + u64::from(block_size);
@@ -379,16 +440,20 @@ pub(crate) fn parse_dm_reader<R: Read + Seek>(
         })?;
         let time = u32_at(&block_header, 0);
         let length = u32_at(&block_header, 4);
+        // A block that claims more bytes than remain is the incomplete tail
+        // whatever length it claims: the notes say SoundSync loads such a
+        // file and stops playing at that block. A damaged length there must
+        // not cost the complete blocks before it.
+        let end = position + 8 + u64::from(length);
+        if end > len {
+            truncated_tail_bytes = len - position;
+            break;
+        }
         if length > block_size {
             return Err(format!(
                 "Block {} of this .dm file has an unexpected length ({length} bytes; blocks are {block_size}).",
                 index + 1
             ));
-        }
-        let end = position + 8 + u64::from(length);
-        if end > len {
-            truncated_tail_bytes = len - position;
-            break;
         }
         stamps.push(time);
         if length < block_size {
@@ -1038,6 +1103,175 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn a_damaged_length_in_the_cut_off_last_block_keeps_every_complete_block() {
+        let block = vec![1u8; 520];
+        let good = dm_bytes(&gsm_format(), 520, &[(T0, &block), (T0, &block), (T0 + 1, &block)]);
+        let third = 36 + 2 * 528;
+        for cut in [third + 8, third + 8 + 100] {
+            let mut bytes = good[..cut].to_vec();
+            bytes[third + 4..third + 8].copy_from_slice(&u32::MAX.to_le_bytes());
+            let dm = parse(&bytes).unwrap();
+            assert_eq!(dm.stamps, vec![T0, T0], "cut {cut}");
+            assert_eq!(dm.truncated_tail_bytes, (cut - third) as u64);
+            assert!(dm.warnings[0].contains("partway through block 3"), "{:?}", dm.warnings);
+        }
+        // The same length on a block the file holds in full is refused.
+        let mut bytes = good.clone();
+        bytes[36 + 528 + 4..36 + 528 + 8].copy_from_slice(&521u32.to_le_bytes());
+        bytes.push(0);
+        let error = parse(&bytes).unwrap_err();
+        assert!(
+            error.contains("Block 2") && error.contains("unexpected length"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn a_format_size_that_does_not_match_the_format_is_refused() {
+        let block = vec![1u8; 520];
+        // 64 extra bytes after a GSM WAVEFORMATEX that says it has 2.
+        let mut padded = gsm_format();
+        padded.extend_from_slice(&[0xEE; 64]);
+        // A GSM format with no cbSize field (16 bytes), and a 17-byte PCM one.
+        let short_gsm = gsm_format()[..16].to_vec();
+        let mut odd_pcm = pcm_format(8000)[..16].to_vec();
+        odd_pcm.push(0);
+        for (name, format) in [
+            ("trailing bytes", padded),
+            ("non-PCM without cbSize", short_gsm),
+            ("17-byte format", odd_pcm),
+        ] {
+            let bytes = dm_bytes(&format, 520, &[(T0, &block)]);
+            let error = parse(&bytes).unwrap_err();
+            assert!(error.starts_with(DM_HEADER_UNRECOGNIZED), "{name}: {error}");
+            assert!(!looks_like_dm(&bytes), "{name}");
+        }
+        // A 16-byte PCM format (the older layout) and an 18-byte one are taken.
+        for format in [pcm_format(8000)[..16].to_vec(), pcm_format(8000)] {
+            let dm = parse(&dm_bytes(&format, 4000, &[(T0, &[0u8; 4000])])).unwrap();
+            assert_eq!(dm.header.data_start(), 16 + format.len() as u64);
+        }
+    }
+
+    #[test]
+    fn formats_ffmpeg_cannot_decode_are_refused_with_the_plain_message() {
+        let block = vec![1u8; 2000];
+        let gsm = |channels: u16, align: u16| {
+            wave_format_bytes(
+                WAVE_FORMAT_GSM610,
+                channels,
+                11025,
+                2239,
+                align,
+                0,
+                &320u16.to_le_bytes(),
+            )
+        };
+        let cases = [
+            ("GSM block alignment 1", gsm(1, 1), 520),
+            ("GSM block alignment 2", gsm(1, 2), 520),
+            ("GSM stereo", gsm(2, 65), 520),
+            (
+                "A-law alignment 2 for mono",
+                wave_format_bytes(WAVE_FORMAT_ALAW, 1, 8000, 8000, 2, 8, &[]),
+                2000,
+            ),
+            (
+                "mu-law alignment 1 for stereo",
+                wave_format_bytes(WAVE_FORMAT_MULAW, 2, 8000, 16000, 1, 8, &[]),
+                2000,
+            ),
+            (
+                "float 16-bit",
+                wave_format_bytes(WAVE_FORMAT_IEEE_FLOAT, 1, 8000, 16000, 2, 16, &[]),
+                2000,
+            ),
+            (
+                "MS ADPCM 8-bit",
+                wave_format_bytes(WAVE_FORMAT_ADPCM, 1, 8000, 4096, 256, 8, &500u16.to_le_bytes()),
+                512,
+            ),
+            (
+                "MS ADPCM block smaller than its header",
+                wave_format_bytes(WAVE_FORMAT_ADPCM, 1, 8000, 4096, 4, 4, &2u16.to_le_bytes()),
+                512,
+            ),
+            (
+                "IMA ADPCM 8-bit",
+                wave_format_bytes(WAVE_FORMAT_IMA_ADPCM, 1, 8000, 4096, 256, 8, &505u16.to_le_bytes()),
+                512,
+            ),
+            (
+                "IMA ADPCM block no bigger than its header",
+                wave_format_bytes(WAVE_FORMAT_IMA_ADPCM, 1, 8000, 4096, 4, 4, &1u16.to_le_bytes()),
+                512,
+            ),
+            (
+                "extensible with too few extra bytes",
+                wave_format_bytes(WAVE_FORMAT_EXTENSIBLE, 1, 8000, 16000, 2, 16, &[0; 4]),
+                2000,
+            ),
+        ];
+        for (name, format, block_size) in cases {
+            let bytes = dm_bytes(&format, block_size, &[(T0, &block[..block_size as usize])]);
+            let error = parse(&bytes).unwrap_err();
+            assert!(error.starts_with(DM_HEADER_UNRECOGNIZED), "{name}: {error}");
+            assert!(!looks_like_dm(&bytes), "{name}");
+        }
+        // A tag DepoAudio has no checks for is left to FFmpeg.
+        let other = wave_format_bytes(0x00ff, 1, 8000, 8000, 1, 8, &[]);
+        assert!(parse(&dm_bytes(&other, 2000, &[(T0, &[0u8; 2000])])).is_ok());
+    }
+
+    #[test]
+    fn samples_per_codec_block_follow_the_alignment_not_the_header_field() {
+        // GSM with a field of 160: FFmpeg's gsm_ms still gives 320 a block.
+        let format = wave_format_bytes(WAVE_FORMAT_GSM610, 1, 11025, 2239, 65, 0, &160u16.to_le_bytes());
+        let block = vec![1u8; 520];
+        let dm = parse(&dm_bytes(&format, 520, &[(T0, &block), (T0, &block)])).unwrap();
+        assert_eq!(dm.header.wave.samples_per_codec_block(), Some(320));
+        assert_eq!(audio_totals(&dm), (1040, Some(2 * 8 * 320)));
+        assert_eq!(dm.warnings.len(), 1, "{:?}", dm.warnings);
+        assert!(
+            dm.warnings[0].contains("160") && dm.warnings[0].contains("320"),
+            "{:?}",
+            dm.warnings
+        );
+        // The default header says 320 and gets no warning.
+        let dm = parse(&dm_bytes(&gsm_format(), 520, &[(T0, &block)])).unwrap();
+        assert!(dm.warnings.is_empty(), "{:?}", dm.warnings);
+
+        let ms = |channels: u16, align: u16, field: u16| {
+            let format = wave_format_bytes(WAVE_FORMAT_ADPCM, channels, 8000, 4096, align, 4, &field.to_le_bytes());
+            parse_wave_format(&format, format.len() as u32)
+                .unwrap()
+                .samples_per_codec_block()
+        };
+        assert_eq!(ms(1, 256, 500), Some(500));
+        assert_eq!(ms(1, 256, 9), Some(500));
+        assert_eq!(ms(2, 512, 500), Some(500));
+        assert_eq!(ms(1, 1024, 2036), Some(2036));
+        let ima = |channels: u16, align: u16, bits: u16| {
+            let format = wave_format_bytes(
+                WAVE_FORMAT_IMA_ADPCM,
+                channels,
+                8000,
+                4096,
+                align,
+                bits,
+                &7u16.to_le_bytes(),
+            );
+            parse_wave_format(&format, format.len() as u32)
+                .unwrap()
+                .samples_per_codec_block()
+        };
+        assert_eq!(ima(1, 256, 4), Some(505));
+        assert_eq!(ima(2, 512, 4), Some(505));
+        assert_eq!(ima(1, 1024, 4), Some(2041));
+        assert_eq!(ima(1, 256, 3), Some(1 + 21 * 32));
+    }
+
+    #[test]
     fn a_file_with_no_complete_block_is_refused() {
         let block = vec![1u8; 520];
         let good = dm_bytes(&gsm_format(), 520, &[(T0, &block)]);
@@ -1207,7 +1441,7 @@ pub(crate) mod tests {
             (T0 + 3, &block[..]),  // +2 s: same segment
             (T0 + 60, &block[..]), // pause
             (T0 + 61, &block[..]),
-            (T0 - 100, &block[..]), // recorded over, appended at the end
+            (T0 - 100, &block[..]), // a clock set back
         ];
         let dm = parse(&dm_bytes(&gsm_format(), 520, &blocks)).unwrap();
         let timeline = build_timeline(&dm);

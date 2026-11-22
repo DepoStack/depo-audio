@@ -228,6 +228,24 @@ export function buildDm(fmt, data) {
   return Buffer.concat(parts)
 }
 
+// Samples per codec block as FFmpeg's decoders count them (dm.rs does the
+// same): from the block alignment, not the header's wSamplesPerBlock field.
+export function dmSamplesPerCodecBlock(fmt) {
+  const tag = fmt.readUInt16LE(0)
+  const channels = fmt.readUInt16LE(2)
+  const align = fmt.readUInt16LE(12)
+  const bits = fmt.readUInt16LE(14)
+  if ([1, 3, 6, 7, 0xfffe].includes(tag)) return 1
+  if (tag === 0x31) return 320
+  if (tag === 2) return align >= 7 * channels ? Math.floor(((align - 6 * channels) * 2) / channels) : 0
+  if (tag === 0x11) {
+    const groups = { 2: [4, 16], 3: [12, 32], 4: [4, 8], 5: [20, 32] }[bits]
+    if (!groups || align < 4 * channels) return 0
+    return 1 + Math.floor((align - 4 * channels) / (groups[0] * channels)) * groups[1]
+  }
+  return 0
+}
+
 // Read a .dm into the WAV layout dm.rs writes: its WAVEFORMATEX as `fmt `
 // (padded to even), a `fact` chunk for formats outside the PCM family when
 // the samples are countable, and the blocks that are not recorded over, in
@@ -248,17 +266,16 @@ export function demuxDm(buffer) {
     if (at + 8 > buffer.length) break
     const stamp = buffer.readUInt32LE(at)
     const length = buffer.readUInt32LE(at + 4)
-    if (length > blockSize) throw new Error('bad .dm block')
+    // A block claiming more than remains is the incomplete tail, whatever it claims.
     if (at + 8 + length > buffer.length) break
+    if (length > blockSize) throw new Error('bad .dm block')
     if (stamp !== 0) kept.push(buffer.subarray(at + 8, at + 8 + length - (length % align)))
     at += 8 + length
     if (length < blockSize) break
   }
   if (kept.length === 0 && at === 16 + formatSize) throw new Error('.dm has no complete block')
   const data = Buffer.concat(kept)
-  const cbSize = formatSize >= 18 ? fmt.readUInt16LE(16) : 0
-  const samplesField = cbSize >= 2 && formatSize >= 20 ? fmt.readUInt16LE(18) : 0
-  const samplesPerBlock = { 6: 1, 7: 1, 0x31: samplesField || 320 }[tag] ?? samplesField
+  const samplesPerBlock = dmSamplesPerCodecBlock(fmt)
   const pcmFamily = [1, 3, 0xfffe].includes(tag)
   const fact = !pcmFamily && samplesPerBlock > 0 ? Buffer.alloc(12) : Buffer.alloc(0)
   if (fact.length) {

@@ -102,9 +102,10 @@ describe('dmNotice', () => {
     expect(dmNotice({ dm: { blocksErased: 1, stampsMonotonic: true } })).toBe('1 recorded-over block skipped.')
   })
   it('says when stamps go backwards and audio stays in file order, without naming a cause', () => {
-    const backwards =
-      'Time stamps go backwards in places (for example after a record-over or a clock change); audio is kept in file order.'
+    const backwards = 'Time stamps go backwards in places; the file does not say why. Audio is kept in file order.'
     expect(dmNotice({ dm: { blocksErased: 0, stampsMonotonic: false } })).toBe(backwards)
+    // The notes say a record-over appends later stamps, so it is not offered as a cause.
+    expect(dmNotice({ dm: { blocksErased: 0, stampsMonotonic: false } })).not.toMatch(/record/i)
     expect(dmNotice({ dm: { blocksErased: 3, stampsMonotonic: false } })).toBe(
       `3 recorded-over blocks skipped. ${backwards}`,
     )

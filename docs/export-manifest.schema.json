@@ -46,7 +46,7 @@
             "lastBlockBytesDropped": { "type": "integer", "minimum": 0, "description": "Bytes at the end of a kept short last block that were less than one whole codec block and were left out." },
             "bytesAfterShortBlock": { "type": "integer", "minimum": 0, "description": "Bytes of the file after a short block that is not at the end of the file. The format notes say SoundSync's player stops at a short block, and SoundSync finds blocks (including the ones it marks as recorded over) by their fixed spacing, which a short block breaks; so these bytes were not read as blocks and are not in the audio. warnings names the short block." },
             "truncatedTailBytes": { "type": "integer", "minimum": 0, "description": "Bytes at the end of the file after the last complete block: a block the file ends partway through (for example a recording or copy that did not finish). They were left out of the audio." },
-            "stampsMonotonic": { "type": "boolean", "description": "False when a later block has an earlier stamp than the block before it. Only that is observed, not the cause: the layout notes give record-over (newer blocks appended at the end) as one, and a recorder clock set back during the session gives the same stamps." },
+            "stampsMonotonic": { "type": "boolean", "description": "False when a later block has an earlier stamp than the block before it. Only that is observed, not the cause; the file does not say why. A recorder clock set back during the session would do it. Recorded-over blocks (stamp 0) are skipped in this comparison, and the layout notes say a record-over appends its new blocks with later stamps, so a record-over alone does not set this false." },
             "segments": {
               "type": "array",
               "description": "Runs of kept blocks, in file order. A new segment starts where a stamp moves forward by more than 2 seconds (a pause) or moves backwards.",
@@ -71,8 +71,7 @@
               "properties": {
                 "status": { "enum": ["read", "unreadable", "ambiguous"], "description": "read: its FileInfo stream was read. unreadable: see problem. ambiguous: several files have the name in different letter case and none is the all lower-case name SoundSync writes, so none was read." },
                 "fileName": { "type": ["string", "null"] },
-                "sizeBytes": { "type": ["integer", "null"], "minimum": 0 },
-                "sha256": { "type": ["string", "null"], "pattern": "^[0-9a-f]{64}$" },
+                "sizeBytes": { "type": ["integer", "null"], "minimum": 0, "description": "The marker file's size. No hash of it is recorded: the file is mostly its marker text, so a hash would let a reader confirm a guess at that text. Null when the name is a link, which is not followed." },
                 "entries": { "type": ["integer", "null"], "minimum": 0, "description": "Bookmark entries in the FileInfo stream." },
                 "entriesWithText": { "type": ["integer", "null"], "minimum": 0, "description": "Entries that carry text. The text itself is not recorded." },
                 "entriesInSoundsyncRange": { "type": ["integer", "null"], "minimum": 0, "description": "Entries SoundSync would keep on opening the file: positions from 0 to its timeline length (the sound bytes its loader counts divided by the byte rate, in whole seconds, times 1000 ms)." },

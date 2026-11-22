@@ -21,7 +21,7 @@ All numbers are little-endian. There is no magic number and no checksum.
 | ------ | ----------- | ------------ | ------------------------------------------------------------------------------------------------------------------------------------ |
 | 0      | 4           | version      | Written as 1. SoundSync does not check it, and neither does DepoAudio.                                                               |
 | 4      | 4           | header size  | Size of the two fields that follow. Always 8; SoundSync does not check it. DepoAudio refuses any other value.                        |
-| 8      | 4           | format size  | Bytes of the audio format that follow the header: 18 for PCM, 18 + extra size otherwise (20 for GSM). DepoAudio takes 16 to 1 MiB.   |
+| 8      | 4           | format size  | Bytes of the audio format that follow the header: 18 for PCM, 18 + extra size otherwise (20 for GSM). See "Checks" below.            |
 | 12     | 4           | block size   | Bytes of audio in a full block. DepoAudio takes 1 byte to 16 MiB, whole codec blocks.                                                |
 | 16     | format size | audio format | A Windows WAVEFORMATEX (format tag, channels, sample rate, byte rate, block alignment, bits per sample, extra-size and extra bytes). |
 
@@ -49,9 +49,11 @@ Blocks repeat to the end of the file:
   drops a short block and everything after it.
 - Recording over existing sound sets the stamp of each overwritten block to
   0 (the audio bytes stay in the file) and adds the new blocks at the end of
-  the file, so stamps can go backwards. A recorder clock set back during a
-  session would also make stamps go backwards; the file does not say which
-  happened.
+  the file with the current clock, so they are stamped later than the
+  blocks they replace. Once the zero stamps are skipped, a record-over does
+  not make stamps go backwards. Stamps that do go backwards are recorded
+  without a cause: a recorder clock set back during a session would do it,
+  and the file does not say why.
 - Stamps normally rise by 0 or 1 second per block (a block is about a quarter
   second) and jump during a pause; there is no other pause marker.
 - For a recording, a stamp is the clock time when the block's buffer came
@@ -78,6 +80,31 @@ rate 2239, block alignment 65, two extra bytes holding 320 samples per block.
 The person recording can pick any format Windows offers, such as PCM
 (0x0001), Microsoft ADPCM (0x0002), A-law (0x0006), mu-law (0x0007) and IMA
 ADPCM (0x0011); a WAV import keeps the WAV's format, usually PCM.
+
+## Checks
+
+DepoAudio refuses a header, with the plain "not one DepoAudio recognizes"
+message and nothing converted, unless:
+
+- the format size is 18 + the extra size the format states (a 16-byte PCM
+  format with no extra-size field is also taken), so no bytes the format
+  does not describe sit between it and the first block;
+- the fields fit the format tag the way FFmpeg's decoder needs: PCM and
+  float block alignment is channels × bits ÷ 8; A-law and mu-law use one
+  byte per sample; GSM 6.10 is mono with 65-byte blocks; MS ADPCM has 4-bit
+  samples and room for each channel's 7-byte header; IMA ADPCM has 2 to 5
+  bits and room for each channel's 4-byte header; an extensible format has
+  at least 22 extra bytes.
+
+Other format tags pass these checks and are left to FFmpeg, which reports
+its own error if it cannot decode them.
+
+Samples per codec block, which the export record's sample positions, the
+queue's duration and the temporary WAV's `fact` chunk use, are worked out
+from the block alignment the way FFmpeg's decoders count them: 320 per
+65-byte GSM block, and for ADPCM from the alignment, channels and bits. The
+header's own samples-per-block field is not used for the count; when it
+disagrees, DepoAudio says so in a warning.
 
 ## Marker files (`.bmf`)
 
@@ -125,7 +152,10 @@ keeps audio SoundSync has not deleted:
   DepoAudio cannot tell which later blocks SoundSync meant to erase.
 - **An incomplete block** (the file ends partway through it, as a recording
   or copy that did not finish can) is left out, and every complete block
-  before it is kept; its size is recorded as `truncatedTailBytes`. A file
+  before it is kept; its size is recorded as `truncatedTailBytes`. A block
+  that claims more bytes than remain in the file is treated this way
+  whatever length it claims, as SoundSync loads such a file and stops
+  playing at that block. A file
   with no complete block is refused.
 - **Time stamps** are recorded as stored (`firstStampUtc` for each segment),
   not moved to the start of their block, because the file does not say
@@ -134,7 +164,10 @@ keeps audio SoundSync has not deleted:
 `src-tauri/src/bmf.rs` reads a `.bmf` beside the `.dm` (matched without
 regard to case) and records in `markerFile` only counts: the entries, how
 many carry text, how many SoundSync would keep, and how many point at the
-stamp of a block DepoAudio read. Marker text can hold notes about the case,
+stamp of a block DepoAudio read, and the `.bmf`'s size. No hash of the
+`.bmf` is recorded, because the file is mostly its marker text and a hash
+would let a reader of the record confirm a guess at that text. A `.bmf`
+name that is a link is not followed; it is reported as unreadable. Marker text can hold notes about the case,
 so it is never kept, logged or written to the export record; there is no
 option to include it yet. A `.bmf` that cannot be read is reported and never
 stops a conversion.

@@ -19,7 +19,6 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use serde::Serialize;
-use sha2::{Digest, Sha256};
 
 /// A marker file bigger than this is not read (the notes' own example is
 /// 20 KiB; the compound-file container is mostly padding).
@@ -42,8 +41,10 @@ pub(crate) struct MarkerFileSummary {
     pub status: String,
     /// The marker file's name, without its folder. Null when ambiguous.
     pub file_name: Option<String>,
+    /// The marker file's size. No hash of it is recorded: the file is
+    /// mostly its marker text, so a hash would let a reader of the record
+    /// confirm a guess at that text.
     pub size_bytes: Option<u64>,
-    pub sha256: Option<String>,
     /// Entries in the `FileInfo` stream.
     pub entries: Option<u64>,
     /// Entries with any text (their text is not recorded).
@@ -98,7 +99,9 @@ fn find_beside(dm_path: &Path) -> Lookup {
                 .to_str()
                 .is_some_and(|name| name.eq_ignore_ascii_case(&wanted))
         })
-        .filter(|entry| fs::metadata(entry.path()).is_ok_and(|meta| meta.is_file()))
+        .filter(|entry| {
+            fs::symlink_metadata(entry.path()).is_ok_and(|meta| meta.is_file() || meta.file_type().is_symlink())
+        })
         .map(|entry| entry.path())
         .collect();
     match matches.len() {
@@ -336,17 +339,36 @@ pub(crate) fn block_for_marker(stamps: &[u32], position_ms: i32) -> Option<usize
     stamps.iter().position(|&stamp| stamp == target)
 }
 
-fn unreadable(path: &Path, size: Option<u64>, sha256: Option<String>, problem: &str) -> MarkerFileSummary {
+fn unreadable(path: &Path, size: Option<u64>, problem: &str) -> MarkerFileSummary {
     MarkerFileSummary {
         status: "unreadable".into(),
         file_name: path.file_name().map(|name| name.to_string_lossy().into_owned()),
         size_bytes: size,
-        sha256,
         entries: None,
         entries_with_text: None,
         entries_in_soundsync_range: None,
         entries_matching_a_block: None,
         problem: Some(format!("The marker file could not be read: {problem}.")),
+    }
+}
+
+/// Open `path` for reading and check it is still the file `checked`
+/// describes (on Unix, the same device and inode), so a link swapped in after
+/// the check is not followed.
+fn open_checked(path: &Path, checked: &fs::Metadata) -> std::io::Result<fs::File> {
+    let file = fs::File::open(path)?;
+    let opened = file.metadata()?;
+    #[cfg(unix)]
+    let same = {
+        use std::os::unix::fs::MetadataExt;
+        opened.dev() == checked.dev() && opened.ino() == checked.ino()
+    };
+    #[cfg(not(unix))]
+    let same = opened.is_file() && opened.len() == checked.len();
+    if same {
+        Ok(file)
+    } else {
+        Err(std::io::Error::other("the marker file changed"))
     }
 }
 
@@ -360,7 +382,6 @@ pub(crate) fn summary_beside(dm_path: &Path, dm: &crate::dm::DmFile) -> Option<M
                 status: "ambiguous".into(),
                 file_name: None,
                 size_bytes: None,
-                sha256: None,
                 entries: None,
                 entries_with_text: None,
                 entries_in_soundsync_range: None,
@@ -374,28 +395,39 @@ pub(crate) fn summary_beside(dm_path: &Path, dm: &crate::dm::DmFile) -> Option<M
         }
         Lookup::One(path) => path,
     };
-    let size = fs::metadata(&path).map(|meta| meta.len()).ok();
-    if size.is_none_or(|size| size > MAX_BMF_BYTES) {
+    // A link is not followed: its target could be any file the user can
+    // read, and its size would go into the record.
+    let meta = fs::symlink_metadata(&path).ok();
+    if meta.as_ref().is_some_and(|meta| meta.file_type().is_symlink()) {
         return Some(unreadable(
             &path,
-            size,
             None,
-            "it is larger than 16 MiB or its size is unknown",
+            "it is a link to another file, which DepoAudio does not follow",
         ));
     }
-    let mut bytes = Vec::new();
-    let read = fs::File::open(&path).and_then(|file| file.take(MAX_BMF_BYTES + 1).read_to_end(&mut bytes));
-    if read.is_err() {
-        return Some(unreadable(&path, size, None, "the file could not be opened or read"));
+    let Some(meta) = meta.filter(fs::Metadata::is_file) else {
+        return Some(unreadable(
+            &path,
+            None,
+            "it is not a regular file or its size is unknown",
+        ));
+    };
+    if meta.len() > MAX_BMF_BYTES {
+        return Some(unreadable(&path, Some(meta.len()), "it is larger than 16 MiB"));
     }
-    let sha256: String = Sha256::digest(&bytes)
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect();
+    let mut bytes = Vec::new();
+    let read = open_checked(&path, &meta).and_then(|file| file.take(MAX_BMF_BYTES + 1).read_to_end(&mut bytes));
+    if read.is_err() {
+        return Some(unreadable(
+            &path,
+            Some(meta.len()),
+            "the file could not be opened or read",
+        ));
+    }
     let size = Some(bytes.len() as u64);
     let markers = match compound_stream(&bytes, STREAM_NAME).and_then(|stream| parse_file_info(&stream)) {
         Ok(markers) => markers,
-        Err(problem) => return Some(unreadable(&path, size, Some(sha256), problem)),
+        Err(problem) => return Some(unreadable(&path, size, problem)),
     };
     let range_ms = crate::dm::soundsync_loader_sound_bytes(dm_path, &dm.header)
         .map(|bytes| bytes / u64::from(dm.header.wave.avg_bytes_per_sec.max(1)) * 1000);
@@ -411,7 +443,6 @@ pub(crate) fn summary_beside(dm_path: &Path, dm: &crate::dm::DmFile) -> Option<M
         status: "read".into(),
         file_name: path.file_name().map(|name| name.to_string_lossy().into_owned()),
         size_bytes: size,
-        sha256: Some(sha256),
         entries: Some(markers.positions_ms.len() as u64),
         entries_with_text: Some(markers.with_text),
         entries_in_soundsync_range: kept.as_ref().map(|kept| kept.len() as u64),
@@ -539,10 +570,6 @@ mod tests {
         assert_eq!(summary.status, "read");
         assert_eq!(summary.file_name.as_deref(), Some("tone_gsm.bmf"));
         assert_eq!(summary.size_bytes, Some(20480));
-        assert_eq!(
-            summary.sha256.as_deref(),
-            Some("829b55dc6234ee21d6cd4be40fa99c4b9cd540d775abdc198902203747fb6b8b")
-        );
         assert_eq!(summary.entries, Some(2));
         assert_eq!(summary.entries_with_text, Some(2));
         // 9 × 520 bytes at 2239 bytes a second is 2 whole seconds: 0…2000 ms.
@@ -618,6 +645,48 @@ mod tests {
         fs::write(dir.join("a.bmf"), compound_file("Other", &file_info(&[]))).unwrap();
         let summary = summary_beside(&dm_path, &dm).unwrap();
         assert!(summary.problem.unwrap().contains("no FileInfo"));
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn the_summary_holds_no_hash_of_the_marker_file() {
+        let dm_path = sample("tone_gsm.dm");
+        let dm = crate::dm::parse_dm(&dm_path, &|| false).unwrap();
+        let json = serde_json::to_value(summary_beside(&dm_path, &dm).unwrap()).unwrap();
+        let keys: Vec<&str> = json.as_object().unwrap().keys().map(String::as_str).collect();
+        assert!(
+            !keys.iter().any(|key| key.contains("sha") || key.contains("hash")),
+            "{keys:?}"
+        );
+        let digest = "829b55dc6234ee21d6cd4be40fa99c4b9cd540d775abdc198902203747fb6b8b";
+        assert!(!json.to_string().contains(digest));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_linked_marker_file_is_not_followed() {
+        let dir = std::env::temp_dir().join(format!("depoaudio_bmf_test_{}", uuid::Uuid::new_v4().simple()));
+        fs::create_dir(&dir).unwrap();
+        let block = vec![1u8; 520];
+        let dm_path = dir.join("a.dm");
+        fs::write(
+            &dm_path,
+            crate::dm::tests::dm_bytes(&crate::dm::tests::gsm_format(), 520, &[(1_763_800_000, &block)]),
+        )
+        .unwrap();
+        let dm = crate::dm::parse_dm(&dm_path, &|| false).unwrap();
+        let elsewhere = dir.join("private.txt");
+        fs::write(&elsewhere, vec![b'x'; 12345]).unwrap();
+        std::os::unix::fs::symlink(&elsewhere, dir.join("a.bmf")).unwrap();
+        let summary = summary_beside(&dm_path, &dm).unwrap();
+        assert_eq!(summary.status, "unreadable");
+        assert_eq!(summary.size_bytes, None, "the link's target size is not recorded");
+        assert!(summary.problem.unwrap().contains("link"));
+        // A link to the real marker file is refused the same way.
+        fs::remove_file(dir.join("a.bmf")).unwrap();
+        std::os::unix::fs::symlink(sample("tone_gsm.bmf"), dir.join("a.bmf")).unwrap();
+        let summary = summary_beside(&dm_path, &dm).unwrap();
+        assert_eq!((summary.status.as_str(), summary.entries), ("unreadable", None));
         fs::remove_dir_all(&dir).unwrap();
     }
 
