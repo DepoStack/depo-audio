@@ -59,6 +59,7 @@ async function importText(text, name = 'C:\\transcripts\\day1.srt') {
 }
 
 const lines = () => screen.getAllByRole('option')
+const openTiming = async () => fireEvent.click(await screen.findByRole('button', { name: 'Timing and sync' }))
 
 describe('Transcript proofing', () => {
   it('invites the person to proof an existing transcript', () => {
@@ -98,6 +99,7 @@ describe('Transcript proofing', () => {
     const { rerender } = renderPanel({ currentTime: 6 })
     await importText(SRT)
     await waitFor(() => expect(lines()[1]).toHaveAttribute('aria-current', 'true'))
+    await openTiming()
     fireEvent.click(screen.getByRole('button', { name: 'Move lines 0.5 seconds later' }))
     fireEvent.click(screen.getByRole('button', { name: 'Move lines 0.5 seconds later' }))
     expect(screen.getByText('Transcript is ahead by 1.0 s')).toBeVisible()
@@ -125,6 +127,7 @@ describe('Transcript proofing', () => {
     renderPanel({ currentTime: 12.5 })
     await importText(SRT)
     fireEvent.focus((await screen.findAllByRole('option'))[2])
+    await openTiming()
     fireEvent.click(screen.getByRole('button', { name: 'Set row 3 to now' }))
     expect(screen.getByText('Transcript is ahead by 2.5 s')).toBeVisible()
     expect(screen.getByRole('status')).toHaveTextContent('Set row 3 to play from 0:00:12.')
@@ -267,6 +270,7 @@ describe('Transcript proofing', () => {
       JSON.stringify([{ id: 'a', start: 10 * 3600, speaker: '', text: 'Broadcast timecode' }]),
     )
     const { onPlayFrom } = renderPanel()
+    fireEvent.click(screen.getByRole('button', { name: 'Timing and sync' }))
     expect(screen.getByRole('button', { name: 'time into recording' })).toHaveAttribute('aria-pressed', 'true')
     expect(screen.queryByLabelText('Recording started at')).not.toBeInTheDocument()
     fireEvent.click(lines()[0])
@@ -350,5 +354,57 @@ describe('Transcript proofing', () => {
     expect(JSON.parse(localStorage.getItem(storageKey(other)))[0].text).toBe('Keep me')
     expect(screen.getByText('Proof a transcript against this recording')).toBeVisible()
     expect(fileMocks.writeTextFile).not.toHaveBeenCalled()
+  })
+
+  it('keeps the timing settings behind one disclosure, with the shift still in view', async () => {
+    renderPanel({ currentTime: 6 })
+    await importText(SRT)
+    const timing = await screen.findByRole('button', { name: 'Timing and sync' })
+    expect(timing).toHaveAttribute('aria-expanded', 'false')
+    expect(screen.queryByRole('button', { name: 'time into recording' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('group', { name: 'Sync' })).not.toBeInTheDocument()
+    fireEvent.click(timing)
+    expect(timing).toHaveAttribute('aria-expanded', 'true')
+    fireEvent.click(screen.getByRole('button', { name: 'Move lines 0.5 seconds later' }))
+    fireEvent.click(timing)
+    // Closed, the shift is still said in the summary row.
+    expect(screen.getByText('Transcript is ahead by 0.5 s')).toBeVisible()
+  })
+
+  it('opens the timing settings while the recording start is needed, and leaves them open after', async () => {
+    renderPanel()
+    await importText(TOD, 'C:\\transcripts\\day1.txt')
+    expect(await screen.findByLabelText('Recording started at')).toBeVisible()
+    expect(screen.queryByRole('button', { name: 'Timing and sync' })).not.toBeInTheDocument()
+    fireEvent.change(screen.getByLabelText('Recording started at'), { target: { value: '9:00:00' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+    expect(screen.getByText('Entered by you.')).toBeVisible()
+    expect(screen.getByRole('button', { name: 'Timing and sync' })).toHaveAttribute('aria-expanded', 'true')
+  })
+
+  it('sets the line text as body copy with a readable measure, and the gutter as labels', async () => {
+    renderPanel()
+    await importText(SRT)
+    const row = (await screen.findAllByRole('option'))[0]
+    expect(row).toHaveClass('text-[14px]')
+    expect(within(row).getByText('Good morning.')).toHaveClass('max-w-[80ch]')
+    expect(within(row).getByText('0:00:01')).toHaveClass('text-[12px]')
+  })
+
+  it('in a pane, shows each flag note in full in a growing field, with a visible remove button', async () => {
+    const pane = document.createElement('div')
+    document.body.appendChild(pane)
+    renderPanel({ flagsContainer: pane })
+    await importText(SRT)
+    fireEvent.keyDown((await screen.findAllByRole('option'))[1], { key: 'f' })
+    const note = within(pane).getByRole('textbox', { name: 'Note for flag on row 2' })
+    expect(note.tagName).toBe('TEXTAREA')
+    const enter = new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true })
+    note.dispatchEvent(enter)
+    expect(enter.defaultPrevented).toBe(true)
+    const remove = within(pane).getByRole('button', { name: 'Remove flag from row 2' })
+    expect(remove).toHaveClass('h-6', 'w-6')
+    expect(remove).not.toHaveClass('opacity-0')
+    pane.remove()
   })
 })

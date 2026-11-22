@@ -1,8 +1,8 @@
-import { useState, useRef, useEffect, useMemo, useId } from 'react'
+import { useState, useRef, useEffect, useLayoutEffect, useMemo, useId } from 'react'
 import { createPortal } from 'react-dom'
 import { open, save } from '@tauri-apps/plugin-dialog'
 import { readTextFile, writeTextFile } from '@tauri-apps/plugin-fs'
-import { Upload, Copy, Check, Flag, Locate, Trash2, Download, X } from 'lucide-react'
+import { Upload, Copy, Check, Flag, Locate, Trash2, Download, X, ChevronDown } from 'lucide-react'
 import { cn } from '../../lib/utils'
 import { basename } from '../../utils'
 import {
@@ -105,10 +105,51 @@ const SUPPORTED_FORMATS = [
   ['Time-stamped text, such as a CAT ASCII export', '.txt, .asc, .ascii'],
 ]
 
+// A flag note in the Player's right pane: a textarea that grows with the
+// note, so the whole note can be read in a narrow pane. Enter does not add a
+// line break (a note is one line in the export).
+function FlagNote({ className, value, ...props }) {
+  const ref = useRef(null)
+  const fit = () => {
+    const el = ref.current
+    // A hidden pane (a closed drawer) has no layout yet: measure when shown.
+    if (!el || !el.clientWidth) return
+    el.style.height = 'auto'
+    el.style.height = `${el.scrollHeight}px`
+  }
+  useLayoutEffect(fit, [value])
+  // Again when the pane is resized or shown, since the wrapping changes.
+  useEffect(() => {
+    const el = ref.current
+    if (!el || typeof ResizeObserver !== 'function') return undefined
+    let width = el.clientWidth
+    const observer = new ResizeObserver(() => {
+      if (el.clientWidth === width) return
+      width = el.clientWidth
+      fit()
+    })
+    observer.observe(el)
+    return () => observer.disconnect()
+  }, [])
+  return (
+    <textarea
+      ref={ref}
+      rows={1}
+      value={value}
+      className={cn('resize-none overflow-hidden', className)}
+      onKeyDown={e => {
+        if (e.key === 'Enter') e.preventDefault()
+      }}
+      {...props}
+    />
+  )
+}
+
 // The card fills the height it is given: the line list takes all the room
-// left under the detection and sync rows and scrolls inside itself. With
-// `flagsContainer` (a DOM node, the Player's right pane), the flags list is
-// shown there instead of under the lines.
+// left under the detection row (and the timing settings, when open) and
+// scrolls inside itself. With `flagsContainer` (a DOM node, the Player's
+// right pane), the flags list is shown there instead of under the lines.
+// `flush` drops the card frame, for a pane that is its own frame.
 export default function Transcript({
   trackPath,
   currentTime,
@@ -119,6 +160,7 @@ export default function Transcript({
   onStorageError,
   onClockChange,
   flagsContainer = null,
+  flush = false,
 }) {
   const [state, setState] = useState(() => loadTrackState(trackPath))
   if (state.path !== trackPath) setState(loadTrackState(trackPath))
@@ -142,6 +184,10 @@ export default function Transcript({
   const [focusIndex, setFocusIndex] = useState(0)
   const [startDraft, setStartDraft] = useState('')
   const [startError, setStartError] = useState('')
+  // The timing settings (what the times mean, the recording start, the sync
+  // shift) are mostly set once, so they sit behind one disclosure.
+  const [timingOpen, setTimingOpen] = useState(false)
+  const timingId = useId()
   const listRef = useRef(null)
   const startId = useId()
   const rowRefs = useRef([])
@@ -189,6 +235,11 @@ export default function Transcript({
   const flags = useMemo(() => flagRows(segments, sync), [segments, sync])
   const timedCount = positions.filter(p => p.own != null).length
   const needsStart = sync.timeKind === 'time-of-day' && sync.recordingStart == null
+  // Open while the start time is needed or was entered wrong, and it stays
+  // open after that until the person closes it.
+  const timingForced = needsStart || Boolean(startError)
+  if (timingForced && !timingOpen) setTimingOpen(true)
+  const timingShown = timingOpen || timingForced
   const firstTimed = segments.find(s => s.start != null)
   const hasTimes = firstTimed != null
   const stampedCount = segments.filter(s => s.start != null).length
@@ -417,7 +468,7 @@ export default function Transcript({
         ? 'bg-secondary text-foreground ring-1 ring-inset ring-foreground'
         : 'text-[hsl(var(--sub))] hover:text-foreground',
     )
-  const gutter = 'w-10 shrink-0 text-right tabular-nums text-[hsl(var(--text2))]'
+  const gutter = 'w-10 shrink-0 text-right text-[12px] tabular-nums text-[hsl(var(--text2))]'
   const smallButton =
     'inline-flex items-center gap-1 rounded border border-border px-1.5 py-0.5 text-[12px] tabular-nums text-foreground hover:bg-secondary disabled:opacity-45'
 
@@ -431,7 +482,7 @@ export default function Transcript({
       aria-label="Flags for review"
       className={cn(inPane ? 'flex flex-col gap-1.5' : 'shrink-0 border-t border-border/60 px-3 py-1')}
     >
-      <div className="flex items-center justify-between gap-2">
+      <div className="flex flex-wrap items-center justify-between gap-x-2 gap-y-1">
         <h3 className="shrink-0 text-[12px] font-medium text-[hsl(var(--text2))]">
           Flags for review{flags.length ? ` (${flags.length})` : ''}
           {!inPane && flags.length > FLAG_ROWS_SHOWN && (
@@ -468,23 +519,32 @@ export default function Transcript({
                 {f.audioTime == null ? '—' : fmtElapsed(f.audioTime)}
               </button>
             )
-            const note = (
+            const noteProps = {
+              'aria-label': `Note for flag on ${f.name}`,
+              placeholder: 'Add a note…',
+              maxLength: MAX_FLAG_NOTE_CHARS,
+              value: f.note,
+              onChange: e => commit({ segments: setFlagNote(segments, f.id, e.target.value) }),
+            }
+            const note = inPane ? (
+              <FlagNote
+                className="min-h-6 min-w-0 flex-1 rounded-none border-0 border-b border-[hsl(var(--sub))] bg-transparent px-0.5 py-0.5 text-[14px] leading-[1.45] text-foreground placeholder:text-[hsl(var(--sub))] focus:border-foreground"
+                {...noteProps}
+              />
+            ) : (
               <input
-                className="h-5 min-w-0 flex-1 rounded-none border-0 border-b border-[hsl(var(--sub))] bg-transparent px-0.5 text-[12px] text-foreground placeholder:text-[hsl(var(--sub))] focus:border-foreground"
-                aria-label={`Note for flag on ${f.name}`}
-                placeholder="Add a note…"
-                maxLength={MAX_FLAG_NOTE_CHARS}
-                value={f.note}
-                onChange={e => commit({ segments: setFlagNote(segments, f.id, e.target.value) })}
+                className="h-6 min-w-0 flex-1 rounded-none border-0 border-b border-[hsl(var(--sub))] bg-transparent px-0.5 text-[12px] text-foreground placeholder:text-[hsl(var(--sub))] focus:border-foreground"
+                {...noteProps}
               />
             )
             const remove = (
               <button
-                className="shrink-0 rounded text-[hsl(var(--sub))] opacity-0 transition-opacity hover:text-destructive group-hover:opacity-100 group-focus-within:opacity-100"
+                className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded text-[hsl(var(--text2))] transition-colors hover:bg-secondary hover:text-destructive"
                 aria-label={`Remove flag from ${f.name}`}
+                title="Remove flag"
                 onClick={() => flagLine(f.index)}
               >
-                <X size={10} />
+                <X size={13} />
               </button>
             )
             const ref = (
@@ -500,7 +560,7 @@ export default function Transcript({
                   <span className="flex-1" />
                   {remove}
                 </div>
-                <span className="text-foreground line-clamp-2 break-words" title={f.excerpt}>
+                <span className="text-[14px] leading-[1.45] text-foreground line-clamp-2 break-words" title={f.excerpt}>
                   {f.excerpt}
                 </span>
                 <div className="flex">{note}</div>
@@ -523,10 +583,13 @@ export default function Transcript({
   )
 
   return (
-    <Card className="flex h-full min-h-0 flex-col">
+    <Card className={cn('@container flex h-full min-h-0 flex-col', flush && 'rounded-none border-0 bg-transparent')}>
       <CardHeader className="shrink-0 py-2">
-        <CardTitle as="h2">Transcript proofing</CardTitle>
-        <div className="flex flex-wrap items-center justify-end gap-1.5">
+        {/* The title gives way (truncates) before the actions wrap. */}
+        <CardTitle as="h2" className="min-w-[5rem] shrink-[4] truncate" title="Transcript proofing">
+          Transcript proofing
+        </CardTitle>
+        <div className="flex min-w-0 flex-wrap items-center justify-end gap-1.5">
           {segments.length > 0 && hasTimes && (
             <button
               onClick={held ? goToPlaying : () => setFollow(f => !f)}
@@ -534,16 +597,25 @@ export default function Transcript({
               title={held ? 'Go back to the line playing now (.)' : 'Keep the line playing now in view'}
               className={pill(following)}
             >
-              <Locate size={11} /> {held ? 'Follow paused: back to playing line' : 'Follow audio'}
+              <Locate size={11} />{' '}
+              {held ? (
+                <span>
+                  <span className="@max-[40rem]:sr-only">Follow paused: </span>back to playing line
+                </span>
+              ) : (
+                'Follow audio'
+              )}
             </button>
           )}
           {hasLines && (
             <>
-              <Button size="sm" variant="ghost" onClick={importFile}>
-                <Upload size={12} /> Open another
+              {/* In a narrow card the labels become icon-only (the name stays for screen readers). */}
+              <Button size="sm" variant="ghost" onClick={importFile} title="Open another transcript">
+                <Upload size={12} /> <span className="@max-[34rem]:sr-only">Open another</span>
               </Button>
-              <Button size="sm" variant="ghost" onClick={copyText}>
-                {copied ? <Check size={12} /> : <Copy size={12} />} {copied ? 'Copied' : 'Copy with times'}
+              <Button size="sm" variant="ghost" onClick={copyText} title="Copy the lines with their times">
+                {copied ? <Check size={12} /> : <Copy size={12} />}{' '}
+                <span className="@max-[34rem]:sr-only">{copied ? 'Copied' : 'Copy with times'}</span>
               </Button>
               <Button
                 size="sm"
@@ -551,6 +623,7 @@ export default function Transcript({
                 className="hover:text-destructive"
                 onClick={() => setConfirmDelete(true)}
                 title="Remove this transcript from DepoAudio"
+                aria-label="Remove this transcript from DepoAudio"
               >
                 <Trash2 size={12} />
               </Button>
@@ -624,8 +697,11 @@ export default function Transcript({
         </div>
       ) : (
         <div className="flex min-h-0 flex-1 flex-col">
-          {/* Detection + sync */}
-          <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 border-b border-border/60 px-3 py-1 text-[12px] text-[hsl(var(--text2))]">
+          {/* Detection, the sync shift, and the timing settings behind one
+              disclosure. The disclosure stays open while the recording start
+              time is still needed, so the lines are never out of step
+              without the person seeing why. */}
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-1 border-b border-border/60 px-3 py-1 text-[12px] text-[hsl(var(--text2))]">
             <span className="min-w-0">
               {detection
                 ? `${detection.name}: ${describeDetection(detection)}`
@@ -636,8 +712,37 @@ export default function Transcript({
                     timeKind: sync.timeKind,
                   })}`}
             </span>
-            {hasTimes && (
-              <span className="inline-flex items-center gap-1" role="group" aria-label="What the times mean">
+            {timedCount > 0 && sync.shift !== 0 && !timingShown && (
+              <span className="tabular-nums font-medium text-foreground" title={shiftTitle}>
+                {shiftLabel}
+              </span>
+            )}
+            {hasTimes && !timingForced && (
+              <button
+                type="button"
+                className={pill(timingShown)}
+                aria-expanded={timingShown}
+                aria-controls={timingId}
+                onClick={() => setTimingOpen(o => !o)}
+              >
+                Timing and sync
+                <ChevronDown size={11} className={cn('transition-transform', timingShown && 'rotate-180')} />
+              </button>
+            )}
+            {/* What the last action did (which line was flagged, and so on), in view. */}
+            <p role="status" aria-live="polite" className="ml-auto font-medium text-foreground">
+              {status}
+            </p>
+          </div>
+
+          {hasTimes && timingShown && (
+            <div
+              id={timingId}
+              role="group"
+              aria-label="Timing and sync"
+              className="flex flex-col gap-1 border-b border-border/60 px-3 py-1.5 text-[12px] text-[hsl(var(--text2))]"
+            >
+              <span className="inline-flex flex-wrap items-center gap-1" role="group" aria-label="What the times mean">
                 <span>Times are</span>
                 <button
                   className={pill(sync.timeKind === 'elapsed')}
@@ -654,80 +759,72 @@ export default function Transcript({
                   time of day
                 </button>
               </span>
-            )}
-            {/* What the last action did (which line was flagged, and so on), in view. */}
-            <p role="status" aria-live="polite" className="ml-auto font-medium text-foreground">
-              {status}
-            </p>
-          </div>
 
-          {sync.timeKind === 'time-of-day' && hasTimes && (
-            <form
-              onSubmit={saveStart}
-              className="flex flex-wrap items-center gap-x-2 gap-y-1 border-b border-border/60 px-3 py-1 text-[12px] text-[hsl(var(--text2))]"
-            >
-              <label htmlFor={startId}>Recording started at</label>
-              {sync.recordingStart != null && !startDraft && (
-                <span className="tabular-nums font-medium text-foreground">{fmtClock(sync.recordingStart)}</span>
+              {sync.timeKind === 'time-of-day' && (
+                <form onSubmit={saveStart} className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                  <label htmlFor={startId}>Recording started at</label>
+                  {sync.recordingStart != null && !startDraft && (
+                    <span className="tabular-nums font-medium text-foreground">{fmtClock(sync.recordingStart)}</span>
+                  )}
+                  <input
+                    id={startId}
+                    className="h-6 w-28 rounded border border-border bg-transparent px-1.5 tabular-nums text-foreground placeholder:text-[hsl(var(--sub))]"
+                    placeholder={sync.recordingStart != null ? 'change' : 'HH:MM:SS'}
+                    value={startDraft}
+                    onChange={e => setStartDraft(e.target.value)}
+                    aria-describedby={`${startId}-help`}
+                    aria-invalid={startError ? true : undefined}
+                  />
+                  <button type="submit" className={smallButton} disabled={!startDraft.trim()}>
+                    Save
+                  </button>
+                  {needsStart && firstTimed && (
+                    <button
+                      type="button"
+                      className={smallButton}
+                      onClick={() => setSync({ recordingStart: firstTimed.start })}
+                    >
+                      Use first line&apos;s time ({fmtClock(firstTimed.start)})
+                    </button>
+                  )}
+                  <span id={`${startId}-help`} className={startError ? 'text-destructive' : ''}>
+                    {startError ||
+                      (needsStart ? 'DepoAudio does not know when this recording started.' : 'Entered by you.')}
+                  </span>
+                </form>
               )}
-              <input
-                id={startId}
-                className="h-6 w-28 rounded border border-border bg-transparent px-1.5 tabular-nums text-foreground placeholder:text-[hsl(var(--sub))]"
-                placeholder={sync.recordingStart != null ? 'change' : 'HH:MM:SS'}
-                value={startDraft}
-                onChange={e => setStartDraft(e.target.value)}
-                aria-describedby={`${startId}-help`}
-                aria-invalid={startError ? true : undefined}
-              />
-              <button type="submit" className={smallButton} disabled={!startDraft.trim()}>
-                Save
-              </button>
-              {needsStart && firstTimed && (
-                <button
-                  type="button"
-                  className={smallButton}
-                  onClick={() => setSync({ recordingStart: firstTimed.start })}
-                >
-                  Use first line&apos;s time ({fmtClock(firstTimed.start)})
-                </button>
-              )}
-              <span id={`${startId}-help`} className={startError ? 'text-destructive' : ''}>
-                {startError ||
-                  (needsStart ? 'DepoAudio does not know when this recording started.' : 'Entered by you.')}
-              </span>
-            </form>
-          )}
 
-          {timedCount > 0 && (
-            <div
-              className="flex flex-wrap items-center gap-x-2 gap-y-1 border-b border-border/60 px-3 py-1 text-[12px] text-[hsl(var(--text2))]"
-              role="group"
-              aria-label="Sync"
-            >
-              <span className="tabular-nums font-medium text-foreground" title={shiftTitle}>
-                {shiftLabel}
-              </span>
-              <button className={smallButton} onClick={() => nudge(-0.5)} aria-label="Move lines 0.5 seconds earlier">
-                −0.5 s
-              </button>
-              <button className={smallButton} onClick={() => nudge(0.5)} aria-label="Move lines 0.5 seconds later">
-                +0.5 s
-              </button>
-              <button
-                className={smallButton}
-                onClick={setLineToNow}
-                title={`Make ${currentName} play from the current audio position`}
-              >
-                Set {currentName} to now
-              </button>
-              {sync.shift !== 0 && (
-                <button className={smallButton} onClick={() => setSync({ shift: 0 })}>
-                  Clear shift
-                </button>
+              {timedCount > 0 && (
+                <div className="flex flex-wrap items-center gap-x-2 gap-y-1" role="group" aria-label="Sync">
+                  <span className="tabular-nums font-medium text-foreground" title={shiftTitle}>
+                    {shiftLabel}
+                  </span>
+                  <button
+                    className={smallButton}
+                    onClick={() => nudge(-0.5)}
+                    aria-label="Move lines 0.5 seconds earlier"
+                  >
+                    −0.5 s
+                  </button>
+                  <button className={smallButton} onClick={() => nudge(0.5)} aria-label="Move lines 0.5 seconds later">
+                    +0.5 s
+                  </button>
+                  <button
+                    className={smallButton}
+                    onClick={setLineToNow}
+                    title={`Make ${currentName} play from the current audio position`}
+                  >
+                    Set {currentName} to now
+                  </button>
+                  {sync.shift !== 0 && (
+                    <button className={smallButton} onClick={() => setSync({ shift: 0 })}>
+                      Clear shift
+                    </button>
+                  )}
+                </div>
               )}
             </div>
           )}
-
           {/* Lines (read-only) */}
           <div
             ref={listRef}
@@ -753,7 +850,8 @@ export default function Transcript({
                   onKeyDown={e => onRowKey(e, index)}
                   title={at == null ? undefined : `Plays from ${fmtElapsed(at)} in the audio`}
                   className={cn(
-                    'group flex cursor-pointer items-start gap-2 rounded px-1.5 py-0.5 text-[12px] leading-snug focus-visible:outline focus-visible:outline-2 focus-visible:outline-foreground',
+                    // Line text is body copy (14px); the gutter and time are labels (12px).
+                    'group flex cursor-pointer items-baseline gap-2 rounded px-1.5 py-0.5 text-[14px] leading-[1.45] focus-visible:outline focus-visible:outline-2 focus-visible:outline-foreground',
                     active
                       ? 'bg-secondary border-l-2 border-l-foreground'
                       : 'border-l-2 border-l-transparent hover:bg-secondary/40',
@@ -763,11 +861,12 @@ export default function Transcript({
                   <span aria-hidden="true" className={gutter}>
                     {lineRef(s, index)}
                   </span>
-                  <span className="w-16 shrink-0 tabular-nums text-[hsl(var(--text2))]">
+                  <span className="w-16 shrink-0 text-[12px] tabular-nums text-[hsl(var(--text2))]">
                     {s.start == null ? '' : sync.timeKind === 'time-of-day' ? fmtClock(s.start) : fmtElapsed(s.start)}
                   </span>
                   {s.speaker && <span className="shrink-0 font-medium text-[hsl(var(--text2))]">{s.speaker}:</span>}
-                  <span className="min-w-0 flex-1 whitespace-pre-wrap break-words text-foreground">{s.text}</span>
+                  {/* A readable measure at any width; the flag sits right after the text. */}
+                  <span className="min-w-0 max-w-[80ch] whitespace-pre-wrap break-words text-foreground">{s.text}</span>
                   {s.flag && <span className="sr-only">, flagged</span>}
                   {/* Mouse only: the keyboard uses F, and the state is read above. */}
                   <span
@@ -778,13 +877,13 @@ export default function Transcript({
                     }}
                     title={s.flag ? 'Remove flag (F)' : 'Flag for review (F)'}
                     className={cn(
-                      'shrink-0 rounded transition-opacity',
+                      '-my-0.5 inline-flex h-6 w-6 shrink-0 items-center justify-center self-start rounded transition-opacity',
                       s.flag
                         ? 'text-foreground'
                         : 'text-[hsl(var(--sub))] opacity-0 group-hover:opacity-100 group-focus:opacity-100 hover:text-foreground',
                     )}
                   >
-                    <Flag size={11} fill={s.flag ? 'currentColor' : 'none'} />
+                    <Flag size={13} fill={s.flag ? 'currentColor' : 'none'} />
                   </span>
                 </div>
               )

@@ -13,15 +13,16 @@ export const LAYOUT_KEY = 'player-layout'
 export const NARROW_BREAKPOINT = 1100
 
 export const PANE_LIMITS = {
-  left: { min: 200, max: 320, initial: 220 },
-  right: { min: 260, max: 380, initial: 280 },
+  left: { min: 160, max: 320, initial: 200 },
+  right: { min: 224, max: 380, initial: 260 },
 }
-// Width of a collapsed side pane (its expand button) and of a splitter.
+// Width of a collapsed side pane (its expand button) and of a splitter. The
+// splitter's pointer target reaches a few pixels past each side of it.
 export const COLLAPSED_WIDTH = 40
 export const SPLITTER_WIDTH = 6
-// The centre never gets less than half the workspace (as long as the side
-// panes are above their minimum).
-export const CENTRE_MIN_SHARE = 0.5
+// The centre gets at least 60% of the workspace (as long as the side panes
+// are above their minimum), so the transcript has most of the room.
+export const CENTRE_MIN_SHARE = 0.6
 export const RESIZE_STEP = 16
 
 export const DEFAULT_LAYOUT = Object.freeze({
@@ -84,15 +85,22 @@ export function isNarrow(width) {
   return Number.isFinite(width) && width < NARROW_BREAKPOINT
 }
 
+const splittersOf = layout => SPLITTER_WIDTH * (Number(layout.leftOpen) + Number(layout.rightOpen))
+const OTHER = { left: 'right', right: 'left' }
+
+// The room both side panes (and the splitters) may take in a workspace
+// `width` pixels wide.
+const sideRoomOf = (layout, width) => Math.max(0, width * (1 - CENTRE_MIN_SHARE) - splittersOf(layout))
+
 // The pixel widths the panes get in a workspace `total` pixels wide. Side
 // panes shrink (towards their minimum) when the centre would otherwise fall
 // below CENTRE_MIN_SHARE, and the centre is never narrower than a side pane.
 export function paneWidths(layout, total) {
   const leftWanted = layout.leftOpen ? clampPane('left', layout.left) : COLLAPSED_WIDTH
   const rightWanted = layout.rightOpen ? clampPane('right', layout.right) : COLLAPSED_WIDTH
-  const splitters = SPLITTER_WIDTH * (Number(layout.leftOpen) + Number(layout.rightOpen))
+  const splitters = splittersOf(layout)
   const width = Number.isFinite(total) && total > 0 ? total : leftWanted + rightWanted + splitters + 640
-  const sideRoom = Math.max(0, width * (1 - CENTRE_MIN_SHARE) - splitters)
+  const sideRoom = sideRoomOf(layout, width)
   let left = leftWanted
   let right = rightWanted
   const over = left + right - sideRoom
@@ -109,4 +117,31 @@ export function paneWidths(layout, total) {
   }
   const centre = Math.max(0, width - left - right - splitters)
   return { left, centre, right }
+}
+
+// The sizes a side pane can really take in a workspace `total` pixels wide,
+// with the other pane as it is shown now: the splitter reports these, so it
+// never offers room the centre would take back.
+export function paneRange(layout, total, side) {
+  const { min, max } = PANE_LIMITS[side]
+  const shown = paneWidths(layout, total)
+  const width = shown.left + shown.centre + shown.right + splittersOf(layout)
+  const room = Math.floor(sideRoomOf(layout, width) - shown[OTHER[side]])
+  return { min, max: Math.max(min, Math.min(max, room)) }
+}
+
+// The layout after the person resizes `side` to `width`. The width is kept
+// inside what the window allows, and the other open pane is saved at the size
+// it is shown, so what is saved is what is on screen (nothing jumps later).
+export function resizeLayout(layout, total, side, width) {
+  const { min, max } = paneRange(layout, total, side)
+  const shown = paneWidths(layout, total)
+  const other = OTHER[side]
+  const otherOpen = other === 'left' ? layout.leftOpen : layout.rightOpen
+  const value = Number(width)
+  return {
+    ...layout,
+    [side]: Math.round(Math.min(max, Math.max(min, Number.isFinite(value) ? value : shown[side]))),
+    [other]: otherOpen ? shown[other] : layout[other],
+  }
 }

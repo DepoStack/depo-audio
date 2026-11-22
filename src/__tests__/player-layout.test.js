@@ -8,8 +8,10 @@ import {
   clampPane,
   isNarrow,
   loadLayout,
+  paneRange,
   paneWidths,
   readLayout,
+  resizeLayout,
   writeLayout,
 } from '../lib/playerLayout'
 
@@ -78,16 +80,43 @@ describe('pane widths', () => {
       const { left, centre, right } = paneWidths(layout, total)
       expect(centre).toBeGreaterThan(left)
       expect(centre).toBeGreaterThan(right)
-      expect(centre).toBeGreaterThanOrEqual(Math.floor(total * (total >= 968 ? 0.5 : 0.45)) - 1)
+      expect(centre).toBeGreaterThan(left + right)
+      expect(centre).toBeGreaterThanOrEqual(Math.floor(total * (total >= 1250 ? 0.6 : 0.55)) - 1)
       expect(left).toBeGreaterThanOrEqual(PANE_LIMITS.left.min)
       expect(right).toBeGreaterThanOrEqual(PANE_LIMITS.right.min)
     }
   })
 
   it('keeps the chosen sizes when there is room, and a thin rail for a collapsed pane', () => {
-    expect(paneWidths(DEFAULT_LAYOUT, 1920)).toMatchObject({ left: 220, right: 280 })
+    expect(paneWidths(DEFAULT_LAYOUT, 1920)).toMatchObject({ left: 200, right: 260 })
     const collapsed = paneWidths({ ...DEFAULT_LAYOUT, leftOpen: false }, 1440)
     expect(collapsed.left).toBe(COLLAPSED_WIDTH)
-    expect(collapsed.centre).toBe(1440 - COLLAPSED_WIDTH - 280 - 6)
+    expect(collapsed.centre).toBe(1440 - COLLAPSED_WIDTH - 260 - 6)
+  })
+
+  it('gives the transcript most of the room at the smallest pane width', () => {
+    // 1160px window less the 192px app navigation
+    const { left, centre, right } = paneWidths(DEFAULT_LAYOUT, 968)
+    expect(centre).toBeGreaterThan(left + right + 2 * 6)
+    expect(centre / 968).toBeGreaterThan(0.55)
+  })
+
+  it('reports the room a pane really has, and saves the sizes shown when one is resized', () => {
+    // 1248px workspace: room for 487px of side panes and splitters
+    const total = 1248
+    expect(paneRange(DEFAULT_LAYOUT, total, 'left')).toEqual({ min: 160, max: 227 })
+    const wider = resizeLayout(DEFAULT_LAYOUT, total, 'left', 999)
+    expect(wider).toMatchObject({ left: 227, right: 260 })
+    expect(paneWidths(wider, total)).toMatchObject({ left: 227, right: 260 })
+    // A squeezed pane: the stored size is above what is shown, and resizing
+    // the other side saves what is shown, so nothing jumps later.
+    const squeezed = { ...DEFAULT_LAYOUT, left: 320, right: 380 }
+    const shown = paneWidths(squeezed, total)
+    const next = resizeLayout(squeezed, total, 'right', shown.right - 16)
+    expect(next.left).toBe(shown.left)
+    expect(paneWidths(next, total)).toMatchObject({ left: shown.left, right: shown.right - 16 })
+    // No room at all: the range is a single size.
+    const tight = paneRange(DEFAULT_LAYOUT, 968, 'left')
+    expect(tight.max).toBe(tight.min)
   })
 })

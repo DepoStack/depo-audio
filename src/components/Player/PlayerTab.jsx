@@ -46,7 +46,15 @@ import Transcript from './Transcript'
 import ListeningMix from './ListeningMix'
 import PaneSplitter from './PaneSplitter'
 import { fmtClock } from '../../lib/transcript'
-import { isNarrow, paneWidths, readLayout, writeLayout, clampPane, SPLITTER_WIDTH } from '../../lib/playerLayout'
+import {
+  isNarrow,
+  paneRange,
+  paneWidths,
+  readLayout,
+  resizeLayout,
+  writeLayout,
+  SPLITTER_WIDTH,
+} from '../../lib/playerLayout'
 import {
   CHANNEL_PROBE_URL,
   createChannelMixer,
@@ -657,24 +665,45 @@ export default function PlayerTab({ dropHandlerRef, onConvertFiles, openRequest,
 
   // ── Pane layout ───────────────────────────────────────────────────────────
   const [layout, setLayout] = useState(initialStorage.layout)
+  const layoutRef = useRef(layout)
   const [narrow, setNarrow] = useState(() => isNarrow(viewportWidth()))
+  const narrowRef = useRef(narrow)
   const [drawer, setDrawer] = useState(null) // 'left' | 'right' in a narrow window
   const [workspaceWidth, setWorkspaceWidth] = useState(() => viewportWidth())
   const [flagsNode, setFlagsNode] = useState(null)
   const [clock, setClockState] = useState({ path: null, start: null })
   const workspaceRef = useRef(null)
   const drawerButtonRefs = useRef({})
+  const drawerRefs = useRef({})
+  // Where the keyboard goes after the panes change shape: a pane toggle
+  // ('toggle:left'), a drawer's first control ('drawer'), or nowhere.
+  const pendingFocusRef = useRef(null)
   const paneBaseId = useId()
   const paneIds = { left: `${paneBaseId}-left`, right: `${paneBaseId}-right` }
   const setClock = (path, start) =>
     setClockState(prev => (prev.path === path && prev.start === start ? prev : { path, start }))
   const clockStart = clock.path === activeTrack?.path ? clock.start : null
 
+  // Crossing the breakpoint (a resize, or zooming in) keeps every pane
+  // mounted (one tree, below), and the keyboard where it was: focus in a side
+  // pane going narrow opens that pane's drawer around it; focus in a drawer
+  // going wide stays in the pane, or moves to the pane's Show button when the
+  // pane is collapsed.
   useEffect(() => {
     const onResize = () => {
       const next = isNarrow(viewportWidth())
+      if (next === narrowRef.current) return
+      narrowRef.current = next
+      const active = document.activeElement
+      const side = ['left', 'right'].find(k => drawerRefs.current[k]?.contains(active))
       setNarrow(next)
-      if (!next) setDrawer(null)
+      if (next) {
+        if (side) setDrawer(side)
+      } else {
+        setDrawer(null)
+        const open = side === 'left' ? layoutRef.current.leftOpen : layoutRef.current.rightOpen
+        if (side && !open) pendingFocusRef.current = `toggle:${side}`
+      }
     }
     window.addEventListener('resize', onResize)
     return () => window.removeEventListener('resize', onResize)
@@ -696,16 +725,19 @@ export default function PlayerTab({ dropHandlerRef, onConvertFiles, openRequest,
   const saveLayout = next => {
     if (!writeLayout(browserStorage(), next)) setStorageError(PLAYER_STORAGE_WARNING)
   }
-  const updateLayout = (patch, save = true) => {
-    setLayout(prev => {
-      const next = { ...prev, ...patch }
-      if (save) saveLayout(next)
-      return next
-    })
+  // The next layout is worked out here, not in a state updater, so saving it
+  // (and the storage warning) happens once, as a plain side effect.
+  const commitLayout = (next, save = true) => {
+    layoutRef.current = next
+    setLayout(next)
+    if (save) saveLayout(next)
   }
-  const resizePane = (side, width, save) => updateLayout({ [side]: clampPane(side, width) }, save)
+  const updateLayout = (patch, save = true) => commitLayout({ ...layoutRef.current, ...patch }, save)
+  const resizePane = (side, width, save) =>
+    commitLayout(resizeLayout(layoutRef.current, workspaceWidth, side, width), save)
 
   const widths = paneWidths(layout, workspaceWidth)
+  const ranges = { left: paneRange(layout, workspaceWidth, 'left'), right: paneRange(layout, workspaceWidth, 'right') }
   const gridColumns = [
     `${widths.left}px`,
     layout.leftOpen ? `${SPLITTER_WIDTH}px` : null,
@@ -721,12 +753,45 @@ export default function PlayerTab({ dropHandlerRef, onConvertFiles, openRequest,
     setDrawer(null)
     if (open) drawerButtonRefs.current[open]?.focus()
   }
-  // Opening a drawer moves the keyboard into it.
+  const openDrawer = side => {
+    pendingFocusRef.current = 'drawer'
+    setDrawer(side)
+  }
+  const closeDrawerRef = useRef(closeDrawer)
+  closeDrawerRef.current = closeDrawer
+
+  // Moves the keyboard after the panes change shape: into a drawer the
+  // person opened, or to the button that now stands for a pane they hid or
+  // showed (the one they pressed is gone).
+  useLayoutEffect(() => {
+    const target = pendingFocusRef.current
+    if (!target) return
+    pendingFocusRef.current = null
+    if (target === 'drawer') {
+      if (drawer) drawerRefs.current[drawer]?.querySelector('button, input, select, textarea, [tabindex="0"]')?.focus()
+      return
+    }
+    const side = target.slice('toggle:'.length)
+    document.querySelector(`[data-pane-toggle="${side}"]`)?.focus()
+  }, [drawer, layout.leftOpen, layout.rightOpen, narrow])
+
+  // Esc closes the open drawer from anywhere inside it. A native listener on
+  // the drawer element, because the flags list is rendered into the drawer
+  // through a portal and React would bubble its key events to the Transcript,
+  // not to the drawer.
   useEffect(() => {
-    if (!drawer) return
-    document.getElementById(paneIds[drawer])?.querySelector('button, input, select, [tabindex="0"]')?.focus()
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- only when a drawer opens
-  }, [drawer])
+    if (!narrow || !drawer) return undefined
+    const el = drawerRefs.current[drawer]
+    if (!el) return undefined
+    const onKey = event => {
+      if (event.key !== 'Escape' || event.defaultPrevented) return
+      event.preventDefault()
+      event.stopPropagation()
+      closeDrawerRef.current()
+    }
+    el.addEventListener('keydown', onKey)
+    return () => el.removeEventListener('keydown', onKey)
+  }, [narrow, drawer])
 
   const iconButton =
     'h-7 w-7 shrink-0 inline-flex items-center justify-center rounded-md text-[hsl(var(--text2))] transition-colors hover:bg-secondary hover:text-foreground'
@@ -756,7 +821,11 @@ export default function PlayerTab({ dropHandlerRef, onConvertFiles, openRequest,
         title={`${open ? 'Hide' : 'Show'} ${name}`}
         aria-expanded={open}
         aria-controls={paneIds[side]}
-        onClick={() => updateLayout(side === 'left' ? { leftOpen: !open } : { rightOpen: !open })}
+        data-pane-toggle={side}
+        onClick={() => {
+          pendingFocusRef.current = `toggle:${side}`
+          updateLayout(side === 'left' ? { leftOpen: !open } : { rightOpen: !open })
+        }}
       >
         <Icon size={15} />
       </button>
@@ -775,7 +844,7 @@ export default function PlayerTab({ dropHandlerRef, onConvertFiles, openRequest,
         className={cn(open && 'bg-secondary text-foreground ring-1 ring-inset ring-foreground')}
         aria-expanded={open}
         aria-controls={paneIds[side]}
-        onClick={() => (open ? closeDrawer() : setDrawer(side))}
+        onClick={() => (open ? closeDrawer() : openDrawer(side))}
       >
         <Icon size={13} /> {side === 'left' ? 'Playlist and bookmarks' : 'Now playing and flags'}
       </Button>
@@ -907,19 +976,25 @@ export default function PlayerTab({ dropHandlerRef, onConvertFiles, openRequest,
     )
   }
 
+  // Inside a pane, content sits flush: the pane edge is the only frame, and
+  // sections are split by a rule.
+  const paneCard = 'rounded-none border-0 bg-transparent'
+
+  // The flags are the output of proofing, so they come straight after the
+  // track and waveform, above the listening mix (which can grow tall).
   const flagsCard = (
-    <Card>
-      <CardContent ref={setFlagsNode} className="p-3" />
+    <Card className={paneCard}>
+      <CardContent ref={setFlagsNode} className="px-4 py-3" />
     </Card>
   )
 
   const nowPlaying = activeTrack && (
-    <Card>
+    <Card className={paneCard}>
       <CardHeader className="py-2">
         <CardTitle as="h2">Now Playing</CardTitle>
         {paneToggle('right')}
       </CardHeader>
-      <CardContent className="p-3 flex flex-col gap-2.5">
+      <CardContent className="px-4 py-3 flex flex-col gap-2.5">
         <div className="flex items-baseline gap-2 min-w-0">
           <span className="w-2 h-2 rounded-full shrink-0 self-center" style={{ background: activeColor }} />
           <span className="text-[14px] font-semibold text-foreground truncate" title={activeTrack.name}>
@@ -950,29 +1025,35 @@ export default function PlayerTab({ dropHandlerRef, onConvertFiles, openRequest,
             <span className="tabular-nums font-medium text-foreground">{fmtClock(clockStart + currentTime)}</span>
           </p>
         )}
-        <ListeningMix
-          volume={volume}
-          onVolume={applyVolume}
-          fileChannels={fileChannels}
-          mixOn={mixOn}
-          onToggleMix={toggleMix}
-          strips={strips}
-          onStrips={setStrips}
-          heardChannels={heardChannels}
-          probeAvailable={probeAvailable}
-          probed={probe.path === activePath}
-          stripsCleared={stripsCleared}
-          stripsFromPreviousCleared={stripsFromPreviousCleared}
-          notice={mixNotice}
-          compact
-        />
       </CardContent>
     </Card>
   )
 
+  const listeningMix = activeTrack && (
+    <div className="flex flex-col gap-2 px-4 py-3 [&>section]:border-t-0 [&>section]:pt-0">
+      <h3 className="type-label text-[hsl(var(--text2))]">Listening mix</h3>
+      <ListeningMix
+        volume={volume}
+        onVolume={applyVolume}
+        fileChannels={fileChannels}
+        mixOn={mixOn}
+        onToggleMix={toggleMix}
+        strips={strips}
+        onStrips={setStrips}
+        heardChannels={heardChannels}
+        probeAvailable={probeAvailable}
+        probed={probe.path === activePath}
+        stripsCleared={stripsCleared}
+        stripsFromPreviousCleared={stripsFromPreviousCleared}
+        notice={mixNotice}
+        compact
+      />
+    </div>
+  )
+
   const leftContent = (
-    <div className="flex flex-col gap-3 p-3">
-      <Card>
+    <div className="flex flex-col divide-y divide-border/60">
+      <Card className={paneCard}>
         <CardHeader>
           <CardTitle>Playlist</CardTitle>
           <div className="flex items-center gap-1">
@@ -1060,7 +1141,7 @@ export default function PlayerTab({ dropHandlerRef, onConvertFiles, openRequest,
 
       {/* Bookmarks for the active track */}
       {activeTrack && (
-        <Card>
+        <Card className={paneCard}>
           <CardHeader>
             <CardTitle>Bookmarks</CardTitle>
             {trackBookmarks.length > 0 && (
@@ -1114,11 +1195,12 @@ export default function PlayerTab({ dropHandlerRef, onConvertFiles, openRequest,
                         }
                       />
                       <button
-                        className="text-[hsl(var(--sub))] opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 hover:text-destructive transition-all shrink-0 rounded"
-                        aria-label="Remove bookmark"
+                        className="-my-0.5 inline-flex h-6 w-6 shrink-0 items-center justify-center rounded text-[hsl(var(--text2))] transition-colors hover:bg-secondary hover:text-destructive"
+                        aria-label={`Remove bookmark at ${fmtTime(b.time)}`}
+                        title="Remove bookmark"
                         onClick={() => setBookmarks(prev => prev.filter(x => x !== b))}
                       >
-                        <X size={10} />
+                        <X size={13} />
                       </button>
                     </div>
                   ))}
@@ -1131,9 +1213,10 @@ export default function PlayerTab({ dropHandlerRef, onConvertFiles, openRequest,
   )
 
   const rightContent = (
-    <div className="flex flex-col gap-3 p-3">
+    <div className="flex flex-col divide-y divide-border/60">
       {nowPlaying}
       {flagsCard}
+      {listeningMix}
     </div>
   )
 
@@ -1149,6 +1232,7 @@ export default function PlayerTab({ dropHandlerRef, onConvertFiles, openRequest,
       onStorageError={setTranscriptStorageError}
       onClockChange={setClock}
       flagsContainer={flagsNode}
+      flush
     />
   )
 
@@ -1160,36 +1244,67 @@ export default function PlayerTab({ dropHandlerRef, onConvertFiles, openRequest,
     </div>
   )
 
-  // Side pane: open (content, scrolling inside itself) or a collapsed rail
-  // with the button that opens it again.
+  // A side pane. Wide: open (content, scrolling inside itself) or a
+  // collapsed rail with the button that opens it again. Narrow: a drawer
+  // over the transcript, shown while it is the open drawer. The element and
+  // its content stay the same either way, so crossing the breakpoint (or
+  // zooming) never remounts the panes or the transcript.
   const sidePane = side => {
-    const content = side === 'left' ? leftContent : rightContent
     const open = side === 'left' ? layout.leftOpen : layout.rightOpen
+    const showContent = narrow || open
     return (
       <aside
         id={paneIds[side]}
+        ref={el => {
+          drawerRefs.current[side] = el
+        }}
         aria-label={PANE_NAMES[side]}
+        hidden={narrow && drawer !== side ? true : undefined}
+        data-drawer={narrow ? 'true' : undefined}
         className={cn(
-          'relative min-h-0 min-w-0 bg-[hsl(var(--surface))]',
-          side === 'left' ? 'border-r border-border/60' : 'border-l border-border/60',
-          open ? 'overflow-y-auto overflow-x-hidden' : 'flex flex-col items-center py-3',
+          'min-h-0 min-w-0 bg-[hsl(var(--surface))]',
+          // An open pane's edge is drawn by its splitter, so only the rail
+          // and the drawer carry a border of their own.
+          (narrow || !open) && (side === 'left' ? 'border-r border-border/60' : 'border-l border-border/60'),
+          narrow
+            ? cn(
+                'absolute inset-y-0 z-20 w-[min(22rem,88%)] overflow-y-auto overflow-x-hidden shadow-xl',
+                side === 'left' ? 'left-0' : 'right-0',
+              )
+            : open
+              ? 'relative overflow-y-auto overflow-x-hidden'
+              : 'relative flex flex-col items-center py-3',
         )}
       >
-        {open ? content : paneToggle(side)}
+        {showContent ? (side === 'left' ? leftContent : rightContent) : paneToggle(side)}
       </aside>
     )
   }
 
+  const splitter = side => (
+    <PaneSplitter
+      side={side}
+      label={side === 'left' ? 'Resize the playlist and bookmarks pane' : 'Resize the now playing and flags pane'}
+      controls={paneIds[side]}
+      value={widths[side]}
+      min={ranges[side].min}
+      max={ranges[side].max}
+      onChange={w => resizePane(side, w, false)}
+      onCommit={w => resizePane(side, w, true)}
+    />
+  )
+
   // ── Workspace: three panes over a fixed transport bar ─────────────────────
+  // One element tree for both layouts; only the containers' styles change.
   return (
     <>
-      {narrow ? (
-        <div
-          className="relative flex min-h-0 flex-1 flex-col overflow-hidden"
-          data-testid="player-workspace"
-          data-layout="narrow"
-        >
-          {notices}
+      <div
+        className="relative flex min-h-0 flex-1 flex-col overflow-hidden"
+        data-testid="player-workspace"
+        data-layout={narrow ? 'narrow' : 'panes'}
+      >
+        {notices}
+        {narrow && (
           <div
             className="shrink-0 flex items-center gap-2 border-b border-border/60 px-3 py-1.5"
             role="toolbar"
@@ -1199,80 +1314,38 @@ export default function PlayerTab({ dropHandlerRef, onConvertFiles, openRequest,
             <span className="flex-1" />
             {drawerButton('right')}
           </div>
-          <div className="relative min-h-0 flex-1">
-            <section aria-label="Transcript" className="h-full min-h-0 overflow-y-auto p-3">
-              {centre}
-            </section>
-            {['left', 'right'].map(side => (
-              <div
-                key={side}
-                id={paneIds[side]}
-                role="region"
-                aria-label={PANE_NAMES[side]}
-                hidden={drawer !== side}
-                onKeyDown={e => {
-                  if (e.key === 'Escape') {
-                    e.preventDefault()
-                    e.stopPropagation()
-                    closeDrawer()
-                  }
-                }}
-                className={cn(
-                  'absolute inset-y-0 z-20 w-[min(22rem,88%)] overflow-y-auto overflow-x-hidden border-border bg-[hsl(var(--surface))] shadow-xl',
-                  side === 'left' ? 'left-0 border-r' : 'right-0 border-l',
-                )}
-              >
-                {side === 'left' ? leftContent : rightContent}
-              </div>
-            ))}
-          </div>
-        </div>
-      ) : (
+        )}
         <div
-          className="flex min-h-0 flex-1 flex-col overflow-hidden"
-          data-testid="player-workspace"
-          data-layout="panes"
+          ref={workspaceRef}
+          className={cn('relative min-h-0 flex-1', !narrow && 'grid')}
+          style={narrow ? undefined : { gridTemplateColumns: gridColumns }}
+          data-testid={narrow ? undefined : 'player-panes'}
         >
-          {notices}
-          <div
-            ref={workspaceRef}
-            className="relative grid min-h-0 flex-1"
-            style={{ gridTemplateColumns: gridColumns }}
-            data-testid="player-panes"
+          {sidePane('left')}
+          {!narrow && layout.leftOpen && splitter('left')}
+          <section
+            aria-label="Transcript"
+            // While a drawer covers it, the transcript is out of reach of
+            // Tab and the pointer, so nothing behind the drawer takes focus.
+            inert={narrow && drawer ? true : undefined}
+            className={cn('relative min-h-0 min-w-0 overflow-y-auto', narrow && 'h-full')}
+            data-testid="player-centre"
           >
-            {sidePane('left')}
-            {layout.leftOpen && (
-              <PaneSplitter
-                side="left"
-                label="Resize the playlist and bookmarks pane"
-                controls={paneIds.left}
-                value={widths.left}
-                onChange={w => resizePane('left', w, false)}
-                onCommit={w => resizePane('left', w, true)}
-              />
-            )}
-            <section
-              aria-label="Transcript"
-              className="relative min-h-0 min-w-0 overflow-y-auto p-3"
-              data-testid="player-centre"
-            >
-              {centre}
-            </section>
-            {layout.rightOpen && (
-              <PaneSplitter
-                side="right"
-                label="Resize the now playing and flags pane"
-                controls={paneIds.right}
-                value={widths.right}
-                onChange={w => resizePane('right', w, false)}
-                onCommit={w => resizePane('right', w, true)}
-              />
-            )}
-            {sidePane('right')}
-          </div>
+            {centre}
+          </section>
+          {!narrow && layout.rightOpen && splitter('right')}
+          {sidePane('right')}
+          {narrow && drawer && (
+            // Clicking outside the drawer closes it.
+            <div
+              aria-hidden="true"
+              data-testid="drawer-scrim"
+              className="absolute inset-0 z-10 bg-[hsl(var(--background)/0.6)]"
+              onClick={closeDrawer}
+            />
+          )}
         </div>
-      )}
-
+      </div>
       {/* ── Persistent transport bar ─────────────────────────────────────── */}
       {activeTrack && (
         <div className="shrink-0 border-t border-border bg-card px-4 md:px-6 py-2.5">
