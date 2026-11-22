@@ -32,6 +32,7 @@ public/fonts/*.txt text eol=lf
 
 # Media, models, installer art, and archives are binary.
 *.dll binary
+*.dm binary
 *.dylib binary
 *.exe binary
 *.icns binary

@@ -11,11 +11,13 @@
 // which writes the audio into a temporary WAV for FFmpeg. FFmpeg never sees a
 // .dm, so the smoke here makes synthetic .dm files in the documented layout
 // (docs/formats/dm.md), reads them into the same WAV layout dm.rs writes, and
-// requires each sidecar to decode that WAV and convert it like the app. The
-// Rust tests check dm.rs itself against FFmpeg on PATH; this checks that the
-// bundled sidecars have the decoders those WAVs need. GSM 6.10, the
-// SoundSync default, has no LGPL encoder in the sidecars, so for GSM only the
-// decoder's presence is checked.
+// requires each sidecar to decode that WAV and convert it like the app.
+// demuxDm below is a JavaScript reading of the layout, not dm.rs itself. To
+// tie the two together, scripts/fixtures/dm holds committed .dm files and the
+// WAV that dm.rs writes for each (a cargo test fails if dm.rs's output
+// changes); the self-test checks that demuxDm gives the same bytes, and the
+// release smoke feeds those dm.rs-written WAVs to each sidecar too, including
+// GSM 6.10 (the SoundSync default), which has no LGPL encoder in the sidecars.
 //
 // Nothing is downloaded and no recording is used: every byte of input is made
 // here. Fixtures live under RUNNER_TEMP and are removed by --clean.
@@ -159,6 +161,16 @@ const DM_SAMPLE_RATE = 11_025
 // left out.
 const DM_ERASED_BLOCK = 1
 const DM_FIRST_STAMP = 1_763_800_000
+// Committed .dm files and the WAV dm.rs writes for each; GOLDEN_DM in
+// src-tauri/src/dm.rs lists the same names.
+const GOLDEN_DM_DIRECTORY = path.resolve(path.dirname(fileURLToPath(import.meta.url)), 'fixtures/dm')
+export const GOLDEN_DM = [
+  { name: 'gsm-default', codec: 'gsm_ms' },
+  { name: 'ima-adpcm-damaged', codec: 'adpcm_ima_wav' },
+  { name: 'adpcm-ms', codec: 'adpcm_ms' },
+  { name: 'mulaw-odd-format', codec: 'pcm_mulaw' },
+  { name: 'pcm-u8-odd', codec: 'pcm_u8' },
+]
 export const DM_FIXTURES = [
   { label: 'DigitalCAT .dm (PCM)', fixture: 'dm-smoke-pcm.dm', encoder: null, codec: 'pcm_s16le' },
   { label: 'DigitalCAT .dm (A-law)', fixture: 'dm-smoke-alaw.dm', encoder: 'pcm_alaw', codec: 'pcm_alaw' },
@@ -219,7 +231,8 @@ export function buildDm(fmt, data) {
 // Read a .dm into the WAV layout dm.rs writes: its WAVEFORMATEX as `fmt `
 // (padded to even), a `fact` chunk for formats outside the PCM family when
 // the samples are countable, and the blocks that are not recorded over, in
-// file order, as `data`. A short last block keeps only whole codec blocks.
+// file order, as `data`. A short block keeps only whole codec blocks, and an
+// incomplete block at the end of the file is left out.
 export function demuxDm(buffer) {
   if (buffer.length < 16 || buffer.readUInt32LE(4) !== 8) throw new Error('not a .dm audio header')
   const formatSize = buffer.readUInt32LE(8)
@@ -231,17 +244,19 @@ export function demuxDm(buffer) {
   const kept = []
   let at = 16 + formatSize
   while (at < buffer.length) {
-    if (at + 8 > buffer.length) throw new Error('.dm ends inside a block header')
+    if (at + 8 > buffer.length) break
     const stamp = buffer.readUInt32LE(at)
     const length = buffer.readUInt32LE(at + 4)
-    if (length === 0 || length > blockSize || at + 8 + length > buffer.length) throw new Error('bad .dm block')
-    const keep = length < blockSize ? length - (length % align) : length
-    if (stamp !== 0) kept.push(buffer.subarray(at + 8, at + 8 + keep))
+    if (length === 0 || length > blockSize) throw new Error('bad .dm block')
+    if (at + 8 + length > buffer.length) break
+    if (stamp !== 0) kept.push(buffer.subarray(at + 8, at + 8 + length - (length % align)))
     at += 8 + length
   }
+  if (kept.length === 0 && at === 16 + formatSize) throw new Error('.dm has no complete block')
   const data = Buffer.concat(kept)
   const cbSize = formatSize >= 18 ? fmt.readUInt16LE(16) : 0
-  const samplesPerBlock = { 6: 1, 7: 1, 0x31: 320 }[tag] ?? (cbSize >= 2 ? fmt.readUInt16LE(18) : 0)
+  const samplesField = cbSize >= 2 && formatSize >= 20 ? fmt.readUInt16LE(18) : 0
+  const samplesPerBlock = { 6: 1, 7: 1, 0x31: samplesField || 320 }[tag] ?? samplesField
   const pcmFamily = [1, 3, 0xfffe].includes(tag)
   const fact = !pcmFamily && samplesPerBlock > 0 ? Buffer.alloc(12) : Buffer.alloc(0)
   if (fact.length) {
@@ -360,6 +375,25 @@ async function checkDm(ffmpeg, ffprobe, tag) {
       await rm(feed, { force: true })
     }
     console.log(`${path.basename(ffmpeg)}: ${entry.label} decodes`)
+  }
+}
+
+// The WAVs dm.rs wrote for the committed .dm files: each sidecar must see the
+// expected codec and decode every sample without error.
+async function checkGoldenDm(ffmpeg, ffprobe) {
+  for (const entry of GOLDEN_DM) {
+    const feed = path.join(GOLDEN_DM_DIRECTORY, `${entry.name}.wav`)
+    await requireFile(feed, `dm.rs-written WAV for ${entry.name}.dm`)
+    const found = streams(ffprobe, feed, `${entry.name}.wav`)
+    if (found.length !== 1 || found[0].codec_name !== entry.codec) {
+      throw new Error(`${entry.name}.wav: expected one ${entry.codec} stream, found ${JSON.stringify(found)}`)
+    }
+    run(
+      ffmpeg,
+      ['-hide_banner', '-v', 'error', '-xerror', '-i', feed, '-map', '0:a:0', '-f', 'null', '-'],
+      `${entry.name}.wav decode`,
+    )
+    console.log(`${path.basename(ffmpeg)}: dm.rs-written ${entry.name}.wav decodes`)
   }
 }
 
@@ -510,6 +544,7 @@ async function check(ffmpegArgument, ffprobeArgument) {
     console.log(`${path.basename(ffmpeg)}: ${container.label} (${container.extensions.join(', ')}) decodes`)
   }
   await checkDm(ffmpeg, ffprobe, tag)
+  await checkGoldenDm(ffmpeg, ffprobe)
 }
 
 async function clean() {
@@ -575,6 +610,18 @@ async function selfTest() {
   const gsm = wavChunks(demuxDm(buildDm(gsmFmt, Buffer.alloc(520 * 3 + 100, 1))))
   assert.equal(gsm.data.length, 520 * 2 + 65, 'erased block dropped, 35 stray bytes dropped')
   assert.throws(() => demuxDm(Buffer.from('RIFF0000WAVEfmt ')), /not a \.dm audio header/u)
+  // demuxDm must give the same bytes dm.rs wrote for every committed fixture.
+  const goldenNames = (await readdir(GOLDEN_DM_DIRECTORY)).filter(name => name.endsWith('.dm')).sort()
+  assert.deepEqual(goldenNames, GOLDEN_DM.map(entry => `${entry.name}.dm`).sort(), 'every golden .dm is listed')
+  for (const entry of GOLDEN_DM) {
+    const written = await readFile(path.join(GOLDEN_DM_DIRECTORY, `${entry.name}.wav`))
+    const ours = demuxDm(await readFile(path.join(GOLDEN_DM_DIRECTORY, `${entry.name}.dm`)))
+    assert.ok(ours.equals(written), `demuxDm and dm.rs disagree on ${entry.name}.dm`)
+  }
+  const goldenSource = await readFile(path.join(repository, 'src-tauri/src/dm.rs'), 'utf8')
+  for (const entry of GOLDEN_DM) {
+    assert.ok(goldenSource.includes(`"${entry.name}",`), `dm.rs GOLDEN_DM lists ${entry.name}`)
+  }
   assert.equal(new Set(DM_FIXTURES.map(entry => entry.fixture)).size, DM_FIXTURES.length)
   const ffmpegBuild = await readFile(path.join(repository, 'scripts/build-ffmpeg-macos.sh'), 'utf8')
   for (const decoder of DM_DECODERS) {

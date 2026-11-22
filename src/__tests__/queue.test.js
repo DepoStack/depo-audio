@@ -101,13 +101,25 @@ describe('dmNotice', () => {
     expect(dmNotice({ streams: [{}], dm })).toBe('12 recorded-over blocks skipped.')
     expect(dmNotice({ dm: { blocksErased: 1, stampsMonotonic: true } })).toBe('1 recorded-over block skipped.')
   })
-  it('says when stamps go backwards and audio stays in file order', () => {
-    expect(dmNotice({ dm: { blocksErased: 0, stampsMonotonic: false } })).toBe(
-      'Parts of this file were recorded over; audio is kept in file order.',
-    )
+  it('says when stamps go backwards and audio stays in file order, without naming a cause', () => {
+    const backwards =
+      'Time stamps go backwards in places (for example after a record-over or a clock change); audio is kept in file order.'
+    expect(dmNotice({ dm: { blocksErased: 0, stampsMonotonic: false } })).toBe(backwards)
     expect(dmNotice({ dm: { blocksErased: 3, stampsMonotonic: false } })).toBe(
-      '3 recorded-over blocks skipped. Parts of this file were recorded over; audio is kept in file order.',
+      `3 recorded-over blocks skipped. ${backwards}`,
     )
+  })
+  it('says when a file ends partway through a block or has short blocks before its end', () => {
+    expect(dmNotice({ dm: { blocksErased: 0, stampsMonotonic: true, truncatedTailBytes: 300 } })).toBe(
+      'The file ends partway through a block, so it may not have finished recording or copying; the complete blocks are converted and the incomplete one is left out.',
+    )
+    expect(dmNotice({ dm: { stampsMonotonic: true, shortBlocksBeforeEnd: 1 } })).toBe(
+      'A short block comes before the end of the file; the audio after it is kept.',
+    )
+    expect(dmNotice({ dm: { stampsMonotonic: true, shortBlocksBeforeEnd: 2 } })).toBe(
+      '2 short blocks come before the end of the file; the audio after them is kept.',
+    )
+    expect(dmNotice({ dm: { stampsMonotonic: true, shortBlocksBeforeEnd: 0, truncatedTailBytes: 0 } })).toBe('')
   })
   it('is empty with nothing to report or no answer', () => {
     expect(dmNotice({ dm: { blocksErased: 0, stampsMonotonic: true } })).toBe('')

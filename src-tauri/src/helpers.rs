@@ -954,6 +954,30 @@ mod tests {
         let cancelled = || checks.fetch_add(1, Ordering::Relaxed) >= 2;
         let error = prepare_audio_feed_with_cancel(&source, Some(&cancelled)).unwrap_err();
         assert_eq!(error, AUDIO_PREPARATION_CANCELLED_MESSAGE);
+
+        // A copy cut off 300 bytes into its last block still gives the
+        // complete blocks before it, and the queue still gets a duration.
+        let cut = dir.path().join("Session 1 (cut).dm");
+        fs::write(&cut, &bytes[..bytes.len() - 220]).unwrap();
+        let prepared = prepare_audio_feed_detailed(&cut, None).unwrap();
+        let timeline = prepared.dm_timeline.clone().unwrap();
+        assert_eq!(timeline.blocks_total, 2);
+        assert_eq!(timeline.truncated_tail_bytes, 308);
+        let wav = fs::read(&prepared.path).unwrap();
+        // One kept block (the other is recorded over): 520 bytes of data.
+        assert_eq!(
+            u32::from_le_bytes(wav[wav.len() - 524..wav.len() - 520].try_into().unwrap()),
+            520
+        );
+        drop(prepared);
+        let info = crate::dm::streams_info(&cut).unwrap();
+        assert_eq!(info.dm.unwrap().truncated_tail_bytes, 308);
+        assert!((info.duration_secs.unwrap() - 2560.0 / 11025.0).abs() < 1e-9);
+        assert_eq!(
+            fs::read(&cut).unwrap(),
+            &bytes[..bytes.len() - 220],
+            "the original is only read"
+        );
     }
 
     #[test]

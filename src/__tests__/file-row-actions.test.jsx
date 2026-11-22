@@ -307,7 +307,7 @@ describe('Compare with original', () => {
 describe('Queued DigitalCAT .dm rows', () => {
   afterEach(cleanup)
 
-  it('say what was recorded over and that audio stays in file order', () => {
+  it('say which blocks were skipped and that audio stays in file order', () => {
     const dm = {
       path: '/case/session.dm',
       name: 'session.dm',
@@ -322,7 +322,7 @@ describe('Queued DigitalCAT .dm rows', () => {
     render(<FileRow file={dm} streams={streams} onRemove={vi.fn()} converting={false} />)
     expect(
       screen.getByText(
-        '12 recorded-over blocks skipped. Parts of this file were recorded over; audio is kept in file order.',
+        '12 recorded-over blocks skipped. Time stamps go backwards in places (for example after a record-over or a clock change); audio is kept in file order.',
       ),
     ).toBeTruthy()
   })

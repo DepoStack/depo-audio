@@ -63,16 +63,27 @@ export function reexportConfirmCopy({ queued, queuedAtOpen, incoming }) {
 
 // Plain notice for a queued DigitalCAT .dm, from probe_audio_streams_cmd's
 // `dm` answer (read from the file's own block headers): how many
-// recorded-over blocks are skipped, and whether stamps run backwards because
-// part of the file was recorded over. Nothing to say, or no answer, means no
-// notice.
+// recorded-over blocks are skipped, whether stamps go backwards somewhere
+// (only that is known, not why), whether short blocks sit before the end, and
+// whether the file ends partway through a block. Nothing to say, or no
+// answer, means no notice.
 export function dmNotice(info) {
   const dm = info?.dm
   if (!dm || typeof dm !== 'object') return ''
-  const erased = Number.isInteger(dm.blocksErased) && dm.blocksErased > 0 ? dm.blocksErased : 0
+  const count = value => (Number.isInteger(value) && value > 0 ? value : 0)
+  const erased = count(dm.blocksErased)
+  const shortBefore = count(dm.shortBlocksBeforeEnd)
   const parts = [
     erased ? `${erased} recorded-over ${erased === 1 ? 'block' : 'blocks'} skipped.` : '',
-    dm.stampsMonotonic === false ? 'Parts of this file were recorded over; audio is kept in file order.' : '',
+    dm.stampsMonotonic === false
+      ? 'Time stamps go backwards in places (for example after a record-over or a clock change); audio is kept in file order.'
+      : '',
+    shortBefore
+      ? `${shortBefore === 1 ? 'A short block comes' : `${shortBefore} short blocks come`} before the end of the file; the audio after ${shortBefore === 1 ? 'it' : 'them'} is kept.`
+      : '',
+    count(dm.truncatedTailBytes)
+      ? 'The file ends partway through a block, so it may not have finished recording or copying; the complete blocks are converted and the incomplete one is left out.'
+      : '',
   ]
   return parts.filter(Boolean).join(' ')
 }

@@ -15,8 +15,11 @@
 //!   marks a block that was recorded over; its audio is stale and skipped.
 //!
 //! Every count read from the file is bounds-checked against the file's size
-//! and fixed caps before anything is allocated, so a truncated or random file
-//! gives an error, never a panic or a huge allocation.
+//! and fixed caps before anything is allocated, so a random file gives an
+//! error, never a panic or a huge allocation. A file that ends partway
+//! through a block (a recording or copy that did not finish) keeps every
+//! complete block before that point; the incomplete block is left out and
+//! reported.
 
 use std::fs;
 use std::io::{BufReader, Read, Seek, SeekFrom, Write};
@@ -45,6 +48,11 @@ pub(crate) const MAX_RECORDED_SEGMENTS: usize = 1000;
 /// segment (a pause). Stamps have one-second resolution and a block lasts
 /// about a quarter second, so 0 or 1 is the normal step.
 const SEGMENT_GAP_SECONDS: u32 = 2;
+/// Short blocks before the last one that DepoAudio still reads. The notes
+/// describe at most one short block, at the end (from a WAV import); a few
+/// more are kept with a warning, and a file with more than this many is
+/// taken not to match the layout.
+const MAX_SHORT_BLOCKS_BEFORE_END: usize = 16;
 
 pub(crate) const WAVE_FORMAT_PCM: u16 = 0x0001;
 pub(crate) const WAVE_FORMAT_ADPCM: u16 = 0x0002;
@@ -152,17 +160,41 @@ impl DmHeader {
     }
 }
 
-/// A parsed `.dm` file: its header and one time stamp per block, in file
-/// order. Every block but the last is `block_size` bytes long, so its offset
-/// follows from its index; the last may be shorter (`final_block_len`).
+/// A parsed `.dm` file: its header and one time stamp per complete block, in
+/// file order. Blocks are `block_size` bytes long except those listed in
+/// `short_blocks`.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct DmFile {
     pub header: DmHeader,
     pub stamps: Vec<u32>,
-    /// Length of the last block when it is shorter than `block_size`.
-    pub final_block_len: Option<u32>,
+    /// `(index, length)` of every block shorter than `block_size`, in file
+    /// order: at most `MAX_SHORT_BLOCKS_BEFORE_END` before the last block,
+    /// and possibly the last block itself.
+    pub short_blocks: Vec<(usize, u32)>,
+    /// Bytes after the last complete block: the start of a block the file
+    /// ends inside of. They are left out of the audio.
+    pub truncated_tail_bytes: u64,
     /// Facts that do not stop the conversion but are worth knowing.
     pub warnings: Vec<String>,
+}
+
+impl DmFile {
+    /// Length in bytes of block `index`'s audio.
+    pub(crate) fn block_len(&self, index: usize) -> u32 {
+        match self.short_blocks.binary_search_by_key(&index, |&(at, _)| at) {
+            Ok(found) => self.short_blocks[found].1,
+            Err(_) => self.header.block_size,
+        }
+    }
+
+    /// Length of the last block when it is shorter than `block_size`.
+    pub(crate) fn final_block_len(&self) -> Option<u32> {
+        let last = self.stamps.len().checked_sub(1)?;
+        self.short_blocks
+            .last()
+            .filter(|&&(index, _)| index == last)
+            .map(|&(_, length)| length)
+    }
 }
 
 fn u16_at(bytes: &[u8], offset: usize) -> u16 {
@@ -329,23 +361,17 @@ pub(crate) fn parse_dm_reader<R: Read + Seek>(
         ));
     }
     let mut stamps = Vec::with_capacity(most_blocks as usize);
-    let mut final_block_len = None;
+    let mut short_blocks: Vec<(usize, u32)> = Vec::new();
+    let mut truncated_tail_bytes = 0u64;
     let mut position = data_start;
     while position < len {
         if stamps.len() % 4096 == 0 && cancelled() {
             return Err(crate::helpers::AUDIO_PREPARATION_CANCELLED_MESSAGE.into());
         }
         let index = stamps.len();
-        if final_block_len.is_some() {
-            return Err(format!(
-                "This .dm file has a short block before its end (block {index}); DepoAudio does not convert it."
-            ));
-        }
         if len - position < 8 {
-            return Err(format!(
-                "This .dm file ends partway through a block header (block {}); it may be incomplete.",
-                index + 1
-            ));
+            truncated_tail_bytes = len - position;
+            break;
         }
         let mut block_header = [0u8; 8];
         read_exact_or(&mut reader, &mut block_header, || {
@@ -361,13 +387,28 @@ pub(crate) fn parse_dm_reader<R: Read + Seek>(
         }
         let end = position + 8 + u64::from(length);
         if end > len {
-            return Err(format!(
-                "This .dm file ends partway through block {}; it may be incomplete.",
-                index + 1
-            ));
+            truncated_tail_bytes = len - position;
+            break;
+        }
+        if let Some(&(before, before_len)) = short_blocks.last() {
+            // The previous short block turned out not to be the last one.
+            if before + 1 == index {
+                if short_blocks.len() > MAX_SHORT_BLOCKS_BEFORE_END {
+                    return Err(format!(
+                        "This .dm file has more than {MAX_SHORT_BLOCKS_BEFORE_END} short blocks before its end, \
+                         which does not match the layout DepoAudio reads; it was not converted."
+                    ));
+                }
+                warnings.push(format!(
+                    "Block {} is shorter than the others ({before_len} of {block_size} bytes) but is not the last \
+                     block. Its whole codec blocks and every block after it were kept; the format notes say \
+                     SoundSync's own player stops at a short block.",
+                    before + 1
+                ));
+            }
         }
         if length < block_size {
-            final_block_len = Some(length);
+            short_blocks.push((index, length));
         }
         stamps.push(time);
         reader
@@ -376,12 +417,29 @@ pub(crate) fn parse_dm_reader<R: Read + Seek>(
         position = end;
     }
     if stamps.is_empty() {
+        if truncated_tail_bytes > 0 {
+            return Err(
+                "This .dm file ends partway through its first block, so it holds no complete audio \
+                        block; it may be incomplete."
+                    .into(),
+            );
+        }
         return Err("This .dm file holds no audio blocks.".into());
+    }
+    if truncated_tail_bytes > 0 {
+        warnings.push(format!(
+            "The file ends partway through block {}: its last {truncated_tail_bytes} bytes are an incomplete \
+             block and were left out. The recording or copy may not have finished; the {} complete blocks \
+             before it were read.",
+            stamps.len() + 1,
+            stamps.len()
+        ));
     }
     Ok(DmFile {
         header,
         stamps,
-        final_block_len,
+        short_blocks,
+        truncated_tail_bytes,
         warnings,
     })
 }
@@ -422,10 +480,19 @@ pub(crate) struct DmTimeline {
     pub block_size: u32,
     pub blocks_total: u64,
     pub blocks_erased: u64,
+    /// The last block is shorter than `block_size` and was not recorded over
+    /// (a recorded-over short block is counted in `blocks_erased` only).
     pub short_final_block: bool,
-    /// Bytes of the short last block left out because they are less than one
-    /// whole codec block.
+    /// Bytes of a kept short last block left out because they are less than
+    /// one whole codec block.
     pub last_block_bytes_dropped: u32,
+    /// Short blocks that are not the last block (the notes describe none).
+    pub short_blocks_before_end: u64,
+    /// Bytes of those short blocks, not recorded over, left out because they
+    /// are less than one whole codec block.
+    pub short_block_bytes_dropped: u64,
+    /// Bytes at the end of the file that are an incomplete block, left out.
+    pub truncated_tail_bytes: u64,
     pub stamps_monotonic: bool,
     pub segments: Vec<DmSegment>,
     /// Segments past `MAX_RECORDED_SEGMENTS`, counted but not listed.
@@ -436,19 +503,14 @@ pub(crate) struct DmTimeline {
 }
 
 /// Bytes of block `index` that go into the audio: 0 for an erased block,
-/// `block_size` for a full block, and the whole codec blocks of a short last
+/// `block_size` for a full block, and the whole codec blocks of a short
 /// block.
 fn kept_bytes(dm: &DmFile, index: usize) -> u32 {
     if dm.stamps[index] == 0 {
         return 0;
     }
-    if index + 1 == dm.stamps.len() {
-        if let Some(short) = dm.final_block_len {
-            let align = u32::from(dm.header.wave.block_align);
-            return short - short % align;
-        }
-    }
-    dm.header.block_size
+    let length = dm.block_len(index);
+    length - length % u32::from(dm.header.wave.block_align)
 }
 
 fn samples_in(dm: &DmFile, bytes: u32) -> Option<u64> {
@@ -519,10 +581,18 @@ pub(crate) fn build_timeline(dm: &DmFile) -> DmTimeline {
             segments_omitted += 1;
         }
     }
-    let (short_final_block, last_block_bytes_dropped) = match dm.final_block_len {
-        Some(short) => (true, short % u32::from(dm.header.wave.block_align)),
-        None => (false, 0),
+    let align = u32::from(dm.header.wave.block_align);
+    let last = dm.stamps.len() - 1;
+    let (short_final_block, last_block_bytes_dropped) = match dm.final_block_len() {
+        Some(short) if dm.stamps[last] != 0 => (true, short % align),
+        _ => (false, 0),
     };
+    let before_end = dm.short_blocks.iter().filter(|&&(index, _)| index != last);
+    let short_blocks_before_end = before_end.clone().count() as u64;
+    let short_block_bytes_dropped = before_end
+        .filter(|&&(index, _)| dm.stamps[index] != 0)
+        .map(|&(_, length)| u64::from(length % align))
+        .sum();
     DmTimeline {
         format_tag: dm.header.wave.format_tag,
         codec_name: dm.header.wave.codec_name(),
@@ -531,6 +601,9 @@ pub(crate) fn build_timeline(dm: &DmFile) -> DmTimeline {
         blocks_erased: erased,
         short_final_block,
         last_block_bytes_dropped,
+        short_blocks_before_end,
+        short_block_bytes_dropped,
+        truncated_tail_bytes: dm.truncated_tail_bytes,
         stamps_monotonic: monotonic,
         segments,
         segments_omitted,
@@ -546,6 +619,8 @@ pub struct DmQueueInfo {
     pub blocks_total: u64,
     pub blocks_erased: u64,
     pub short_final_block: bool,
+    pub short_blocks_before_end: u64,
+    pub truncated_tail_bytes: u64,
     pub stamps_monotonic: bool,
     pub warnings: Vec<String>,
 }
@@ -557,6 +632,8 @@ pub(crate) fn queue_info(dm: &DmFile) -> DmQueueInfo {
         blocks_total: timeline.blocks_total,
         blocks_erased: timeline.blocks_erased,
         short_final_block: timeline.short_final_block,
+        short_blocks_before_end: timeline.short_blocks_before_end,
+        truncated_tail_bytes: timeline.truncated_tail_bytes,
         stamps_monotonic: timeline.stamps_monotonic,
         warnings: dm.warnings.clone(),
     }
@@ -652,7 +729,8 @@ pub(crate) fn riff_layout(
 
 /// Write the audio of `source` (parsed as `dm`) to `out` as a RIFF WAVE file:
 /// the `.dm`'s own WAVEFORMATEX as `fmt `, a `fact` chunk for compressed
-/// formats, and the non-erased blocks in file order as `data`. The source is
+/// formats, and the non-erased blocks in file order as `data`. An incomplete
+/// block at the end of the file is not read. The source is
 /// streamed block by block. Each block header is read again and must match
 /// the parse, so a file that changes meanwhile fails instead of mixing two
 /// versions.
@@ -700,10 +778,7 @@ pub(crate) fn write_wav<W: Write>(
         let mut block_header = [0u8; 8];
         read_exact_or(&mut reader, &mut block_header, changed)?;
         let length = u32_at(&block_header, 4);
-        let expected_length = match dm.final_block_len {
-            Some(short) if index + 1 == dm.stamps.len() => short,
-            _ => header.block_size,
-        };
+        let expected_length = dm.block_len(index);
         if u32_at(&block_header, 0) != stamp || length != expected_length {
             return Err(changed());
         }
@@ -797,7 +872,7 @@ pub(crate) mod tests {
         assert_eq!(dm.header.wave.codec_name(), "gsm_ms");
         assert_eq!(expected_block_size(&dm.header.wave), 520);
         assert_eq!(dm.stamps, vec![T0, T0, T0 + 1]);
-        assert_eq!(dm.final_block_len, None);
+        assert_eq!(dm.final_block_len(), None);
         assert!(dm.warnings.is_empty());
         assert!(looks_like_dm(&bytes));
 
@@ -871,17 +946,54 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn a_truncated_block_is_an_error_not_a_panic() {
+    fn a_cut_off_last_block_keeps_every_complete_block() {
         let block = vec![1u8; 520];
-        let good = dm_bytes(&gsm_format(), 520, &[(T0, &block), (T0, &block)]);
-        // Inside the second block's header, then inside its payload.
-        for cut in [36 + 528 + 3, 36 + 528 + 8 + 100] {
+        let good = dm_bytes(&gsm_format(), 520, &[(T0, &block), (T0, &block), (T0 + 1, &block)]);
+        let first_two = 36 + 2 * 528;
+        // Inside the third block's header, then inside its payload, then one
+        // byte short of its end.
+        for cut in [first_two + 3, first_two + 8, first_two + 8 + 100, good.len() - 1] {
+            let dm = parse(&good[..cut]).unwrap();
+            assert_eq!(dm.stamps, vec![T0, T0], "cut {cut}");
+            assert_eq!(dm.truncated_tail_bytes, (cut - first_two) as u64, "cut {cut}");
+            assert_eq!(dm.final_block_len(), None);
+            assert_eq!(dm.warnings.len(), 1, "{:?}", dm.warnings);
+            assert!(dm.warnings[0].contains("partway through block 3"), "{:?}", dm.warnings);
+            assert!(dm.warnings[0].contains("2 complete blocks"), "{:?}", dm.warnings);
+            assert_eq!(audio_totals(&dm), (1040, Some(2 * 8 * 320)));
+            let timeline = build_timeline(&dm);
+            assert_eq!(timeline.blocks_total, 2);
+            assert_eq!(timeline.truncated_tail_bytes, (cut - first_two) as u64);
+            assert!(!timeline.short_final_block);
+            assert_eq!(queue_info(&dm).truncated_tail_bytes, (cut - first_two) as u64);
+        }
+        // A complete file reports no tail.
+        let dm = parse(&good).unwrap();
+        assert_eq!(dm.truncated_tail_bytes, 0);
+        assert_eq!(build_timeline(&dm).truncated_tail_bytes, 0);
+        assert!(dm.warnings.is_empty());
+
+        // A short last block before the cut stays a short last block.
+        let short = vec![2u8; 130];
+        let bytes = dm_bytes(&gsm_format(), 520, &[(T0, &block), (T0, &short), (T0, &block)]);
+        let dm = parse(&bytes[..bytes.len() - 10]).unwrap();
+        assert_eq!(dm.final_block_len(), Some(130));
+        assert_eq!(dm.truncated_tail_bytes, 518);
+        assert_eq!(audio_totals(&dm).0, 650);
+    }
+
+    #[test]
+    fn a_file_with_no_complete_block_is_refused() {
+        let block = vec![1u8; 520];
+        let good = dm_bytes(&gsm_format(), 520, &[(T0, &block)]);
+        for cut in [36 + 3, 36 + 8, 36 + 8 + 519] {
             let error = parse(&good[..cut]).unwrap_err();
-            assert!(error.contains("ends partway"), "cut {cut}: {error}");
+            assert!(error.contains("partway through its first block"), "cut {cut}: {error}");
         }
         // A file with a header and no blocks.
         assert!(parse(&good[..36]).unwrap_err().contains("no audio blocks"));
-        // A block longer than the block size, or empty.
+        // A complete block header with a length longer than the block size,
+        // or empty, does not match the layout.
         let long = vec![0u8; 585];
         assert!(parse(&dm_bytes(&gsm_format(), 520, &[(T0, &long)]))
             .unwrap_err()
@@ -889,11 +1001,68 @@ pub(crate) mod tests {
         assert!(parse(&dm_bytes(&gsm_format(), 520, &[(T0, &[])]))
             .unwrap_err()
             .contains("unexpected length"));
-        // A short block followed by another block.
-        let short = vec![0u8; 130];
-        assert!(parse(&dm_bytes(&gsm_format(), 520, &[(T0, &short), (T0, &block)]))
+    }
+
+    #[test]
+    fn a_short_block_before_the_end_is_kept_with_a_warning() {
+        let block = vec![1u8; 520];
+        // 100 bytes: one 65-byte GSM block and 35 stray bytes.
+        let short = vec![2u8; 100];
+        let dm = parse(&dm_bytes(
+            &gsm_format(),
+            520,
+            &[(T0, &block), (T0, &short), (T0 + 1, &block), (T0 + 1, &block)],
+        ))
+        .unwrap();
+        assert_eq!(dm.short_blocks, vec![(1, 100)]);
+        assert_eq!(dm.final_block_len(), None);
+        assert_eq!(dm.block_len(1), 100);
+        assert_eq!(dm.block_len(2), 520);
+        assert_eq!(dm.warnings.len(), 1, "{:?}", dm.warnings);
+        assert!(dm.warnings[0].starts_with("Block 2 is shorter"), "{:?}", dm.warnings);
+        assert_eq!(audio_totals(&dm), (3 * 520 + 65, Some((3 * 8 + 1) * 320)));
+        let timeline = build_timeline(&dm);
+        assert!(!timeline.short_final_block);
+        assert_eq!(timeline.short_blocks_before_end, 1);
+        assert_eq!(timeline.short_block_bytes_dropped, 35);
+        assert_eq!(timeline.last_block_bytes_dropped, 0);
+        assert_eq!(timeline.segments.len(), 1);
+        assert_eq!(timeline.segments[0].blocks, 4);
+        assert_eq!(queue_info(&dm).short_blocks_before_end, 1);
+
+        // A recorded-over short block adds nothing and drops no bytes of its
+        // own; it is counted as erased.
+        let dm = parse(&dm_bytes(
+            &gsm_format(),
+            520,
+            &[(T0, &block), (0, &short), (T0, &block)],
+        ))
+        .unwrap();
+        let timeline = build_timeline(&dm);
+        assert_eq!(timeline.blocks_erased, 1);
+        assert_eq!(timeline.short_blocks_before_end, 1);
+        assert_eq!(timeline.short_block_bytes_dropped, 0);
+        assert_eq!(audio_totals(&dm).0, 1040);
+
+        // Up to the cap is read; one more is refused.
+        let mut blocks: Vec<(u32, &[u8])> = Vec::new();
+        for _ in 0..MAX_SHORT_BLOCKS_BEFORE_END {
+            blocks.push((T0, &short));
+            blocks.push((T0, &block));
+        }
+        let dm = parse(&dm_bytes(&gsm_format(), 520, &blocks)).unwrap();
+        assert_eq!(dm.short_blocks.len(), MAX_SHORT_BLOCKS_BEFORE_END);
+        assert_eq!(dm.warnings.len(), MAX_SHORT_BLOCKS_BEFORE_END);
+        blocks.push((T0, &short));
+        blocks.push((T0, &block));
+        assert!(parse(&dm_bytes(&gsm_format(), 520, &blocks))
             .unwrap_err()
-            .contains("short block before its end"));
+            .contains("short blocks before its end"));
+        // The cap counts blocks before the end: a short last block after the
+        // cap's worth is still read.
+        blocks.pop();
+        let dm = parse(&dm_bytes(&gsm_format(), 520, &blocks)).unwrap();
+        assert_eq!(dm.final_block_len(), Some(100));
     }
 
     #[test]
@@ -920,7 +1089,7 @@ pub(crate) mod tests {
         // 130 bytes is exactly two 65-byte GSM blocks.
         let whole = vec![2u8; 130];
         let dm = parse(&dm_bytes(&gsm_format(), 520, &[(T0, &block), (T0, &whole)])).unwrap();
-        assert_eq!(dm.final_block_len, Some(130));
+        assert_eq!(dm.final_block_len(), Some(130));
         let timeline = build_timeline(&dm);
         assert!(timeline.short_final_block);
         assert_eq!(timeline.last_block_bytes_dropped, 0);
@@ -933,6 +1102,17 @@ pub(crate) mod tests {
         assert!(timeline.short_final_block);
         assert_eq!(timeline.last_block_bytes_dropped, 35);
         assert_eq!(audio_totals(&dm), (585, Some(9 * 320)));
+
+        // A recorded-over short last block is counted as erased, not as a
+        // short block whose bytes were cut.
+        let dm = parse(&dm_bytes(&gsm_format(), 520, &[(T0, &block), (0, &partial)])).unwrap();
+        assert_eq!(dm.final_block_len(), Some(100));
+        let timeline = build_timeline(&dm);
+        assert!(!timeline.short_final_block);
+        assert_eq!(timeline.last_block_bytes_dropped, 0);
+        assert_eq!(timeline.blocks_erased, 1);
+        assert!(!queue_info(&dm).short_final_block);
+        assert_eq!(audio_totals(&dm), (520, Some(8 * 320)));
 
         // Less than one codec block: no audio from it, and no segment.
         let crumb = vec![2u8; 10];
@@ -1041,6 +1221,84 @@ pub(crate) mod tests {
         let limit = u64::from(u32::MAX) - (4 + 8 + 18 + 8) - 1;
         assert_eq!(riff_layout(18, true, None, limit).unwrap().riff_size, u32::MAX - 1);
         assert_eq!(riff_layout(18, true, None, limit + 2).unwrap_err(), DM_TOO_LARGE);
+    }
+
+    /// The committed `.dm` fixtures and the WAV dm.rs writes for each. The
+    /// release smoke (`scripts/container-smoke-fixtures.mjs`) feeds these
+    /// same WAVs to the bundled FFmpeg sidecars and checks that its own
+    /// reader gives the same bytes, so a change here that alters the WAV
+    /// shows up in both places. Regenerate the WAVs with
+    /// `DEPOAUDIO_WRITE_DM_GOLDEN=1 cargo test golden_dm` after a deliberate
+    /// change, and say why in the commit.
+    pub(crate) const GOLDEN_DM: [&str; 5] = [
+        "gsm-default",
+        "ima-adpcm-damaged",
+        "adpcm-ms",
+        "mulaw-odd-format",
+        "pcm-u8-odd",
+    ];
+
+    fn golden_dir() -> std::path::PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../scripts/fixtures/dm")
+    }
+
+    #[test]
+    fn golden_dm_fixtures_demux_to_the_committed_wavs() {
+        let regenerate = std::env::var_os("DEPOAUDIO_WRITE_DM_GOLDEN").is_some_and(|value| value == "1");
+        for name in GOLDEN_DM {
+            let source = golden_dir().join(format!("{name}.dm"));
+            let dm = parse_dm(&source, &|| false).unwrap_or_else(|error| panic!("{name}: {error}"));
+            let mut wav = Vec::new();
+            write_wav(&source, &dm, &mut wav, &|| false).unwrap();
+            let golden = golden_dir().join(format!("{name}.wav"));
+            if regenerate {
+                fs::write(&golden, &wav).unwrap();
+            }
+            assert!(
+                fs::read(&golden).unwrap() == wav,
+                "{name}: dm.rs no longer writes the committed {name}.wav"
+            );
+        }
+    }
+
+    #[test]
+    fn golden_dm_fixtures_have_the_expected_timelines() {
+        let timeline = |name: &str| {
+            let dm = parse_dm(&golden_dir().join(format!("{name}.dm")), &|| false).unwrap();
+            (build_timeline(&dm), audio_totals(&dm))
+        };
+        // SoundSync default header, real GSM frames: an erased block, a pause,
+        // stamps that go backwards and a 160-byte last block (two codec blocks
+        // and 30 stray bytes).
+        let (gsm, totals) = timeline("gsm-default");
+        assert_eq!((gsm.blocks_total, gsm.blocks_erased), (9, 1));
+        assert!(gsm.short_final_block && !gsm.stamps_monotonic);
+        assert_eq!(gsm.last_block_bytes_dropped, 30);
+        let starts: Vec<_> = gsm.segments.iter().map(|segment| segment.start_sample).collect();
+        assert_eq!(starts, vec![Some(0), Some(4 * 2560), Some(6 * 2560)]);
+        assert_eq!(totals, (7 * 520 + 130, Some(7 * 2560 + 640)));
+        assert!(gsm.warnings.is_empty(), "{:?}", gsm.warnings);
+        // IMA ADPCM: a short block before the end and a cut-off last block.
+        let (ima, totals) = timeline("ima-adpcm-damaged");
+        assert_eq!(ima.blocks_total, 4);
+        assert_eq!((ima.short_blocks_before_end, ima.short_block_bytes_dropped), (1, 10));
+        assert_eq!(ima.truncated_tail_bytes, 108);
+        assert_eq!(totals, (7 * 1024, Some(7 * 2041)));
+        assert_eq!(ima.warnings.len(), 3, "{:?}", ima.warnings);
+        // MS ADPCM with its 50-byte format: an erased block and a short last
+        // block of whole codec blocks.
+        let (ms, totals) = timeline("adpcm-ms");
+        assert_eq!((ms.blocks_erased, ms.last_block_bytes_dropped), (1, 0));
+        assert!(ms.short_final_block);
+        assert_eq!(totals, (5120, Some(5 * 2036)));
+        // mu-law with a 19-byte format (padded in the WAV) and a pause.
+        let (mulaw, totals) = timeline("mulaw-odd-format");
+        assert_eq!(mulaw.segments.len(), 2);
+        assert_eq!(totals, (4777, Some(4777)));
+        // 8-bit PCM with a 16-byte format and an odd amount of audio.
+        let (pcm, totals) = timeline("pcm-u8-odd");
+        assert_eq!(pcm.blocks_erased, 1);
+        assert_eq!(totals, (5001, Some(5001)));
     }
 
     #[test]

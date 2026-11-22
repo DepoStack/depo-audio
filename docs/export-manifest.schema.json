@@ -33,18 +33,21 @@
         "sizeBytes": { "type": "integer", "minimum": 0 },
         "dmTimeline": {
           "type": "object",
-          "description": "Only for a DigitalCAT / SoundSync .dm source, whose audio DepoAudio reads into a temporary WAV before FFmpeg decodes it. Lists the source's blocks, the recorded-over blocks that were skipped, and where the block time stamps jump. The audio is kept in file order. Stamps are whole seconds (UTC), so they place a block to within about a second; for a recording, a stamp marks roughly the end of its block. Positions come from block counts, not stamps. Nothing here is written into the output audio. Written by versions after 1.1.0; absent for every other source.",
+          "description": "Only for a DigitalCAT / SoundSync .dm source, whose audio DepoAudio reads into a temporary WAV before FFmpeg decodes it. Lists the source's complete blocks, the recorded-over blocks that were skipped, any incomplete block at the end that was left out, and where the block time stamps jump. The audio is kept in file order. Stamps are whole seconds (UTC), so they place a block to within about a second; for a recording, a stamp marks roughly the end of its block. Positions come from block counts, not stamps. Nothing here is written into the output audio. Written by versions after 1.1.0; absent for every other source.",
           "additionalProperties": false,
           "required": ["formatTag", "codecName", "blockSize", "blocksTotal", "blocksErased", "shortFinalBlock", "stampsMonotonic", "segments"],
           "properties": {
             "formatTag": { "type": "integer", "minimum": 0, "maximum": 65535, "description": "The WAVEFORMATEX wFormatTag stored in the .dm (0x0031, 49, is GSM 6.10)." },
             "codecName": { "type": "string", "description": "The FFmpeg decoder DepoAudio expects for formatTag (for example gsm_ms or pcm_s16le), or the tag in hex when it has no name for it." },
             "blockSize": { "type": "integer", "minimum": 1, "description": "Block size in bytes from the .dm header." },
-            "blocksTotal": { "type": "integer", "minimum": 1 },
+            "blocksTotal": { "type": "integer", "minimum": 1, "description": "Complete blocks in the file. An incomplete block at the end is not counted (see truncatedTailBytes)." },
             "blocksErased": { "type": "integer", "minimum": 0, "description": "Blocks whose stamp is 0 (recorded over). Their audio is stale and was left out." },
-            "shortFinalBlock": { "type": "boolean", "description": "The last block is shorter than blockSize. Its whole codec blocks are kept." },
-            "lastBlockBytesDropped": { "type": "integer", "minimum": 0, "description": "Bytes at the end of a short last block that were less than one whole codec block and were left out." },
-            "stampsMonotonic": { "type": "boolean", "description": "False when a later block has an earlier stamp than the block before it, which happens after part of a recording was recorded over." },
+            "shortFinalBlock": { "type": "boolean", "description": "The last block is shorter than blockSize and its whole codec blocks are kept. False when that short block was recorded over (stamp 0): it is then counted in blocksErased only, and none of it is used." },
+            "lastBlockBytesDropped": { "type": "integer", "minimum": 0, "description": "Bytes at the end of a kept short last block that were less than one whole codec block and were left out." },
+            "shortBlocksBeforeEnd": { "type": "integer", "minimum": 0, "description": "Blocks shorter than blockSize that are not the last block. The layout notes describe none; their whole codec blocks and every block after them are kept, and warnings names each." },
+            "shortBlockBytesDropped": { "type": "integer", "minimum": 0, "description": "Bytes of those short blocks (not recorded over) that were less than one whole codec block and were left out." },
+            "truncatedTailBytes": { "type": "integer", "minimum": 0, "description": "Bytes at the end of the file after the last complete block: a block the file ends partway through (for example a recording or copy that did not finish). They were left out of the audio." },
+            "stampsMonotonic": { "type": "boolean", "description": "False when a later block has an earlier stamp than the block before it. Only that is observed, not the cause: the layout notes give record-over (newer blocks appended at the end) as one, and a recorder clock set back during the session gives the same stamps." },
             "segments": {
               "type": "array",
               "description": "Runs of kept blocks, in file order. A new segment starts where a stamp moves forward by more than 2 seconds (a pause) or moves backwards.",
@@ -60,7 +63,7 @@
               }
             },
             "segmentsOmitted": { "type": "integer", "minimum": 0, "description": "Segments after the first 1000, counted but not listed." },
-            "warnings": { "type": "array", "items": { "type": "string" }, "description": "Header facts that did not stop the conversion, such as a block size other than the one this audio format usually gets." }
+            "warnings": { "type": "array", "items": { "type": "string" }, "description": "Facts that did not stop the conversion, such as a block size other than the one this audio format usually gets, a short block before the end, or an incomplete block at the end." }
           }
         }
       }

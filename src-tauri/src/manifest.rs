@@ -1224,6 +1224,9 @@ pub(crate) mod tests {
         assert_eq!(timeline["shortFinalBlock"], true);
         assert_eq!(timeline["lastBlockBytesDropped"], 35);
         assert_eq!(timeline["stampsMonotonic"], false);
+        assert_eq!(timeline["shortBlocksBeforeEnd"], 0);
+        assert_eq!(timeline["shortBlockBytesDropped"], 0);
+        assert_eq!(timeline["truncatedTailBytes"], 0);
         assert_eq!(timeline["segments"].as_array().unwrap().len(), 3);
         assert_eq!(timeline["segments"][1]["startSample"], 8 * 320);
         assert_eq!(timeline["segments"][2]["startUtc"], "2025-11-22T08:10:00Z");
@@ -1231,7 +1234,14 @@ pub(crate) mod tests {
         // Older records without the optional fields still validate; unknown
         // fields and malformed stamps do not.
         let mut older = record.clone();
-        for field in ["lastBlockBytesDropped", "segmentsOmitted", "warnings"] {
+        for field in [
+            "lastBlockBytesDropped",
+            "segmentsOmitted",
+            "warnings",
+            "shortBlocksBeforeEnd",
+            "shortBlockBytesDropped",
+            "truncatedTailBytes",
+        ] {
             older["source"]["dmTimeline"].as_object_mut().unwrap().remove(field);
         }
         assert!(schema_errors_for_value(&older).is_empty());
@@ -1244,6 +1254,26 @@ pub(crate) mod tests {
             "{errors:#?}"
         );
         assert!(errors.iter().any(|error| error.contains("startUtc")), "{errors:#?}");
+
+        // A damaged file read anyway: a short block before the end and an
+        // incomplete last block, each reported.
+        let damaged =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../scripts/fixtures/dm/ima-adpcm-damaged.dm");
+        let dm = crate::dm::parse_dm(&damaged, &|| false).unwrap();
+        let mut manifest = sample_input(&ProbedSource::default(), &[], false);
+        manifest.source.dm_timeline = Some(crate::dm::build_timeline(&dm));
+        let record = serde_json::to_value(&manifest).unwrap();
+        assert!(
+            schema_errors_for_value(&record).is_empty(),
+            "{:#?}",
+            schema_errors_for_value(&record)
+        );
+        let timeline = &record["source"]["dmTimeline"];
+        assert_eq!(timeline["shortBlocksBeforeEnd"], 1);
+        assert_eq!(timeline["shortBlockBytesDropped"], 10);
+        assert_eq!(timeline["truncatedTailBytes"], 108);
+        assert_eq!(timeline["shortFinalBlock"], false);
+        assert_eq!(timeline["warnings"].as_array().unwrap().len(), 3);
     }
 
     #[test]
