@@ -109,7 +109,13 @@ export default function PlayerTab({ dropHandlerRef, onConvertFiles, openRequest,
   const [probeAvailable, setProbeAvailable] = useState(true)
   const [mixNotice, setMixNotice] = useState('')
   const mixerRef = useRef(null)
-  const restoreRef = useRef(null) // { time, play } to apply after a swap
+  // { time, play, pausedAt } to apply once a swapped-in element has loaded.
+  // Until then, play/pause (buttons, in-app and playback keys) change `play`
+  // instead of acting on an element that has not loaded yet.
+  const restoreRef = useRef(null)
+  // The pause position to keep through the restore's own seek, so turning
+  // Separate channels on or off while paused keeps the Backstep resume point.
+  const restoreSeekRef = useRef(null)
   const backstepRuleId = useId()
   // Position where the person last paused this track. Any seek (including our
   // own backstep and the A-B loop wrap) clears it, so only a plain resume rewinds.
@@ -204,6 +210,15 @@ export default function PlayerTab({ dropHandlerRef, onConvertFiles, openRequest,
     const a = audioRef.current
     if (!a || !activeTrack) return
     setPlaybackError('')
+    restoreSeekRef.current = null
+    const pending = restoreRef.current
+    if (pending) {
+      // Paused here: the next resume rewinds by Backstep, as for any pause
+      restoreRef.current = pending.play
+        ? { ...pending, play: false, pausedAt: pending.time }
+        : { ...pending, play: true }
+      return
+    }
     if (!a.paused) {
       a.pause()
       return
@@ -229,7 +244,15 @@ export default function PlayerTab({ dropHandlerRef, onConvertFiles, openRequest,
   // Swap the <audio> element, keeping position and play state.
   const swapAudio = nextMixOn => {
     const a = audioRef.current
-    restoreRef.current = a ? { time: a.currentTime || 0, play: !a.paused } : null
+    // A swap that has not loaded yet (for example the mix failed to start)
+    // still holds the position to go back to.
+    if (!restoreRef.current && a) {
+      restoreRef.current = {
+        time: a.currentTime || 0,
+        play: !a.paused,
+        pausedAt: a.paused ? pausedAtRef.current : null,
+      }
+    }
     a?.pause()
     setMixOn(nextMixOn)
     setAudioKey(k => k + 1)
@@ -259,9 +282,11 @@ export default function PlayerTab({ dropHandlerRef, onConvertFiles, openRequest,
   const seekBy = delta => {
     const a = audioRef.current
     if (!a) return
+    restoreSeekRef.current = null
     a.currentTime = Math.max(0, Math.min((a.currentTime || 0) + delta, a.duration || 0))
   }
   const seekTo = t => {
+    restoreSeekRef.current = null
     if (audioRef.current) audioRef.current.currentTime = t
   }
 
@@ -356,7 +381,8 @@ export default function PlayerTab({ dropHandlerRef, onConvertFiles, openRequest,
   const setPlaybackKeysTarget = playbackKeys?.setTarget
   useEffect(() => {
     if (!setPlaybackKeysTarget) return undefined
-    const isPlaying = () => !!audioRef.current && !audioRef.current.paused
+    const isPlaying = () =>
+      restoreRef.current ? restoreRef.current.play : !!audioRef.current && !audioRef.current.paused
     setPlaybackKeysTarget({
       get hasTrack() {
         return actionsRef.current.hasTrack
@@ -441,6 +467,8 @@ export default function PlayerTab({ dropHandlerRef, onConvertFiles, openRequest,
   useEffect(() => {
     if (activeTrack && audioRef.current) {
       pausedAtRef.current = null
+      restoreRef.current = null
+      restoreSeekRef.current = null
       mixerRef.current?.resetHeard()
       setPlaying(false)
       setPlaybackError('')
@@ -923,7 +951,11 @@ export default function PlayerTab({ dropHandlerRef, onConvertFiles, openRequest,
               const restore = restoreRef.current
               restoreRef.current = null
               if (restore) {
-                if (restore.time > 0) e.target.currentTime = Math.min(restore.time, e.target.duration || restore.time)
+                if (restore.time > 0) {
+                  restoreSeekRef.current = restore.play ? null : restore.pausedAt
+                  e.target.currentTime = Math.min(restore.time, e.target.duration || restore.time)
+                }
+                if (!restore.play) pausedAtRef.current = restore.pausedAt ?? null
                 if (restore.play) {
                   mixerRef.current?.resume()
                   e.target.play().catch(err => setPlaybackError(`Couldn't play ${activeTrack.name}: ${err}`))
@@ -941,14 +973,17 @@ export default function PlayerTab({ dropHandlerRef, onConvertFiles, openRequest,
               pausedAtRef.current = e.target.ended ? null : e.target.currentTime
             }}
             onSeeking={() => {
-              pausedAtRef.current = null
+              pausedAtRef.current = restoreSeekRef.current
+              restoreSeekRef.current = null
             }}
             onError={() => {
               setPlaying(false)
+              restoreSeekRef.current = null
               if (mixOn) {
                 mixFailed('the web view would not open this file for Web Audio')
                 return
               }
+              restoreRef.current = null
               setPlaybackError(
                 `Couldn't decode ${activeTrack?.name || 'this file'}. Convert the source to a standard audio format and try again.`,
               )
