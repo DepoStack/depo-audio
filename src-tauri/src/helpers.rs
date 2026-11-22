@@ -69,7 +69,7 @@ pub(crate) fn get_formats() -> Vec<FormatInfo> {
             note: Some("Ogg Opus with one mono stream per channel (mapping family 255).".into()) },
         FormatInfo { key: "ftr".into(), name: "FTR Recording".into(), vendor: "For The Record".into(),
             status: "experimental".into(), handler: "ftr".into(), channels: Some("4–16".into()),
-            note: Some("FTR uses its own multichannel codec (tag 0x4180) and requires FFmpeg's native FTR decoder. Drop all .trm files for a session together.".into()) },
+            note: Some("FTR interleaves one AAC stream per microphone. DepoAudio reads a file with FFmpeg's native FTR decoder when its layout allows, and otherwise splits the channels itself first; the export record says which. This reading is based on interoperability notes and has not yet been checked against a real FTR recording. Add all .trm or .tll files of a session together.".into()) },
         FormatInfo { key: "bwf".into(), name: "Broadcast WAV".into(), vendor: "CourtSmart / Various".into(),
             status: "supported".into(), handler: "passthrough".into(), channels: None, note: None },
         FormatInfo { key: "digitalcat".into(), name: "DigitalCAT Audio".into(), vendor: "Stenovations".into(),
@@ -111,12 +111,15 @@ pub(crate) fn is_standard_format(ext: &str) -> bool {
     )
 }
 
-/// Input-decoder arguments that must appear before `-i`.
+/// Input-decoder arguments that must appear before `-i` when FFmpeg reads an
+/// FTR recording as it is.
 ///
-/// FTR packets contain one modified AAC unit per court channel. FFmpeg's native
-/// `ftr` decoder unwraps and repairs those units before delegating to AAC; using
-/// the ordinary `aac` decoder directly fails on real recordings and must never
-/// be used as a fallback.
+/// FTR chunks contain one modified AAC frame per court channel. FFmpeg's
+/// native `ftr` decoder unwraps and repairs those frames before delegating to
+/// AAC; the ordinary `aac` decoder cannot read the interleaved file. When the
+/// native decoder cannot take a file, DepoAudio does not fall back to plain
+/// AAC on it: it splits the channels first (`crate::trm`) and decodes each
+/// channel's own ADTS stream.
 ///
 /// SGMCA streams are decoded with libopus, the reference Opus decoder.
 /// FFmpeg's built-in Opus decoder has been seen to corrupt a channel of a
@@ -147,7 +150,7 @@ pub(crate) fn detect_format_by_extension(path: &str) -> Option<FormatInfo> {
     let key = match ext.as_str() {
         // Court formats
         "sgmca" => "sgmca",
-        "trm" | "ftr" => "ftr",
+        "trm" | "ftr" | "tll" => "ftr",
         "aes" => "aes",
         "dm" => "digitalcat",
         "dcr" => "dcr",
@@ -441,36 +444,272 @@ pub(crate) fn strip_sgmca_header(src: &Path) -> Result<(PathBuf, bool), String> 
     strip_sgmca_header_with_cancel(src, None)
 }
 
+/// What the caller knows about the FFmpeg that will read the feed.
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct FeedOptions {
+    /// The FFmpeg build has its native `ftr` decoder.
+    pub native_ftr: bool,
+    /// An earlier native `ftr` attempt on this file failed.
+    pub native_failed: bool,
+}
+
+const MERGED_SOURCE_LABEL: &str = "[da_src]";
+const MERGED_OUTPUT_LABEL: &str = "[da_out]";
+
+/// The audio FFmpeg reads for one selected file: usually the file itself; an
+/// SGMCA's Ogg stream in a temporary copy; or, for an FTR recording that
+/// FFmpeg's native decoder cannot take as it is, one temporary mono ADTS file
+/// per channel, joined back in channel order with `amerge`. Temporary files
+/// live exactly as long as the feed.
+#[derive(Debug)]
+pub(crate) struct AudioFeed {
+    inputs: Vec<PathBuf>,
+    /// Options placed before every `-i` (a decoder or demuxer choice).
+    input_codec: Vec<String>,
+    trm: Option<crate::trm::TrmRoute>,
+    _guards: Vec<crate::safety::TempFile>,
+}
+
+impl AudioFeed {
+    /// The file itself, read with FFmpeg's own choices.
+    pub(crate) fn plain(path: PathBuf) -> Self {
+        Self {
+            inputs: vec![path],
+            input_codec: Vec::new(),
+            trm: None,
+            _guards: Vec::new(),
+        }
+    }
+
+    /// The first input: the file ffprobe reads when nothing is known.
+    pub(crate) fn path(&self) -> &Path {
+        &self.inputs[0]
+    }
+
+    /// The FTR route taken, for the export record.
+    pub(crate) fn trm(&self) -> Option<&crate::trm::TrmRoute> {
+        self.trm.as_ref()
+    }
+
+    /// Several inputs that `amerge` joins into the converted stream.
+    pub(crate) fn is_merged(&self) -> bool {
+        self.inputs.len() > 1
+    }
+
+    /// Every input in order, each preceded by `per_input` and the feed's own
+    /// input options: `[per_input] [-c:a ftr | -f aac] -i <input>`.
+    pub(crate) fn input_args(&self, per_input: &[String]) -> Vec<String> {
+        let mut args = Vec::new();
+        for input in &self.inputs {
+            args.extend(per_input.iter().cloned());
+            args.extend(self.input_codec.iter().cloned());
+            args.extend(["-i".into(), input.to_string_lossy().to_string()]);
+        }
+        args
+    }
+
+    /// The arguments for one channel's own input, when the feed has one
+    /// input per channel (so a per-channel pass decodes only that channel).
+    pub(crate) fn channel_input_args(&self, channel: u32, per_input: &[String]) -> Option<Vec<String>> {
+        if !self.is_merged() {
+            return None;
+        }
+        let input = self.inputs.get(channel as usize)?;
+        let mut args: Vec<String> = per_input.to_vec();
+        args.extend(self.input_codec.iter().cloned());
+        args.extend(["-i".into(), input.to_string_lossy().to_string()]);
+        Some(args)
+    }
+
+    /// `[0:a:0][1:a:0]…amerge=inputs=N`: channel k of the joined stream is
+    /// input k's only channel.
+    fn merge_filter(&self) -> String {
+        let labels: String = (0..self.inputs.len())
+            .map(|index| format!("[{index}:{}]", source_audio_stream_specifier()))
+            .collect();
+        format!("{labels}amerge=inputs={}", self.inputs.len())
+    }
+
+    /// The filtergraph prefix (empty, or the `amerge` step ending in `;`)
+    /// and the label of the converted stream inside a `-filter_complex`.
+    pub(crate) fn filter_source(&self) -> (String, String) {
+        if self.is_merged() {
+            (
+                format!("{}{MERGED_SOURCE_LABEL};", self.merge_filter()),
+                MERGED_SOURCE_LABEL.into(),
+            )
+        } else {
+            (String::new(), source_audio_filter_input())
+        }
+    }
+
+    /// How an output reads the converted stream with an optional filter
+    /// chain: `-map 0:a:0 [-af <chain>]` for one input, or, for joined
+    /// inputs, `-filter_complex <amerge>[,<chain>][da_out] -map [da_out]`
+    /// (FFmpeg does not allow `-af` on a filtergraph's output).
+    pub(crate) fn source_output_args(&self, chain: Option<&str>) -> Vec<String> {
+        let (option, graph, map) = self.source_filtering(chain);
+        let mut args = Vec::new();
+        if let (Some(option), Some(graph)) = (option, graph) {
+            if option == "-filter_complex" {
+                args.extend([option.to_string(), graph]);
+                args.extend(map);
+            } else {
+                args.extend(map);
+                args.extend([option.to_string(), graph]);
+            }
+        } else {
+            args.extend(map);
+        }
+        args
+    }
+
+    /// The parts of [`Self::source_output_args`]: filter option, filter
+    /// graph or chain, and the `-map` arguments.
+    pub(crate) fn source_filtering(&self, chain: Option<&str>) -> (Option<&'static str>, Option<String>, Vec<String>) {
+        if self.is_merged() {
+            let graph = match chain {
+                Some(chain) => format!("{},{chain}{MERGED_OUTPUT_LABEL}", self.merge_filter()),
+                None => format!("{}{MERGED_OUTPUT_LABEL}", self.merge_filter()),
+            };
+            (
+                Some("-filter_complex"),
+                Some(graph),
+                vec!["-map".into(), MERGED_OUTPUT_LABEL.into()],
+            )
+        } else {
+            match chain {
+                Some(chain) => (Some("-af"), Some(chain.to_string()), source_audio_map_args()),
+                None => (None, None, source_audio_map_args()),
+            }
+        }
+    }
+
+    /// Channel count read from the recording itself (FTR), if any.
+    pub(crate) fn known_channels(&self) -> Option<u32> {
+        self.trm.as_ref().map(|route| u32::from(route.info.channels))
+    }
+
+    /// Duration from the frames actually read (FTR): never from a header
+    /// length an unclosed recording leaves at its placeholder.
+    pub(crate) fn known_duration(&self) -> Option<f64> {
+        self.trm.as_ref().and_then(|route| route.info.duration_secs)
+    }
+
+    /// FFmpeg reads this FTR recording with its native decoder.
+    pub(crate) fn used_native_ftr(&self) -> bool {
+        self.trm
+            .as_ref()
+            .is_some_and(|route| route.decode_path == crate::trm::DecodePath::NativeFtr)
+    }
+
+    pub(crate) fn known_sample_rate(&self) -> Option<u32> {
+        self.trm.as_ref().and_then(|route| route.info.sample_rate)
+    }
+}
+
+/// The selected file is an FTR recording (`.trm`, `.ftr`, `.tll`).
+pub(crate) fn is_trm_path(path: &Path) -> bool {
+    detect_format_by_extension(&path.to_string_lossy()).is_some_and(|format| format.handler == "ftr")
+}
+
+fn prepare_trm_feed(
+    src: &Path,
+    options: FeedOptions,
+    cancelled: Option<&(dyn Fn() -> bool + Send + Sync)>,
+) -> Result<AudioFeed, String> {
+    let info = crate::trm::inspect_trm_with_cancel(src, cancelled)?;
+    let (decode_path, reasons) = crate::trm::choose_route(&info, options);
+    match decode_path {
+        crate::trm::DecodePath::NativeFtr => Ok(AudioFeed {
+            inputs: vec![src.to_path_buf()],
+            input_codec: input_codec_args(src),
+            trm: Some(crate::trm::TrmRoute {
+                info,
+                decode_path,
+                route_reasons: reasons,
+            }),
+            _guards: Vec::new(),
+        }),
+        crate::trm::DecodePath::Deinterleaved => {
+            let (written, files) =
+                crate::trm::deinterleave_trm_with_cancel(src, &std::env::temp_dir(), Some(&info), cancelled)?;
+            let guards = files.iter().cloned().map(crate::safety::TempFile::new).collect();
+            Ok(AudioFeed {
+                inputs: files,
+                input_codec: vec!["-f".into(), "aac".into()],
+                trm: Some(crate::trm::TrmRoute {
+                    info: written,
+                    decode_path,
+                    route_reasons: reasons,
+                }),
+                _guards: guards,
+            })
+        }
+    }
+}
+
 pub(crate) fn prepare_audio_feed_with_cancel(
     src: &Path,
+    options: FeedOptions,
     cancelled: Option<&(dyn Fn() -> bool + Send + Sync)>,
-) -> Result<(PathBuf, Option<crate::safety::TempFile>), String> {
+) -> Result<AudioFeed, String> {
     if cancelled.is_some_and(|check| check()) {
         return Err(AUDIO_PREPARATION_CANCELLED_MESSAGE.into());
+    }
+    if is_trm_path(src) {
+        return prepare_trm_feed(src, options, cancelled);
     }
     let is_sgmca = src
         .extension()
         .and_then(|extension| extension.to_str())
         .is_some_and(|extension| extension.eq_ignore_ascii_case("sgmca"));
     if !is_sgmca {
-        return Ok((src.to_path_buf(), None));
+        return Ok(AudioFeed::plain(src.to_path_buf()));
     }
 
     let (feed, is_temp) = strip_sgmca_header_with_cancel(src, cancelled)?;
-    let guard = is_temp.then(|| crate::safety::TempFile::new(feed.clone()));
-    Ok((feed, guard))
+    let mut prepared = AudioFeed::plain(feed.clone());
+    if is_temp {
+        prepared._guards.push(crate::safety::TempFile::new(feed));
+    }
+    Ok(prepared)
 }
 
-/// Prepare an SGMCA feed without blocking the async command executor. The
-/// cancellation predicate is checked between every 64 KiB copied and owns no
-/// borrowed command state, so scan/conversion/waveform callers can reuse it.
+/// Prepare a feed without blocking the async command executor. The
+/// cancellation predicate is checked between every 64 KiB read or copied and
+/// owns no borrowed command state, so scan/conversion/waveform callers can
+/// reuse it. For an FTR recording this asks the bundled FFmpeg (once per
+/// process) whether it has the native `ftr` decoder.
 pub(crate) async fn prepare_audio_feed_cancellable(
+    app: &tauri::AppHandle,
     src: PathBuf,
     cancelled: Arc<dyn Fn() -> bool + Send + Sync>,
-) -> Result<(PathBuf, Option<crate::safety::TempFile>), String> {
-    tauri::async_runtime::spawn_blocking(move || prepare_audio_feed_with_cancel(&src, Some(cancelled.as_ref())))
-        .await
-        .map_err(|error| format!("Audio preparation task failed: {error}"))?
+) -> Result<AudioFeed, String> {
+    let options = crate::ffmpeg::feed_options(app, &src).await;
+    tauri::async_runtime::spawn_blocking(move || {
+        prepare_audio_feed_with_cancel(&src, options, Some(cancelled.as_ref()))
+    })
+    .await
+    .map_err(|error| format!("Audio preparation task failed: {error}"))?
+}
+
+/// The feed for an FTR recording on which FFmpeg's native decoder already
+/// failed: always the split-channel route, with "native-decode-failed" among
+/// the reasons the export record gives.
+pub(crate) async fn prepare_audio_feed_after_native_failure(
+    src: PathBuf,
+    cancelled: Arc<dyn Fn() -> bool + Send + Sync>,
+) -> Result<AudioFeed, String> {
+    let options = FeedOptions {
+        native_ftr: true,
+        native_failed: true,
+    };
+    tauri::async_runtime::spawn_blocking(move || {
+        prepare_audio_feed_with_cancel(&src, options, Some(cancelled.as_ref()))
+    })
+    .await
+    .map_err(|error| format!("Audio preparation task failed: {error}"))?
 }
 
 // ── Output format helpers ─────────────────────────────────────────────────────
@@ -740,11 +979,102 @@ mod tests {
         let ftr = detect_format_for_path("SESSION.FTR").unwrap();
         assert_eq!(ftr.key, "ftr");
         assert_eq!(ftr.handler, "ftr");
+
+        for name in ["session.tll", "SESSION.TLL"] {
+            let tll = detect_format_for_path(name).unwrap();
+            assert_eq!((tll.key.as_str(), tll.handler.as_str()), ("ftr", "ftr"), "{name}");
+            assert!(is_trm_path(Path::new(name)));
+        }
+        assert!(!is_trm_path(Path::new("session.trs")));
+        assert!(detect_format_for_path("session.trs").is_none());
+    }
+
+    #[test]
+    fn a_merged_feed_joins_its_inputs_in_channel_order() {
+        let feed = AudioFeed {
+            inputs: (0..3)
+                .map(|channel| PathBuf::from(format!("/tmp/ch{channel}.aac")))
+                .collect(),
+            input_codec: vec!["-f".into(), "aac".into()],
+            trm: None,
+            _guards: Vec::new(),
+        };
+        assert!(feed.is_merged());
+        assert_eq!(
+            feed.input_args(&["-t".into(), "5".into()]),
+            [
+                "-t",
+                "5",
+                "-f",
+                "aac",
+                "-i",
+                "/tmp/ch0.aac",
+                "-t",
+                "5",
+                "-f",
+                "aac",
+                "-i",
+                "/tmp/ch1.aac",
+                "-t",
+                "5",
+                "-f",
+                "aac",
+                "-i",
+                "/tmp/ch2.aac"
+            ]
+        );
+        assert_eq!(
+            feed.source_output_args(Some("volume=2")),
+            [
+                "-filter_complex",
+                "[0:a:0][1:a:0][2:a:0]amerge=inputs=3,volume=2[da_out]",
+                "-map",
+                "[da_out]"
+            ]
+        );
+        assert_eq!(
+            feed.source_output_args(None),
+            [
+                "-filter_complex",
+                "[0:a:0][1:a:0][2:a:0]amerge=inputs=3[da_out]",
+                "-map",
+                "[da_out]"
+            ]
+        );
+        assert_eq!(
+            feed.filter_source(),
+            (
+                "[0:a:0][1:a:0][2:a:0]amerge=inputs=3[da_src];".to_string(),
+                "[da_src]".to_string()
+            )
+        );
+        assert_eq!(
+            feed.channel_input_args(2, &[]).unwrap(),
+            ["-f", "aac", "-i", "/tmp/ch2.aac"]
+        );
+        assert!(feed.channel_input_args(3, &[]).is_none());
+
+        let plain = AudioFeed::plain(PathBuf::from("/in.wav"));
+        assert!(!plain.is_merged());
+        assert_eq!(
+            plain.source_output_args(Some("volume=2")),
+            ["-map", "0:a:0", "-af", "volume=2"]
+        );
+        assert_eq!(plain.source_output_args(None), ["-map", "0:a:0"]);
+        assert_eq!(plain.filter_source(), (String::new(), "[0:a:0]".to_string()));
+        assert!(plain.channel_input_args(0, &[]).is_none());
     }
 
     #[test]
     fn ftr_input_uses_native_decoder_and_never_plain_aac() {
-        for path in ["session.trm", "session.ftr", "SESSION.TRM", "SESSION.FTR"] {
+        for path in [
+            "session.trm",
+            "session.ftr",
+            "session.tll",
+            "SESSION.TRM",
+            "SESSION.FTR",
+            "SESSION.TLL",
+        ] {
             let args = input_codec_args(Path::new(path));
             assert_eq!(args, vec!["-c:a", "ftr"], "unexpected decoder args for {path}");
             assert!(!args.iter().any(|arg| arg.eq_ignore_ascii_case("aac")));
@@ -815,7 +1145,7 @@ mod tests {
         let checks = AtomicUsize::new(0);
         let cancelled = || checks.fetch_add(1, Ordering::Relaxed) >= 4;
 
-        let error = prepare_audio_feed_with_cancel(&source, Some(&cancelled)).unwrap_err();
+        let error = prepare_audio_feed_with_cancel(&source, FeedOptions::default(), Some(&cancelled)).unwrap_err();
 
         assert_eq!(error, AUDIO_PREPARATION_CANCELLED_MESSAGE);
         assert!(checks.load(Ordering::Relaxed) >= 5);

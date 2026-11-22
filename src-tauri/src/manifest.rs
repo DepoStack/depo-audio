@@ -111,6 +111,18 @@ fn audio_stream_count(probe: &serde_json::Value) -> Option<u32> {
         .filter(|count| *count > 0)
 }
 
+/// Source facts an FTR feed already holds from reading the recording: its
+/// channel count, one audio stream, and no BWF start time. None for any other
+/// feed, which is probed with ffprobe.
+pub(crate) fn probed_from_feed(feed: &crate::helpers::AudioFeed) -> Option<ProbedSource> {
+    let route = feed.trm()?;
+    Some(ProbedSource {
+        channels: Some(u32::from(route.info.channels)),
+        timing: None,
+        audio_stream_count: Some(1),
+    })
+}
+
 pub(crate) fn parse_probe(probe: &serde_json::Value) -> ProbedSource {
     let stream = &probe["streams"][crate::helpers::SOURCE_AUDIO_STREAM as usize];
     let channels = positive_u32(&stream["channels"]);
@@ -163,6 +175,28 @@ pub struct AudioStreamsInfo {
     pub converted_index: u32,
     pub streams: Vec<AudioStreamSummary>,
     pub duration_secs: Option<f64>,
+    /// For an FTR recording: what reading it found (session flags, whether
+    /// it was closed) and the route a conversion would take now.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub trm: Option<crate::trm::TrmRoute>,
+}
+
+/// The queue's view of an FTR recording, from reading it rather than from
+/// ffprobe: one audio stream with the recording's channel count and the
+/// duration of the frames actually written (an unclosed recording's header
+/// length is a placeholder, never a duration).
+pub(crate) fn trm_audio_streams(route: crate::trm::TrmRoute) -> AudioStreamsInfo {
+    AudioStreamsInfo {
+        converted_index: crate::helpers::SOURCE_AUDIO_STREAM,
+        streams: vec![AudioStreamSummary {
+            channels: Some(u32::from(route.info.channels)),
+            sample_rate: route.info.sample_rate,
+            language: None,
+            title: None,
+        }],
+        duration_secs: route.info.duration_secs,
+        trm: Some(route),
+    }
 }
 
 fn bounded_tag(tags: &serde_json::Value, key: &str) -> Option<String> {
@@ -236,6 +270,7 @@ pub(crate) fn parse_audio_streams(probe: &serde_json::Value) -> AudioStreamsInfo
         converted_index: crate::helpers::SOURCE_AUDIO_STREAM,
         streams,
         duration_secs,
+        trm: None,
     }
 }
 
@@ -318,6 +353,9 @@ pub(crate) struct FileRecord {
     pub file_name: String,
     pub sha256: String,
     pub size_bytes: u64,
+    /// For an FTR recording: what reading it found and how it was decoded.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub trm: Option<crate::trm::TrmRoute>,
 }
 
 #[derive(Debug, Serialize, Clone, PartialEq)]
@@ -615,6 +653,7 @@ pub(crate) mod tests {
                 file_name: "synthetic_session.wav".into(),
                 sha256: "a".repeat(64),
                 size_bytes: 1024,
+                trm: None,
             },
             probed,
             labels,
@@ -1031,6 +1070,90 @@ pub(crate) mod tests {
             let errors = schema_errors(&manifest);
             assert!(errors.is_empty(), "{errors:#?}");
         }
+    }
+
+    fn sample_trm_route(ftra: Option<crate::trm::FtraInfo>, reasons: &[&str]) -> crate::trm::TrmRoute {
+        crate::trm::TrmRoute {
+            info: crate::trm::TrmInfo {
+                tag: 0x4180,
+                channels: 4,
+                sample_rate: Some(16_000),
+                session_first: true,
+                session_last: false,
+                open_ended: true,
+                index_kind: crate::trm::IndexKind::Walked,
+                packets: 10,
+                frames: 40,
+                frames_per_channel: 10,
+                scrambled_frames: 20,
+                straddling_frames: 3,
+                misaligned_packets: 2,
+                resync_skipped_bytes: 0,
+                incomplete_final_round: true,
+                dropped_frames: 1,
+                truncated: false,
+                ftra,
+                video_streams: 1,
+                duration_secs: Some(0.64),
+            },
+            decode_path: if reasons.is_empty() {
+                crate::trm::DecodePath::NativeFtr
+            } else {
+                crate::trm::DecodePath::Deinterleaved
+            },
+            route_reasons: reasons.iter().map(|reason| reason.to_string()).collect(),
+        }
+    }
+
+    #[test]
+    fn ftr_source_records_match_the_published_schema() {
+        let probed = ProbedSource {
+            channels: Some(4),
+            timing: None,
+            audio_stream_count: Some(1),
+        };
+        let ftra = crate::trm::FtraInfo {
+            a: 1,
+            b: 2,
+            c: 3,
+            d: 4,
+            e: 5,
+        };
+        for route in [
+            sample_trm_route(None, &[]),
+            sample_trm_route(Some(ftra), &["open-ended", "no-usable-index", "native-decode-failed"]),
+        ] {
+            let mut manifest = sample_input(&probed, &[], false);
+            manifest.source.trm = Some(route.clone());
+            let errors = schema_errors(&manifest);
+            assert!(errors.is_empty(), "{errors:#?}");
+            let value = serde_json::to_value(&manifest).unwrap();
+            assert_eq!(
+                value["source"]["trm"]["decodePath"],
+                serde_json::json!(route.decode_path)
+            );
+            assert_eq!(value["source"]["trm"]["indexKind"], "walked");
+            assert_eq!(value["source"]["trm"]["openEnded"], true);
+        }
+        // A reason the schema does not list is rejected, so the two cannot drift.
+        let mut manifest = sample_input(&probed, &[], false);
+        manifest.source.trm = Some(sample_trm_route(None, &["made-up-reason"]));
+        assert!(!schema_errors(&manifest).is_empty());
+        // Other sources carry no trm object at all.
+        let plain = serde_json::to_value(sample_input(&probed, &[], false)).unwrap();
+        assert!(plain["source"].get("trm").is_none());
+    }
+
+    #[test]
+    fn ftr_queue_streams_come_from_reading_the_recording() {
+        let info = trm_audio_streams(sample_trm_route(None, &["open-ended"]));
+        assert_eq!(info.streams.len(), 1);
+        assert_eq!(info.streams[0].channels, Some(4));
+        assert_eq!(info.streams[0].sample_rate, Some(16_000));
+        assert_eq!(info.duration_secs, Some(0.64));
+        let value = serde_json::to_value(&info).unwrap();
+        assert_eq!(value["trm"]["openEnded"], true);
+        assert_eq!(value["trm"]["sessionFirst"], true);
     }
 
     #[test]

@@ -13,9 +13,9 @@ import {
   compareTarget,
   isPlayerPlayable,
 } from '../../lib/player'
-import { audioTrackNotice } from '../../lib/queue'
+import { audioTrackNotice, trmRecordingNotice } from '../../lib/queue'
 
-export default function FileRow({ file, streams, job, onRemove, converting, onOpenInPlayer }) {
+export default function FileRow({ file, streams, sessionNotice = '', job, onRemove, converting, onOpenInPlayer }) {
   const [expanded, setExpanded] = useState(false)
   const [folderError, setFolderError] = useState('')
   const [comparing, setComparing] = useState(false)
@@ -24,6 +24,7 @@ export default function FileRow({ file, streams, job, onRemove, converting, onOp
   const isExp = file.fmt?.status === 'experimental'
   const isRej = file.fmt?.status === 'unsupported'
   const trackNotice = isRej ? '' : audioTrackNotice(streams)
+  const recordingNotice = isRej ? '' : trmRecordingNotice(streams)
 
   return (
     <div
@@ -61,6 +62,10 @@ export default function FileRow({ file, streams, job, onRemove, converting, onOp
           </div>
           <span className="type-small text-[hsl(var(--sub))] truncate block">{file.path}</span>
           {trackNotice && <span className="type-small text-[hsl(var(--text2))] block mt-0.5">{trackNotice}</span>}
+          {recordingNotice && (
+            <span className="type-small text-[hsl(var(--text2))] block mt-0.5">{recordingNotice}</span>
+          )}
+          {sessionNotice && <span className="type-small text-[hsl(var(--text2))] block mt-0.5">{sessionNotice}</span>}
         </div>
         <div className="flex items-center gap-2 shrink-0">
           <StatusChip status={status} />

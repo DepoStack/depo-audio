@@ -16,6 +16,7 @@ mod models;
 mod persistence;
 mod safety;
 mod sgmca;
+mod trm;
 pub mod types;
 mod waveform;
 

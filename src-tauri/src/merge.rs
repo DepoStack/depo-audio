@@ -6,7 +6,7 @@ use tauri::AppHandle;
 use uuid::Uuid;
 
 use crate::ffmpeg::{probe_duration, sidecar_output_opt};
-use crate::helpers::ffmpeg_bin_name;
+use crate::helpers::{ffmpeg_bin_name, AudioFeed};
 use crate::safety::TempFile;
 
 const MAX_MERGE_SOURCES: usize = 4;
@@ -146,8 +146,8 @@ fn validate_merge_job(job: &MergeJob) -> Result<ValidatedMergeJob, String> {
 /// Strip an SGMCA vendor prefix once and keep the temporary Ogg feed alive for
 /// the whole merge. Reusing it avoids copying a potentially large recording
 /// for duration probing, sync detection, and final decoding independently.
-async fn prepare_merge_source(path: PathBuf) -> Result<(PathBuf, Option<TempFile>), String> {
-    crate::helpers::prepare_audio_feed_cancellable(path, Arc::new(|| false)).await
+async fn prepare_merge_source(app: &AppHandle, path: PathBuf) -> Result<AudioFeed, String> {
+    crate::helpers::prepare_audio_feed_cancellable(app, path, Arc::new(|| false)).await
 }
 
 /// Result of analyzing sync between two audio files.
@@ -185,12 +185,12 @@ pub(crate) async fn detect_sync(app: &AppHandle, source_a: &str, source_b: &str)
     if source_a == source_b {
         return Err("Choose two different source files for sync detection".into());
     }
-    let (source_a, _guard_a) = prepare_merge_source(source_a).await?;
-    let (source_b, _guard_b) = prepare_merge_source(source_b).await?;
+    let source_a = prepare_merge_source(app, source_a).await?;
+    let source_b = prepare_merge_source(app, source_b).await?;
     detect_sync_paths(app, &source_a, &source_b).await
 }
 
-async fn detect_sync_paths(app: &AppHandle, source_a: &Path, source_b: &Path) -> Result<SyncResult, String> {
+async fn detect_sync_paths(app: &AppHandle, source_a: &AudioFeed, source_b: &AudioFeed) -> Result<SyncResult, String> {
     // A short, low-rate decode contains enough speech for sync detection while
     // bounding temporary disk use and correlation work.
     let tmp_a = decode_to_mono(app, source_a, SYNC_SAMPLE_RATE, SYNC_DECODE_SECS).await?;
@@ -334,24 +334,18 @@ fn cross_correlate_step(segment_a: &[f32], samples_b: &[f32], offset: i64, len: 
 
 /// Merge multiple audio files into one synchronized output.
 pub(crate) async fn merge_audio(app: &AppHandle, job: &MergeJob) -> Result<MergeResult, String> {
-    let mut job = validate_merge_job(job)?;
-    let mut prepared_sources = Vec::with_capacity(job.sources.len());
-    let mut source_guards = Vec::new();
+    let job = validate_merge_job(job)?;
+    // Each feed (and any temporary file it owns) lives until every
+    // probe/decode finishes.
+    let mut feeds = Vec::with_capacity(job.sources.len());
     for source in &job.sources {
-        let (prepared, guard) = prepare_merge_source(source.clone()).await?;
-        prepared_sources.push(prepared);
-        if let Some(guard) = guard {
-            source_guards.push(guard);
-        }
+        feeds.push(prepare_merge_source(app, source.clone()).await?);
     }
-    job.sources = prepared_sources;
-    // The guards intentionally live until every probe/decode finishes.
-    let _source_guards = source_guards;
 
     // Probe before decoding so a very long compressed source cannot fill the
     // temp directory or exhaust memory before the decoded-size limit is seen.
     let mut estimated_samples = 0f64;
-    for source in &job.sources {
+    for source in &feeds {
         let duration = probe_duration(app, source)
             .await
             .filter(|duration| duration.is_finite() && *duration > 0.0)
@@ -370,8 +364,8 @@ pub(crate) async fn merge_audio(app: &AppHandle, job: &MergeJob) -> Result<Merge
 
     // Step 1: Detect sync offsets relative to the first source
     let mut offsets = vec![0.0f64]; // First source is reference (offset = 0)
-    for i in 1..job.sources.len() {
-        let sync = detect_sync_paths(app, &job.sources[0], &job.sources[i]).await?;
+    for i in 1..feeds.len() {
+        let sync = detect_sync_paths(app, &feeds[0], &feeds[i]).await?;
         if !sync.is_same_event {
             return Err(format!(
                 "Source {} could not be confidently matched to the reference recording",
@@ -383,7 +377,7 @@ pub(crate) async fn merge_audio(app: &AppHandle, job: &MergeJob) -> Result<Merge
 
     // Step 2: Decode all sources to 48kHz mono
     let mut decoded_files = Vec::new();
-    for src in &job.sources {
+    for src in &feeds {
         let tmp = decode_to_mono(app, src, 48_000, MAX_MERGE_DURATION_SECS + 1).await?;
         decoded_files.push(tmp);
     }
@@ -625,7 +619,7 @@ fn best_quality_strategy(sources: &[Vec<f32>], offsets: &[i64], total_samples: u
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
-async fn decode_to_mono(app: &AppHandle, path: &Path, rate: u32, max_secs: u32) -> Result<TempFile, String> {
+async fn decode_to_mono(app: &AppHandle, feed: &AudioFeed, rate: u32, max_secs: u32) -> Result<TempFile, String> {
     let tmp_path = std::env::temp_dir().join(format!(
         "depoaudio_merge_{}.wav",
         Uuid::new_v4().to_string().replace('-', "")
@@ -640,22 +634,15 @@ async fn decode_to_mono(app: &AppHandle, path: &Path, rate: u32, max_secs: u32) 
         "-protocol_whitelist".into(),
         "file".into(),
     ];
-    let input_codec = crate::helpers::input_codec_args(path);
-    if !input_codec.is_empty() {
-        crate::ffmpeg::ensure_ftr_decoder(app).await?;
-        args.extend(input_codec);
-    }
-    args.extend(["-i".into(), path.to_string_lossy().to_string()]);
+    args.extend(feed.input_args(&[]));
     // The same audio stream every other pass reads, not FFmpeg's pick.
-    args.extend(crate::helpers::source_audio_map_args());
+    args.extend(feed.source_output_args(Some(&format!("aresample={rate}"))));
     args.extend([
         "-t".into(),
         max_secs.to_string(),
         "-vn".into(),
         "-sn".into(),
         "-dn".into(),
-        "-af".into(),
-        format!("aresample={}", rate),
         "-ac".into(),
         "1".into(),
         "-acodec".into(),

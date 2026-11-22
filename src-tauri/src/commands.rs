@@ -92,8 +92,8 @@ pub async fn detect_format(path: String) -> Option<FormatInfo> {
 }
 
 /// The audio streams of a queued file, for the Convert queue's multi-track
-/// notice and the WAV size estimate. Read-only: one ffprobe of the original
-/// file. Returns None when the file is not probed here: a rejected format, or
+/// notice, the FTR notices and the WAV size estimate. Read-only: one ffprobe
+/// of the original file, or one read of an FTR recording. Returns None when the file is not probed here: a rejected format, or
 /// an SGMCA, whose Ogg stream sits behind a vendor prefix and is only read
 /// from a temporary copy at conversion time.
 #[tauri::command]
@@ -105,6 +105,25 @@ pub async fn probe_audio_streams_cmd(
     crate::safety::check_file_safe(source)?;
     match detect_format_blocking(path.clone()).await {
         Some(format) if format.handler == "rejected" || format.key == "sgmca" => Ok(None),
+        // An FTR recording is read through (never changed) for its channel
+        // count, the duration of the audio actually written, its session
+        // flags and the decode route; ffprobe would take an unclosed
+        // recording's placeholder length for its duration.
+        Some(format) if format.handler == "ftr" => {
+            let options = crate::ffmpeg::feed_options(&app, source).await;
+            let trm_path = source.to_path_buf();
+            let inspected = tauri::async_runtime::spawn_blocking(move || crate::trm::inspect_trm(&trm_path))
+                .await
+                .map_err(|error| format!("FTR inspection task failed: {error}"))?;
+            Ok(inspected.ok().map(|info| {
+                let (decode_path, route_reasons) = crate::trm::choose_route(&info, options);
+                crate::manifest::trm_audio_streams(crate::trm::TrmRoute {
+                    info,
+                    decode_path,
+                    route_reasons,
+                })
+            }))
+        }
         Some(_) => Ok(crate::ffmpeg::probe_audio_streams(&app, source).await),
         None => Ok(None),
     }

@@ -8,8 +8,8 @@ use serde::Serialize;
 use tauri::AppHandle;
 use tokio::sync::oneshot;
 
-use crate::ffmpeg::{ensure_ftr_decoder, probe_duration_cancellable, sidecar_output_cancellable};
-use crate::helpers::{ffmpeg_bin_name, input_codec_args, prepare_audio_feed_cancellable};
+use crate::ffmpeg::{probe_duration_cancellable, sidecar_output_cancellable};
+use crate::helpers::{ffmpeg_bin_name, prepare_audio_feed_cancellable};
 
 const MAX_WAVEFORM_SECONDS: f64 = 10.0 * 60.0;
 const WAVEFORM_SAMPLE_RATE: u32 = 1_000;
@@ -355,18 +355,11 @@ async fn decode_waveform(app: &AppHandle, key: &FileKey, cancelled: Arc<AtomicBo
             .note
             .unwrap_or_else(|| "This audio format cannot be decoded".into()));
     }
-    if format.handler == "ftr" {
-        ensure_ftr_decoder(app).await?;
-        if is_cancelled() {
-            return Err(WAVEFORM_CANCELLED_MESSAGE.into());
-        }
-    }
-
     let source = key.canonical_path.clone();
     let preparation_flag = cancelled.clone();
     let preparation_cancelled: Arc<dyn Fn() -> bool + Send + Sync> =
         Arc::new(move || preparation_flag.load(Ordering::Acquire));
-    let (feed, _feed_guard) = prepare_audio_feed_cancellable(source, preparation_cancelled)
+    let feed = prepare_audio_feed_cancellable(app, source, preparation_cancelled)
         .await
         .map_err(|error| {
             if is_cancelled() {
@@ -398,11 +391,11 @@ async fn decode_waveform(app: &AppHandle, key: &FileKey, cancelled: Arc<AtomicBo
         "-protocol_whitelist".into(),
         "file,pipe".into(),
     ];
-    args.extend(input_codec_args(&feed));
-    args.extend(["-i".into(), feed.to_string_lossy().to_string()]);
-    // The converted stream (`-map 0:a:0`), so the waveform shows the audio
-    // the probes describe and the conversion encodes.
-    args.extend(crate::helpers::source_audio_map_args());
+    args.extend(feed.input_args(&[]));
+    // The converted stream (`-map 0:a:0`, or an FTR recording's channel files
+    // joined in order), so the waveform shows the audio the probes describe
+    // and the conversion encodes.
+    args.extend(feed.source_output_args(None));
     args.extend([
         "-vn".into(),
         "-sn".into(),

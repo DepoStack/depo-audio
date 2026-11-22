@@ -6,7 +6,7 @@ use tauri::{AppHandle, Emitter};
 use tauri_plugin_shell::process::CommandEvent;
 use tauri_plugin_shell::ShellExt;
 
-use crate::helpers::{ffmpeg_bin_name, ffprobe_bin_name};
+use crate::helpers::{ffmpeg_bin_name, ffprobe_bin_name, AudioFeed};
 use crate::types::{ConvertJob, ProgressEvent};
 
 /// How many seconds of audio the pre-scan / auto-level analysis reads.
@@ -194,31 +194,39 @@ pub(crate) async fn ftr_decoder_available(app: &AppHandle) -> Result<bool, Strin
     Ok(available)
 }
 
-/// Return a user-actionable error before starting a TRM scan/conversion when
-/// the bundled multimedia engine cannot support the format at all.
-pub(crate) async fn ensure_ftr_decoder(app: &AppHandle) -> Result<(), String> {
-    if ftr_decoder_available(app).await? {
-        Ok(())
+/// Feed options for `src`: for an FTR recording, whether the bundled FFmpeg
+/// has its native decoder (a failed check counts as no); nothing to ask for
+/// any other file.
+pub(crate) async fn feed_options(app: &AppHandle, src: &Path) -> crate::helpers::FeedOptions {
+    let native_ftr = if crate::helpers::is_trm_path(src) {
+        ftr_decoder_available(app).await.unwrap_or(false)
     } else {
-        Err(
-            "This FTR/TRM recording requires FFmpeg's native 'ftr' decoder, but this FFmpeg build does not provide it. Update or reinstall DepoAudio; forcing the ordinary AAC decoder cannot decode FTR's multichannel bitstream."
-                .into(),
-        )
+        false
+    };
+    crate::helpers::FeedOptions {
+        native_ftr,
+        native_failed: false,
     }
 }
 
 // Note: ffprobe auto-detects codecs and does not accept ffmpeg input options
 // like -acodec, so the probe helpers take no input codec arguments.
-pub(crate) async fn probe_duration(app: &AppHandle, feed: &Path) -> Option<f64> {
+pub(crate) async fn probe_duration(app: &AppHandle, feed: &AudioFeed) -> Option<f64> {
     probe_duration_cancellable(app, feed, None).await
 }
 
+/// The converted stream's duration. An FTR feed's comes from the frames read,
+/// so an unclosed recording's placeholder length is never used.
 pub(crate) async fn probe_duration_cancellable(
     app: &AppHandle,
-    feed: &Path,
+    feed: &AudioFeed,
     cancelled: CancelCheck<'_>,
 ) -> Option<f64> {
-    let output = sidecar_output_cancellable(app, ffprobe_bin_name(), duration_probe_args(feed), 30, cancelled).await?;
+    if feed.trm().is_some() {
+        return feed.known_duration();
+    }
+    let output =
+        sidecar_output_cancellable(app, ffprobe_bin_name(), duration_probe_args(feed.path()), 30, cancelled).await?;
     parse_duration_probe(&output.stdout)
 }
 
@@ -252,10 +260,14 @@ pub(crate) fn parse_duration_probe(stdout: &[u8]) -> Option<f64> {
 
 pub(crate) async fn probe_channels_cancellable(
     app: &AppHandle,
-    feed: &Path,
+    feed: &AudioFeed,
     cancelled: CancelCheck<'_>,
 ) -> Option<u32> {
-    let out = sidecar_output_cancellable(app, ffprobe_bin_name(), channel_probe_args(feed), 30, cancelled).await?;
+    if let Some(channels) = feed.known_channels() {
+        return Some(channels);
+    }
+    let out =
+        sidecar_output_cancellable(app, ffprobe_bin_name(), channel_probe_args(feed.path()), 30, cancelled).await?;
     parse_channel_probe(&out.stdout)
 }
 
@@ -293,10 +305,14 @@ pub(crate) fn parse_channel_probe(stdout: &[u8]) -> Option<u32> {
 /// record: the manifest then says the start is unknown instead of guessing.
 pub(crate) async fn probe_manifest_source_cancellable(
     app: &AppHandle,
-    feed: &Path,
+    feed: &AudioFeed,
     cancelled: CancelCheck<'_>,
 ) -> crate::manifest::ProbedSource {
-    let Some(out) = sidecar_output_cancellable(app, ffprobe_bin_name(), manifest_probe_args(feed), 30, cancelled).await
+    if let Some(probed) = crate::manifest::probed_from_feed(feed) {
+        return probed;
+    }
+    let Some(out) =
+        sidecar_output_cancellable(app, ffprobe_bin_name(), manifest_probe_args(feed.path()), 30, cancelled).await
     else {
         return crate::manifest::ProbedSource::default();
     };
@@ -343,7 +359,7 @@ pub(crate) async fn probe_audio_streams(app: &AppHandle, feed: &Path) -> Option<
 pub(crate) async fn build_proc_filters_with_gain(
     app: &AppHandle,
     opts: &ConvertJob,
-    feed: &Path,
+    feed: &AudioFeed,
     auto_gain: Option<f64>,
     cancelled: CancelCheck<'_>,
 ) -> Vec<String> {

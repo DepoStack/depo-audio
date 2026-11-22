@@ -30,7 +30,56 @@
       "properties": {
         "fileName": { "type": "string", "description": "File name only, never a folder path." },
         "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$", "description": "SHA-256 of the original file as selected, before any format preparation." },
-        "sizeBytes": { "type": "integer", "minimum": 0 }
+        "sizeBytes": { "type": "integer", "minimum": 0 },
+        "trm": {
+          "type": "object",
+          "description": "Only for an FTR recording (.trm, .ftr, .tll): what DepoAudio found when it read the file, and how FFmpeg decoded it. The layout reading follows owner-supplied interoperability notes and has not yet been confirmed against a recorded file. Written by versions after 1.1.0.",
+          "additionalProperties": false,
+          "required": ["tag", "channels", "sampleRate", "sessionFirst", "sessionLast", "openEnded", "indexKind", "packets", "frames", "framesPerChannel", "scrambledFrames", "straddlingFrames", "misalignedPackets", "resyncSkippedBytes", "incompleteFinalRound", "droppedFrames", "truncated", "ftra", "videoStreams", "durationSecs", "decodePath", "routeReasons"],
+          "properties": {
+            "tag": { "type": "integer", "minimum": 0, "maximum": 65535, "description": "WAVEFORMATEX format tag as stored." },
+            "channels": { "type": "integer", "minimum": 1, "maximum": 16, "description": "Channel (microphone) count from the audio format header." },
+            "sampleRate": { "type": ["integer", "null"], "minimum": 7350, "maximum": 96000, "description": "From the first channel-0 AAC frame header; null when no frame was found." },
+            "sessionFirst": { "type": "boolean", "description": "The main header marks this file as the first of a recording session." },
+            "sessionLast": { "type": "boolean", "description": "The main header marks this file as the last of a recording session." },
+            "openEnded": { "type": "boolean", "description": "The audio length field holds the value a recorder leaves in a file it never closed; the duration then comes from the frames read." },
+            "indexKind": { "enum": ["idx1-absolute", "idx1-relative", "walked"], "description": "How the audio chunks were found: the idx1 index (absolute or movi-relative offsets) or a walk of the movi list." },
+            "packets": { "type": "integer", "minimum": 0, "description": "Audio chunks read." },
+            "frames": { "type": "integer", "minimum": 0, "description": "AAC frames delivered to the channels (whole rounds only)." },
+            "framesPerChannel": { "type": "integer", "minimum": 0 },
+            "scrambledFrames": { "type": "integer", "minimum": 0, "description": "Delivered frames that were descrambled." },
+            "straddlingFrames": { "type": "integer", "minimum": 0, "description": "Frames that begin in one audio chunk and end in a later one." },
+            "misalignedPackets": { "type": "integer", "minimum": 0, "description": "Audio chunks that do not start and end on a channel-0 round boundary." },
+            "resyncSkippedBytes": { "type": "integer", "minimum": 0, "description": "Bytes skipped to reach a channel-0 frame." },
+            "incompleteFinalRound": { "type": "boolean", "description": "The last round was missing channels and was not delivered." },
+            "droppedFrames": { "type": "integer", "minimum": 0, "description": "Frames read but not delivered because their round was incomplete." },
+            "truncated": { "type": "boolean", "description": "The file ends inside a chunk or a frame, or its chunk list stops at unreadable data." },
+            "ftra": {
+              "type": ["object", "null"],
+              "description": "The optional FTRA chunk's five values, as read; null when the file has none. Reported only; DepoAudio does not use them.",
+              "if": { "type": "object" },
+              "then": {
+                "additionalProperties": false,
+                "required": ["a", "b", "c", "d", "e"],
+                "properties": {
+                  "a": { "type": "integer", "minimum": 0 },
+                  "b": { "type": "integer", "minimum": 0 },
+                  "c": { "type": "integer", "minimum": 0 },
+                  "d": { "type": "integer", "minimum": 0 },
+                  "e": { "type": "integer", "minimum": 0 }
+                }
+              }
+            },
+            "videoStreams": { "type": "integer", "minimum": 0, "description": "Video stream headers in the file; video is never converted." },
+            "durationSecs": { "type": ["number", "null"], "minimum": 0, "description": "Frames per channel x 1024 samples / sample rate." },
+            "decodePath": { "enum": ["native-ftr", "deinterleaved"], "description": "native-ftr: FFmpeg's ftr decoder read the file as it is. deinterleaved: DepoAudio wrote each channel to a temporary mono ADTS file (descrambled, equal frame counts) and FFmpeg joined them in channel order with amerge." },
+            "routeReasons": {
+              "type": "array",
+              "description": "Why the native decoder was not used; empty for native-ftr.",
+              "items": { "enum": ["format-tag-not-mapped-by-ffmpeg", "no-usable-index", "open-ended", "truncated", "frames-cross-chunks", "chunks-not-on-round-boundaries", "data-before-channel-0", "incomplete-rounds", "native-decoder-unavailable", "native-decode-failed"] }
+            }
+          }
+        }
       }
     },
     "output": {

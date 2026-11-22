@@ -6,15 +6,14 @@ use std::sync::Arc;
 use tauri::{AppHandle, Emitter};
 
 use crate::ffmpeg::{
-    build_proc_filters_with_gain, ensure_ftr_decoder, probe_channels_cancellable, probe_duration_cancellable,
+    build_proc_filters_with_gain, probe_channels_cancellable, probe_duration_cancellable,
     probe_manifest_source_cancellable, run_ffmpeg_with_timeout,
 };
 use crate::helpers::{
-    basename, input_codec_args, output_args, output_ext, prepare_audio_feed_with_cancel, safe_ffmpeg_input_prelude,
-    safe_label, source_audio_map_args, wav_estimated_bytes, wav_rf64_args,
+    basename, output_args, output_ext, prepare_audio_feed_with_cancel, safe_ffmpeg_input_prelude, safe_label,
+    wav_estimated_bytes, wav_rf64_args, AudioFeed, FeedOptions,
 };
 use crate::manifest::{self, FileRecord, ManifestInput, OutputFacts};
-use crate::safety::TempFile;
 use crate::types::{ConvertJob, OutputFile, ProgressEvent, CONVERSION_CANCELLED_MESSAGE};
 /// FTR's supported registry and the analysis engine both cap court recordings
 /// at 16 channels. Reject corrupt or unsupported headers before allocating
@@ -127,15 +126,31 @@ fn split_labels(num_ch: u32, labels: &[String]) -> Vec<String> {
 /// requires the actual channel layout, which breaks mono and 4-channel court
 /// recordings). Auto-level injects EACH channel's own gain right after the
 /// channel is isolated — a single averaged gain would leave imbalance in place.
+#[cfg(test)]
 fn split_filter_complex(num_ch: u32, auto_level: bool, channel_gains: Option<&Vec<f64>>, proc: &[String]) -> String {
+    split_filter_complex_from(
+        (String::new(), crate::helpers::source_audio_filter_input()),
+        num_ch,
+        auto_level,
+        channel_gains,
+        proc,
+    )
+}
+
+/// [`split_filter_complex`] reading the converted stream from `source`: the
+/// filtergraph prefix and label from `AudioFeed::filter_source` (`[0:a:0]`
+/// for one input, the `amerge` of an FTR recording's channel files otherwise).
+fn split_filter_complex_from(
+    source: (String, String),
+    num_ch: u32,
+    auto_level: bool,
+    channel_gains: Option<&Vec<f64>>,
+    proc: &[String],
+) -> String {
+    let (prefix, input) = source;
     let sp_tags: Vec<String> = (0..num_ch as usize).map(|i| format!("sp{}", i)).collect();
     // `[0:a:0]`: the converted stream, never FFmpeg's choice among tracks.
-    let split_str = format!(
-        "{}asplit={}[{}]",
-        crate::helpers::source_audio_filter_input(),
-        num_ch,
-        sp_tags.join("][")
-    );
+    let split_str = format!("{prefix}{input}asplit={}[{}]", num_ch, sp_tags.join("]["));
     let per_ch_proc = if proc.is_empty() {
         String::new()
     } else {
@@ -272,40 +287,101 @@ pub(crate) async fn do_convert(
     if fmt.handler == "rejected" {
         return Err(fmt.note.unwrap_or_else(|| "This format cannot be converted.".into()));
     }
-    if fmt.handler == "ftr" {
-        ensure_ftr_decoder(app).await?;
-        cancel.check()?;
+    let options = crate::ffmpeg::feed_options(app, src).await;
+    cancel.check()?;
+    let (feed, source) = prepare_on_blocking_thread(src, options, cancel).await?;
+
+    let error = match do_convert_inner(app, job, &feed, cancel, source.clone()).await {
+        Ok(outputs) => return Ok(outputs),
+        Err(InnerError::Other(error)) => return Err(error),
+        Err(InnerError::Decode(error)) => error,
+    };
+    // FFmpeg's native FTR decoder failed on a file whose layout looked right
+    // for it: split the channels and decode them instead. The export record
+    // names the route and gives "native-decode-failed" as the reason.
+    if !feed.used_native_ftr() || cancel.cancelled() {
+        return Err(error);
     }
+    drop(feed);
+    let preparation_cancel = cancel.clone();
+    let feed = crate::helpers::prepare_audio_feed_after_native_failure(
+        src.to_path_buf(),
+        Arc::new(move || preparation_cancel.cancelled()),
+    )
+    .await?;
+    cancel.check()?;
+    // The original was fingerprinted once already; only the route changed.
+    let fallback_source = FileRecord {
+        trm: feed.trm().cloned(),
+        ..source
+    };
+    do_convert_inner(app, job, &feed, cancel, fallback_source)
+        .await
+        .map_err(|fallback| {
+            format!(
+                "{} (FFmpeg's native FTR decoder failed first: {error})",
+                fallback.into_message()
+            )
+        })
+}
+
+/// Why `do_convert_inner` stopped: a decode failure is worth one retry by
+/// another FTR route; anything else ends the conversion.
+enum InnerError {
+    Decode(String),
+    Other(String),
+}
+
+impl InnerError {
+    fn into_message(self) -> String {
+        match self {
+            InnerError::Decode(message) | InnerError::Other(message) => message,
+        }
+    }
+}
+
+impl From<String> for InnerError {
+    fn from(message: String) -> Self {
+        InnerError::Other(message)
+    }
+}
+
+async fn prepare_on_blocking_thread(
+    src: &Path,
+    options: FeedOptions,
+    cancel: &ConversionCancel,
+) -> Result<(AudioFeed, FileRecord), String> {
     let preparation_cancel = cancel.clone();
     let preparation_src = src.to_path_buf();
     let prepared = tauri::async_runtime::spawn_blocking(move || {
-        prepare_source(&preparation_src, &move || preparation_cancel.cancelled())
+        prepare_source(&preparation_src, options, &move || preparation_cancel.cancelled())
     })
     .await
     .map_err(|error| format!("Audio preparation task failed: {error}"))?;
     cancel.check()?;
-    let (feed_path, _feed_guard, source) = prepared?;
-
-    do_convert_inner(app, job, &feed_path, max_bytes, cancel, source).await
+    prepared
 }
 
 /// Prepare the selected file for FFmpeg (an SGMCA loses its vendor prefix in a
-/// temporary Ogg copy; every other format is used as is) and fingerprint the
-/// original file as the person selected it, before any preparation, for the
-/// export record (DA-08). The temporary copy, if any, lives as long as the
-/// returned guard.
+/// temporary Ogg copy; an FTR recording is read through and, when FFmpeg's
+/// native decoder cannot take it, split into temporary per-channel files;
+/// every other format is used as is) and fingerprint the original file as the
+/// person selected it, before any preparation, for the export record (DA-08).
+/// Temporary files live as long as the returned feed.
 fn prepare_source(
     src: &Path,
+    options: FeedOptions,
     cancelled: &(dyn Fn() -> bool + Send + Sync),
-) -> Result<(PathBuf, Option<TempFile>, FileRecord), String> {
-    let (feed, guard) = prepare_audio_feed_with_cancel(src, Some(cancelled))?;
+) -> Result<(AudioFeed, FileRecord), String> {
+    let feed = prepare_audio_feed_with_cancel(src, options, Some(cancelled))?;
     let (sha256, size_bytes) = manifest::sha256_file(src, cancelled)?;
     let source = FileRecord {
         file_name: basename(&src.to_string_lossy()),
         sha256,
         size_bytes,
+        trm: feed.trm().cloned(),
     };
-    Ok((feed, guard, source))
+    Ok((feed, source))
 }
 
 /// What the probes found before the FFmpeg command is planned.
@@ -345,12 +421,10 @@ struct ConversionPlan {
 /// drive the same plan with FFmpeg from PATH.
 fn plan_conversion(
     job: &ConvertJob,
-    feed: &Path,
+    feed: &AudioFeed,
     probes: &ConversionProbes,
     cleanup: &mut OutputCleanup,
 ) -> Result<ConversionPlan, String> {
-    let input_codec = input_codec_args(feed);
-
     let base = Path::new(&job.src_path)
         .file_stem()
         .and_then(|s| s.to_str())
@@ -409,8 +483,7 @@ fn plan_conversion(
     ));
 
     let mut ffmpeg_args = safe_ffmpeg_input_prelude();
-    ffmpeg_args.extend(input_codec);
-    ffmpeg_args.extend(["-i".into(), feed.to_string_lossy().to_string()]);
+    ffmpeg_args.extend(feed.input_args(&[]));
 
     let planned: Vec<PlannedOutput>;
     let map_args: Vec<Vec<String>>;
@@ -454,30 +527,25 @@ fn plan_conversion(
             track_planned(cleanup, &planned);
             let dst = planned[0].path.clone();
             let chain = all.join(",");
-            map_args = vec![source_audio_map_args()];
-            args.extend(map_args[0].clone());
-            args.extend(["-af".into(), chain.clone()]);
+            let (option, graph, map) = feed.source_filtering(Some(&chain));
+            args.extend(feed.source_output_args(Some(&chain)));
+            map_args = vec![map];
             args.extend(encoder_args.clone());
             args.extend(["-y".into(), dst.to_string_lossy().to_string()]);
-            filter_option = Some("-af");
-            filter_chain = Some(chain);
+            filter_option = option;
+            filter_chain = graph;
         }
 
         "keep" => {
             planned = reserve_output_paths([(out_dir.join(format!("{}_orig{}", base, ext)), None, None)])?;
             track_planned(cleanup, &planned);
             let dst = planned[0].path.clone();
-            map_args = vec![source_audio_map_args()];
-            args.extend(map_args[0].clone());
-            if proc.is_empty() {
-                filter_option = None;
-                filter_chain = None;
-            } else {
-                let chain = proc.join(",");
-                args.extend(["-af".into(), chain.clone()]);
-                filter_option = Some("-af");
-                filter_chain = Some(chain);
-            }
+            let chain = (!proc.is_empty()).then(|| proc.join(","));
+            let (option, graph, map) = feed.source_filtering(chain.as_deref());
+            args.extend(feed.source_output_args(chain.as_deref()));
+            map_args = vec![map];
+            filter_option = option;
+            filter_chain = graph;
             args.extend(encoder_args.clone());
             args.extend(["-y".into(), dst.to_string_lossy().to_string()]);
         }
@@ -503,7 +571,7 @@ fn plan_conversion(
             // Same channel-count guard as the stereo arm: a gains vector from
             // a desynced analysis probe must not be applied per-channel
             let valid_gains = probes.channel_gains.as_ref().filter(|g| g.len() == num_ch as usize);
-            let fc = split_filter_complex(num_ch, job.auto_level, valid_gains, &proc);
+            let fc = split_filter_complex_from(feed.filter_source(), num_ch, job.auto_level, valid_gains, &proc);
             args.extend(["-filter_complex".into(), fc.clone(), "-y".into()]);
             map_args = (0..planned.len())
                 .map(|i| vec!["-map".into(), format!("[op{}]", i)])
@@ -634,11 +702,10 @@ fn finish_outputs(
 async fn do_convert_inner(
     app: &AppHandle,
     job: &ConvertJob,
-    feed: &Path,
-    max_input_size: u64,
+    feed: &AudioFeed,
     cancel: &ConversionCancel,
     source: FileRecord,
-) -> Result<Vec<OutputFile>, String> {
+) -> Result<Vec<OutputFile>, InnerError> {
     cancel.check()?;
     let is_cancelled = || cancel.cancelled();
 
@@ -661,15 +728,14 @@ async fn do_convert_inner(
         // recording to PCM.
         let analysis_ctx = crate::analysis::ScanCtx::silent(
             app.clone(),
-            feed.to_string_lossy().to_string(),
+            job.src_path.clone(),
             cancel.epoch.clone(),
             cancel.generation,
         );
-        let gain_result =
-            crate::analysis::analyze_channel_gains(app, &feed.to_string_lossy(), max_input_size, Some(&analysis_ctx))
-                .await;
+        let gain_result = crate::analysis::analyze_feed_channel_gains(app, feed, Some(&analysis_ctx)).await;
         cancel.check()?;
-        channel_gains = Some(gain_result.map_err(|error| format!("Auto-level analysis failed: {error}"))?);
+        channel_gains =
+            Some(gain_result.map_err(|error| InnerError::Decode(format!("Auto-level analysis failed: {error}")))?);
     }
 
     let effective_feed = feed;
@@ -716,7 +782,14 @@ async fn do_convert_inner(
         total_secs,
         Some(&is_cancelled),
     )
-    .await?;
+    .await
+    .map_err(|error| {
+        if error == CONVERSION_CANCELLED_MESSAGE {
+            InnerError::Other(error)
+        } else {
+            InnerError::Decode(error)
+        }
+    })?;
     cancel.check()?;
 
     // Outputs, fingerprints and export records (DA-08), then commit; the same
@@ -740,6 +813,7 @@ async fn do_convert_inner(
     })
     .await
     .map_err(|error| format!("Could not save the export records: {error}"))?
+    .map_err(InnerError::Other)
 }
 
 #[cfg(test)]
@@ -1271,7 +1345,12 @@ mod tests {
     /// What one synthetic conversion produced.
     struct CourtConversion {
         files: Vec<OutputFile>,
+        /// The feed's first input (removed by now if it was temporary).
         feed: PathBuf,
+        /// Every input FFmpeg read.
+        feed_inputs: Vec<String>,
+        /// The FFmpeg arguments that ran.
+        args: Vec<String>,
     }
 
     /// `do_convert` without the Tauri runtime: the same request checks, source
@@ -1284,13 +1363,23 @@ mod tests {
         job: &ConvertJob,
         channel_gains: Option<Vec<f64>>,
     ) -> Result<CourtConversion, String> {
+        convert_with_system_ffmpeg_options(job, channel_gains, FeedOptions::default())
+    }
+
+    /// As [`convert_with_system_ffmpeg`], with the feed options the app would
+    /// pass (for an FTR recording: whether the native decoder is present).
+    fn convert_with_system_ffmpeg_options(
+        job: &ConvertJob,
+        channel_gains: Option<Vec<f64>>,
+        options: FeedOptions,
+    ) -> Result<CourtConversion, String> {
         validate_convert_request(job)?;
         let format = crate::helpers::detect_format_for_path(&job.src_path).ok_or("Unrecognised file format")?;
         assert!(
-            !matches!(format.handler.as_str(), "rejected" | "ftr"),
-            "this harness covers container formats only"
+            format.handler != "rejected",
+            "this harness covers readable formats only"
         );
-        let (feed, _feed_guard, source) = prepare_source(Path::new(&job.src_path), &|| false)?;
+        let (feed, source) = prepare_source(Path::new(&job.src_path), options, &|| false)?;
 
         let probe = |args: Vec<String>| {
             let output = std::process::Command::new("ffprobe").args(args).output().unwrap();
@@ -1300,15 +1389,24 @@ mod tests {
         // As do_convert_inner: the duration is always probed (progress and the
         // WAV size estimate); build_proc_filters_with_gain uses it only to
         // place the fade-out.
-        let total_secs = crate::ffmpeg::parse_duration_probe(&probe(crate::ffmpeg::duration_probe_args(&feed)));
+        // An FTR feed answers from the recording itself, as the app's probes do.
+        let total_secs = if feed.trm().is_some() {
+            feed.known_duration()
+        } else {
+            crate::ffmpeg::parse_duration_probe(&probe(crate::ffmpeg::duration_probe_args(feed.path())))
+        };
         let duration = if job.fade { total_secs } else { None };
         let probes = ConversionProbes {
-            channels: crate::ffmpeg::parse_channel_probe(&probe(crate::ffmpeg::channel_probe_args(&feed))),
+            channels: feed
+                .known_channels()
+                .or_else(|| crate::ffmpeg::parse_channel_probe(&probe(crate::ffmpeg::channel_probe_args(feed.path())))),
             channel_gains,
             proc: crate::ffmpeg::proc_filters(job, None, duration),
-            probed: serde_json::from_slice::<serde_json::Value>(&probe(crate::ffmpeg::manifest_probe_args(&feed)))
-                .map(|value| manifest::parse_probe(&value))
-                .unwrap_or_default(),
+            probed: manifest::probed_from_feed(&feed).unwrap_or_else(|| {
+                serde_json::from_slice::<serde_json::Value>(&probe(crate::ffmpeg::manifest_probe_args(feed.path())))
+                    .map(|value| manifest::parse_probe(&value))
+                    .unwrap_or_default()
+            }),
             duration_secs: total_secs,
         };
 
@@ -1331,7 +1429,20 @@ mod tests {
         };
         let cancel = ConversionCancel::new(Arc::new(AtomicU64::new(1)), 1);
         let files = finish_outputs(job, &plan, &input, output_cleanup, &cancel)?;
-        Ok(CourtConversion { files, feed })
+        let first = feed.path().to_path_buf();
+        let inputs = plan
+            .args
+            .windows(2)
+            .filter(|pair| pair[0] == "-i")
+            .map(|pair| pair[1].clone())
+            .collect();
+        drop(feed);
+        Ok(CourtConversion {
+            files,
+            feed: first,
+            feed_inputs: inputs,
+            args: plan.args,
+        })
     }
 
     /// Reads `<output>.depoaudio.json`, checks it against the published schema
@@ -1421,6 +1532,219 @@ mod tests {
         assert_eq!(record["processing"]["filterOption"], "-af");
         assert_eq!(record["channel"]["output"], "stereo-mix");
         assert_eq!(record["channel"]["sourceChannelIndex"], serde_json::Value::Null);
+    }
+
+    // ── Synthetic FTR recordings ────────────────────────────────────────────
+    //
+    // Built by `crate::trm::tests` from FFmpeg-encoded tones (300, 700, 1100,
+    // 1700 Hz on channels 1-4), marked and scrambled as the interoperability
+    // notes describe. No byte comes from a real FTR recording.
+
+    use crate::trm::tests as trm_fixture;
+
+    #[derive(Clone, Copy)]
+    enum TrmLayout {
+        /// One round per chunk, indexed, closed: what the native decoder takes.
+        Aligned,
+        /// Frames cut across chunks, and a channel-3 frame before channel 0.
+        Straddling,
+        /// No idx1, the audio length left at 0x7FFFFFFF, movi never closed.
+        OpenEnded,
+    }
+
+    fn synthetic_trm(dir: &Path, layout: TrmLayout) -> PathBuf {
+        let channels = trm_fixture::tone_channels(dir, SYNTHETIC_SECONDS);
+        let (stream, lengths) = trm_fixture::ftr_frame_stream(&channels);
+        let mut spec = trm_fixture::AviSpec::closed(4);
+        let packets = match layout {
+            TrmLayout::Aligned => trm_fixture::round_packets(&stream, &lengths, 4, 1),
+            TrmLayout::Straddling => {
+                let mut lead = channels[3][1].clone();
+                lead[2] |= 0x02;
+                lead.extend(&stream);
+                trm_fixture::sized_packets(&lead, 900)
+            }
+            TrmLayout::OpenEnded => {
+                spec.index = trm_fixture::Index::None;
+                spec.length = 0x7FFF_FFFF;
+                spec.open_movi = true;
+                trm_fixture::round_packets(&stream, &lengths, 4, 1)
+            }
+        };
+        let path = dir.join("synthetic_session.trm");
+        fs::write(&path, trm_fixture::build_avi(&spec, &packets)).unwrap();
+        path
+    }
+
+    fn native_options() -> FeedOptions {
+        FeedOptions {
+            native_ftr: true,
+            native_failed: false,
+        }
+    }
+
+    fn output_samples(path: &str) -> Vec<f32> {
+        trm_fixture::decode_f32(&["-i".into(), path.into()])
+    }
+
+    fn assert_no_channel_files_left(inputs: &[String]) {
+        for input in inputs {
+            assert!(
+                !Path::new(input).exists(),
+                "temporary channel file left behind: {input}"
+            );
+        }
+    }
+
+    #[test]
+    fn synthetic_trm_converts_the_same_by_native_ftr_and_by_split_channels() {
+        if !trm_fixture::aac_tools_available() {
+            return;
+        }
+        if !trm_fixture::native_ftr_decoder_on_path() {
+            eprintln!("skipping: this FFmpeg has no native ftr decoder to cross-check against");
+            return;
+        }
+        let dir = ConversionTestDir::new();
+        let trm = synthetic_trm(&dir.0, TrmLayout::Aligned);
+        let original = fs::read(&trm).unwrap();
+        let native_out = dir.0.join("native");
+        let split_out = dir.0.join("split");
+        fs::create_dir(&native_out).unwrap();
+        fs::create_dir(&split_out).unwrap();
+
+        let native =
+            convert_with_system_ffmpeg_options(&court_job(&trm, &native_out, "keep", "wav"), None, native_options())
+                .unwrap();
+        let split = convert_with_system_ffmpeg(&court_job(&trm, &split_out, "keep", "wav"), None).unwrap();
+        assert_eq!(native.feed_inputs, vec![trm.to_string_lossy().to_string()]);
+        assert!(native.args.windows(2).any(|pair| pair == ["-c:a", "ftr"]));
+        assert_eq!(split.feed_inputs.len(), 4);
+        assert!(split.args.iter().any(|arg| arg.contains("amerge=inputs=4")));
+        assert_no_channel_files_left(&split.feed_inputs);
+
+        let native_samples = output_samples(&native.files[0].path);
+        let split_samples = output_samples(&split.files[0].path);
+        assert_eq!(native_samples.len(), split_samples.len());
+        assert!(
+            native_samples
+                .iter()
+                .zip(&split_samples)
+                .all(|(a, b)| a.to_bits() == b.to_bits()),
+            "Keep Original output differs between the native and split-channel routes"
+        );
+        assert_eq!(
+            trm_fixture::dominant_tones(&split_samples, 4, 48_000),
+            trm_fixture::TONE_FREQUENCIES.to_vec()
+        );
+
+        let native_record = checked_export_record(&native.files[0], &trm);
+        assert_eq!(native_record["source"]["trm"]["decodePath"], "native-ftr");
+        assert_eq!(native_record["source"]["trm"]["routeReasons"], serde_json::json!([]));
+        assert_eq!(
+            native_record["processing"]["mapArgs"],
+            serde_json::json!(["-map", "0:a:0"])
+        );
+        let split_record = checked_export_record(&split.files[0], &trm);
+        assert_eq!(split_record["source"]["trm"]["decodePath"], "deinterleaved");
+        assert_eq!(
+            split_record["source"]["trm"]["routeReasons"],
+            serde_json::json!(["native-decoder-unavailable"])
+        );
+        assert_eq!(split_record["processing"]["filterOption"], "-filter_complex");
+        assert_eq!(
+            split_record["processing"]["mapArgs"],
+            serde_json::json!(["-map", "[da_out]"])
+        );
+        assert_eq!(split_record["source"]["trm"]["indexKind"], "idx1-absolute");
+        assert_eq!(split_record["audioStream"]["sourceAudioStreamCount"], 1);
+        assert_eq!(fs::read(&trm).unwrap(), original, "the original is never modified");
+    }
+
+    #[test]
+    fn synthetic_trm_with_straddling_frames_splits_each_tone_to_its_own_file() {
+        if !trm_fixture::aac_tools_available() {
+            return;
+        }
+        let dir = ConversionTestDir::new();
+        let trm = synthetic_trm(&dir.0, TrmLayout::Straddling);
+        let out = dir.0.join("out");
+        fs::create_dir(&out).unwrap();
+        // The native decoder is offered; the layout still routes around it.
+        let conversion =
+            convert_with_system_ffmpeg_options(&court_job(&trm, &out, "split", "wav"), None, native_options()).unwrap();
+        assert_eq!(conversion.files.len(), 4);
+        assert!(!conversion.args.iter().any(|arg| arg == "ftr"));
+        assert_no_channel_files_left(&conversion.feed_inputs);
+        for (index, file) in conversion.files.iter().enumerate() {
+            let samples = output_samples(&file.path);
+            assert_eq!(
+                trm_fixture::dominant_tones(&samples, 1, 48_000),
+                vec![trm_fixture::TONE_FREQUENCIES[index]],
+                "{}",
+                file.name
+            );
+            let record = checked_export_record(file, &trm);
+            assert_eq!(record["channel"]["sourceChannelIndex"], index);
+            let route = &record["source"]["trm"];
+            assert_eq!(route["decodePath"], "deinterleaved");
+            assert!(route["straddlingFrames"].as_u64().unwrap() > 0);
+            assert!(route["resyncSkippedBytes"].as_u64().unwrap() > 0);
+            let reasons = route["routeReasons"].as_array().unwrap();
+            assert!(
+                reasons.contains(&serde_json::json!("frames-cross-chunks")),
+                "{reasons:?}"
+            );
+        }
+
+        // Mix to Stereo hears every channel on both sides.
+        let stereo_out = dir.0.join("stereo");
+        fs::create_dir(&stereo_out).unwrap();
+        let stereo = convert_with_system_ffmpeg(&court_job(&trm, &stereo_out, "stereo", "wav"), None).unwrap();
+        let samples = output_samples(&stereo.files[0].path);
+        for frequency in trm_fixture::TONE_FREQUENCIES {
+            let on = trm_fixture::tone_power(&samples, 2, 0, frequency, 48_000);
+            let off = trm_fixture::tone_power(&samples, 2, 0, frequency + 150, 48_000);
+            assert!(on > off * 100.0, "{frequency} Hz is missing from the stereo mix");
+        }
+        let record = checked_export_record(&stereo.files[0], &trm);
+        assert_eq!(record["processing"]["filterOption"], "-filter_complex");
+        assert!(record["processing"]["filterChain"]
+            .as_str()
+            .unwrap()
+            .starts_with("[0:a:0][1:a:0][2:a:0][3:a:0]amerge=inputs=4,pan=stereo"));
+    }
+
+    #[test]
+    fn an_unclosed_unindexed_trm_converts_the_audio_that_was_written() {
+        if !trm_fixture::aac_tools_available() {
+            return;
+        }
+        let dir = ConversionTestDir::new();
+        let trm = synthetic_trm(&dir.0, TrmLayout::OpenEnded);
+        let out = dir.0.join("out");
+        fs::create_dir(&out).unwrap();
+        let mut job = court_job(&trm, &out, "keep", "flac");
+        job.fade = true;
+        let conversion = convert_with_system_ffmpeg_options(&job, None, native_options()).unwrap();
+        let record = checked_export_record(&conversion.files[0], &trm);
+        let route = &record["source"]["trm"];
+        assert_eq!(route["openEnded"], true);
+        assert_eq!(route["indexKind"], "walked");
+        assert_eq!(route["decodePath"], "deinterleaved");
+        let frames = route["framesPerChannel"].as_u64().unwrap();
+        let expected = frames as f64 * 1024.0 / 16_000.0;
+        assert_eq!(route["durationSecs"].as_f64().unwrap(), expected);
+        // The fade-out sits at the end of the audio read, not at a duration
+        // worked out from the 0x7FFFFFFF placeholder.
+        let chain = record["processing"]["filterChain"].as_str().unwrap();
+        assert!(
+            chain.contains(&format!("afade=t=out:st={:.3}", expected - job.fade_dur)),
+            "{chain}"
+        );
+        let samples = output_samples(&conversion.files[0].path);
+        assert_eq!(samples.len() as f64 / 4.0 / 48_000.0, expected);
+        assert_no_channel_files_left(&conversion.feed_inputs);
     }
 
     #[test]
@@ -1731,7 +2055,7 @@ mod tests {
             job.out_dir = dir.0.to_string_lossy().to_string();
             job.mode = mode.into();
             let mut cleanup = OutputCleanup::default();
-            let plan = plan_conversion(&job, &feed, &probes, &mut cleanup).unwrap();
+            let plan = plan_conversion(&job, &AudioFeed::plain(feed.to_path_buf()), &probes, &mut cleanup).unwrap();
             let input = plan.args.iter().position(|arg| arg == &feed_arg).unwrap();
             assert_eq!(plan.args[input - 1], "-i");
             assert_eq!(
@@ -1747,7 +2071,7 @@ mod tests {
         job.out_dir = dir.0.to_string_lossy().to_string();
         job.mode = "split".into();
         let mut cleanup = OutputCleanup::default();
-        let plan = plan_conversion(&job, &feed, &probes, &mut cleanup).unwrap();
+        let plan = plan_conversion(&job, &AudioFeed::plain(feed.to_path_buf()), &probes, &mut cleanup).unwrap();
         assert!(plan.filter_chain.as_deref().unwrap().starts_with("[0:a:0]asplit=2"));
         let maps: Vec<&String> = plan
             .args
@@ -1780,7 +2104,7 @@ mod tests {
                 duration_secs,
             };
             let mut cleanup = OutputCleanup::default();
-            plan_conversion(&job, &feed, &probes, &mut cleanup).unwrap()
+            plan_conversion(&job, &AudioFeed::plain(feed.to_path_buf()), &probes, &mut cleanup).unwrap()
         };
         let has_rf64 = |plan: &ConversionPlan| plan.encoder_args.windows(2).any(|pair| pair == ["-rf64", "auto"]);
 
@@ -1824,7 +2148,7 @@ mod tests {
             duration_secs: None,
         };
         let mut cleanup = OutputCleanup::default();
-        let plan = plan_conversion(&job, &source, &probes, &mut cleanup).unwrap();
+        let plan = plan_conversion(&job, &AudioFeed::plain(source.to_path_buf()), &probes, &mut cleanup).unwrap();
         let output = plan.planned[0].path.clone();
         let record = plan.planned[0].manifest.clone();
         fs::write(&output, b"not a wav header").unwrap();
@@ -1835,6 +2159,7 @@ mod tests {
                 file_name: "session.wav".into(),
                 sha256: "a".repeat(64),
                 size_bytes: 12,
+                trm: None,
             },
             probed: &probes.probed,
             labels: &job.labels,

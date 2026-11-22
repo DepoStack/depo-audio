@@ -20,11 +20,12 @@ export const AUDIO_EXTS = [
   'sgmca',
   'trm',
   'ftr',
+  'tll',
   'bwf',
 ]
 // These containers need native preprocessing before a browser media element
 // can decode them. SGMCA may contain an Ogg stream behind a vendor prefix.
-export const CONVERSION_REQUIRED_EXTS = new Set(['sgmca', 'trm', 'ftr'])
+export const CONVERSION_REQUIRED_EXTS = new Set(['sgmca', 'trm', 'ftr', 'tll'])
 export const SPEED_STEPS = [0.5, 0.75, 1, 1.25, 1.5, 2]
 
 // Parse the persisted playback speed; anything off the menu falls back to 1×
@@ -112,7 +113,7 @@ export const COMPARE_OUTPUT_UNAVAILABLE =
   "Output can't be played here. Use Reveal in folder to open it in another player."
 
 // What "Compare with original" on a converted row can do. The original must
-// open in the web view as it is (court containers such as .sgmca/.trm/.ftr
+// open in the web view as it is (court containers such as .sgmca/.trm/.ftr/.tll
 // cannot), and so must the output. Split conversions compare the first
 // playable output, and the note names it. When leading-silence trim ran, the
 // output starts later in the recording than the original by an amount FFmpeg

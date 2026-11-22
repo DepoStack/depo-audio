@@ -1,5 +1,17 @@
 import { describe, expect, it } from 'vitest'
-import { audioTrackNotice, catJobPaths, mergeQueuedFiles, partitionQueuePaths, reexportConfirmCopy } from '../lib/queue'
+import {
+  TRM_OPEN_ENDED_NOTICE,
+  TRM_SESSION_FIRST_MISSING,
+  TRM_SESSION_LAST_MISSING,
+  audioTrackNotice,
+  catJobPaths,
+  mergeQueuedFiles,
+  partitionQueuePaths,
+  reexportConfirmCopy,
+  trmRecordingNotice,
+  trmSessionNotices,
+} from '../lib/queue'
+import { ftrSessionKey } from '../utils'
 
 describe('partitionQueuePaths', () => {
   it('separates TRS companions without discarding any dropped TRM chunks', () => {
@@ -85,5 +97,63 @@ describe('audioTrackNotice', () => {
     expect(audioTrackNotice(null)).toBe('')
     expect(audioTrackNotice(undefined)).toBe('')
     expect(audioTrackNotice([])).toBe('')
+  })
+})
+
+describe('FTR recording notices', () => {
+  const route = (sessionFirst, sessionLast, openEnded = false) => ({
+    convertedIndex: 0,
+    streams: [{ channels: 4 }],
+    trm: { sessionFirst, sessionLast, openEnded },
+  })
+  const chunk = (location, time, filetime, ext = 'trm') => `/court/${location}_20260105-${time}_${filetime}.${ext}`
+  const a = chunk('CR4', '0900', '01dc5f0000000001')
+  const b = chunk('CR4', '0905', '01dc5f0000000002', 'tll')
+  const c = chunk('CR4', '0910', '01dc5f0000000003')
+
+  it('names an unclosed recording and nothing else', () => {
+    expect(trmRecordingNotice(route(true, true, true))).toBe(TRM_OPEN_ENDED_NOTICE)
+    expect(TRM_OPEN_ENDED_NOTICE).toBe(
+      'This recording was not closed properly; DepoAudio read the audio that was written.',
+    )
+    expect(trmRecordingNotice(route(true, true))).toBe('')
+    expect(trmRecordingNotice({ streams: [] })).toBe('')
+    expect(trmRecordingNotice(null)).toBe('')
+  })
+
+  it('groups chunks by folder, location and date', () => {
+    expect(ftrSessionKey(a)).toBe(ftrSessionKey(b))
+    expect(ftrSessionKey(a)).not.toBe(ftrSessionKey(chunk('CR5', '0900', '01dc5f0000000001')))
+    expect(ftrSessionKey(a)).not.toBe(ftrSessionKey(a.replace('/court/', '/other/')))
+    expect(ftrSessionKey('C:\\court\\CR4_20260105-0900_01dc5f0000000001.TRM')).toBe(
+      ftrSessionKey('C:/court/CR4_20260105-0900_01dc5f0000000009.trm'),
+    )
+    expect(ftrSessionKey('/court/session part 1.trm')).toBeNull()
+  })
+
+  it('says which end of a session is missing, on the first queued chunk', () => {
+    const files = [a, b, c].map(path => ({ path }))
+    expect(
+      trmSessionNotices(files, { [a]: route(true, false), [b]: route(false, false), [c]: route(false, true) }),
+    ).toEqual({})
+    expect(
+      trmSessionNotices(files, { [a]: route(false, false), [b]: route(false, false), [c]: route(false, true) }),
+    ).toEqual({ [a]: TRM_SESSION_FIRST_MISSING })
+    expect(
+      trmSessionNotices(files, { [a]: route(true, false), [b]: route(false, false), [c]: route(false, false) }),
+    ).toEqual({ [a]: TRM_SESSION_LAST_MISSING })
+    expect(trmSessionNotices([{ path: b }], { [b]: route(false, false) })).toEqual({
+      [b]: `${TRM_SESSION_FIRST_MISSING} ${TRM_SESSION_LAST_MISSING}`,
+    })
+    expect(TRM_SESSION_FIRST_MISSING).toBe("This session's first file isn't in the queue.")
+  })
+
+  it('claims nothing until every chunk of the session has been read', () => {
+    const files = [a, b].map(path => ({ path }))
+    expect(trmSessionNotices(files, { [a]: route(false, false) })).toEqual({})
+    expect(trmSessionNotices([{ path: '/court/renamed.trm' }], { '/court/renamed.trm': route(false, false) })).toEqual(
+      {},
+    )
+    expect(trmSessionNotices([{ path: '/case/hearing.wav' }], {})).toEqual({})
   })
 })
