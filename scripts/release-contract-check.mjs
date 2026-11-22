@@ -882,6 +882,24 @@ expect(
     macFfmpegBuild.includes('avi mpeg mpegts asf'),
   'release.yml must generate and decode a synthetic fixture for every listed legacy video container on macOS and Windows, and outputs must drop video',
 )
+// DigitalCAT .dm audio is read by dm.rs into a WAV; both platforms' sidecars
+// must carry the decoders that WAV can need, and the container smoke must
+// decode synthetic .dm fixtures through a JavaScript copy of the layout and
+// the WAVs dm.rs itself wrote for scripts/fixtures/dm.
+expect(
+  macFfmpegBuild.includes('pcm_dvd pcm_bluray gsm_ms adpcm_ima_wav adpcm_ms pcm_alaw pcm_mulaw; do') &&
+    releaseWorkflow.includes('Check bundled FFmpeg has the DigitalCAT .dm decoders (Windows)') &&
+    releaseWorkflow.includes("@('gsm_ms', 'adpcm_ima_wav', 'adpcm_ms', 'pcm_alaw', 'pcm_mulaw')") &&
+    containerSmokeFixtures.includes(
+      "export const DM_DECODERS = ['gsm_ms', 'adpcm_ima_wav', 'adpcm_ms', 'pcm_alaw', 'pcm_mulaw']",
+    ) &&
+    containerSmokeFixtures.includes('await generateDm(ffmpeg)') &&
+    containerSmokeFixtures.includes('await checkDm(ffmpeg, ffprobe, tag)') &&
+    containerSmokeFixtures.includes('await checkGoldenDm(ffmpeg, ffprobe)') &&
+    gitAttributes.includes('*.dm binary') &&
+    helpersSource.includes('if has_extension(src, "dm") {'),
+  'macOS and Windows sidecars must have the DigitalCAT .dm decoders, and the release smoke must decode synthetic .dm fixtures and the WAVs dm.rs wrote for the committed ones',
+)
 expect(
   releaseWorkflow.includes('scripts/windows-webview2-evidence.ps1') &&
     releaseWorkflow.includes('WEBVIEW2-EVIDENCE-windows.json') &&

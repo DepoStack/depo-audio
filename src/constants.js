@@ -84,7 +84,14 @@ export const FORMAT_ROWS = [
   { ext: '.sgmca', vendor: 'Stenograph · Case CATalyst', ch: '1–16 ch', status: 'supported', group: 'court' },
   { ext: '.trm  .ftr', vendor: 'For The Record · FTR Gold', ch: '4–16 ch', status: 'experimental', group: 'court' },
   { ext: '.bwf', vendor: 'CourtSmart · Various', ch: 'varies', status: 'supported', group: 'court' },
-  { ext: '.dm', vendor: 'Stenovations · DigitalCAT', ch: '—', status: 'experimental', group: 'court' },
+  {
+    ext: '.dm',
+    vendor: 'Stenovations · DigitalCAT / SoundSync',
+    ch: '—',
+    status: 'experimental',
+    note: 'Reads the audio inside; tested with synthetic files only',
+    group: 'court',
+  },
   // Closed formats — recognized, never decoded; export to WAV in the recording software first
   { ext: '.aes', vendor: 'Eclipse CAT · AudioSync', ch: '—', status: 'unsupported', group: 'export' },
   { ext: '.dcr', vendor: 'Liberty Court Recorder · BIS Digital', ch: '—', status: 'unsupported', group: 'export' },
