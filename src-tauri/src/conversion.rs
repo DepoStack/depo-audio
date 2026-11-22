@@ -2399,7 +2399,7 @@ mod tests {
             assert_eq!(record["channel"]["label"], DCR_NAMES[index]);
             assert_eq!(record["channel"]["sourceChannelIndex"], index);
             let dcr = &record["source"]["dcr"];
-            assert_eq!(dcr["version"], 2100);
+            assert_eq!(dcr["version"], 2700);
             assert_eq!(dcr["codec"], "PCM 16-bit");
             assert_eq!(dcr["codecTag"], 1);
             assert_eq!(dcr["channelNames"], serde_json::json!(DCR_NAMES));

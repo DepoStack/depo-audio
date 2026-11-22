@@ -94,6 +94,17 @@ pub fn run() {
         .manage(AppState::default())
         .setup(|app| {
             setup_persistence(app.handle());
+            // Decoded copies of recordings left in the temp folder by a run
+            // that crashed or was forced to quit; off the startup path.
+            std::thread::spawn(|| {
+                let removed = helpers::sweep_stale_temp_feeds(
+                    &std::env::temp_dir(),
+                    std::time::Duration::from_secs(helpers::STALE_TEMP_FEED_SECS),
+                );
+                if removed > 0 {
+                    eprintln!("[temp] Removed {removed} temporary audio files left by an earlier run");
+                }
+            });
             // Auto-update is available only when the release overlay contains
             // a complete signed-updater configuration. Tauri exposes a missing
             // plugin configuration as JSON null; registering the updater in

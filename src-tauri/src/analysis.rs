@@ -134,8 +134,7 @@ pub(crate) async fn analyze_channel_gains(
     let preparation_context = ctx.cloned();
     let preparation_cancelled: Arc<dyn Fn() -> bool + Send + Sync> =
         Arc::new(move || preparation_context.as_ref().is_some_and(ScanCtx::cancelled));
-    let prepared =
-        crate::helpers::prepare_audio_feed_cancellable(app, source.to_path_buf(), preparation_cancelled).await;
+    let prepared = prepare_with_heartbeat(app, source, preparation_cancelled, ctx).await;
     check(ctx)?;
     let (feed_path, _feed_guard) = prepared?;
     let feed = feed_path.as_path();
@@ -190,6 +189,26 @@ pub(crate) async fn sidecar_with_heartbeat(
     }
 }
 
+/// `prepare_audio_feed_cancellable` with a progress heartbeat. Preparing a
+/// `.dcr` reads the whole recording, writes a decoded copy and may run an
+/// FFmpeg merge, which on a long recording can outlast the frontend's stall
+/// watchdog; the heartbeat says the scan is alive while that runs.
+async fn prepare_with_heartbeat(
+    app: &AppHandle,
+    source: &Path,
+    cancelled: Arc<dyn Fn() -> bool + Send + Sync>,
+    ctx: Option<&ScanCtx>,
+) -> Result<(std::path::PathBuf, Option<crate::safety::TempFile>), String> {
+    let prepare = crate::helpers::prepare_audio_feed_cancellable(app, source.to_path_buf(), cancelled);
+    tokio::pin!(prepare);
+    loop {
+        match tokio::time::timeout(std::time::Duration::from_secs(HEARTBEAT_SECS), &mut prepare).await {
+            Ok(prepared) => return prepared,
+            Err(_) => emit(ctx, "prepare", 0.01),
+        }
+    }
+}
+
 /// Run full audio analysis on a file.
 pub(crate) async fn analyze_audio(
     app: &AppHandle,
@@ -201,8 +220,7 @@ pub(crate) async fn analyze_audio(
     let preparation_context = ctx.cloned();
     let preparation_cancelled: Arc<dyn Fn() -> bool + Send + Sync> =
         Arc::new(move || preparation_context.as_ref().is_some_and(ScanCtx::cancelled));
-    let prepared =
-        crate::helpers::prepare_audio_feed_cancellable(app, source.to_path_buf(), preparation_cancelled).await;
+    let prepared = prepare_with_heartbeat(app, source, preparation_cancelled, ctx).await;
     check(ctx)?;
     let (feed_path, _feed_guard) = prepared?;
     let feed = feed_path.as_path();

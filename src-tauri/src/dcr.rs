@@ -64,6 +64,11 @@ pub(crate) const DCR_MAGIC: &[u8; 8] = b"HGCRLCRS";
 const HEADER_BYTES: u64 = 16;
 const MAX_MAJOR: u32 = 27;
 const META_VERSION: u32 = 2100;
+/// Versions 5.00 to 20.99 must have a `crpt` chunk (the recorder refuses a
+/// file of those versions without one).
+const CRPT_VERSION: u32 = 500;
+/// The first version with the `TIMEZONE` attribute.
+const TIME_ZONE_VERSION: u32 = 2700;
 const CHECKSUM_TAIL_BYTES: u64 = 12;
 const DIRECTORY_POINTER_BYTES: u64 = 16;
 const DIRECTORY_ENTRY_BYTES: u64 = 24;
@@ -102,6 +107,10 @@ pub(crate) const PTCH_UNREADABLE_MESSAGE: &str = concat!(
 );
 pub(crate) const MARK_UNREADABLE_MESSAGE: &str = concat!(
     "The bookmark section of this recording can't be read, so DepoAudio can't tell whether parts of it are redacted. ",
+    export_hint!()
+);
+pub(crate) const BOOKMARK_UNREADABLE_MESSAGE: &str = concat!(
+    "A bookmark in this recording can't be read, so DepoAudio can't tell whether parts of it are redacted. ",
     export_hint!()
 );
 pub(crate) const REDACTION_POSITION_MESSAGE: &str = concat!(
@@ -197,6 +206,13 @@ fn damaged(reason: &str) -> String {
 fn several_data_chunks(count: usize) -> String {
     format!(
         "This recording has {count} audio data sections; DepoAudio reads recordings with one so far, so converting it could leave audio out. {}",
+        export_hint!()
+    )
+}
+
+fn several_mark_chunks(count: usize) -> String {
+    format!(
+        "This recording has {count} bookmark sections; DepoAudio reads recordings with one so far, so it can't tell whether parts of it are redacted. {}",
         export_hint!()
     )
 }
@@ -327,6 +343,36 @@ impl WaveFormat {
         }
     }
 
+    /// How long one block lasts: `(numerator, denominator)` seconds. From
+    /// the samples in a block where the codec has a fixed count (the stored
+    /// byte rate of an IMA ADPCM format is often only an estimate), else from
+    /// the stored byte rate.
+    fn block_duration(&self) -> (u64, u64) {
+        match self.samples_per_block() {
+            Some(samples) if self.sample_rate > 0 => (samples, u64::from(self.sample_rate)),
+            _ => (u64::from(self.block_align), u64::from(self.avg_bytes_per_sec.max(1))),
+        }
+    }
+
+    /// Seconds of audio in `atoms` blocks of one channel.
+    fn atoms_secs(&self, atoms: u64) -> f64 {
+        let (numerator, denominator) = self.block_duration();
+        (u128::from(atoms) * u128::from(numerator)) as f64 / denominator as f64
+    }
+
+    /// The atom that holds sample `samples` (samples per channel from the
+    /// start), or with `round_up` the first atom that starts at or after it.
+    fn atom_at_sample(&self, samples: u64, round_up: bool) -> u128 {
+        let (numerator, denominator) = self.block_duration();
+        let scaled = u128::from(samples) * u128::from(denominator);
+        let per_atom = u128::from(self.sample_rate.max(1)) * u128::from(numerator.max(1));
+        if round_up {
+            scaled.div_ceil(per_atom)
+        } else {
+            scaled / per_atom
+        }
+    }
+
     /// Why DepoAudio cannot decode this one-channel format, if it cannot.
     fn problem(&self) -> Option<String> {
         let codec = self.codec();
@@ -377,9 +423,17 @@ impl WaveFormat {
                 if self.bits_per_sample != 4 || align <= 4 {
                     return unsupported("a block layout other than 4-bit blocks with a header");
                 }
+                // Times come from the samples in a block, and FFmpeg decodes
+                // as many as the block size holds: the two must agree.
+                if self.samples_per_block() != Some((u64::from(align) - 4) * 2 + 1) {
+                    return unsupported("a samples-per-block count that does not match its block size");
+                }
             }
             Codec::Gsm610 if align != 65 => {
                 return unsupported("a block size other than 65 bytes");
+            }
+            Codec::Gsm610 if self.samples_per_block() != Some(320) => {
+                return unsupported("a samples-per-block count other than 320");
             }
             _ => {}
         }
@@ -711,13 +765,6 @@ impl DcrInfo {
         if self.checksum == CHECKSUMS_DIFFER {
             notices.push(CHECKSUM_WARNING.into());
         }
-        if self.bookmarks.unreadable > 0 {
-            notices.push(format!(
-                "{} could not be read and {} skipped.",
-                plural(self.bookmarks.unreadable, "bookmark", "bookmarks"),
-                if self.bookmarks.unreadable == 1 { "is" } else { "are" }
-            ));
-        }
         notices
     }
 
@@ -754,8 +801,7 @@ impl DcrInfo {
     }
 
     fn atoms_secs(&self, atoms: u64) -> f64 {
-        let format = &self.layout.format;
-        (atoms * u64::from(format.block_align)) as f64 / f64::from(format.avg_bytes_per_sec.max(1))
+        self.layout.format.atoms_secs(atoms)
     }
 
     /// The Convert queue's summary of this recording.
@@ -966,6 +1012,19 @@ impl Container {
             _ => None,
         }
     }
+
+    /// How many chunks have this tag, whatever their ids.
+    fn count(&self, tag: &[u8; 4]) -> usize {
+        self.entries.iter().filter(|entry| &entry.tag == tag).count()
+    }
+
+    /// The entry `(tag, 0)`, or else the first chunk with this tag in the
+    /// file. For tags that DepoAudio refuses to read more than one of, so
+    /// that the refusal names them all.
+    fn first(&self, tag: &[u8; 4]) -> Option<Entry> {
+        self.find(tag, 0)
+            .or_else(|| self.entries.iter().find(|entry| &entry.tag == tag).copied())
+    }
 }
 
 /// Check a chunk's framing and return its payload range `(offset, length)`.
@@ -1054,7 +1113,7 @@ fn open_tag_end(text: &str, start: usize) -> Option<usize> {
 }
 
 /// Index of the `</NAME>` that closes an element whose content starts at
-/// `from`, skipping CDATA sections.
+/// `from`, skipping CDATA sections and comments.
 fn close_tag_start(text: &str, from: usize, name: &str) -> Option<usize> {
     let bytes = text.as_bytes();
     let mut index = from;
@@ -1062,6 +1121,10 @@ fn close_tag_start(text: &str, from: usize, name: &str) -> Option<usize> {
         let rest = &text[index..];
         if rest.starts_with("<![CDATA[") {
             index += rest.find("]]>")? + 3;
+            continue;
+        }
+        if rest.starts_with("<!--") {
+            index += rest.find("-->")? + 3;
             continue;
         }
         if rest.starts_with("</") && tag_name_matches(&rest[2..], name) {
@@ -1083,16 +1146,20 @@ fn tag_name_matches(rest: &str, name: &str) -> bool {
 }
 
 /// Every `NAME` element in `text`, in order (not nested in each other).
+/// CDATA sections and comments are skipped.
 fn elements<'a>(text: &'a str, name: &str) -> Vec<Element<'a>> {
     let mut found = Vec::new();
     let mut index = 0;
     while let Some(offset) = text[index..].find('<') {
         let start = index + offset;
         let rest = &text[start + 1..];
-        if rest.starts_with("![CDATA[") {
-            match rest.find("]]>") {
+        if let Some(closing) = [("![CDATA[", "]]>"), ("!--", "-->")]
+            .iter()
+            .find_map(|(opening, closing)| rest.starts_with(opening).then_some(*closing))
+        {
+            match rest.find(closing) {
                 Some(end) => {
-                    index = start + 1 + end + 3;
+                    index = start + 1 + end + closing.len();
                     continue;
                 }
                 None => break,
@@ -1221,7 +1288,15 @@ fn decode_entities(text: &str) -> String {
 }
 
 /// An element's text: the CDATA sections joined, or the entity-decoded text.
+/// Comments outside CDATA are not text.
 fn text_content(inner: &str) -> String {
+    let without_comments;
+    let inner = if inner.contains("<!--") {
+        without_comments = strip_comments(inner);
+        without_comments.as_str()
+    } else {
+        inner
+    };
     if inner.contains("<![CDATA[") {
         let mut out = String::new();
         let mut rest = inner;
@@ -1234,6 +1309,32 @@ fn text_content(inner: &str) -> String {
         out
     } else {
         decode_entities(inner)
+    }
+}
+
+/// `text` without its comments (`<!-- … -->`, an unclosed one running to
+/// the end); CDATA sections are kept whole.
+fn strip_comments(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    loop {
+        let comment = rest.find("<!--");
+        let cdata = rest.find("<![CDATA[");
+        match (comment, cdata) {
+            (Some(at), cdata) if cdata.is_none_or(|cdata| at < cdata) => {
+                out.push_str(&rest[..at]);
+                rest = rest[at..].find("-->").map_or("", |end| &rest[at + end + 3..]);
+            }
+            (_, Some(at)) => {
+                let end = rest[at..].find("]]>").map_or(rest.len(), |end| at + end + 3);
+                out.push_str(&rest[..end]);
+                rest = &rest[end..];
+            }
+            _ => {
+                out.push_str(rest);
+                return out;
+            }
+        }
     }
 }
 
@@ -1268,8 +1369,10 @@ fn split_u64(inner: &str, name: &str, low: &str, high: &str) -> Option<u64> {
 
 /// The elements directly inside `text`, with their names, in order. Element
 /// names are not checked against a list: the recorder's own reader does not
-/// check them either. Nested elements with the same name are matched.
-fn child_elements(text: &str) -> Vec<(&str, Element<'_>)> {
+/// check them either. Nested elements with the same name are matched. None
+/// when any of them cannot be read to its end (an unclosed tag, element,
+/// comment or CDATA section): a partial list is never returned as whole.
+fn child_elements(text: &str) -> Option<Vec<(&str, Element<'_>)>> {
     let mut found = Vec::new();
     let mut index = 0;
     while let Some(offset) = text[index..].find('<') {
@@ -1288,13 +1391,8 @@ fn child_elements(text: &str) -> Vec<(&str, Element<'_>)> {
             None
         };
         if rest.starts_with("<!") || rest.starts_with("<?") || rest.starts_with("</") {
-            match next {
-                Some(next) => {
-                    index = next;
-                    continue;
-                }
-                None => break,
-            }
+            index = next?;
+            continue;
         }
         let name_end = rest[1..]
             .find(|character: char| character.is_whitespace() || character == '/' || character == '>')
@@ -1304,9 +1402,7 @@ fn child_elements(text: &str) -> Vec<(&str, Element<'_>)> {
             index = start + 1;
             continue;
         }
-        let Some(tag_end) = open_tag_end(text, start + name_end) else {
-            break;
-        };
+        let tag_end = open_tag_end(text, start + name_end)?;
         let attributes = &text[start + name_end..tag_end];
         if attributes.trim_end().ends_with('/') {
             found.push((
@@ -1319,9 +1415,7 @@ fn child_elements(text: &str) -> Vec<(&str, Element<'_>)> {
             index = tag_end + 1;
             continue;
         }
-        let Some(close) = matching_close(text, tag_end + 1, name) else {
-            break;
-        };
+        let close = matching_close(text, tag_end + 1, name)?;
         found.push((
             name,
             Element {
@@ -1329,13 +1423,13 @@ fn child_elements(text: &str) -> Vec<(&str, Element<'_>)> {
                 inner: &text[tag_end + 1..close],
             },
         ));
-        index = text[close..].find('>').map_or(text.len(), |end| close + end + 1);
+        index = close + text[close..].find('>')? + 1;
     }
-    found
+    Some(found)
 }
 
 /// The `</NAME>` closing an element whose content starts at `from`, counting
-/// nested `NAME` elements and skipping CDATA sections.
+/// nested `NAME` elements and skipping CDATA sections and comments.
 fn matching_close(text: &str, from: usize, name: &str) -> Option<usize> {
     let mut depth = 0usize;
     let mut index = from;
@@ -1344,6 +1438,10 @@ fn matching_close(text: &str, from: usize, name: &str) -> Option<usize> {
         let rest = &text[at..];
         if rest.starts_with("<![CDATA[") {
             index = at + rest.find("]]>")? + 3;
+            continue;
+        }
+        if rest.starts_with("<!--") {
+            index = at + rest.find("-->")? + 3;
             continue;
         }
         if let Some(after) = rest.strip_prefix("</") {
@@ -1425,7 +1523,7 @@ struct AudioDescription {
     time_zone_minutes: Option<i32>,
 }
 
-fn parse_meta(bytes: &[u8]) -> Result<AudioDescription, String> {
+fn parse_meta(bytes: &[u8], version: u32) -> Result<AudioDescription, String> {
     let text = decode_xml(bytes);
     let meta = element(&text, "META").ok_or_else(|| damaged("its META description is missing"))?;
     let audio = element(meta.inner, "AUDIO").ok_or_else(|| damaged("its audio description is missing"))?;
@@ -1456,8 +1554,10 @@ fn parse_meta(bytes: &[u8]) -> Result<AudioDescription, String> {
             })
         })
     });
-    // Local minus UTC in minutes; more than a day either way is not an offset.
+    // Local minus UTC in minutes; more than a day either way is not an
+    // offset. Older versions have no such field, so one is not read there.
     let time_zone_minutes = element(meta.inner, "PROP")
+        .filter(|_| version >= TIME_ZONE_VERSION)
         .and_then(|prop| attribute(prop.attributes, "TIMEZONE"))
         .and_then(|value| value.trim().parse::<i32>().ok())
         .filter(|minutes| minutes.abs() <= 24 * 60);
@@ -1470,7 +1570,8 @@ fn parse_meta(bytes: &[u8]) -> Result<AudioDescription, String> {
     })
 }
 
-/// Version 20.xx and earlier: `wfmt`, `chnl` and an optional `crpt` chunk.
+/// Version 20.xx and earlier: `wfmt`, `chnl` and a `crpt` chunk (required
+/// from 5.00).
 fn read_legacy_description(file: &mut File, container: &Container) -> Result<AudioDescription, String> {
     let wfmt = container
         .find(b"wfmt", 0)
@@ -1491,6 +1592,7 @@ fn read_legacy_description(file: &mut File, container: &Container) -> Result<Aud
         Some(crpt) => read_payload(file, crpt, MAX_META_BYTES, "protection chunk")?
             .iter()
             .any(|byte| *byte != 0),
+        None if container.version >= CRPT_VERSION => return Err(damaged("its password chunk is missing")),
         None => false,
     };
     Ok(AudioDescription {
@@ -1800,7 +1902,7 @@ fn scan_data(
                         let at_per_channel_byte = stats.atoms * block as u64;
                         stats.changes.push(ConferenceChange {
                             at_per_channel_byte,
-                            at_seconds: at_per_channel_byte as f64 / f64::from(format.avg_bytes_per_sec.max(1)),
+                            at_seconds: format.atoms_secs(stats.atoms),
                             kind: if joined { "joined" } else { "left" },
                             channel_mask: mask,
                             channels_after: active.count_ones(),
@@ -1939,20 +2041,22 @@ fn marked_action(note: &str) -> MarkedAction {
     }
 }
 
-/// Bookmarks of the `mark` chunk. None when it has text but no list of
-/// bookmarks can be found in it.
+/// Bookmarks of the `mark` chunk, and how many items could not be read
+/// (no readable `IDMARK`, or content that cannot be read to its end). None
+/// when it has text but no list of bookmarks can be read in full from it.
 fn parse_bookmarks(bytes: &[u8]) -> Option<(Vec<Bookmark>, u64)> {
     let text = decode_xml(bytes);
     if text.trim().is_empty() {
         return Some((Vec::new(), 0));
     }
     let root = element(&text, "Root").map_or(text.as_str(), |root| root.inner);
-    let lists = child_elements(root);
+    let lists = child_elements(root)?;
     let (_, list) = lists.first()?;
     let mut bookmarks = Vec::new();
     let mut unreadable = 0u64;
-    for (_, item) in child_elements(list.inner) {
-        let Some(id) = attribute(item.attributes, "IDMARK").as_deref().and_then(parse_bits32) else {
+    for (_, item) in child_elements(list.inner)? {
+        let id = attribute(item.attributes, "IDMARK").as_deref().and_then(parse_bits32);
+        let Some(id) = id.filter(|_| child_elements(item.inner).is_some()) else {
             unreadable += 1;
             continue;
         };
@@ -1982,12 +2086,13 @@ fn bookmark_counts(bookmarks: &[Bookmark], unreadable: u64) -> BookmarkCounts {
     }
 }
 
-/// A redacted segment in milliseconds of recording time, `[start, end)`;
-/// `end` None runs to the end of the recording.
+/// A redacted segment in samples per channel from the start of the
+/// recording (the unit of a bookmark position), `[start, end)`; `end` None
+/// runs to the end of the recording.
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct Segment {
-    start_ms: u64,
-    end_ms: Option<u64>,
+    start: u64,
+    end: Option<u64>,
     action: RedactionAction,
 }
 
@@ -2001,18 +2106,11 @@ struct Redactions {
     unplaced: bool,
 }
 
-/// Samples per channel to milliseconds, rounded (as the recorder keeps
-/// bookmark times).
-fn samples_to_ms(samples: u64, rate: u32) -> u64 {
-    let rate = u128::from(rate.max(1));
-    ((u128::from(samples) * 1000 + rate / 2) / rate).min(u128::from(u64::MAX)) as u64
-}
-
 /// Pair each Begin Redaction with the next unused End Redaction at or after
 /// it; an unpaired Begin runs to the end of the recording, an End with no
 /// Begin before it is ignored (and counted). Overlapping segments are then
 /// joined; where they overlap, the strictest action wins.
-fn pair_redactions(bookmarks: &[Bookmark], rate: u32) -> Redactions {
+fn pair_redactions(bookmarks: &[Bookmark]) -> Redactions {
     let mut result = Redactions::default();
     let mut begins: Vec<(u64, MarkedAction)> = Vec::new();
     let mut ends: Vec<u64> = Vec::new();
@@ -2046,8 +2144,8 @@ fn pair_redactions(bookmarks: &[Bookmark], rate: u32) -> Redactions {
             result.distort += 1;
         }
         raw.push(Segment {
-            start_ms: samples_to_ms(start, rate),
-            end_ms: end.map(|end| samples_to_ms(end, rate)),
+            start,
+            end,
             action: marked.applied(),
         });
     }
@@ -2100,59 +2198,54 @@ fn strictest_cover(ranges: &[(u64, u64, RedactionAction)]) -> Vec<(u64, u64, Red
 fn join_segments(raw: &[Segment]) -> Vec<Segment> {
     let ranges: Vec<(u64, u64, RedactionAction)> = raw
         .iter()
-        .map(|segment| (segment.start_ms, segment.end_ms.unwrap_or(u64::MAX), segment.action))
+        .map(|segment| (segment.start, segment.end.unwrap_or(u64::MAX), segment.action))
         .collect();
     let mut joined: Vec<Segment> = strictest_cover(&ranges)
         .into_iter()
-        .map(|(start_ms, end, action)| Segment {
-            start_ms,
-            end_ms: (end != u64::MAX).then_some(end),
+        .map(|(start, end, action)| Segment {
+            start,
+            end: (end != u64::MAX).then_some(end),
             action,
         })
         .collect();
     for segment in raw {
-        let empty = segment.end_ms == Some(segment.start_ms);
+        let empty = segment.end == Some(segment.start);
         let covered = joined
             .iter()
-            .any(|kept| kept.start_ms <= segment.start_ms && kept.end_ms.is_none_or(|end| end > segment.start_ms));
+            .any(|kept| kept.start <= segment.start && kept.end.is_none_or(|end| end > segment.start));
         if empty && !covered {
             joined.push(*segment);
         }
     }
-    joined.sort_by_key(|segment| segment.start_ms);
+    joined.sort_by_key(|segment| segment.start);
     joined.dedup();
     joined
 }
 
-/// The atoms each segment covers: every atom that overlaps it in time
-/// (atom `k` lasts from `k × block / rate` to `(k + 1) × block / rate`
-/// seconds), so no partly covered block is kept.
+/// The atoms each segment covers: every atom that overlaps it (atom `k`
+/// holds samples `k × n` to `(k + 1) × n`, `n` samples per block), so no
+/// partly covered block is kept. Positions go straight from samples to
+/// atoms, with no rounding to milliseconds on the way.
 fn plan_redactions(segments: &[Segment], format: &WaveFormat, atoms: u64) -> (RedactionPlan, Vec<RedactionRecord>) {
-    let per_atom = u128::from(format.block_align) * 1000;
-    let rate = u128::from(format.avg_bytes_per_sec.max(1));
-    let atom_at_ms = |ms: u64, round_up: bool| -> u64 {
-        let scaled = u128::from(ms) * rate;
-        let atom = if round_up {
-            scaled.div_ceil(per_atom)
-        } else {
-            scaled / per_atom
-        };
-        atom.min(u128::from(atoms)) as u64
+    let atom_at = |samples: u64, round_up: bool| -> u64 {
+        format.atom_at_sample(samples, round_up).min(u128::from(atoms)) as u64
     };
-    let duration_ms = (u128::from(atoms) * per_atom / rate) as u64;
+    let rate = f64::from(format.sample_rate.max(1));
+    let duration_secs = format.atoms_secs(atoms);
     let mut ranges = Vec::new();
     let mut records = Vec::new();
     for segment in segments {
-        let start = atom_at_ms(segment.start_ms, false);
-        let end = segment.end_ms.map_or(atoms, |end| atom_at_ms(end, true));
+        let start = atom_at(segment.start, false);
+        let end = segment.end.map_or(atoms, |end| atom_at(end, true));
         let applied = start < end;
         if applied && segment.action != RedactionAction::Play {
             ranges.push((start, end, segment.action));
         }
-        let end_ms = segment.end_ms.unwrap_or(duration_ms);
+        let start_secs = segment.start as f64 / rate;
+        let end_secs = segment.end.map_or(duration_secs, |end| end as f64 / rate);
         records.push(RedactionRecord {
-            start_secs: segment.start_ms as f64 / 1000.0,
-            end_secs: end_ms.max(segment.start_ms) as f64 / 1000.0,
+            start_secs,
+            end_secs: end_secs.max(start_secs),
             action: segment.action,
             applied,
         });
@@ -2220,7 +2313,10 @@ pub(crate) fn inspect(path: &Path, cancelled: &dyn Fn() -> bool) -> Result<DcrIn
         let meta = container
             .find(b"meta", 0)
             .ok_or_else(|| damaged("its META description chunk is missing"))?;
-        parse_meta(&read_payload(&mut file, meta, MAX_META_BYTES, "META description")?)?
+        parse_meta(
+            &read_payload(&mut file, meta, MAX_META_BYTES, "META description")?,
+            container.version,
+        )?
     } else {
         read_legacy_description(&mut file, &container)?
     };
@@ -2229,12 +2325,12 @@ pub(crate) fn inspect(path: &Path, cancelled: &dyn Fn() -> bool) -> Result<DcrIn
     }
     let format = WaveFormat::parse(&description.format)?;
     let data = container
-        .find(b"data", 0)
+        .first(b"data")
         .ok_or_else(|| damaged("its audio data chunk is missing"))?;
     let (data_offset, data_len) = payload_range(&mut file, data)?;
     let checksum = verify_checksums(&mut file, file_len, container.version, data, cancelled)?;
     // Footer chunks are optional: a missing one is simply not there.
-    let bookmarks = match container.find(b"mark", 0) {
+    let bookmarks = match container.first(b"mark") {
         Some(mark) => parse_bookmarks(&read_payload(&mut file, mark, MAX_MARK_BYTES, "bookmark section")?),
         None => Some((Vec::new(), 0)),
     };
@@ -2255,19 +2351,28 @@ pub(crate) fn inspect(path: &Path, cancelled: &dyn Fn() -> bool) -> Result<DcrIn
     let stats = scan_data(&mut file, &layout, cancelled, &mut |_, _, _| Ok(()))?;
     let mark_unreadable = bookmarks.is_none();
     let (bookmarks, unreadable) = bookmarks.unwrap_or_default();
-    let redactions = pair_redactions(&bookmarks, layout.format.sample_rate);
+    let redactions = pair_redactions(&bookmarks);
     let (plan, redaction_records) = plan_redactions(&redactions.segments, &layout.format, stats.atoms);
     layout.plan = plan;
     // Only the first data chunk is read. How a recording with several
     // (for example after a pause) joins them is not known, so it is refused
     // rather than converted short.
-    let data_chunks = container.entries.iter().filter(|entry| &entry.tag == b"data").count();
+    // The id of a repeated chunk is a stream number; how the recorder joins
+    // several bookmark sections is not known either, and any of them could
+    // hold a redaction, so that is refused too. An unreadable bookmark could
+    // be the start of a redaction.
+    let data_chunks = container.count(b"data");
+    let mark_chunks = container.count(b"mark");
     layout.problem = if data_chunks > 1 {
         Some(several_data_chunks(data_chunks))
     } else if stats.problem.is_some() {
         stats.problem.clone()
+    } else if mark_chunks > 1 {
+        Some(several_mark_chunks(mark_chunks))
     } else if mark_unreadable {
         Some(MARK_UNREADABLE_MESSAGE.into())
+    } else if unreadable > 0 {
+        Some(BOOKMARK_UNREADABLE_MESSAGE.into())
     } else if redactions.unplaced {
         Some(REDACTION_POSITION_MESSAGE.into())
     } else {
@@ -2279,8 +2384,7 @@ pub(crate) fn inspect(path: &Path, cancelled: &dyn Fn() -> bool) -> Result<DcrIn
     let channel_names = channel_names(&layout.output_bits, description.mask, &description.names);
     let output_atoms = stats.atoms - layout.plan.atoms_with(RedactionAction::Skip);
     let format = &layout.format;
-    let seconds =
-        |atoms: u64| (atoms * u64::from(format.block_align)) as f64 / f64::from(format.avg_bytes_per_sec.max(1));
+    let seconds = |atoms: u64| format.atoms_secs(atoms);
     Ok(DcrInfo {
         version: container.version,
         codec_tag: format.tag,
@@ -2317,9 +2421,10 @@ pub(crate) fn inspect(path: &Path, cancelled: &dyn Fn() -> bool) -> Result<DcrIn
 /// File identity for the inspect cache: path, size and modification time.
 type InspectKey = (PathBuf, u64, Option<std::time::SystemTime>);
 
-/// Recently inspected recordings, so queueing, converting, Scan and the
-/// waveform do not each walk the whole recording again. The demux pass that
-/// follows still reads every atom and fails if the count differs.
+/// Recently inspected recordings, so queueing and probing do not each walk
+/// the whole recording again. Only for what the queue shows: a feed is
+/// always prepared from a fresh `inspect` (see `prepare_feed`), because a
+/// file can change and keep its size and modification time.
 fn inspect_cache() -> &'static std::sync::Mutex<Vec<(InspectKey, DcrInfo)>> {
     static CACHE: std::sync::OnceLock<std::sync::Mutex<Vec<(InspectKey, DcrInfo)>>> = std::sync::OnceLock::new();
     CACHE.get_or_init(|| std::sync::Mutex::new(Vec::new()))
@@ -2342,6 +2447,12 @@ pub(crate) fn inspect_cached(path: &Path, cancelled: &dyn Fn() -> bool) -> Resul
             return Ok(info.clone());
         }
     }
+    inspect_and_remember(path, key, cancelled)
+}
+
+/// `inspect`, always reading the file, and remember the result for the
+/// queue when the file did not change while it was read.
+fn inspect_and_remember(path: &Path, key: Option<InspectKey>, cancelled: &dyn Fn() -> bool) -> Result<DcrInfo, String> {
     let info = inspect(path, cancelled)?;
     if let Some(key) = key.filter(|key| inspect_key(path).as_ref() == Some(key)) {
         let mut cache = inspect_cache().lock().unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -2743,9 +2854,12 @@ pub(crate) struct DcrFeed {
 }
 
 /// Inspect, refuse what cannot be converted (nothing is written then), and
-/// demux the audio into temporary WAVs. Blocking file I/O.
+/// demux the audio into temporary WAVs. Blocking file I/O. The plan
+/// (redactions, sealed audio, channels) always comes from reading the file
+/// now, never from the queue's cache: a file replaced by one of the same
+/// size with its modification time kept would otherwise get the old plan.
 pub(crate) fn prepare_feed(src: &Path, cancelled: &dyn Fn() -> bool) -> Result<DcrFeed, String> {
-    let info = inspect_cached(src, cancelled)?;
+    let info = inspect_and_remember(src, inspect_key(src), cancelled)?;
     if let Some(refusal) = info.refusal() {
         return Err(refusal);
     }
@@ -2853,6 +2967,9 @@ pub(crate) mod tests {
         pub docket: &'static str,
         /// Write the `info` chunk (a footer chunk DepoAudio does not need).
         pub info: bool,
+        /// The ids of the `data` and `mark` chunks (0 unless a test sets them).
+        pub data_id: u32,
+        pub mark_id: u32,
     }
 
     pub(crate) const SECRET_DOCKET: &str = "SECRET-DOCKET-4471 Smith v. Jones";
@@ -2893,7 +3010,7 @@ pub(crate) mod tests {
     impl DcrBuilder {
         pub(crate) fn new(format: Vec<u8>, mask: u64, names: &[&str]) -> Self {
             Self {
-                major: 21,
+                major: 27,
                 minor: 0,
                 format,
                 mask,
@@ -2908,12 +3025,17 @@ pub(crate) mod tests {
                 time_zone: "-300",
                 docket: SECRET_DOCKET,
                 info: true,
+                data_id: 0,
+                mark_id: 0,
             }
         }
 
+        /// Version 20.05: `wfmt` and `chnl` in place of `meta`, and the
+        /// `crpt` chunk those versions must have (no password set).
         pub(crate) fn legacy(mut self) -> Self {
             self.major = 20;
             self.minor = 5;
+            self.extra_chunks.push((*b"crpt", 0, vec![0; 8]));
             self
         }
 
@@ -3022,12 +3144,12 @@ pub(crate) mod tests {
             }
             chunks.extend(self.extra_chunks.iter().cloned());
             let data_index = chunks.len();
-            chunks.push((*b"data", 0, self.data.clone()));
+            chunks.push((*b"data", self.data_id, self.data.clone()));
             if self.info {
                 chunks.push((*b"info", 0, b"synthetic info".to_vec()));
             }
             if let Some(mark) = self.mark_xml() {
-                chunks.push((*b"mark", 0, mark));
+                chunks.push((*b"mark", self.mark_id, mark));
             }
             if let Some(filetime) = self.start_rec {
                 chunks.push((
@@ -3159,7 +3281,7 @@ pub(crate) mod tests {
         builder.names = ["Judge", "Witness", "Unused", "Counsel"].map(String::from).to_vec();
         let path = builder.write(&dir.0, "hearing.dcr");
         let info = inspect(&path, &never).unwrap();
-        assert_eq!(info.version, 2100);
+        assert_eq!(info.version, 2700);
         assert_eq!(info.codec_tag, 1);
         assert_eq!(info.codec, "PCM 16-bit");
         assert_eq!(info.sample_rate, 8000);
@@ -3334,12 +3456,9 @@ pub(crate) mod tests {
         }
     }
 
-    fn segment(start_ms: u64, end_ms: Option<u64>, action: RedactionAction) -> Segment {
-        Segment {
-            start_ms,
-            end_ms,
-            action,
-        }
+    /// A segment in samples per channel.
+    fn segment(start: u64, end: Option<u64>, action: RedactionAction) -> Segment {
+        Segment { start, end, action }
     }
 
     #[test]
@@ -3363,17 +3482,14 @@ pub(crate) mod tests {
         use MarkedAction::*;
         use RedactionAction as A;
         // 8000 samples per second: 8000 samples = 1000 ms.
-        let paired = pair_redactions(
-            &[
-                end(Some(800)),
-                begin(Some(16_000), Black),
-                begin(Some(8000), Play),
-                end(Some(24_000)),
-                end(Some(32_000)),
-                begin(Some(40_000), Skip),
-            ],
-            8000,
-        );
+        let paired = pair_redactions(&[
+            end(Some(800)),
+            begin(Some(16_000), Black),
+            begin(Some(8000), Play),
+            end(Some(24_000)),
+            end(Some(32_000)),
+            begin(Some(40_000), Skip),
+        ]);
         // The end at 0.1 s has no begin before it; begin 1 s (play) takes
         // the end at 3 s, begin 2 s (black) the end at 4 s, and begin 5 s
         // (skip) has no end left, so it runs to the end of the recording.
@@ -3382,9 +3498,9 @@ pub(crate) mod tests {
         assert_eq!(
             paired.segments,
             [
-                segment(1000, Some(2000), A::Play),
-                segment(2000, Some(4000), A::Black),
-                segment(5000, None, A::Skip),
+                segment(8000, Some(16_000), A::Play),
+                segment(16_000, Some(32_000), A::Black),
+                segment(40_000, None, A::Skip),
             ]
         );
 
@@ -3408,16 +3524,16 @@ pub(crate) mod tests {
 
         // A begin with no position cannot be placed; an end with none is
         // ignored.
-        let unplaced = pair_redactions(&[begin(None, Black), end(None)], 8000);
+        let unplaced = pair_redactions(&[begin(None, Black), end(None)]);
         assert!(unplaced.unplaced);
         assert_eq!(unplaced.unpaired_ends, 1);
-        assert_eq!(pair_redactions(&[begin(Some(0), Distort)], 8000).distort, 1);
+        assert_eq!(pair_redactions(&[begin(Some(0), Distort)]).distort, 1);
     }
 
     #[test]
     fn redaction_atoms_cover_every_partly_covered_block() {
-        // IMA ADPCM-like: 256-byte blocks at 4055 bytes per second, so one
-        // block lasts about 63 ms.
+        // IMA ADPCM: 256-byte blocks of 505 samples at 8 kHz, so one block
+        // lasts 63.125 ms. Positions are in samples (8 per millisecond).
         let format = WaveFormat::parse(&waveformatex(
             WAVE_FORMAT_IMA_ADPCM,
             8000,
@@ -3427,15 +3543,15 @@ pub(crate) mod tests {
             &505u16.to_le_bytes(),
         ))
         .unwrap();
-        let (plan, records) = plan_redactions(&[segment(100, Some(200), RedactionAction::Skip)], &format, 1000);
+        let (plan, records) = plan_redactions(&[segment(800, Some(1600), RedactionAction::Skip)], &format, 1000);
         // 100 ms is inside block 1 (63-126 ms); 200 ms inside block 3.
         assert_eq!(plan.ranges, [(1, 4, RedactionAction::Skip)]);
         assert!(records[0].applied);
         // Two segments meeting inside block 1: the stricter action takes it.
         let (plan, _) = plan_redactions(
             &[
-                segment(0, Some(100), RedactionAction::Black),
-                segment(100, Some(200), RedactionAction::Skip),
+                segment(0, Some(800), RedactionAction::Black),
+                segment(800, Some(1600), RedactionAction::Skip),
             ],
             &format,
             1000,
@@ -3446,13 +3562,90 @@ pub(crate) mod tests {
         );
         assert_eq!(plan.atoms_with(RedactionAction::Skip), 3);
         // Past the end of the audio: listed, not applied.
-        let (plan, records) = plan_redactions(&[segment(90_000_000, None, RedactionAction::Black)], &format, 1000);
+        let (plan, records) = plan_redactions(&[segment(720_000_000_000, None, RedactionAction::Black)], &format, 1000);
         assert!(plan.ranges.is_empty());
         assert!(!records[0].applied);
         // PCM: exact sample boundaries.
         let pcm = WaveFormat::parse(&pcm16_format(8000)).unwrap();
-        let (plan, _) = plan_redactions(&[segment(4000, Some(6000), RedactionAction::Black)], &pcm, 96_000);
+        let (plan, _) = plan_redactions(&[segment(32_000, Some(48_000), RedactionAction::Black)], &pcm, 96_000);
         assert_eq!(plan.ranges, [(32_000, 48_000, RedactionAction::Black)]);
+        // Positions that are not whole milliseconds: every redacted sample
+        // is covered (no rounding to the nearest millisecond on the way).
+        let (plan, records) = plan_redactions(&[segment(32_005, Some(47_995), RedactionAction::Black)], &pcm, 96_000);
+        assert_eq!(plan.ranges, [(32_005, 47_995, RedactionAction::Black)]);
+        assert_eq!(records[0].start_secs, 32_005.0 / 8000.0);
+        let (plan, _) = plan_redactions(&[segment(32_000, Some(48_003), RedactionAction::Skip)], &pcm, 96_000);
+        assert_eq!(plan.ranges, [(32_000, 48_003, RedactionAction::Skip)]);
+        // IMA: a position inside a block takes the whole block.
+        let (plan, _) = plan_redactions(&[segment(506, Some(1011), RedactionAction::Black)], &format, 1000);
+        assert_eq!(plan.ranges, [(1, 3, RedactionAction::Black)]);
+    }
+
+    #[test]
+    fn ima_adpcm_times_come_from_samples_per_block_not_the_stored_byte_rate() {
+        let dir = TestDir::new();
+        // As FFmpeg's IMA ADPCM WAV encoder writes it at 8 kHz mono: 1024-byte
+        // blocks of 2041 samples (0.2551 s each), with a stored byte rate of
+        // 16000 that would make a block 0.064 s.
+        let format = waveformatex(WAVE_FORMAT_IMA_ADPCM, 8000, 16_000, 1024, 4, &2041u16.to_le_bytes());
+        let mut builder = DcrBuilder::new(format, 0b1, &["Judge"]);
+        builder.marker(b"audi#mrk");
+        for _ in 0..47 {
+            builder.atom(&[&[0x11; 1024]]);
+        }
+        // A black redaction from 4 s to 6 s.
+        builder
+            .begin_redaction(Some(32_000), "<play_black>")
+            .end_redaction(Some(48_000));
+        let path = builder.write(&dir.0, "ima.dcr");
+        let info = inspect(&path, &never).unwrap();
+        let block = 2041.0 / 8000.0;
+        assert!(
+            (info.duration_secs - 47.0 * block).abs() < 1e-9,
+            "{}",
+            info.duration_secs
+        );
+        assert_eq!(info.refusal(), None);
+        assert!(info.redactions[0].applied, "the redaction lies inside the recording");
+        assert_eq!(info.redactions[0].start_secs, 4.0);
+        assert_eq!(info.redactions[0].end_secs, 6.0);
+        // Sample 32000 is in block 15 (30615-32656); sample 48000 in block 23.
+        assert_eq!(info.layout.plan.ranges, [(15, 24, RedactionAction::Black)]);
+        assert!((queue_streams_info(&path).duration_secs.unwrap() - 47.0 * block).abs() < 1e-9);
+        let feed = prepare_feed(&path, &never).unwrap();
+        let (_, data) = read_wav_data(&feed.path);
+        let blocks: Vec<&[u8]> = data.chunks_exact(1024).collect();
+        assert_eq!(blocks.len(), 47);
+        for (index, block) in blocks.iter().enumerate() {
+            let silent = block.iter().all(|byte| *byte == 0);
+            assert_eq!(silent, (15..24).contains(&index), "block {index}");
+        }
+
+        // A participant change is timed the same way.
+        let format = waveformatex(WAVE_FORMAT_IMA_ADPCM, 8000, 16_000, 1024, 4, &2041u16.to_le_bytes());
+        let mut joined = DcrBuilder::new(format, 0b1, &[]);
+        joined.marker(b"audi#mrk");
+        for _ in 0..4 {
+            joined.atom(&[&[0x11; 1024]]);
+        }
+        joined.participant(true, "2");
+        joined.atom(&[&[0x11; 1024], &[0x22; 1024]]);
+        let path = joined.write(&dir.0, "ima-join.dcr");
+        let info = inspect(&path, &never).unwrap();
+        assert!((info.conference_changes[0].at_seconds - 4.0 * block).abs() < 1e-9);
+
+        // A samples-per-block count the block size cannot hold is refused.
+        for declared in [2000u16, 2042] {
+            let format = waveformatex(WAVE_FORMAT_IMA_ADPCM, 8000, 16_000, 1024, 4, &declared.to_le_bytes());
+            let problem = WaveFormat::parse(&format).unwrap().problem().unwrap();
+            assert!(problem.contains("samples-per-block"), "{problem}");
+        }
+        let gsm = waveformatex(WAVE_FORMAT_GSM610, 8000, 1625, 65, 0, &160u16.to_le_bytes());
+        assert!(WaveFormat::parse(&gsm).unwrap().problem().is_some());
+        // Microsoft's own header (505 samples in 256 bytes) is accepted.
+        let acm = waveformatex(WAVE_FORMAT_IMA_ADPCM, 8000, 4055, 256, 4, &505u16.to_le_bytes());
+        assert_eq!(WaveFormat::parse(&acm).unwrap().problem(), None);
+        assert!((WaveFormat::parse(&acm).unwrap().atoms_secs(8000 * 60 * 60 / 505) - 3600.0).abs() < 0.07);
     }
 
     #[test]
@@ -3566,20 +3759,153 @@ pub(crate) mod tests {
             Some(MARK_UNREADABLE_MESSAGE)
         );
 
-        // An empty mark chunk (as in the owner's plain sample) is fine, and a
-        // bookmark without IDMARK is skipped and counted.
-        let mut skipped = pcm_tones(0b1, 8000, 80, &[(300.0, 0.5)]);
-        skipped.bookmarks.push("<ITEM COLOR=\"1\"/>".into());
-        skipped.bookmarks.push(bookmark_item(1, 1, Some(8), "auto"));
-        let path = skipped.write(&dir.0, "skipped.dcr");
-        let info = inspect(&path, &never).unwrap();
-        assert_eq!(info.refusal(), None);
-        assert_eq!(info.bookmarks.total, 2);
-        assert_eq!(info.bookmarks.unreadable, 1);
-        assert_eq!(info.bookmarks.by_type, BTreeMap::from([(1, 1)]));
-        assert!(info
-            .notices()
-            .contains(&"1 bookmark could not be read and is skipped.".to_string()));
+        // A bookmark without a readable IDMARK could be the start of a
+        // redaction, so it is refused (as the recorder refuses it), and
+        // counted.
+        for idmark in ["", " IDMARK=\"-805306367.0\"", " IDMARK=\"x\""] {
+            let mut skipped = pcm_tones(0b1, 8000, 80, &[(300.0, 0.5)]);
+            skipped.bookmarks.push(format!(
+                "<ITEM{idmark} COLOR=\"1\"><POSMARK N64Low=\"8\" N64High=\"0\"/><PUBLNOTE><![CDATA[Begin Redaction <play_black>]]></PUBLNOTE></ITEM>"
+            ));
+            skipped.end_redaction(Some(16));
+            skipped.bookmarks.push(bookmark_item(1, 3, Some(8), "auto"));
+            let path = skipped.write(&dir.0, "skipped.dcr");
+            let info = inspect(&path, &never).unwrap();
+            assert_eq!(info.refusal().as_deref(), Some(BOOKMARK_UNREADABLE_MESSAGE), "{idmark}");
+            assert_eq!(info.bookmarks.total, 3);
+            assert_eq!(info.bookmarks.unreadable, 1);
+            assert_eq!(
+                info.bookmarks.by_type,
+                BTreeMap::from([(1, 1), (BOOKMARK_END_REDACTION, 1)])
+            );
+            assert_eq!(
+                prepare_feed(&path, &never).err().as_deref(),
+                Some(BOOKMARK_UNREADABLE_MESSAGE)
+            );
+        }
+    }
+
+    #[test]
+    fn a_bookmark_list_that_cannot_be_read_to_its_end_is_refused() {
+        let dir = TestDir::new();
+        let begin = bookmark_item(BOOKMARK_BEGIN_REDACTION, 2, Some(8000), "Begin Redaction <play_black>");
+        let end = bookmark_item(BOOKMARK_END_REDACTION, 3, Some(16_000), "End Redaction");
+        let unclosed_item = "<ITEM IDMARK=\"268435457\"><POSMARK N64Low=\"8\" N64High=\"0\"/><PUBLNOTE>note</PUBLNOTE>";
+        let payloads = [
+            // The first item is missing its </ITEM>; a well-formed redaction
+            // follows it.
+            format!("<Root><BOOK>{unclosed_item}{begin}{end}</BOOK></Root>"),
+            // The list is not closed.
+            format!("<Root><BOOK>{begin}{end}"),
+            // An item whose note is not closed.
+            format!("<Root><BOOK><ITEM IDMARK=\"268435457\"><PUBLNOTE>note</ITEM>{begin}{end}</BOOK></Root>"),
+            // An unclosed comment or CDATA section.
+            format!("<Root><BOOK>{begin}<!-- {end}</BOOK></Root>"),
+            format!("<Root><BOOK>{begin}<![CDATA[ {end}</BOOK></Root>"),
+            // Something after the list that cannot be read.
+            format!("<Root><BOOK>{begin}{end}</BOOK><EXTRA a=\"1\"></Root>"),
+        ];
+        for payload in payloads {
+            let mut builder = pcm_tones(0b1, 8000, 24_000, &[(300.0, 0.5)]);
+            builder.mark_payload = Some(payload.clone().into_bytes());
+            let path = builder.write(&dir.0, "partial.dcr");
+            let info = inspect(&path, &never).unwrap();
+            let refusal = info.refusal();
+            assert!(
+                refusal.as_deref() == Some(MARK_UNREADABLE_MESSAGE)
+                    || refusal.as_deref() == Some(BOOKMARK_UNREADABLE_MESSAGE),
+                "{payload}: {refusal:?}"
+            );
+            assert!(prepare_feed(&path, &never).is_err(), "{payload}");
+        }
+        // The same redaction in a list that reads to its end is applied.
+        let mut whole = pcm_tones(0b1, 8000, 24_000, &[(300.0, 0.5)]);
+        whole.mark_payload = Some(format!("<Root><BOOK><!-- a comment -->{begin}{end}</BOOK></Root>").into_bytes());
+        let path = whole.write(&dir.0, "whole.dcr");
+        let feed = prepare_feed(&path, &never).unwrap();
+        let (_, data) = read_wav_data(&feed.path);
+        let samples = i16s(&data);
+        assert_eq!(samples.len(), 24_000);
+        assert!(samples[8000..16_000].iter().all(|sample| *sample == 0));
+        assert!(samples[..8000].iter().any(|sample| *sample != 0));
+    }
+
+    #[test]
+    fn comments_in_a_bookmark_never_move_or_change_a_redaction() {
+        let dir = TestDir::new();
+        let mut builder = pcm_tones(0b1, 8000, 24_000, &[(300.0, 0.5)]);
+        let idmark = ((BOOKMARK_BEGIN_REDACTION << 28) | 1) as i32;
+        builder.bookmarks.push(format!(
+            "<ITEM IDMARK=\"{idmark}\"><!-- <POSMARK N64Low=\"20000\" N64High=\"0\"/> --><POSMARK N64Low=\"8000\" N64High=\"0\"/><PUBLNOTE><!-- <play_play> --><![CDATA[Begin Redaction <play_black>]]></PUBLNOTE></ITEM>"
+        ));
+        builder.end_redaction(Some(16_000));
+        let path = builder.write(&dir.0, "commented.dcr");
+        let feed = prepare_feed(&path, &never).unwrap();
+        assert_eq!(feed.info.redactions.len(), 1);
+        assert_eq!(feed.info.redactions[0].start_secs, 1.0);
+        assert_eq!(feed.info.redactions[0].action, RedactionAction::Black);
+        let (_, data) = read_wav_data(&feed.path);
+        let samples = i16s(&data);
+        assert!(samples[8000..16_000].iter().all(|sample| *sample == 0));
+        assert!(samples[16_000..].iter().any(|sample| *sample != 0));
+
+        // A comment outside CDATA is not note text: here the note has no
+        // tag left, so the segment is skipped (the default).
+        assert_eq!(
+            marked_action(&text_content("<!-- <play_play> -->Begin Redaction")),
+            MarkedAction::Skip
+        );
+        assert_eq!(
+            element("<!-- <A x='1'/> --><A x='2'/>", "A").unwrap().attributes.trim(),
+            "x='2'"
+        );
+        assert_eq!(
+            split_u64("<!-- <P L=\"9\" H=\"0\"/> --><P L=\"7\" H=\"0\"/>", "P", "L", "H"),
+            Some(7)
+        );
+    }
+
+    #[test]
+    fn redactions_in_any_bookmark_section_are_never_ignored() {
+        let dir = TestDir::new();
+        let section = |begin_at: u64, end_at: u64| {
+            format!(
+                "<Root><BOOK>{}{}</BOOK></Root>",
+                bookmark_item(
+                    BOOKMARK_BEGIN_REDACTION,
+                    1,
+                    Some(begin_at),
+                    "Begin Redaction <play_black>"
+                ),
+                bookmark_item(BOOKMARK_END_REDACTION, 2, Some(end_at), "End Redaction")
+            )
+            .into_bytes()
+        };
+        // One bookmark section under a non-zero id is read.
+        let mut only = pcm_tones(0b1, 8000, 24_000, &[(300.0, 0.5)]);
+        only.mark_id = 3;
+        only.mark_payload = Some(section(8000, 16_000));
+        let path = only.write(&dir.0, "one-mark.dcr");
+        let feed = prepare_feed(&path, &never).unwrap();
+        assert_eq!(feed.info.redactions.len(), 1);
+        let (_, data) = read_wav_data(&feed.path);
+        assert!(i16s(&data)[8000..16_000].iter().all(|sample| *sample == 0));
+
+        // Two sections, with or without id 0: refused, never read as none.
+        for first_id in [0, 1] {
+            let mut two = pcm_tones(0b1, 8000, 24_000, &[(300.0, 0.5)]);
+            two.mark_id = first_id;
+            two.mark_payload = Some(if first_id == 0 {
+                Vec::new()
+            } else {
+                section(8000, 16_000)
+            });
+            two.footer_chunks.push((*b"mark", 2, section(8000, 16_000)));
+            let path = two.write(&dir.0, "two-marks.dcr");
+            let refusal = inspect(&path, &never).unwrap().refusal().unwrap();
+            assert!(refusal.contains("2 bookmark sections"), "{refusal}");
+            assert_eq!(prepare_feed(&path, &never).err(), Some(refusal));
+        }
     }
 
     #[test]
@@ -3640,7 +3966,7 @@ pub(crate) mod tests {
     fn a_password_flag_alone_does_not_stop_a_recording_without_sealed_audio() {
         let dir = TestDir::new();
         let mut legacy = pcm_tones(0b1, 8000, 8, &[(300.0, 0.5)]).legacy();
-        legacy.extra_chunks.push((*b"crpt", 0, vec![0, 0, 9, 9]));
+        legacy.extra_chunks = vec![(*b"crpt", 0, vec![0, 0, 9, 9])];
         let path = legacy.write(&dir.0, "locked.dcr");
         let info = inspect(&path, &never).unwrap();
         assert!(info.password_set);
@@ -3686,6 +4012,13 @@ pub(crate) mod tests {
         assert_eq!(record["timeZone"]["localMinusUtcMinutes"], 330);
         assert_eq!(record["timeZone"]["display"], "GMT+5:30");
         assert_eq!(time_zone(-300).display, "GMT-5:00");
+
+        // Before 27.00 there is no time-zone field, so one is not read.
+        let mut older = pcm_tones(0b1, 8000, 8, &[(300.0, 0.5)]);
+        older.major = 26;
+        older.minor = 99;
+        let path = older.write(&dir.0, "older.dcr");
+        assert_eq!(inspect(&path, &never).unwrap().time_zone, None);
     }
 
     // ── Remote participants ────────────────────────────────────────────────
@@ -3811,33 +4144,37 @@ pub(crate) mod tests {
             xml.extend_from_slice(b" &amp; Bar</CHNAME></ITEM><ITEM><CHNAME><![CDATA[<Witness>]]></CHNAME></ITEM></LISTCHNL></AUDIO><CRYPT HAVEREC='0'/></META></Root>");
             xml
         };
-        let utf8 = parse_meta(&body(
-            "<?xml version=\"1.0\" encoding=\"utf-8\"?>",
-            "Caf\u{e9}".as_bytes(),
-        ))
+        let utf8 = parse_meta(
+            &body("<?xml version=\"1.0\" encoding=\"utf-8\"?>", "Caf\u{e9}".as_bytes()),
+            2700,
+        )
         .unwrap();
         assert_eq!(utf8.mask, 3);
         assert_eq!(utf8.names, [Some("Caf\u{e9} & Bar".into()), Some("<Witness>".into())]);
         assert!(!utf8.password_set);
         // No declaration: UTF-8 too.
-        let bare = parse_meta(&body("", "Caf\u{e9}".as_bytes())).unwrap();
+        let bare = parse_meta(&body("", "Caf\u{e9}".as_bytes()), 2700).unwrap();
         assert_eq!(bare.names[0].as_deref(), Some("Caf\u{e9} & Bar"));
-        let declared = parse_meta(&body(
-            "<?xml version=\"1.0\" encoding=\"windows-1252\"?>",
-            b"Caf\xE9 \x80",
-        ))
+        let declared = parse_meta(
+            &body("<?xml version=\"1.0\" encoding=\"windows-1252\"?>", b"Caf\xE9 \x80"),
+            2700,
+        )
         .unwrap();
         assert_eq!(declared.names[0].as_deref(), Some("Caf\u{e9} \u{20ac} & Bar"));
         // Upper-case hex is accepted as well as lower-case.
         let upper = String::from_utf8(body("", b"A"))
             .unwrap()
             .replace(&hex, &hex.to_uppercase());
-        assert_eq!(parse_meta(upper.as_bytes()).unwrap().format, pcm16_format(8000));
+        assert_eq!(parse_meta(upper.as_bytes(), 2700).unwrap().format, pcm16_format(8000));
         // USECHNL written with %i: bit 31 reads back as a negative number.
         assert_eq!(parse_mask("-2147483647"), Some(0x8000_0001));
         assert_eq!(parse_mask("0"), None);
-        assert!(parse_meta(b"<Root><META><AUDIO USECHNL=\"0\"></AUDIO></META></Root>").is_err());
-        assert!(parse_meta(b"<Root><META><AUDIO USECHNL=\"1\"><FMTDATA>ZZ</FMTDATA></AUDIO></META></Root>").is_err());
+        assert!(parse_meta(b"<Root><META><AUDIO USECHNL=\"0\"></AUDIO></META></Root>", 2700).is_err());
+        assert!(parse_meta(
+            b"<Root><META><AUDIO USECHNL=\"1\"><FMTDATA>ZZ</FMTDATA></AUDIO></META></Root>",
+            2700
+        )
+        .is_err());
     }
 
     #[test]
@@ -3877,11 +4214,22 @@ pub(crate) mod tests {
 
     #[test]
     fn child_elements_are_found_whatever_their_names() {
-        let text = "<?xml version=\"1.0\"?><!-- c --><A x=\"1\"><A/><B><![CDATA[</A>]]></B></A><C/>";
-        let children = child_elements(text);
+        let text = "<?xml version=\"1.0\"?><!-- c --><A x=\"1\"><A/><!-- </A> --><B><![CDATA[</A>]]></B></A><C/>";
+        let children = child_elements(text).unwrap();
         assert_eq!(children.iter().map(|(name, _)| *name).collect::<Vec<_>>(), ["A", "C"]);
         assert_eq!(children[0].1.attributes.trim(), "x=\"1\"");
-        assert_eq!(child_elements(children[0].1.inner).len(), 2);
+        assert_eq!(child_elements(children[0].1.inner).unwrap().len(), 2);
+        // Anything that cannot be read to its end: no partial list.
+        for broken in [
+            "<A><B/>",
+            "<A/><B",
+            "<A/><!-- x",
+            "<A/><![CDATA[ x",
+            "<A x=\"1>",
+            "<A/></B",
+        ] {
+            assert!(child_elements(broken).is_none(), "{broken}");
+        }
     }
 
     // ── Privacy ─────────────────────────────────────────────────────────────
@@ -4237,6 +4585,13 @@ pub(crate) mod tests {
         let refusal = info.refusal().unwrap();
         assert!(refusal.contains("2 audio data sections"), "{refusal}");
         assert!(prepare_feed(&path, &never).is_err());
+
+        // Neither has id 0: the same refusal, not a damaged-file error.
+        builder.data_id = 2;
+        let path = builder.write(&dir.0, "streams.dcr");
+        let refusal = inspect(&path, &never).unwrap().refusal().unwrap();
+        assert!(refusal.contains("2 audio data sections"), "{refusal}");
+        assert_eq!(prepare_feed(&path, &never).err(), Some(refusal));
     }
 
     #[test]
@@ -4264,6 +4619,41 @@ pub(crate) mod tests {
             9,
             "a new size is inspected again"
         );
+    }
+
+    #[test]
+    fn a_feed_is_always_planned_from_the_file_as_it_is_now() {
+        let dir = TestDir::new();
+        let write = |tag: &str| {
+            let mut builder = pcm_tones(0b1, 8000, 24_000, &[(300.0, 0.5)]);
+            builder.begin_redaction(Some(8000), tag).end_redaction(Some(16_000));
+            builder.write(&dir.0, "replaced.dcr")
+        };
+        // Both tags are 11 bytes, so the file keeps its size.
+        let path = write("<play_play>");
+        let modified = fs::metadata(&path).unwrap().modified().unwrap();
+        assert_eq!(inspect_cached(&path, &never).unwrap().output_atoms, 24_000);
+        let size = fs::metadata(&path).unwrap().len();
+        write("<play_skip>");
+        assert_eq!(fs::metadata(&path).unwrap().len(), size);
+        fs::File::options()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_modified(modified)
+            .unwrap();
+        assert_eq!(fs::metadata(&path).unwrap().modified().unwrap(), modified);
+        let feed = prepare_feed(&path, &never).unwrap();
+        assert_eq!(feed.info.output_atoms, 16_000);
+        assert_eq!(feed.info.redactions[0].action, RedactionAction::Skip);
+        let (_, data) = read_wav_data(&feed.path);
+        assert_eq!(
+            i16s(&data).len(),
+            16_000,
+            "the segment marked to be left out is left out"
+        );
+        // The queue now shows the plan the feed used.
+        assert_eq!(inspect_cached(&path, &never).unwrap().output_atoms, 16_000);
     }
 
     #[test]

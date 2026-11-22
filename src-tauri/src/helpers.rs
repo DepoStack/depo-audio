@@ -792,6 +792,55 @@ pub(crate) fn reserve_unique_path_with<T>(
     ))
 }
 
+/// Temporary feeds older than this are left over from a run that did not
+/// finish (a crash or a forced quit): no step of a run uses one for longer
+/// (the longest, a `.dcr` channel merge, stops at four hours).
+pub(crate) const STALE_TEMP_FEED_SECS: u64 = 24 * 60 * 60;
+
+/// Whether `name` is a temporary audio feed this app writes into the temp
+/// folder: `depoaudio_` and 32 hex digits, then `.wav` (a demuxed `.dcr`)
+/// or `.sgmca` (an SGMCA copy). Nothing else matches.
+fn is_temp_feed_name(name: &str) -> bool {
+    let Some(rest) = name.strip_prefix("depoaudio_") else {
+        return false;
+    };
+    let Some((id, ext)) = rest.split_once('.') else {
+        return false;
+    };
+    id.len() == 32 && id.bytes().all(|byte| byte.is_ascii_hexdigit()) && matches!(ext, "wav" | "sgmca")
+}
+
+/// Remove temporary feeds left in `dir` by a run that did not finish. A
+/// feed is a decoded copy of a recording, so it should not stay behind. Only
+/// regular files with a feed's name (see `is_temp_feed_name`) that were last
+/// changed more than `older_than` ago are removed; symlinks and folders are
+/// never touched. Returns how many were removed.
+pub(crate) fn sweep_stale_temp_feeds(dir: &Path, older_than: std::time::Duration) -> usize {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return 0;
+    };
+    let now = std::time::SystemTime::now();
+    let mut removed = 0;
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        if !name.to_str().is_some_and(is_temp_feed_name) {
+            continue;
+        }
+        let Ok(metadata) = fs::symlink_metadata(entry.path()) else {
+            continue;
+        };
+        let stale = metadata
+            .modified()
+            .ok()
+            .and_then(|modified| now.duration_since(modified).ok())
+            .is_some_and(|age| age > older_than);
+        if metadata.is_file() && stale && fs::remove_file(entry.path()).is_ok() {
+            removed += 1;
+        }
+    }
+    removed
+}
+
 pub(crate) fn safe_label(s: &str) -> String {
     s.chars()
         .map(|c| if "<>:\"/\\|?* ".contains(c) { '_' } else { c })
@@ -812,6 +861,46 @@ pub(crate) fn basename(path: &str) -> String {
 mod tests {
     use super::*;
     use std::collections::HashSet;
+
+    #[test]
+    fn stale_temp_feeds_are_swept_and_nothing_else_is() {
+        let dir = std::env::temp_dir().join(format!("depoaudio_sweep_test_{}", Uuid::new_v4().simple()));
+        fs::create_dir(&dir).unwrap();
+        let id = Uuid::new_v4().simple().to_string();
+        let old = std::time::SystemTime::now() - std::time::Duration::from_secs(STALE_TEMP_FEED_SECS + 60);
+        let write = |name: &str, aged: bool| {
+            let path = dir.join(name);
+            fs::write(&path, b"decoded audio").unwrap();
+            if aged {
+                fs::File::options()
+                    .write(true)
+                    .open(&path)
+                    .unwrap()
+                    .set_modified(old)
+                    .unwrap();
+            }
+            path
+        };
+        let stale_wav = write(&format!("depoaudio_{id}.wav"), true);
+        let stale_sgmca = write(&format!("depoaudio_{id}.sgmca"), true);
+        let fresh = write(&format!("depoaudio_{}.wav", Uuid::new_v4().simple()), false);
+        let kept = [
+            write("depoaudio_hearing.wav", true),
+            write(&format!("depoaudio_merged_{id}.wav"), true),
+            write(&format!("depoaudio_{id}.flac"), true),
+            write(&format!("hearing_{id}.wav"), true),
+            write("Smith v Jones.wav", true),
+        ];
+        let folder = dir.join(format!("depoaudio_{}.wav", Uuid::new_v4().simple()));
+        fs::create_dir(&folder).unwrap();
+        let removed = sweep_stale_temp_feeds(&dir, std::time::Duration::from_secs(STALE_TEMP_FEED_SECS));
+        assert_eq!(removed, 2);
+        assert!(!stale_wav.exists() && !stale_sgmca.exists());
+        assert!(fresh.exists(), "a feed in use by another run is kept");
+        assert!(kept.iter().all(|path| path.exists()));
+        assert!(folder.is_dir());
+        fs::remove_dir_all(&dir).unwrap();
+    }
     use std::sync::{Arc, Barrier};
     use std::thread;
 
