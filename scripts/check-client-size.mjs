@@ -4,17 +4,21 @@ import { fileURLToPath } from 'node:url'
 
 const distDirectory = fileURLToPath(new URL('../dist/', import.meta.url))
 const budgets = {
-  // Raised from 560 KiB with the Player listening mix and playback keys
-  // (~33 KiB over main's 548.6 KiB, to ~581.9 KiB): the Player tab chunk
-  // (mix strips, swap and restore), the Settings chunk (Playback keys
-  // section), the global-shortcut plugin with the key dispatcher in the app
-  // shell, the channel-count worklet and the speaker colors. The budget sums
-  // every emitted .js file, so lazy-loading the playback-keys code would move
-  // bytes between chunks without bringing the total under 560 KiB. The
-  // transcript proofing view (with its cue-tag tokenizer) was budgeted
-  // separately at 561 KiB; this merge keeps the larger 592 KiB and does not
-  // raise it further.
-  javascript: 592 * 1024,
+  // Set to 621 KiB for v1.2.0: the measured 608.8 KiB plus about 2% headroom
+  // (ceil(608.8 * 1.02)). v1.2.0 adds the Player listening mix and playback
+  // keys (the Player and Settings chunks, the global-shortcut plugin and key
+  // dispatcher in the app shell, the channel-count worklet and the speaker
+  // colors), transcript proofing (the read-only proofing view with its
+  // cue-tag tokenizer) and the three-pane Player (pane splitters and saved
+  // layout), which together took JavaScript from main's 548.6 KiB to 608.8
+  // KiB. Before raising it, the unused common/Tooltip and common/Toggle
+  // wrappers and the unused shadcn checkbox, progress, scroll-area,
+  // separator, slider and table primitives were removed with their Radix
+  // packages; none of them was imported, so the bundle did not shrink. The
+  // budget sums every emitted .js file, so lazy-loading would only move bytes
+  // between chunks. No duplicate libraries were found, and lucide icons are
+  // imported one by one.
+  javascript: 621 * 1024,
   // Raised from 64 KiB with the DepoStack brand foundation: the bundled
   // Archivo/Fragment Mono @font-face rules with their size-adjusted fallbacks
   // (src/styles/fonts.css) and the type-role utilities add ~2 KiB over main
