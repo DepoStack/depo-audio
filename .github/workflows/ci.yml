@@ -176,7 +176,7 @@ jobs:
         run: cargo fmt --manifest-path src-tauri/Cargo.toml --all -- --check
 
       # The FFmpeg-backed tests (export records, synthetic SGMCA and .dm
-      # conversions) skip themselves when FFmpeg, ffprobe or libopus is
+      # conversions) skip themselves when FFmpeg, ffprobe, libopus or libgsm is
       # missing; here a missing tool fails the job instead.
       - name: Characterization + unit tests
         env:

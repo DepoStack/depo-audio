@@ -103,7 +103,7 @@ Scanning is a bounded, cancellable local analysis pass. FFmpeg performs the sele
 | **SGMCA**                                    | Stenograph · Case CATalyst | ✅ Supported                       |
 | **FTR / TRM**                                | For The Record             | 🧪 Experimental                    |
 | **BWF**                                      | CourtSmart · Various       | ✅ Supported                       |
-| **DigitalCAT (.dm)**                         | Stenovations               | 🧪 Experimental                    |
+| **DigitalCAT / SoundSync (.dm)**             | Stenovations               | 🧪 Experimental                    |
 | **WAV, MP3, FLAC, M4A, OGG, Opus, WMA, AIF** | Standard                   | ✅ Supported                       |
 | **Video (MP4, MOV, MKV, AVI, WebM)**         | — audio track extracted    | ✅ Supported                       |
 | **Video (MPG, VOB, TS, MTS, M2TS, WMV, ASF)** | — audio track extracted   | ✅ Supported                       |
@@ -124,6 +124,15 @@ headers with each session's start time. That layout comes from
 owner-supplied interoperability notes and has not yet been confirmed
 against a file CATalyst wrote, nor has CATalyst been shown to open a file
 DepoAudio wrote. See [`docs/SGMCA.md`](docs/SGMCA.md).
+
+DigitalCAT / SoundSync `.dm` files: DepoAudio reads the audio inside into a
+temporary WAV for FFmpeg, skips blocks that were recorded over, keeps the
+audio in file order and stops at a short block, where the notes say
+SoundSync's player stops; anything left out is reported. A `.bmf` marker file
+beside it is counted in the export record, without its text. It has been
+tested with synthetic files only, built from owner-supplied notes on the
+layout ([`docs/formats/dm.md`](docs/formats/dm.md)) that have not yet been
+checked against a file SoundSync recorded.
 
 ---
 

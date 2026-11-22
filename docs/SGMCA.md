@@ -91,8 +91,9 @@ and the example `OpusHead` page's CRC (`0x801384E6`) by
 
 FFmpeg decodes with the **libopus** decoder (FFmpeg 6.1's built-in Opus decoder turned one
 channel of a 16 kHz family-255 test stream into full-scale noise). No copy of the audio is
-made: DepoAudio writes a small temporary FFmpeg concat script (a few hundred bytes, removed
-when the job ends) whose entries point at each session's byte range of the original file
+made: DepoAudio writes a small temporary FFmpeg concat script (a few hundred bytes, in
+DepoAudio's private work folder like every other temporary file, removed when the job ends)
+whose entries point at each session's byte range of the original file
 through FFmpeg's `subfile` protocol, with each session's exact duration, and reads it with
 `-f concat -safe 0 -protocol_whitelist file,subfile`. A bare-Ogg file is read in place.
 The concat demuxer starts the audio at minus the first session's pre-skip, where a bare Ogg file
@@ -108,7 +109,15 @@ WAV size estimate come from the reader's joined duration, because ffprobe cannot
 Direct Audio layout. A synthetic three-session file (300, 700 and 1500 Hz tones, families 255, 1
 and 255) converts to exactly the sum of its sessions' samples with each tone in its place
 (`every_recording_session_is_converted_in_file_order`, which also runs the app's own ffprobe
-arguments). Scan, the waveform and merge were not run against a multi-session file here.
+arguments). With Fade on, the fade-out is placed from the decoded length of this same feed (the
+decoded-length pass reads the concat script with its input options), so it lands at the end of
+the joined timeline, never at the end of the first or the last session alone, and the export
+record's `processing.fadeOut` names that length. A two-session click file is converted in every
+mode to WAV, MP3, M4A and SGMCA, plain, faded and with Normalize, Fade, high-pass and de-clip on;
+every output holds the joined 240 000 samples with each click on its sample in its session, and a
+faded one starts its fade at 4.5 s of 5 s
+(`a_two_session_sgmca_source_lines_up_sample_for_sample`, beside the alignment matrix).
+Scan, the waveform and merge were not run against a multi-session file here.
 
 ## Writing (Convert → SGMCA)
 

@@ -13,6 +13,14 @@ export const FORMATS_OUT = [
   { id: 'sgmca', label: 'SGMCA', desc: 'Case CATalyst Direct Audio — Opus, one stream per channel, 48 kHz' },
 ]
 
+// Keep Original to these formats is refused for a source with more than two
+// channels: MP3 folds them into stereo, and AAC and Opus code a channel the
+// layout calls LFE as a low-pass effects channel (conversion.rs).
+export const KEEP_STEREO_ONLY_FORMATS = ['mp3', 'm4a', 'opus']
+
+export const KEEP_STEREO_ONLY_NOTE =
+  'Keep Original to this format works only for mono and stereo recordings. A recording with more channels is not converted, because this format would fold channels together or filter one as a bass channel. To keep every channel, choose WAV, FLAC or SGMCA, or use Split Channels.'
+
 // Output formats whose sample rate is fixed by the format itself.
 export const FIXED_OUTPUT_RATES = { opus: '48000', sgmca: '48000' }
 
@@ -84,7 +92,14 @@ export const FORMAT_ROWS = [
   { ext: '.sgmca', vendor: 'Stenograph · Case CATalyst', ch: '1–16 ch', status: 'supported', group: 'court' },
   { ext: '.trm  .ftr', vendor: 'For The Record · FTR Gold', ch: '4–16 ch', status: 'experimental', group: 'court' },
   { ext: '.bwf', vendor: 'CourtSmart · Various', ch: 'varies', status: 'supported', group: 'court' },
-  { ext: '.dm', vendor: 'Stenovations · DigitalCAT', ch: '—', status: 'experimental', group: 'court' },
+  {
+    ext: '.dm',
+    vendor: 'Stenovations · DigitalCAT / SoundSync',
+    ch: '—',
+    status: 'experimental',
+    note: 'Reads the audio inside; tested with synthetic files only',
+    group: 'court',
+  },
   // Closed formats — recognized, never decoded; export to WAV in the recording software first
   { ext: '.aes', vendor: 'Eclipse CAT · AudioSync', ch: '—', status: 'unsupported', group: 'export' },
   { ext: '.dcr', vendor: 'Liberty Court Recorder · BIS Digital', ch: '—', status: 'unsupported', group: 'export' },

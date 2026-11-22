@@ -94,9 +94,10 @@ pub async fn detect_format(path: String) -> Option<FormatInfo> {
 /// The audio streams of a queued file, for the Convert queue's multi-track
 /// and recording-session notices and the WAV size estimate. Read-only: one
 /// ffprobe of the original file, or for an SGMCA a walk of its own headers
-/// and pages (ffprobe cannot read the Direct Audio layout). Returns None for
-/// a rejected format, or an SGMCA that cannot be read (conversion then gives
-/// the reason).
+/// and pages (ffprobe cannot read the Direct Audio layout). A `.dm` is
+/// answered from its own header and block headers (no FFmpeg), with what was
+/// recorded over. Returns None for a rejected format, or an SGMCA that cannot
+/// be read (conversion then gives the reason).
 #[tauri::command]
 pub async fn probe_audio_streams_cmd(
     app: AppHandle,
@@ -113,6 +114,16 @@ pub async fn probe_audio_streams_cmd(
             Ok(info.ok().map(|info| crate::manifest::sgmca_audio_streams(&info)))
         }
         Some(format) if format.handler == "rejected" => Ok(None),
+        // FFmpeg cannot read a .dm; its own header answers instead.
+        Some(format) if format.key == "digitalcat" => {
+            let source = source.to_path_buf();
+            Ok(
+                tauri::async_runtime::spawn_blocking(move || crate::dm::streams_info(&source))
+                    .await
+                    .ok()
+                    .flatten(),
+            )
+        }
         Some(_) => Ok(crate::ffmpeg::probe_audio_streams(&app, source).await),
         None => Ok(None),
     }
@@ -687,9 +698,51 @@ pub struct LocalDataClearResult {
 /// saves, legacy model files) and reset the in-memory library and settings.
 /// Only exact DepoAudio file names are removed; no path recorded in the
 /// library is ever deleted, so recordings, outputs and backups stay.
+/// Leftover temporary audio copies are swept afterwards, off the main thread
+/// and with no lock held, since a large or busy leftover can take a while.
 #[tauri::command]
-pub fn local_data_clear_cmd(app: AppHandle, state: State<'_, AppState>) -> Result<LocalDataClearResult, String> {
-    let dir = app_data_dir(&app)?;
+pub async fn local_data_clear_cmd(app: AppHandle, state: State<'_, AppState>) -> Result<LocalDataClearResult, String> {
+    let ClearedAppData {
+        removed,
+        mut failed,
+        warning: library_warning,
+    } = clear_app_data_locked(&app, &state)?;
+    // Leftover temporary audio copies from runs that are no longer open; this
+    // run's own folder (a Scan or waveform may be using it) is kept.
+    let sweep = tauri::async_runtime::spawn_blocking(crate::workdir::sweep_now)
+        .await
+        .map_err(|e| format!("Could not clear the temporary audio folder: {e}"))?;
+    failed.extend(sweep.failed);
+
+    let mut warning = library_warning;
+    if !failed.is_empty() {
+        let names: Vec<&str> = failed.iter().map(|(name, _)| name.as_str()).collect();
+        let reason = &failed[0].1;
+        let message = format!(
+            "{} file(s) could not be removed ({}; first reason: {reason}). Close other programs that may have them open, then try again.",
+            names.len(),
+            names.join(", ")
+        );
+        warning = Some(match warning {
+            Some(existing) => format!("{message} {existing}"),
+            None => message,
+        });
+    }
+    Ok(LocalDataClearResult { removed, warning })
+}
+
+struct ClearedAppData {
+    removed: usize,
+    /// (name, reason) for each file that could not be removed.
+    failed: Vec<(String, String)>,
+    /// A library access warning, if any.
+    warning: Option<String>,
+}
+
+/// The part of "Clear all DepoAudio data" that runs under the conversion
+/// commit, library and settings locks.
+fn clear_app_data_locked(app: &AppHandle, state: &AppState) -> Result<ClearedAppData, String> {
+    let dir = app_data_dir(app)?;
     // Same lock order as a conversion's commit. With both held, no conversion
     // can be committing; one still running is refused below, and advancing
     // the epoch cancels any job of an earlier batch that starts afterwards,
@@ -709,27 +762,15 @@ pub fn local_data_clear_cmd(app: AppHandle, state: State<'_, AppState>) -> Resul
         let paths: Vec<String> = library.cases.iter().flat_map(case_paths).collect();
         *library = Library::default();
         *state.library_load_error.lock().unwrap_or_else(|e| e.into_inner()) = None;
-        warning = revoke_library_assets(&app, &unreferenced_paths(&library, paths));
+        warning = revoke_library_assets(app, &unreferenced_paths(&library, paths));
     }
     if !failed("prefs.json") {
         *prefs = Prefs::default();
         *state.prefs_load_error.lock().unwrap_or_else(|e| e.into_inner()) = None;
     }
-    if !outcome.failed.is_empty() {
-        let names: Vec<&str> = outcome.failed.iter().map(|(name, _)| name.as_str()).collect();
-        let reason = &outcome.failed[0].1;
-        let message = format!(
-            "{} file(s) could not be removed ({}; first reason: {reason}). Close other programs that may have them open, then try again.",
-            names.len(),
-            names.join(", ")
-        );
-        warning = Some(match warning {
-            Some(existing) => format!("{message} {existing}"),
-            None => message,
-        });
-    }
-    Ok(LocalDataClearResult {
+    Ok(ClearedAppData {
         removed: outcome.removed.len(),
+        failed: outcome.failed,
         warning,
     })
 }
