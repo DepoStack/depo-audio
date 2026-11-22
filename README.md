@@ -120,11 +120,11 @@ deposition recording in these containers has been tried yet.
 DCR support reads unencrypted Liberty / BIS Digital recordings and has been
 tested with synthetic files only. The layout it reads comes from
 owner-supplied interoperability notes and has not been confirmed against a
-recording made by the Liberty software. Password-protected or encrypted
-recordings, Speex audio and other unknown codecs are refused with a message;
-export those to WAV in the Liberty software. A `.dcr` without the Liberty /
-BIS Digital signature gets export guidance, and a camera raw image named
-`.dcr` is called out as an image.
+real recording. Password-protected or encrypted recordings, Speex audio,
+other unknown codecs and recordings whose layout DepoAudio cannot follow are
+refused with a message; export those to WAV in the software that recorded
+them. A `.dcr` without the Liberty / BIS Digital signature gets export
+guidance, and a camera raw image named `.dcr` is called out as an image.
 
 ---
 

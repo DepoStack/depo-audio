@@ -26,6 +26,8 @@
 //! This module reads only the audio element (mask, format, channel names)
 //! and the protection flag. Nothing else from the XML is kept, returned,
 //! logged or written to an export record, and no error message quotes it.
+//! The text of a remote-participant record (which may name the participant)
+//! is searched only for its `ac` attribute and is not kept either.
 
 use std::fs::{self, File};
 use std::io::{self, BufWriter, Read, Seek, SeekFrom, Write};
@@ -62,9 +64,28 @@ const WRITE_BUFFER_BYTES: usize = 256 * 1024;
 /// How many atoms pass between cancellation checks.
 const CANCEL_CHECK_ATOMS: u64 = 1 << 16;
 
-pub(crate) const PROTECTED_MESSAGE: &str = "This recording is password protected; DepoAudio can't open protected recordings. Export it to WAV in the Liberty software.";
-pub(crate) const SPEEX_MESSAGE: &str =
-    "Speex recordings aren't supported yet. Export this recording to WAV in the Liberty software, then add the WAV.";
+/// Where every refusal sends the person. Liberty Court Recorder and BIS
+/// Digital recordings do not open in each other's software, so the guidance
+/// names both and assumes neither.
+macro_rules! export_hint {
+    () => {
+        "Export it to WAV in the software that recorded it (for example Liberty Court Recorder or BIS Digital), then add the WAV."
+    };
+}
+
+pub(crate) const PROTECTED_MESSAGE: &str = concat!(
+    "This recording is password protected; DepoAudio can't open protected recordings. ",
+    export_hint!()
+);
+pub(crate) const SPEEX_MESSAGE: &str = concat!("Speex recordings aren't supported yet. ", export_hint!());
+pub(crate) const PTCH_UNREADABLE_MESSAGE: &str = concat!(
+    "A remote-participant record in this recording can't be read, so DepoAudio can't tell which channels are recorded after it. ",
+    export_hint!()
+);
+pub(crate) const PTCH_GAP_MESSAGE: &str = concat!(
+    "A remote participant joins this recording while its channel layout has a gap, so DepoAudio can't tell where that participant's audio sits among the other channels. ",
+    export_hint!()
+);
 pub(crate) const LAYOUT_SOURCE: &str =
     "owner-supplied interoperability notes; not yet confirmed against a recorded file";
 pub(crate) const CHECKSUM_NOT_CHECKED: &str = "not checked";
@@ -78,7 +99,17 @@ const WAVE_FORMAT_MPEGLAYER3: u16 = 0x0055;
 const WAVE_FORMAT_SPEEX: u16 = 0xA109;
 
 fn damaged(reason: &str) -> String {
-    format!("This .dcr recording is damaged or incomplete: {reason}. Export it to WAV in the Liberty software.")
+    format!(
+        "This .dcr recording is damaged or incomplete: {reason}. {}",
+        export_hint!()
+    )
+}
+
+fn several_data_chunks(count: usize) -> String {
+    format!(
+        "This recording has {count} audio data sections; DepoAudio reads recordings with one so far, so converting it could leave audio out. {}",
+        export_hint!()
+    )
 }
 
 fn read_error(error: io::Error) -> String {
@@ -214,16 +245,18 @@ impl WaveFormat {
             Codec::Speex => return Some(SPEEX_MESSAGE.into()),
             Codec::Other => {
                 return Some(format!(
-                    "This recording uses audio codec tag 0x{:04X}, which DepoAudio can't decode yet. Export it to WAV in the Liberty software, then add the WAV.",
-                    self.tag
+                    "This recording uses audio codec tag 0x{:04X}, which DepoAudio can't decode yet. {}",
+                    self.tag,
+                    export_hint!()
                 ))
             }
             _ => {}
         }
         let unsupported = |what: &str| {
             Some(format!(
-                "This recording's {} audio uses {what}, which DepoAudio doesn't support. Export it to WAV in the Liberty software, then add the WAV.",
-                self.codec_name()
+                "This recording's {} audio uses {what}, which DepoAudio doesn't support. {}",
+                self.codec_name(),
+                export_hint!()
             ))
         };
         if self.channels != 1 {
@@ -292,7 +325,10 @@ pub(crate) struct ConferenceChange {
     pub kind: &'static str,
     pub channels_after: u32,
     /// Always true: which channel bit is added or removed is not known, so
-    /// DepoAudio guesses (lowest unused bit on join, highest used on leave).
+    /// DepoAudio guesses: the lowest unused bit on a join (refused when that
+    /// falls below a channel in use, where the order would change), and on a
+    /// leave the bit most recently added by a join (the highest used bit
+    /// when no join came before).
     pub bit_guessed: bool,
 }
 
@@ -318,7 +354,12 @@ pub(crate) struct DcrInfo {
     /// The first `MAX_RECORDED_CHANGES` changes.
     pub conference_changes: Vec<ConferenceChange>,
     pub conference_change_count: u64,
+    /// At least one encrypted section was found (the walk stops at the
+    /// first one: the bytes after it are not plain audio).
     pub encrypted_sections: u64,
+    /// Bytes at the very end of the audio that were too few for one step
+    /// across all channels and are left out (see `scan_data`).
+    pub trailing_bytes_dropped: u64,
     pub checksum: &'static str,
     #[serde(skip)]
     layout: Layout,
@@ -333,6 +374,9 @@ struct Layout {
     /// Converted channel bits, ascending.
     output_bits: Vec<u32>,
     protected_flag: bool,
+    /// Why the recording cannot be converted although it could be read
+    /// (an unreadable remote-participant record, several data chunks).
+    problem: Option<String>,
 }
 
 impl DcrInfo {
@@ -345,6 +389,9 @@ impl DcrInfo {
         if let Some(problem) = self.layout.format.problem() {
             return Some(problem);
         }
+        if let Some(problem) = &self.layout.problem {
+            return Some(problem.clone());
+        }
         if self.channels > MAX_DCR_CHANNELS {
             return Some(format!(
                 "This recording has {} channels; DepoAudio converts at most {MAX_DCR_CHANNELS}.",
@@ -353,8 +400,9 @@ impl DcrInfo {
         }
         if self.conference_change_count > 0 && !self.silence_known() {
             return Some(format!(
-                "A remote participant joins or leaves during this {} recording. DepoAudio can keep the channels aligned across that only for PCM, A-law, mu-law and IMA ADPCM recordings so far. Export it to WAV in the Liberty software, then add the WAV.",
-                self.codec
+                "A remote participant joins or leaves during this {} recording. DepoAudio can keep the channels aligned across that only for PCM, A-law, mu-law and IMA ADPCM recordings so far. {}",
+                self.codec,
+                export_hint!()
             ));
         }
         if self.atoms == 0 {
@@ -384,6 +432,7 @@ impl DcrInfo {
             attachments_skipped: self.attachments,
             conference_changes: self.conference_changes.clone(),
             conference_change_count: self.conference_change_count,
+            trailing_bytes_dropped: self.trailing_bytes_dropped,
             checksum: CHECKSUM_NOT_CHECKED,
             layout_source: LAYOUT_SOURCE,
         }
@@ -398,6 +447,7 @@ impl DcrInfo {
             conference_change_count: self.conference_change_count,
             video_frames: self.video_frames,
             attachments: self.attachments,
+            trailing_bytes_dropped: self.trailing_bytes_dropped,
             problem: self.refusal(),
         }
     }
@@ -418,8 +468,15 @@ pub(crate) struct DcrSourceRecord {
     pub attachments_skipped: u64,
     pub conference_changes: Vec<ConferenceChange>,
     pub conference_change_count: u64,
+    /// Present only when bytes at the end of the audio were left out.
+    #[serde(skip_serializing_if = "is_zero")]
+    pub trailing_bytes_dropped: u64,
     pub checksum: &'static str,
     pub layout_source: &'static str,
+}
+
+fn is_zero(value: &u64) -> bool {
+    *value == 0
 }
 
 /// What the Convert queue shows for a queued `.dcr`.
@@ -432,6 +489,7 @@ pub(crate) struct DcrQueueInfo {
     pub conference_change_count: u64,
     pub video_frames: u64,
     pub attachments: u64,
+    pub trailing_bytes_dropped: u64,
     /// Why it cannot be converted, when it cannot.
     pub problem: Option<String>,
 }
@@ -471,7 +529,8 @@ fn read_container(file: &mut File, file_len: u64) -> Result<Container, String> {
     let minor = le_u32(&header, 12);
     if major > MAX_MAJOR {
         return Err(format!(
-            "This DCR was written by recorder format version {major}, which is newer than DepoAudio knows. Export it to WAV in the Liberty software."
+            "This DCR was written by recorder format version {major}, which is newer than DepoAudio knows. {}",
+            export_hint!()
         ));
     }
     if minor >= 100 {
@@ -697,25 +756,41 @@ fn element<'a>(text: &'a str, name: &str) -> Option<Element<'a>> {
     elements(text, name).into_iter().next()
 }
 
+/// The value of attribute `name`: a name that starts the text or follows
+/// white space (so `data-ac` is not `ac`), outside any quoted value, followed
+/// by `=` and a quoted value.
 fn attribute(attributes: &str, name: &str) -> Option<String> {
     let bytes = attributes.as_bytes();
     let mut index = 0;
-    while index < attributes.len() {
-        let rest = &attributes[index..];
-        let starts_word = index == 0 || !bytes[index - 1].is_ascii_alphanumeric();
-        if starts_word && tag_like_name(rest, name) {
-            let after = rest[name.len()..].trim_start();
+    let mut quote: Option<u8> = None;
+    while index < bytes.len() {
+        let byte = bytes[index];
+        if let Some(open) = quote {
+            if byte == open {
+                quote = None;
+            }
+            index += 1;
+            continue;
+        }
+        if byte == b'"' || byte == b'\'' {
+            quote = Some(byte);
+            index += 1;
+            continue;
+        }
+        let starts_word = index == 0 || bytes[index - 1].is_ascii_whitespace();
+        if starts_word && attributes.is_char_boundary(index) && tag_like_name(&attributes[index..], name) {
+            let after = attributes[index + name.len()..].trim_start();
             if let Some(after_equals) = after.strip_prefix('=') {
                 let value = after_equals.trim_start();
-                let quote = value.chars().next()?;
-                if quote == '"' || quote == '\'' {
+                let open = value.chars().next()?;
+                if open == '"' || open == '\'' {
                     let body = &value[1..];
-                    let end = body.find(quote)?;
+                    let end = body.find(open)?;
                     return Some(decode_entities(&body[..end]));
                 }
             }
         }
-        index += rest.chars().next().map_or(1, char::len_utf8);
+        index += 1;
     }
     None
 }
@@ -727,7 +802,7 @@ fn tag_like_name(rest: &str, name: &str) -> bool {
         && !rest[name.len()..]
             .chars()
             .next()
-            .is_some_and(|next| next.is_ascii_alphanumeric() || next == '_')
+            .is_some_and(|next| next.is_ascii_alphanumeric() || matches!(next, '_' | '-' | ':' | '.'))
 }
 
 fn decode_entities(text: &str) -> String {
@@ -811,10 +886,30 @@ fn parse_hex(text: &str) -> Option<Vec<u8>> {
         .collect()
 }
 
+/// Invisible format characters (Unicode category Cf) that could reorder or
+/// hide text in a file name: soft hyphen, Arabic letter mark, zero-width
+/// characters and joiners, direction marks, embeddings, overrides and
+/// isolates, word joiner and invisible operators, the byte-order mark and
+/// interlinear annotation marks.
+fn is_format_character(character: char) -> bool {
+    matches!(
+        character,
+        '\u{00AD}'
+            | '\u{061C}'
+            | '\u{180E}'
+            | '\u{200B}'..='\u{200F}'
+            | '\u{202A}'..='\u{202E}'
+            | '\u{2060}'..='\u{2064}'
+            | '\u{2066}'..='\u{206F}'
+            | '\u{FEFF}'
+            | '\u{FFF9}'..='\u{FFFB}'
+    )
+}
+
 fn bounded_channel_name(raw: &str) -> Option<String> {
     let name: String = raw
         .chars()
-        .filter(|character| !character.is_control())
+        .filter(|character| !character.is_control() && !is_format_character(*character))
         .take(MAX_CHANNEL_NAME_CHARS)
         .collect();
     let name = name.trim();
@@ -986,18 +1081,100 @@ struct ScanStats {
     changes: Vec<ConferenceChange>,
     change_count: u64,
     union_mask: u64,
+    trailing_bytes_dropped: u64,
+    /// Why the walk stopped early on a readable file that must be refused.
+    problem: Option<String>,
 }
 
-/// Whether a `ptch` record's text changes the channel count: `ac="0"` does
-/// not; any other value, or no `ac` attribute, does.
-fn ptch_changes_channels(text: &[u8]) -> bool {
-    let text = String::from_utf8_lossy(text);
-    attribute(&text, "ac").is_none_or(|value| value.trim() != "0")
+/// What a `ptch` record's `ac` attribute says.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PtchEffect {
+    /// `ac="0"`: the channel count does not change.
+    Unchanged,
+    /// Any other value: one channel starts (`#str`) or stops (`#stp`).
+    Changes,
+    /// No readable `ac` attribute: DepoAudio cannot tell.
+    Unknown,
 }
 
-/// Walk the data chunk atom by atom. `sink` receives every plain audio atom
-/// with the channel mask active for it. Encrypted audio is counted, never
-/// passed on.
+/// A `ptch` record's text. The notes do not give its encoding: UTF-16 (by
+/// byte-order mark, or zero bytes in every other position) or else
+/// Windows-1252, which reads ASCII unchanged.
+fn decode_ptch_text(bytes: &[u8]) -> String {
+    let utf16 = |body: &[u8], little: bool| -> String {
+        let units = body.chunks_exact(2).map(|pair| {
+            if little {
+                u16::from_le_bytes([pair[0], pair[1]])
+            } else {
+                u16::from_be_bytes([pair[0], pair[1]])
+            }
+        });
+        char::decode_utf16(units)
+            .map(|unit| unit.unwrap_or('\u{FFFD}'))
+            .collect()
+    };
+    if let Some(body) = bytes.strip_prefix(&[0xFF, 0xFE]) {
+        return utf16(body, true);
+    }
+    if let Some(body) = bytes.strip_prefix(&[0xFE, 0xFF]) {
+        return utf16(body, false);
+    }
+    let pairs = bytes.len() / 2;
+    if pairs > 0 {
+        let zero_at = |parity: usize| bytes.chunks_exact(2).filter(|pair| pair[parity] == 0).count();
+        let (even, odd) = (zero_at(0), zero_at(1));
+        if odd * 2 >= pairs && even * 4 < pairs {
+            return utf16(bytes, true);
+        }
+        if even * 2 >= pairs && odd * 4 < pairs {
+            return utf16(bytes, false);
+        }
+    }
+    decode_windows_1252(bytes)
+}
+
+fn ptch_effect(text: &[u8]) -> PtchEffect {
+    match attribute(&decode_ptch_text(text), "ac") {
+        Some(value) if value.trim() == "0" => PtchEffect::Unchanged,
+        Some(_) => PtchEffect::Changes,
+        None => PtchEffect::Unknown,
+    }
+}
+
+/// The 8-byte record markers that may start at an atom boundary.
+const DATA_MARKERS: [&[u8; 8]; 6] = [
+    b"audi#mrk",
+    b"audi#crp",
+    b"cadr#bgn",
+    b"attx#bgn",
+    b"ptch#str",
+    b"ptch#stp",
+];
+
+/// Whether one of the record markers starts inside `atom` (`bytes` runs on
+/// past it) at a block boundary other than the first: the sign of an atom
+/// width that does not match the data, since a marker belongs between atoms.
+fn marker_inside_atom(bytes: &[u8], width: usize, block: usize) -> bool {
+    (block..width).step_by(block).any(|at| {
+        bytes
+            .get(at..at + 8)
+            .is_some_and(|candidate| DATA_MARKERS.iter().any(|marker| candidate == &marker[..]))
+    })
+}
+
+/// Walk the data chunk atom by atom. `sink` receives every audio atom with
+/// the channel mask active for it.
+///
+/// The walk stops early, with the reason in `ScanStats` (the recording is
+/// then refused): at the first encrypted section (`audi#crp`; what follows
+/// is not plain audio, so its bytes are never parsed or passed on), at a
+/// remote-participant record whose `ac` attribute cannot be read, and at a
+/// join whose guessed channel bit would fall below a channel in use. A
+/// last run of bytes shorter than one atom is left out and counted when no
+/// participant change came before it (the channel count then comes straight
+/// from the recording's description); after a change it is an error, since
+/// a misread change is the likelier cause. An atom with a record marker
+/// inside it at a block boundary is an error too.
 fn scan_data(
     file: &mut File,
     layout: &Layout,
@@ -1015,7 +1192,8 @@ fn scan_data(
         ..ScanStats::default()
     };
     let mut active = layout.initial_mask;
-    let mut encrypted = false;
+    // Bits added by joins, most recent last: a leave removes the last one.
+    let mut joined_bits: Vec<u32> = Vec::new();
     let mut steps: u64 = 0;
     let misaligned = || damaged("its audio data is out of step with the channel layout (atom misalignment)");
     while region.left() > 0 {
@@ -1024,7 +1202,7 @@ fn scan_data(
             return Err(crate::helpers::AUDIO_PREPARATION_CANCELLED_MESSAGE.into());
         }
         let width = active.count_ones() as usize * block;
-        region.fill(width.max(24))?;
+        region.fill((width + 8).max(24))?;
         let left = region.left();
         let bytes = region.bytes();
         if bytes.len() >= 8 {
@@ -1032,16 +1210,11 @@ fn scan_data(
             match &marker {
                 b"audi#mrk" => {
                     region.consume(8);
-                    encrypted = false;
                     continue;
                 }
                 b"audi#crp" => {
-                    region.consume(8);
-                    if !encrypted {
-                        stats.encrypted_sections += 1;
-                    }
-                    encrypted = true;
-                    continue;
+                    stats.encrypted_sections += 1;
+                    break;
                 }
                 b"cadr#bgn" => {
                     if bytes.len() < 12 {
@@ -1083,21 +1256,34 @@ fn scan_data(
                     let joined = &marker == b"ptch#str";
                     let searched = 12 + usize::try_from(text_len).unwrap_or(usize::MAX).min(MAX_PTCH_TEXT);
                     region.fill(searched)?;
-                    let changes = ptch_changes_channels(&region.bytes()[12..searched]);
+                    let effect = ptch_effect(&region.bytes()[12..searched]);
                     region.skip(total)?;
-                    if !changes {
-                        continue;
+                    match effect {
+                        PtchEffect::Unchanged => continue,
+                        PtchEffect::Unknown => {
+                            stats.problem = Some(PTCH_UNREADABLE_MESSAGE.into());
+                            break;
+                        }
+                        PtchEffect::Changes => {}
                     }
                     if joined {
                         let bit = (0..MAX_CHANNEL_BITS)
                             .find(|bit| active & (1 << bit) == 0)
                             .ok_or_else(|| damaged("more than 32 channels are active"))?;
+                        if active >> bit != 0 {
+                            // A channel above the new one is in use: its
+                            // place in each atom would depend on the guess.
+                            stats.problem = Some(PTCH_GAP_MESSAGE.into());
+                            break;
+                        }
                         active |= 1 << bit;
+                        joined_bits.push(bit);
                     } else {
                         if active == 0 {
                             return Err(damaged("a participant leaves when no channel is active"));
                         }
-                        active &= !(1u64 << (63 - active.leading_zeros()));
+                        let bit = joined_bits.pop().unwrap_or_else(|| 63 - active.leading_zeros());
+                        active &= !(1u64 << bit);
                     }
                     stats.union_mask |= active;
                     stats.change_count += 1;
@@ -1116,23 +1302,18 @@ fn scan_data(
                 _ => {}
             }
         }
-        if width == 0 {
-            if encrypted {
-                break;
-            }
+        if width == 0 || marker_inside_atom(bytes, width.min(bytes.len()), block) {
             return Err(misaligned());
         }
         if bytes.len() < width {
-            if encrypted {
-                // Encrypted bytes need not follow the plain layout; the
-                // recording is refused as protected either way.
-                break;
+            // Everything left is shorter than one atom.
+            if stats.change_count > 0 {
+                return Err(misaligned());
             }
-            return Err(misaligned());
+            stats.trailing_bytes_dropped = left;
+            break;
         }
-        if !encrypted {
-            sink(active, &bytes[..width])?;
-        }
+        sink(active, &bytes[..width])?;
         region.consume(width);
         stats.atoms += 1;
     }
@@ -1171,8 +1352,18 @@ pub(crate) fn inspect(path: &Path, cancelled: &dyn Fn() -> bool) -> Result<DcrIn
         initial_mask: description.mask,
         output_bits: Vec::new(),
         protected_flag: description.protected_flag,
+        problem: None,
     };
     let stats = scan_data(&mut file, &layout, cancelled, &mut |_, _| Ok(()))?;
+    // Only the first data chunk is read. How a recording with several
+    // (for example after a pause) joins them is not known, so it is refused
+    // rather than converted short.
+    let data_chunks = container.entries.iter().filter(|entry| &entry.tag == b"data").count();
+    layout.problem = if data_chunks > 1 {
+        Some(several_data_chunks(data_chunks))
+    } else {
+        stats.problem.clone()
+    };
     layout.output_bits = (0..MAX_CHANNEL_BITS)
         .filter(|bit| stats.union_mask & (1 << bit) != 0)
         .collect();
@@ -1194,9 +1385,50 @@ pub(crate) fn inspect(path: &Path, cancelled: &dyn Fn() -> bool) -> Result<DcrIn
         conference_changes: stats.changes,
         conference_change_count: stats.change_count,
         encrypted_sections: stats.encrypted_sections,
+        trailing_bytes_dropped: stats.trailing_bytes_dropped,
         checksum: CHECKSUM_NOT_CHECKED,
         layout,
     })
+}
+
+/// File identity for the inspect cache: path, size and modification time.
+type InspectKey = (PathBuf, u64, Option<std::time::SystemTime>);
+
+/// Recently inspected recordings, so queueing, converting, Scan and the
+/// waveform do not each walk the whole recording again. The demux pass that
+/// follows still reads every atom and fails if the count differs.
+fn inspect_cache() -> &'static std::sync::Mutex<Vec<(InspectKey, DcrInfo)>> {
+    static CACHE: std::sync::OnceLock<std::sync::Mutex<Vec<(InspectKey, DcrInfo)>>> = std::sync::OnceLock::new();
+    CACHE.get_or_init(|| std::sync::Mutex::new(Vec::new()))
+}
+
+const INSPECT_CACHE_ENTRIES: usize = 8;
+
+fn inspect_key(path: &Path) -> Option<InspectKey> {
+    let metadata = fs::metadata(path).ok()?;
+    Some((path.to_path_buf(), metadata.len(), metadata.modified().ok()))
+}
+
+/// `inspect`, reusing the result for a file whose path, size and
+/// modification time have not changed since it was last inspected.
+pub(crate) fn inspect_cached(path: &Path, cancelled: &dyn Fn() -> bool) -> Result<DcrInfo, String> {
+    let key = inspect_key(path);
+    if let Some(key) = &key {
+        let cache = inspect_cache().lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some((_, info)) = cache.iter().find(|(cached, _)| cached == key) {
+            return Ok(info.clone());
+        }
+    }
+    let info = inspect(path, cancelled)?;
+    if let Some(key) = key.filter(|key| inspect_key(path).as_ref() == Some(key)) {
+        let mut cache = inspect_cache().lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        cache.retain(|(cached, _)| cached.0 != key.0);
+        if cache.len() >= INSPECT_CACHE_ENTRIES {
+            cache.remove(0);
+        }
+        cache.push((key, info.clone()));
+    }
+    Ok(info)
 }
 
 /// Names for the converted channels. When the list has an item for every
@@ -1231,7 +1463,7 @@ fn channel_names(output_bits: &[u32], mask: u64, names: &[Option<String>]) -> Ve
 /// A file that cannot be read or converted has no streams (so no size
 /// estimate) and says why in `dcr.problem`.
 pub(crate) fn queue_streams_info(path: &Path) -> crate::manifest::AudioStreamsInfo {
-    let (streams, duration_secs, dcr) = match inspect(path, &|| false) {
+    let (streams, duration_secs, dcr) = match inspect_cached(path, &|| false) {
         Ok(info) => {
             let queue = info.queue_info();
             let streams = if queue.problem.is_some() {
@@ -1257,6 +1489,7 @@ pub(crate) fn queue_streams_info(path: &Path) -> crate::manifest::AudioStreamsIn
                 conference_change_count: 0,
                 video_frames: 0,
                 attachments: 0,
+                trailing_bytes_dropped: 0,
                 problem: Some(problem),
             },
         ),
@@ -1477,6 +1710,45 @@ pub(crate) fn merge_args(inputs: &[PathBuf], output: &Path, estimated_bytes: Opt
     args
 }
 
+/// Clear the speaker-position mask FFmpeg's WAV muxer writes into a merged
+/// feed (`amerge` guesses a surround layout such as 4.0 for N mono inputs).
+/// A court recording's channels are microphones, not speakers, so the feed
+/// says "no positions" (dwChannelMask 0) and conversion reads it with
+/// `-guess_layout_max 0`. Only DepoAudio's own temporary feed is changed.
+pub(crate) fn clear_channel_mask(path: &Path) -> Result<(), String> {
+    let error = |error: io::Error| format!("Could not finish the temporary audio: {error}");
+    let mut file = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(path)
+        .map_err(error)?;
+    let mut header = vec![0u8; 4096];
+    let filled = file.read(&mut header).map_err(error)?;
+    header.truncate(filled);
+    if header.len() < 12 || !matches!(&header[..4], b"RIFF" | b"RF64") || &header[8..12] != b"WAVE" {
+        return Ok(());
+    }
+    let mut at = 12;
+    while at + 8 <= header.len() {
+        let size = le_u32(&header, at + 4) as usize;
+        if &header[at..at + 4] == b"fmt " {
+            let body = at + 8;
+            let extensible = size >= 40 && body + 24 <= header.len() && le_u16(&header, body) == 0xFFFE;
+            if extensible && le_u32(&header, body + 20) != 0 {
+                file.seek(SeekFrom::Start((body + 20) as u64)).map_err(error)?;
+                file.write_all(&0u32.to_le_bytes()).map_err(error)?;
+                file.sync_all().map_err(error)?;
+            }
+            return Ok(());
+        }
+        if &header[at..at + 4] == b"data" {
+            return Ok(());
+        }
+        at += 8 + size + size % 2;
+    }
+    Ok(())
+}
+
 /// The FFmpeg run still needed to finish a feed: join the mono channel
 /// files into `output`. The inputs are removed when this is dropped.
 pub(crate) struct MergeStep {
@@ -1497,7 +1769,7 @@ pub(crate) struct DcrFeed {
 /// Inspect, refuse what cannot be converted (nothing is written then), and
 /// demux the audio into temporary WAVs. Blocking file I/O.
 pub(crate) fn prepare_feed(src: &Path, cancelled: &dyn Fn() -> bool) -> Result<DcrFeed, String> {
-    let info = inspect(src, cancelled)?;
+    let info = inspect_cached(src, cancelled)?;
     if let Some(refusal) = info.refusal() {
         return Err(refusal);
     }
@@ -1594,6 +1866,20 @@ pub(crate) mod tests {
     }
 
     pub(crate) const SECRET_DOCKET: &str = "SECRET-DOCKET-4471 Smith v. Jones";
+    /// Registration and participant text that must never leave the reader.
+    pub(crate) const SECRET_USER: &str = "SECRET-USERREG Clerk Jane Roe";
+    pub(crate) const SECRET_PARTICIPANT: &str = "Remote Witness Secret-Participant";
+    /// Every secret the builder writes, for leak checks.
+    pub(crate) const SECRETS: [&str; 8] = [
+        "SECRET-DOCKET",
+        "Smith v. Jones",
+        "hunter2",
+        "TIMEZONE",
+        "DOCKNOTA",
+        "SECRET-USERREG",
+        "Clerk Jane",
+        "Secret-Participant",
+    ];
 
     impl DcrBuilder {
         pub(crate) fn new(format: Vec<u8>, mask: u64, names: &[&str]) -> Self {
@@ -1645,11 +1931,15 @@ pub(crate) mod tests {
         }
 
         pub(crate) fn participant(&mut self, start: bool, ac: &str) -> &mut Self {
-            let text = format!("<ptch id=\"7\" ac=\"{ac}\" name=\"Remote Witness\"/>");
+            let text = format!("<ptch id=\"7\" ac=\"{ac}\" name=\"{SECRET_PARTICIPANT}\"/>");
+            self.participant_text(start, text.as_bytes())
+        }
+
+        pub(crate) fn participant_text(&mut self, start: bool, text: &[u8]) -> &mut Self {
             self.data
                 .extend_from_slice(if start { b"ptch#str" } else { b"ptch#stp" });
             self.data.extend_from_slice(&(text.len() as u32).to_le_bytes());
-            self.data.extend_from_slice(text.as_bytes());
+            self.data.extend_from_slice(text);
             self
         }
 
@@ -1661,7 +1951,7 @@ pub(crate) mod tests {
                 .map(|name| format!("<ITEM><CHNAME><![CDATA[{name}]]></CHNAME><CHDESC/><CHROLE/></ITEM>"))
                 .collect();
             let mut xml = format!(
-                "<META><AUDIO USECHNL=\"{}\"><FMTNAME><![CDATA[Synthetic]]></FMTNAME><FMTDATA><![CDATA[{hex}]]></FMTDATA><LISTCHNL>{items}</LISTCHNL></AUDIO><PROP TIMEZONE=\"-300\">x</PROP><DOCKNOTA><CASE><![CDATA[{}]]></CASE></DOCKNOTA><CRYPT HAVEREC=\"{}\" HAVEOVE=\"0\"><PWD>hunter2-secret</PWD></CRYPT></META>",
+                "<META><AUDIO USECHNL=\"{}\"><FMTNAME><![CDATA[Synthetic]]></FMTNAME><FMTDATA><![CDATA[{hex}]]></FMTDATA><LISTCHNL>{items}</LISTCHNL></AUDIO><USERREG><NAME><![CDATA[{SECRET_USER}]]></NAME><ORG>Court of Synthetic Appeals</ORG></USERREG><PROP TIMEZONE=\"-300\">x</PROP><DOCKNOTA><CASE><![CDATA[{}]]></CASE></DOCKNOTA><CRYPT HAVEREC=\"{}\" HAVEOVE=\"0\"><PWD>hunter2-secret</PWD></CRYPT></META>",
                 self.mask, self.docket, self.have_rec
             )
             .into_bytes();
@@ -1965,11 +2255,47 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn misaligned_audio_is_refused() {
+    fn a_short_last_atom_is_left_out_and_reported_but_misalignment_after_a_change_is_refused() {
         let dir = TestDir::new();
-        let mut builder = pcm_tones(0b11, 8000, 4, &[(300.0, 0.5), (500.0, 0.25)]);
-        builder.data.extend_from_slice(&[1, 2, 3]);
-        let path = builder.write(&dir.0, "misaligned.dcr");
+        let mut builder = pcm_tones(0b11, 8000, 1000, &[(300.0, 0.5), (500.0, 0.25)]);
+        builder.data.extend_from_slice(&[1, 2]);
+        let path = builder.write(&dir.0, "short-end.dcr");
+        let info = inspect(&path, &never).unwrap();
+        assert_eq!(info.atoms, 1000);
+        assert_eq!(info.trailing_bytes_dropped, 2);
+        assert_eq!(info.refusal(), None);
+        assert_eq!(info.queue_info().trailing_bytes_dropped, 2);
+        let record = serde_json::to_value(info.record()).unwrap();
+        assert_eq!(record["trailingBytesDropped"], 2);
+        let feed = prepare_feed(&path, &never).unwrap();
+        let (_, data) = read_wav_data(&feed.path);
+        assert_eq!(data.len(), 4000, "only whole atoms reach the feed");
+
+        // A whole recording has no trailingBytesDropped field at all.
+        let whole = pcm_tones(0b11, 8000, 10, &[(300.0, 0.5), (500.0, 0.25)]).write(&dir.0, "whole.dcr");
+        let record = serde_json::to_value(inspect(&whole, &never).unwrap().record()).unwrap();
+        assert!(record.get("trailingBytesDropped").is_none());
+
+        let mut changed = pcm_tones(0b11, 8000, 4, &[(300.0, 0.5), (500.0, 0.25)]);
+        changed
+            .participant(true, "1")
+            .atom(&[&[0; 6]])
+            .data
+            .extend_from_slice(&[1, 2]);
+        let path = changed.write(&dir.0, "misaligned.dcr");
+        let error = inspect(&path, &never).err().unwrap();
+        assert!(error.contains("atom misalignment"), "{error}");
+    }
+
+    #[test]
+    fn a_record_marker_inside_an_atom_is_misalignment_not_audio() {
+        let dir = TestDir::new();
+        let mut builder = DcrBuilder::new(pcm16_format(8000), 0b11, &[]);
+        builder.marker(b"audi#mrk").atom(&[&[1, 0], &[2, 0]]);
+        // Two stray bytes put the next video frame one block into an atom.
+        builder.data.extend_from_slice(&[3, 0]);
+        builder.video_frame(10).atom(&[&[4, 0], &[5, 0]]);
+        let path = builder.write(&dir.0, "shifted.dcr");
         let error = inspect(&path, &never).err().unwrap();
         assert!(error.contains("atom misalignment"), "{error}");
     }
@@ -2069,18 +2395,36 @@ pub(crate) mod tests {
     #[test]
     fn errors_and_records_never_carry_case_or_password_fields() {
         let dir = TestDir::new();
-        let mut builder = pcm_tones(0b11, 8000, 40, &[(300.0, 0.5), (500.0, 0.25)]);
-        builder.have_rec = "1";
-        let path = builder.write(&dir.0, "private.dcr");
-        let info = inspect(&path, &never).unwrap();
-        let everything = format!(
-            "{} {} {} {:?}",
-            serde_json::to_string(&info).unwrap(),
-            serde_json::to_string(&info.record()).unwrap(),
-            serde_json::to_string(&info.queue_info()).unwrap(),
-            prepare_feed(&path, &never).err()
-        );
-        for secret in ["SECRET-DOCKET", "Smith v. Jones", "hunter2", "TIMEZONE", "DOCKNOTA"] {
+        let mut refused = pcm_tones(0b11, 8000, 40, &[(300.0, 0.5), (500.0, 0.25)]);
+        refused.have_rec = "1";
+        let refused = refused.write(&dir.0, "private.dcr");
+        // A readable recording with a remote participant whose record names
+        // them, and one refused for an unreadable participant record.
+        let mut remote = pcm_tones(0b11, 8000, 40, &[(300.0, 0.5), (500.0, 0.25)]);
+        remote
+            .participant(true, "1")
+            .atom(&[&[0; 2], &[0; 2], &[0; 2]])
+            .participant(false, "1");
+        let remote = remote.write(&dir.0, "remote.dcr");
+        let mut unreadable = pcm_tones(0b11, 8000, 40, &[(300.0, 0.5), (500.0, 0.25)]);
+        unreadable.participant_text(true, format!("<p name=\"{SECRET_PARTICIPANT}\"/>").as_bytes());
+        let unreadable = unreadable.write(&dir.0, "unreadable.dcr");
+        let mut everything = String::new();
+        for path in [&refused, &remote, &unreadable] {
+            let info = inspect(path, &never).unwrap();
+            everything.push_str(&format!(
+                "{} {} {} {:?} {:?}",
+                serde_json::to_string(&info).unwrap(),
+                serde_json::to_string(&info.record()).unwrap(),
+                serde_json::to_string(&info.queue_info()).unwrap(),
+                serde_json::to_string(&queue_streams_info(path)).unwrap(),
+                prepare_feed(path, &never).err()
+            ));
+        }
+        assert!(everything.contains("password protected"), "{everything}");
+        assert!(everything.contains("joined"), "{everything}");
+        assert!(everything.contains("remote-participant record"), "{everything}");
+        for secret in SECRETS {
             assert!(!everything.contains(secret), "{secret} leaked: {everything}");
         }
     }
@@ -2104,12 +2448,246 @@ pub(crate) mod tests {
         assert!(parse_meta(b"<META><AUDIO USECHNL=\"1\"><FMTDATA>ZZ</FMTDATA></AUDIO></META>").is_err());
     }
 
+    fn utf16le(text: &str) -> Vec<u8> {
+        text.encode_utf16().flat_map(u16::to_le_bytes).collect()
+    }
+
     #[test]
     fn ptch_ac_attribute_decides_whether_channels_change() {
-        assert!(!ptch_changes_channels(b"<p ac=\"0\" x=\"1\"/>"));
-        assert!(ptch_changes_channels(b"<p ac=\"1\"/>"));
-        assert!(ptch_changes_channels(b"<p name=\"x\"/>"));
-        assert!(!ptch_changes_channels(b"<p mac=\"1\" ac='0'/>"));
+        use PtchEffect::*;
+        assert_eq!(ptch_effect(b"<p ac=\"0\" x=\"1\"/>"), Unchanged);
+        assert_eq!(ptch_effect(b"<p ac=\"1\"/>"), Changes);
+        assert_eq!(ptch_effect(b"<p AC = ' 0 '/>"), Unchanged);
+        assert_eq!(ptch_effect(b"<p mac=\"1\" ac='0'/>"), Unchanged);
+        // A missing or unreadable `ac` is unknown, never a change.
+        assert_eq!(ptch_effect(b"<p name=\"x\"/>"), Unknown);
+        assert_eq!(ptch_effect(b""), Unknown);
+        assert_eq!(ptch_effect(b"<p ac=1/>"), Unknown);
+        // Only a whole attribute name counts, outside quoted values.
+        assert_eq!(ptch_effect(b"<p data-ac=\"1\" ac=\"0\"/>"), Unchanged);
+        assert_eq!(ptch_effect(b"<p data-ac=\"1\"/>"), Unknown);
+        assert_eq!(ptch_effect(b"<p x:ac=\"1\" ac.y=\"1\"/>"), Unknown);
+        assert_eq!(ptch_effect(b"<p name=\"a ac='1'\" ac=\"0\"/>"), Unchanged);
+        // UTF-16, little- or big-endian, with or without a byte-order mark.
+        assert_eq!(ptch_effect(&utf16le("<p ac=\"0\"/>")), Unchanged);
+        assert_eq!(ptch_effect(&utf16le("<p ac=\"1\"/>")), Changes);
+        let mut marked = vec![0xFF, 0xFE];
+        marked.extend(utf16le("<p ac=\"0\"/>"));
+        assert_eq!(ptch_effect(&marked), Unchanged);
+        let big: Vec<u8> = "<p ac=\"1\"/>".encode_utf16().flat_map(u16::to_be_bytes).collect();
+        assert_eq!(ptch_effect(&big), Changes);
+    }
+
+    #[test]
+    fn a_utf16_ptch_record_without_a_change_keeps_the_channels() {
+        let dir = TestDir::new();
+        let mut builder = DcrBuilder::new(pcm16_format(8000), 0b11, &["Judge", "Witness"]);
+        builder.marker(b"audi#mrk").atom(&[&[1, 0], &[2, 0]]);
+        builder.participant_text(true, &utf16le("<p ac=\"0\"/>"));
+        for index in 3..6u8 {
+            builder.atom(&[&[index, 0], &[index + 10, 0]]);
+        }
+        let path = builder.write(&dir.0, "utf16.dcr");
+        let info = inspect(&path, &never).unwrap();
+        assert_eq!(info.channels, 2);
+        assert_eq!(info.atoms, 4);
+        assert_eq!(info.channel_names, ["Judge", "Witness"]);
+        assert_eq!(info.conference_change_count, 0);
+        assert_eq!(info.refusal(), None);
+    }
+
+    #[test]
+    fn an_unreadable_ptch_record_refuses_the_recording_before_anything_is_written() {
+        let dir = TestDir::new();
+        let mut builder = DcrBuilder::new(pcm16_format(8000), 0b11, &["Judge", "Witness"]);
+        builder.marker(b"audi#mrk").atom(&[&[1, 0], &[2, 0]]);
+        builder.participant_text(true, b"<p name=\"x\"/>");
+        builder.atom(&[&[1, 0], &[2, 0], &[3, 0]]);
+        let path = builder.write(&dir.0, "unknown.dcr");
+        let info = inspect(&path, &never).unwrap();
+        assert_eq!(info.refusal().as_deref(), Some(PTCH_UNREADABLE_MESSAGE));
+        assert_eq!(info.channels, 2, "the walk stops at the record");
+        assert_eq!(
+            prepare_feed(&path, &never).err().as_deref(),
+            Some(PTCH_UNREADABLE_MESSAGE)
+        );
+        assert_eq!(queue_streams_info(&path).streams.len(), 0);
+
+        // An `ac` beyond the bytes searched is unknown too.
+        let mut long = DcrBuilder::new(pcm16_format(8000), 0b1, &[]);
+        let mut text = b"<p note=\"".to_vec();
+        text.extend(std::iter::repeat_n(b'x', MAX_PTCH_TEXT));
+        text.extend_from_slice(b"\" ac=\"0\"/>");
+        long.atom(&[&[1, 0]]).participant_text(true, &text).atom(&[&[2, 0]]);
+        let path = long.write(&dir.0, "long.dcr");
+        let info = inspect(&path, &never).unwrap();
+        assert_eq!(info.refusal().as_deref(), Some(PTCH_UNREADABLE_MESSAGE));
+    }
+
+    #[test]
+    fn a_join_and_leave_restore_the_starting_channels_and_a_join_into_a_gap_is_refused() {
+        let dir = TestDir::new();
+        // Mask 0b111: joins add bits 3 and 4; the leave removes bit 4 (the
+        // most recent join), the next leave bit 3.
+        let mut builder = DcrBuilder::new(pcm16_format(8000), 0b111, &["Judge", "Witness", "Counsel"]);
+        builder.marker(b"audi#mrk").atom(&[&[1, 0], &[2, 0], &[3, 0]]);
+        builder
+            .participant(true, "1")
+            .atom(&[&[4, 0], &[5, 0], &[6, 0], &[7, 0]]);
+        builder
+            .participant(true, "1")
+            .atom(&[&[8, 0], &[9, 0], &[10, 0], &[11, 0], &[12, 0]]);
+        builder
+            .participant(false, "1")
+            .atom(&[&[13, 0], &[14, 0], &[15, 0], &[16, 0]]);
+        builder.participant(false, "1").atom(&[&[17, 0], &[18, 0], &[19, 0]]);
+        let path = builder.write(&dir.0, "lifo.dcr");
+        let feed = prepare_feed(&path, &never).unwrap();
+        assert_eq!(feed.info.channels, 5);
+        assert_eq!(
+            feed.info
+                .conference_changes
+                .iter()
+                .map(|change| change.channels_after)
+                .collect::<Vec<_>>(),
+            [4, 5, 4, 3]
+        );
+        let (_, data) = read_wav_data(&feed.path);
+        let samples: Vec<u8> = data.chunks_exact(2).map(|pair| pair[0]).collect();
+        assert_eq!(
+            samples,
+            [1, 2, 3, 0, 0, 4, 5, 6, 7, 0, 8, 9, 10, 11, 12, 13, 14, 15, 16, 0, 17, 18, 19, 0, 0]
+        );
+
+        // Bits 0, 1, 2 and 4 (a gap at bit 3): the joiner's guessed bit 3
+        // would sit between Plaintiff and Defense, so the order is unknown.
+        let mut gap = DcrBuilder::new(
+            pcm16_format(8000),
+            0b1_0111,
+            &["Judge", "Witness", "Plaintiff", "Defense"],
+        );
+        gap.marker(b"audi#mrk").atom(&[&[1, 0], &[2, 0], &[3, 0], &[4, 0]]);
+        gap.participant(true, "1")
+            .atom(&[&[1, 0], &[2, 0], &[3, 0], &[4, 0], &[5, 0]]);
+        gap.participant(false, "1").atom(&[&[1, 0], &[2, 0], &[3, 0], &[4, 0]]);
+        let path = gap.write(&dir.0, "gap.dcr");
+        let info = inspect(&path, &never).unwrap();
+        assert_eq!(info.refusal().as_deref(), Some(PTCH_GAP_MESSAGE));
+        assert_eq!(prepare_feed(&path, &never).err().as_deref(), Some(PTCH_GAP_MESSAGE));
+
+        // A leave with no join before it removes the highest channel.
+        let mut leave = DcrBuilder::new(pcm16_format(8000), 0b11, &[]);
+        leave.atom(&[&[1, 0], &[2, 0]]).participant(false, "1").atom(&[&[3, 0]]);
+        let path = leave.write(&dir.0, "leave.dcr");
+        let feed = prepare_feed(&path, &never).unwrap();
+        let (_, data) = read_wav_data(&feed.path);
+        assert_eq!(data, [1, 0, 2, 0, 3, 0, 0, 0]);
+    }
+
+    #[test]
+    fn several_data_chunks_are_refused_rather_than_converted_short() {
+        let dir = TestDir::new();
+        let mut builder = pcm_tones(0b1, 8000, 4, &[(300.0, 0.5)]);
+        builder.extra_chunks.push((*b"data", 1, vec![0; 8000]));
+        let path = builder.write(&dir.0, "resumed.dcr");
+        let info = inspect(&path, &never).unwrap();
+        let refusal = info.refusal().unwrap();
+        assert!(refusal.contains("2 audio data sections"), "{refusal}");
+        assert!(prepare_feed(&path, &never).is_err());
+    }
+
+    #[test]
+    fn records_inside_encrypted_audio_are_not_parsed() {
+        let dir = TestDir::new();
+        let mut builder = pcm_tones(0b11, 8000, 4, &[(300.0, 0.5), (500.0, 0.25)]);
+        builder.marker(b"audi#crp").marker(b"cadr#bgn");
+        builder.data.extend_from_slice(&0x7FFF_FFFFu32.to_le_bytes());
+        builder.data.extend_from_slice(&[0; 8]);
+        let path = builder.write(&dir.0, "ciphertext.dcr");
+        let info = inspect(&path, &never).unwrap();
+        assert_eq!(info.encrypted_sections, 1);
+        assert_eq!(info.refusal().as_deref(), Some(PROTECTED_MESSAGE));
+        assert_eq!(
+            queue_streams_info(&path).dcr.unwrap().problem.as_deref(),
+            Some(PROTECTED_MESSAGE)
+        );
+    }
+
+    #[test]
+    fn channel_names_lose_invisible_format_characters() {
+        assert_eq!(
+            bounded_channel_name("Wit\u{202E}ness\u{200B}\u{2066}\u{FEFF}").as_deref(),
+            Some("Witness")
+        );
+        assert_eq!(bounded_channel_name("\u{200F}\u{00AD}"), None);
+        assert_eq!(
+            bounded_channel_name("Caf\u{e9} \u{1F3A4}").as_deref(),
+            Some("Caf\u{e9} \u{1F3A4}")
+        );
+    }
+
+    #[test]
+    fn guidance_names_both_recorders_and_assumes_neither() {
+        for message in [
+            PROTECTED_MESSAGE.to_string(),
+            SPEEX_MESSAGE.into(),
+            PTCH_UNREADABLE_MESSAGE.into(),
+            PTCH_GAP_MESSAGE.into(),
+            damaged("it ends early"),
+            several_data_chunks(2),
+        ] {
+            assert!(
+                message.contains("software that recorded it")
+                    && message.contains("Liberty Court Recorder")
+                    && message.contains("BIS Digital"),
+                "{message}"
+            );
+            assert!(!message.contains("the Liberty software"), "{message}");
+        }
+    }
+
+    #[test]
+    fn the_inspect_cache_follows_file_changes() {
+        let dir = TestDir::new();
+        let path = pcm_tones(0b1, 8000, 4, &[(300.0, 0.5)]).write(&dir.0, "cached.dcr");
+        assert_eq!(inspect_cached(&path, &never).unwrap().atoms, 4);
+        assert_eq!(inspect_cached(&path, &never).unwrap().atoms, 4);
+        pcm_tones(0b1, 8000, 9, &[(300.0, 0.5)]).write(&dir.0, "cached.dcr");
+        assert_eq!(
+            inspect_cached(&path, &never).unwrap().atoms,
+            9,
+            "a new size is inspected again"
+        );
+    }
+
+    #[test]
+    fn a_merged_feed_loses_its_guessed_speaker_mask() {
+        let dir = TestDir::new();
+        let path = dir.0.join("merged.wav");
+        let mut fmt = Vec::new();
+        fmt.extend_from_slice(&0xFFFEu16.to_le_bytes());
+        fmt.extend_from_slice(&4u16.to_le_bytes());
+        fmt.extend_from_slice(&8000u32.to_le_bytes());
+        fmt.extend_from_slice(&64000u32.to_le_bytes());
+        fmt.extend_from_slice(&8u16.to_le_bytes());
+        fmt.extend_from_slice(&16u16.to_le_bytes());
+        fmt.extend_from_slice(&22u16.to_le_bytes());
+        fmt.extend_from_slice(&16u16.to_le_bytes());
+        fmt.extend_from_slice(&0x107u32.to_le_bytes());
+        fmt.extend_from_slice(&[1, 0, 0, 0, 0, 0, 0x10, 0, 0x80, 0, 0, 0xAA, 0, 0x38, 0x9B, 0x71]);
+        let mut bytes = b"RIFF\0\0\0\0WAVEJUNK\x04\0\0\0\0\0\0\0fmt ".to_vec();
+        bytes.extend_from_slice(&(fmt.len() as u32).to_le_bytes());
+        bytes.extend_from_slice(&fmt);
+        bytes.extend_from_slice(b"data\x08\0\0\0");
+        bytes.extend_from_slice(&[7; 8]);
+        fs::write(&path, &bytes).unwrap();
+        clear_channel_mask(&path).unwrap();
+        let after = fs::read(&path).unwrap();
+        let mask_at = 12 + 12 + 8 + 20;
+        assert_eq!(le_u32(&after, mask_at), 0);
+        let mut expected = bytes.clone();
+        expected[mask_at..mask_at + 4].copy_from_slice(&[0; 4]);
+        assert_eq!(after, expected, "nothing else changes");
     }
 
     #[test]

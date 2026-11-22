@@ -371,6 +371,23 @@ jobs:
         shell: pwsh
         run: Get-ChildItem src-tauri/binaries/
 
+      # Liberty / BIS DCR audio (crate::dcr) needs these decoders and the
+      # amerge filter. The macOS build script gates the same list. Presence
+      # only: no DCR is converted with the bundled FFmpeg here.
+      - name: Check DCR decoders and channel merge (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ffmpeg = 'src-tauri/binaries/ffmpeg-x86_64-pc-windows-msvc.exe'
+          $decoders = (& $ffmpeg -hide_banner -decoders) -join "`n"
+          if ($LASTEXITCODE -ne 0) { throw 'Bundled FFmpeg could not list its decoders' }
+          $filters = (& $ffmpeg -hide_banner -filters) -join "`n"
+          if ($LASTEXITCODE -ne 0) { throw 'Bundled FFmpeg could not list its filters' }
+          foreach ($decoder in @('pcm_alaw', 'pcm_mulaw', 'pcm_u8', 'pcm_s24le', 'pcm_s32le', 'adpcm_ima_wav', 'gsm_ms', 'mp3float')) {
+            if ($decoders -notmatch "\s$decoder\s") { throw "Bundled FFmpeg lacks decoder $decoder (DCR)" }
+          }
+          if ($filters -notmatch '\samerge\s') { throw 'Bundled FFmpeg lacks the amerge filter (DCR)' }
+
       - name: Generate synthetic FTR decode fixture (macOS)
         if: runner.os == 'macOS'
         run: >-

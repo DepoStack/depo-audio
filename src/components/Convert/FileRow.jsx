@@ -62,8 +62,10 @@ export default function FileRow({ file, streams, job, onRemove, converting, onOp
           </div>
           <span className="type-small text-[hsl(var(--sub))] truncate block">{file.path}</span>
           {trackNotice && <span className="type-small text-[hsl(var(--text2))] block mt-0.5">{trackNotice}</span>}
-          {dcrNotices.map(notice => (
-            <span key={notice} className="type-small text-[hsl(var(--text2))] block mt-0.5">
+          {dcrNotices.map((notice, index) => (
+            // Two changes in the same second give the same text, so the
+            // position (the list is rebuilt whole) is the key.
+            <span key={index} className="type-small text-[hsl(var(--text2))] block mt-0.5">
               {notice}
             </span>
           ))}

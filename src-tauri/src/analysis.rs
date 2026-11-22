@@ -405,7 +405,7 @@ async fn analyze_loudness_and_peaks(
 /// mapped explicitly (`-map 0:a:0`, the stream the channel probe counted),
 /// optionally one channel isolated with `pan=mono`, then `ebur128`. Using
 /// pan=mono instead of channelsplit avoids hardcoding a channel layout.
-fn loudness_pass_args(feed: &str, channel: Option<u32>, secs: &str) -> Vec<String> {
+pub(crate) fn loudness_pass_args(feed: &str, channel: Option<u32>, secs: &str) -> Vec<String> {
     let filter = match channel {
         Some(ch) => format!("pan=mono|c0=c{ch},ebur128=peak=true"),
         None => "ebur128=peak=true".into(),

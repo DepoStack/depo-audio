@@ -33,7 +33,7 @@
         "sizeBytes": { "type": "integer", "minimum": 0 },
         "dcr": {
           "type": "object",
-          "description": "Present only when the source is a Liberty / BIS Digital .dcr recording read by DepoAudio's experimental reader. Format facts and channel names only: case, docket and password fields from the recording are never written here. The layout DepoAudio reads comes from owner-supplied interoperability notes and has not been checked against a recording from the Liberty software.",
+          "description": "Present only when the source is a Liberty / BIS Digital .dcr recording read by DepoAudio's experimental reader. Format facts and channel names only: case, docket and password fields from the recording are never written here. The layout DepoAudio reads comes from owner-supplied interoperability notes and has not been checked against a real recording.",
           "additionalProperties": false,
           "required": ["version", "codec", "codecTag", "channels", "channelNames", "atoms", "videoFramesSkipped", "attachmentsSkipped", "conferenceChanges", "conferenceChangeCount", "checksum", "layoutSource"],
           "properties": {
@@ -57,11 +57,12 @@
                   "atSeconds": { "type": "number", "minimum": 0 },
                   "kind": { "enum": ["joined", "left"] },
                   "channelsAfter": { "type": "integer", "minimum": 0 },
-                  "bitGuessed": { "const": true, "description": "Which channel is added or removed is not known; DepoAudio's channel order after the change is a best guess." }
+                  "bitGuessed": { "const": true, "description": "Which channel is added or removed is not known; DepoAudio's channel order after the change is a best guess (the lowest unused channel on a join, the most recently joined channel on a leave)." }
                 }
               }
             },
             "conferenceChangeCount": { "type": "integer", "minimum": 0 },
+            "trailingBytesDropped": { "type": "integer", "minimum": 1, "description": "Present only when the audio ended with fewer bytes than one sample of every channel; those bytes were left out of the conversion." },
             "checksum": { "const": "not checked", "description": "The recording's checksums are not verified." },
             "layoutSource": { "const": "owner-supplied interoperability notes; not yet confirmed against a recorded file" }
           }

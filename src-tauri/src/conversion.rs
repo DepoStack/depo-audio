@@ -428,6 +428,11 @@ fn plan_conversion(
 
     let mut ffmpeg_args = safe_ffmpeg_input_prelude();
     ffmpeg_args.extend(input_codec);
+    if crate::helpers::has_extension(Path::new(&job.src_path), "dcr") {
+        // A DCR feed's channels are microphones with no speaker positions:
+        // FFmpeg must not guess a surround layout (such as 4.0) for them.
+        ffmpeg_args.extend(["-guess_layout_max".into(), "0".into()]);
+    }
     ffmpeg_args.extend(["-i".into(), feed.to_string_lossy().to_string()]);
 
     let planned: Vec<PlannedOutput>;
@@ -1103,6 +1108,20 @@ mod tests {
         prefix
     }
 
+    /// `helpers::finish_prepared_feed` with FFmpeg from PATH: run a DCR
+    /// feed's channel merge, then clear the guessed speaker mask.
+    fn finish_with_system_ffmpeg(mut prepared: PreparedFeed) -> Result<PreparedFeed, String> {
+        if let Some(merge) = prepared.merge.take() {
+            let output = std::process::Command::new("ffmpeg").args(&merge.args).output().unwrap();
+            if !output.status.success() {
+                let codec = prepared.dcr.as_ref().map(|info| info.codec.clone()).unwrap_or_default();
+                return Err(crate::helpers::dcr_merge_error(&codec, &output.stderr));
+            }
+            crate::dcr::clear_channel_mask(&prepared.path)?;
+        }
+        Ok(prepared)
+    }
+
     fn run_ffmpeg(args: &[String]) {
         let output = std::process::Command::new("ffmpeg")
             .args(["-nostdin", "-hide_banner", "-loglevel", "error"])
@@ -1308,14 +1327,8 @@ mod tests {
             !matches!(format.handler.as_str(), "rejected" | "ftr"),
             "this harness covers container formats only"
         );
-        let (mut prepared, source) = prepare_source(Path::new(&job.src_path), &|| false)?;
-        if let Some(merge) = prepared.merge.take() {
-            let output = std::process::Command::new("ffmpeg").args(&merge.args).output().unwrap();
-            if !output.status.success() {
-                let codec = prepared.dcr.as_ref().map(|info| info.codec.clone()).unwrap_or_default();
-                return Err(crate::helpers::dcr_merge_error(&codec, &output.stderr));
-            }
-        }
+        let (prepared, source) = prepare_source(Path::new(&job.src_path), &|| false)?;
+        let prepared = finish_with_system_ffmpeg(prepared)?;
         let (job, source) = with_dcr_facts(job, source, prepared.dcr.as_ref());
         let job = &job;
         let feed = prepared.path.clone();
@@ -2268,7 +2281,7 @@ mod tests {
     // layout in crate::dcr (owner-supplied interoperability notes; not yet
     // confirmed against a recorded file). No real recording is used.
 
-    use crate::dcr::tests::{waveformatex, DcrBuilder, SECRET_DOCKET};
+    use crate::dcr::tests::{waveformatex, DcrBuilder, SECRETS};
 
     const DCR_RATE: u32 = 16_000;
     const DCR_NAMES: [&str; 4] = ["Judge", "Witness", "Plaintiff", "Defense"];
@@ -2319,7 +2332,7 @@ mod tests {
     fn checked_dcr_record(output: &OutputFile, source: &Path, channels: u32) -> serde_json::Value {
         let path = manifest::manifest_path_for(Path::new(&output.path));
         let text = fs::read_to_string(&path).unwrap();
-        for secret in [SECRET_DOCKET, "hunter2", "DOCKNOTA", "TIMEZONE"] {
+        for secret in SECRETS {
             assert!(!text.contains(secret), "{secret} reached the export record");
         }
         let record: serde_json::Value = serde_json::from_str(&text).unwrap();
@@ -2391,13 +2404,49 @@ mod tests {
         assert_eq!(fs::read(&source).unwrap(), original, "the original is never modified");
         assert!(!conversion.feed.exists(), "the temporary DCR feed was left behind");
 
-        for (mode, format, channels) in [("keep", "flac", 4), ("stereo", "wav", 2)] {
-            let out = dir.0.join(mode);
+        for (mode, format, channels) in [("keep", "flac", 4), ("keep", "wav", 4), ("stereo", "wav", 2)] {
+            let out = dir.0.join(format!("{mode}-{format}"));
             fs::create_dir(&out).unwrap();
             let conversion = convert_with_system_ffmpeg(&court_job(&source, &out, mode, format), None).unwrap();
             assert_eq!(conversion.files.len(), 1, "{mode}");
-            assert_audio(Path::new(&conversion.files[0].path), channels, "48000");
+            let output = Path::new(&conversion.files[0].path);
+            assert_audio(output, channels, "48000");
             checked_dcr_record(&conversion.files[0], &source, 4);
+            if (mode, format) == ("keep", "wav") {
+                assert_no_speaker_layout(output);
+                assert_keep_levels(output, &SYNTHETIC_CHANNEL_VOLUMES);
+            }
+        }
+    }
+
+    /// A kept DCR's channels are microphones: the WAV names no speaker
+    /// positions (FFmpeg did not guess a surround layout such as 4.0).
+    fn assert_no_speaker_layout(path: &Path) {
+        let probe = ffprobe_json(path, &["-show_streams", "-select_streams", "a:0"]);
+        let layout = probe["streams"][0]["channel_layout"].as_str().unwrap_or("");
+        assert!(
+            layout.is_empty() || layout == "unknown",
+            "{} has the speaker layout {layout}",
+            path.display()
+        );
+        let bytes = fs::read(path).unwrap();
+        let tag = u16::from_le_bytes([bytes[20], bytes[21]]);
+        assert_eq!(&bytes[12..16], b"fmt ");
+        if tag == 0xFFFE {
+            assert_eq!(&bytes[40..44], &[0; 4], "an extensible header with a speaker mask");
+        }
+    }
+
+    /// Each channel of a multichannel output at its expected level.
+    fn assert_keep_levels(path: &Path, volumes: &[f64]) {
+        for (channel, volume) in volumes.iter().enumerate() {
+            let peak = max_volume_db_with(path, &format!("pan=mono|c0=c{channel},volumedetect"));
+            let expected = 20.0 * volume.log10();
+            assert!(
+                (peak - expected).abs() < 1.5,
+                "{} channel {channel}: {peak} dB, expected {expected:.1} dB",
+                path.display()
+            );
         }
     }
 
@@ -2570,6 +2619,27 @@ mod tests {
         assert_eq!(change["channelsAfter"], 3);
         assert_eq!(change["bitGuessed"], true);
         assert_eq!(change["atPerChannelByte"], (joins_at * align) as u64);
+
+        // Keep Original and Mix to Stereo read the same merged feed.
+        for (mode, channels) in [("keep", 3), ("stereo", 2)] {
+            let out = dir.0.join(mode);
+            fs::create_dir(&out).unwrap();
+            let conversion = convert_with_system_ffmpeg(&court_job(&source, &out, mode, "wav"), None).unwrap();
+            assert_eq!(conversion.files.len(), 1, "{mode}");
+            let output = Path::new(&conversion.files[0].path);
+            assert_audio(output, channels, "48000");
+            checked_dcr_record(&conversion.files[0], &source, 3);
+            if mode == "keep" {
+                assert_no_speaker_layout(output);
+                assert_keep_levels(output, &volumes[..2]);
+                let late = max_volume_db_between(output, 0.0, join_seconds - 0.05);
+                assert!(
+                    late > -80.0,
+                    "the mix of the first channels is not silent before the join"
+                );
+            }
+            assert!(!conversion.feed.exists(), "{mode}: the merged feed was left behind");
+        }
     }
 
     #[test]
@@ -2589,6 +2659,12 @@ mod tests {
         let volumes = &SYNTHETIC_CHANNEL_VOLUMES[..2];
         for (encoder, codec, tag) in [("libmp3lame", "MP3", 0x55u8), ("libgsm_ms", "GSM 6.10", 0x31)] {
             if !encoders.contains(encoder) {
+                // FFmpeg has no built-in GSM or MP3 encoder, so these
+                // fixtures need the external ones; CI must have them.
+                assert!(
+                    std::env::var_os("DEPOAUDIO_REQUIRE_FFMPEG_TESTS").is_none_or(|value| value != "1"),
+                    "DEPOAUDIO_REQUIRE_FFMPEG_TESTS=1, but FFmpeg has no {encoder} encoder for the {codec} fixture"
+                );
                 eprintln!("skipping {codec}: FFmpeg has no {encoder} encoder");
                 continue;
             }
@@ -2608,7 +2684,152 @@ mod tests {
             assert!(!conversion.feed.exists(), "{codec}: the merged feed was left behind");
             let record = checked_dcr_record(&conversion.files[0], &source, 2);
             assert_eq!(record["source"]["dcr"]["codec"], codec);
+            for (mode, channels) in [("keep", 2), ("stereo", 2)] {
+                let out = dir.0.join(format!("{encoder}-{mode}"));
+                fs::create_dir(&out).unwrap();
+                let conversion = convert_with_system_ffmpeg(&court_job(&source, &out, mode, "wav"), None)
+                    .unwrap_or_else(|error| panic!("{codec} {mode}: {error}"));
+                let output = Path::new(&conversion.files[0].path);
+                let probe = ffprobe_json(output, &["-show_streams", "-select_streams", "a:0"]);
+                assert_eq!(probe["streams"][0]["channels"], channels, "{codec} {mode}");
+                // MP3 decoding adds the encoder's padding.
+                assert_duration_near(output, SYNTHETIC_SECONDS, 0.3);
+                if mode == "keep" {
+                    assert_keep_levels(output, volumes);
+                }
+                checked_dcr_record(&conversion.files[0], &source, 2);
+            }
         }
+    }
+
+    #[test]
+    fn synthetic_dcr_with_a_short_last_atom_records_the_bytes_left_out() {
+        if !court_fixture_tools_available() {
+            return;
+        }
+        let dir = ConversionTestDir::new();
+        let mut builder = DcrBuilder::new(crate::dcr::tests::pcm16_format(DCR_RATE), 0b11, &DCR_NAMES[..2]);
+        builder.marker(b"audi#mrk");
+        for frame in 0..(SYNTHETIC_SECONDS * f64::from(DCR_RATE)) as u64 {
+            builder.atom(&[&dcr_tone(0, frame).to_le_bytes(), &dcr_tone(1, frame).to_le_bytes()]);
+        }
+        builder.data.extend_from_slice(&[7, 7]);
+        let source = builder.write(&dir.0, "short.dcr");
+        let out = dir.0.join("out");
+        fs::create_dir(&out).unwrap();
+        let conversion = convert_with_system_ffmpeg(&court_job(&source, &out, "split", "wav"), None).unwrap();
+        assert_split_levels(
+            &conversion,
+            "short",
+            &DCR_NAMES[..2],
+            &SYNTHETIC_CHANNEL_VOLUMES[..2],
+            ".wav",
+        );
+        let record = checked_dcr_record(&conversion.files[0], &source, 2);
+        assert_eq!(record["source"]["dcr"]["trailingBytesDropped"], 2);
+    }
+
+    /// Mono tones in a format FFmpeg writes as one interleavable block per
+    /// sample, as (one-channel WAVEFORMATEX, data).
+    fn pcm_family_tones(dir: &Path, codec: &str, volumes: &[f64]) -> Vec<(Vec<u8>, Vec<u8>)> {
+        let tones = encoded_tones(dir, &["-c:a", codec], volumes);
+        // FFmpeg may write WAVE_FORMAT_EXTENSIBLE for 24/32-bit; the DCR
+        // keeps a plain one-channel WAVEFORMATEX.
+        tones
+            .into_iter()
+            .map(|(fmt, data)| {
+                let mut plain = fmt[..16].to_vec();
+                if u16::from_le_bytes([plain[0], plain[1]]) == 0xFFFE {
+                    plain[..2].copy_from_slice(&fmt[24..26]);
+                }
+                plain.extend_from_slice(&0u16.to_le_bytes());
+                (plain, data)
+            })
+            .collect()
+    }
+
+    #[test]
+    fn synthetic_mu_law_and_8_24_32_bit_pcm_dcrs_split_in_channel_order() {
+        if !court_fixture_tools_available() {
+            return;
+        }
+        let dir = ConversionTestDir::new();
+        let volumes = &SYNTHETIC_CHANNEL_VOLUMES[..2];
+        for (codec, tag, name) in [
+            ("pcm_mulaw", 7u16, "mu-law"),
+            ("pcm_u8", 1, "PCM 8-bit"),
+            ("pcm_s24le", 1, "PCM 24-bit"),
+            ("pcm_s32le", 1, "PCM 32-bit"),
+        ] {
+            let tones = pcm_family_tones(&dir.0, codec, volumes);
+            assert_eq!(u16::from_le_bytes([tones[0].0[0], tones[0].0[1]]), tag, "{codec}");
+            let file = format!("{codec}.dcr");
+            let source = coded_dcr(&dir.0, &file, &tones, None);
+            let out = dir.0.join(codec);
+            fs::create_dir(&out).unwrap();
+            let conversion = convert_with_system_ffmpeg(&court_job(&source, &out, "split", "wav"), None)
+                .unwrap_or_else(|error| panic!("{codec}: {error}"));
+            assert_split_levels(&conversion, codec, &DCR_NAMES[..2], volumes, ".wav");
+            let record = checked_dcr_record(&conversion.files[0], &source, 2);
+            assert_eq!(record["source"]["dcr"]["codec"], name);
+        }
+
+        // 8-bit PCM silence is 0x80: a late participant's channel is silent
+        // before the join, not a full-scale offset.
+        let tones = pcm_family_tones(&dir.0, "pcm_u8", &SYNTHETIC_CHANNEL_VOLUMES[..2]);
+        let joins_at = tones[0].1.len() / 2;
+        let source = coded_dcr(&dir.0, "u8-remote.dcr", &tones, Some(joins_at));
+        let out = dir.0.join("u8-remote");
+        fs::create_dir(&out).unwrap();
+        let conversion = convert_with_system_ffmpeg(&court_job(&source, &out, "split", "wav"), None).unwrap();
+        let late = Path::new(&conversion.files[1].path);
+        let join_seconds = joins_at as f64 / 8000.0;
+        assert!(max_volume_db_between(late, 0.0, join_seconds - 0.05) < -40.0);
+    }
+
+    /// Scan and the waveform read a DCR through the same prepared feed as
+    /// conversion; here their FFmpeg passes run on a merged (IMA ADPCM) feed
+    /// with FFmpeg from PATH (the passes themselves need the Tauri sidecar).
+    #[test]
+    fn scan_and_waveform_passes_read_a_merged_dcr_feed() {
+        if !court_fixture_tools_available() {
+            return;
+        }
+        let dir = ConversionTestDir::new();
+        let volumes = &SYNTHETIC_CHANNEL_VOLUMES[..3];
+        let tones = encoded_tones(&dir.0, &["-c:a", "adpcm_ima_wav"], volumes);
+        let source = coded_dcr(&dir.0, "scan.dcr", &tones, None);
+        let prepared = prepare_audio_feed_with_cancel(&source, None).unwrap();
+        let prepared = finish_with_system_ffmpeg(prepared).unwrap();
+        let feed = prepared.path.to_string_lossy().to_string();
+        for (channel, volume) in volumes.iter().enumerate() {
+            let mut args = crate::helpers::safe_ffmpeg_input_prelude();
+            args.extend(crate::analysis::loudness_pass_args(&feed, Some(channel as u32), "180"));
+            let output = std::process::Command::new("ffmpeg").args(&args).output().unwrap();
+            assert!(output.status.success(), "channel {channel}");
+            let log = String::from_utf8_lossy(&output.stderr);
+            let peak: f64 = log
+                .lines()
+                .rev()
+                .find_map(|line| line.trim().strip_prefix("Peak:"))
+                .and_then(|rest| rest.trim().trim_end_matches("dBFS").trim().parse().ok())
+                .unwrap_or_else(|| panic!("no peak for channel {channel}: {log}"));
+            let expected = 20.0 * volume.log10();
+            assert!(
+                (peak - expected).abs() < 1.5,
+                "channel {channel}: {peak} dB vs {expected:.1}"
+            );
+        }
+        let output = std::process::Command::new("ffmpeg")
+            .args(crate::waveform::decode_args(&prepared.path))
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+        let peaks = crate::waveform::samples_to_peaks(&output.stdout, 400).unwrap();
+        assert!(!peaks.is_empty());
+        let feed_path = prepared.path.clone();
+        drop(prepared);
+        assert!(!feed_path.exists(), "the merged feed was left behind");
     }
 
     #[test]

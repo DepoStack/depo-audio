@@ -34,7 +34,7 @@ fn date_regex() -> &'static Regex {
 // - .dcr without the Liberty / BIS Digital signature: not a layout DepoAudio
 //   reads; the recorder software is named only as an example.
 const DCR_NOTE: &str = "DCR recordings use a closed format. Export to WAV from the software that recorded it (for example Liberty Court Recorder or BIS Digital), then add the WAV.";
-const DCR_READER_NOTE: &str = "Reads unencrypted recordings; tested with synthetic files only. The layout comes from interoperability notes and has not been checked against a recording from the Liberty software.";
+const DCR_READER_NOTE: &str = "Reads unencrypted recordings; tested with synthetic files only. The layout comes from interoperability notes and has not been checked against a real recording.";
 const DCR_IMAGE_NOTE: &str = "This .dcr starts like a camera raw image (TIFF), not like court audio. Check that you picked the right file. If it is a court recording, export it to WAV from the software that recorded it.";
 const DS2_NOTE: &str = "DS2 (DSS Pro) dictation files cannot be opened here. Export to WAV with OM System / Olympus dictation software (for example ODMS), then add the WAV. An encrypted DS2 also needs its password in that software.";
 const WEBEX_NOTE: &str = "Webex network recordings (.arf, .wrf) cannot be opened here. Convert an .arf to MP4 with the Webex Recording Converter, or a .wrf to WMV with the Webex WRF2WMV Converter (both Windows only), then add the converted file.";
@@ -489,7 +489,7 @@ impl PreparedFeed {
     }
 }
 
-fn has_extension(src: &Path, wanted: &str) -> bool {
+pub(crate) fn has_extension(src: &Path, wanted: &str) -> bool {
     src.extension()
         .and_then(|extension| extension.to_str())
         .is_some_and(|extension| extension.eq_ignore_ascii_case(wanted))
@@ -560,26 +560,41 @@ pub(crate) async fn finish_prepared_feed(
     }
     let codec = prepared.dcr.as_ref().map(|info| info.codec.clone()).unwrap_or_default();
     match output {
-        Some(output) if output.success && prepared.path.is_file() => Ok(prepared),
+        Some(output) if output.success && prepared.path.is_file() => {
+            crate::dcr::clear_channel_mask(&prepared.path)?;
+            Ok(prepared)
+        }
         Some(output) => Err(dcr_merge_error(&codec, &output.stderr)),
         None => Err(dcr_merge_error(&codec, b"")),
     }
 }
 
 /// The error for a failed DCR channel merge, with FFmpeg's last message.
+/// The merge names temporary files under the user's temp folder (which on
+/// Windows holds the account name), so a message that mentions a path keeps
+/// only its last part after `: ` when that part has no path in it (for
+/// example "No space left on device"), and is left out otherwise.
 pub(crate) fn dcr_merge_error(codec: &str, stderr: &[u8]) -> String {
     let log = String::from_utf8_lossy(stderr);
-    let last: String = log
+    let last = log
         .lines()
         .rev()
         .find(|line| !line.trim().is_empty())
         .unwrap_or("")
-        .chars()
-        .take(300)
-        .collect();
+        .trim();
+    let has_path = |text: &str| text.contains(['/', '\\']) || text.contains("depoaudio_");
+    let shown = if has_path(last) {
+        last.rsplit(": ")
+            .next()
+            .filter(|tail| *tail != last && !has_path(tail))
+            .unwrap_or("")
+    } else {
+        last
+    };
+    let shown: String = shown.trim().chars().take(300).collect();
     let mut message = format!("FFmpeg could not decode this recording's {codec} audio.");
-    if !last.trim().is_empty() {
-        message.push_str(&format!(" FFmpeg said: {}", last.trim()));
+    if !shown.is_empty() {
+        message.push_str(&format!(" FFmpeg said: {shown}"));
     }
     message
 }
@@ -969,6 +984,26 @@ mod tests {
             assert!(note.contains(guidance), "{path}: {note}");
             assert!(note.contains("cannot be opened here"), "{path}: {note}");
         }
+    }
+
+    #[test]
+    fn dcr_merge_errors_never_show_a_temporary_path() {
+        let windows = b"[out#0/wav @ 0x1] Error closing file C:/Users/Jane Roe/AppData/Local/Temp/depoaudio_ab12.wav: No space left on device\n";
+        let message = dcr_merge_error("IMA ADPCM", windows);
+        assert_eq!(
+            message,
+            "FFmpeg could not decode this recording's IMA ADPCM audio. FFmpeg said: No space left on device"
+        );
+        let backslashes = br"C:\Users\Jane Roe\AppData\Local\Temp\depoaudio_ab12.wav: Invalid data found";
+        assert!(!dcr_merge_error("GSM 6.10", backslashes).contains("Jane"));
+        // A path with no plain reason after it is left out entirely.
+        let message = dcr_merge_error("MP3", b"/home/jane/tmp/depoaudio_1.wav");
+        assert_eq!(message, "FFmpeg could not decode this recording's MP3 audio.");
+        let message = dcr_merge_error("MP3", b"\n[mp3float @ 0x2] Header missing\n\n");
+        assert!(
+            message.ends_with("FFmpeg said: [mp3float @ 0x2] Header missing"),
+            "{message}"
+        );
     }
 
     #[test]

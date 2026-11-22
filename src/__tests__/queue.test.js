@@ -124,26 +124,33 @@ describe('dcrQueueNotices', () => {
   })
 
   it('flags each remote-participant change as a best guess, and counts the rest', () => {
-    const change = atSeconds => ({ atSeconds, kind: 'joined', channelsAfter: 3, bitGuessed: true })
+    const change = (atSeconds, kind = 'joined') => ({ atSeconds, kind, channelsAfter: 3, bitGuessed: true })
     const notices = dcrQueueNotices(
       dcr({
-        conferenceChanges: [change(754), change(3600), change(3725.5), change(4000)],
+        conferenceChanges: [change(754), change(3600, 'left'), change(3725.5, 'other'), change(4000)],
         conferenceChangeCount: 5,
         videoFrames: 2,
       }),
     )
     expect(notices.slice(1, 4)).toEqual([
-      "A remote participant joined or left at 00:12:34; DepoAudio's channel order after that point is a best guess.",
-      "A remote participant joined or left at 01:00:00; DepoAudio's channel order after that point is a best guess.",
+      "A remote participant joined at 00:12:34; DepoAudio's channel order after that point is a best guess.",
+      "A remote participant left at 01:00:00; DepoAudio's channel order after that point is a best guess.",
       "A remote participant joined or left at 01:02:05; DepoAudio's channel order after that point is a best guess.",
     ])
     expect(notices[4]).toBe('2 more remote-participant changes follow; the export record lists them.')
     expect(notices[5]).toBe('This recording also holds video frames or attachments; only the audio is converted.')
   })
 
+  it('says when bytes at the end of the audio are left out', () => {
+    expect(dcrQueueNotices(dcr({ trailingBytesDropped: 2 }))[1]).toBe(
+      'The last 2 bytes of audio are too few for one sample of every channel and are left out; the export record says so.',
+    )
+    expect(dcrQueueNotices(dcr({ trailingBytesDropped: 0 }))).toHaveLength(1)
+  })
+
   it('shows only the reason when the recording cannot be converted', () => {
     const problem =
-      "This recording is password protected; DepoAudio can't open protected recordings. Export it to WAV in the Liberty software."
+      "This recording is password protected; DepoAudio can't open protected recordings. Export it to WAV in the software that recorded it (for example Liberty Court Recorder or BIS Digital), then add the WAV."
     expect(dcrQueueNotices(dcr({ problem }))).toEqual([problem])
   })
 })

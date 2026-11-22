@@ -104,8 +104,9 @@ export function dcrQueueNotices(info) {
   }
   const changes = Array.isArray(dcr.conferenceChanges) ? dcr.conferenceChanges : []
   for (const change of changes.slice(0, DCR_CHANGES_LISTED)) {
+    const kind = change?.kind === 'joined' || change?.kind === 'left' ? change.kind : 'joined or left'
     notices.push(
-      `A remote participant joined or left at ${clockTime(change?.atSeconds)}; DepoAudio's channel order after that point is a best guess.`,
+      `A remote participant ${kind} at ${clockTime(change?.atSeconds)}; DepoAudio's channel order after that point is a best guess.`,
     )
   }
   const total = Number.isInteger(dcr.conferenceChangeCount) ? dcr.conferenceChangeCount : changes.length
@@ -113,6 +114,12 @@ export function dcrQueueNotices(info) {
   if (unlisted > 0) {
     notices.push(
       `${unlisted} more remote-participant ${unlisted === 1 ? 'change follows' : 'changes follow'}; the export record lists them.`,
+    )
+  }
+  const dropped = Number.isInteger(dcr.trailingBytesDropped) ? dcr.trailingBytesDropped : 0
+  if (dropped > 0) {
+    notices.push(
+      `The last ${dropped} ${dropped === 1 ? 'byte' : 'bytes'} of audio are too few for one sample of every channel and are left out; the export record says so.`,
     )
   }
   if (dcr.videoFrames > 0 || dcr.attachments > 0) {

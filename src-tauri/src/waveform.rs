@@ -307,7 +307,7 @@ fn validate_request_id(request_id: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn samples_to_peaks(bytes: &[u8], bucket_limit: usize) -> Result<Vec<WaveformPeak>, String> {
+pub(crate) fn samples_to_peaks(bytes: &[u8], bucket_limit: usize) -> Result<Vec<WaveformPeak>, String> {
     if bytes.is_empty() || !bytes.len().is_multiple_of(std::mem::size_of::<f32>()) {
         return Err("Waveform decoder returned invalid PCM data".into());
     }
@@ -338,6 +338,39 @@ fn samples_to_peaks(bytes: &[u8], bucket_limit: usize) -> Result<Vec<WaveformPea
     }
 
     Ok(peaks)
+}
+
+/// FFmpeg arguments that decode the prepared feed's converted stream to mono
+/// 32-bit float PCM on stdout for the peak overview.
+pub(crate) fn decode_args(feed: &Path) -> Vec<String> {
+    let mut args: Vec<String> = vec![
+        "-nostdin".into(),
+        "-hide_banner".into(),
+        "-loglevel".into(),
+        "error".into(),
+        "-protocol_whitelist".into(),
+        "file,pipe".into(),
+    ];
+    args.extend(input_codec_args(feed));
+    args.extend(["-i".into(), feed.to_string_lossy().to_string()]);
+    // The converted stream (`-map 0:a:0`), so the waveform shows the audio
+    // the probes describe and the conversion encodes.
+    args.extend(crate::helpers::source_audio_map_args());
+    args.extend([
+        "-vn".into(),
+        "-sn".into(),
+        "-dn".into(),
+        "-ac".into(),
+        "1".into(),
+        "-ar".into(),
+        WAVEFORM_SAMPLE_RATE.to_string(),
+        "-t".into(),
+        MAX_WAVEFORM_SECONDS.to_string(),
+        "-f".into(),
+        "f32le".into(),
+        "pipe:1".into(),
+    ]);
+    args
 }
 
 async fn decode_waveform(app: &AppHandle, key: &FileKey, cancelled: Arc<AtomicBool>) -> WaveformResult {
@@ -390,33 +423,7 @@ async fn decode_waveform(app: &AppHandle, key: &FileKey, cancelled: Arc<AtomicBo
         return Err("Waveform disabled for recordings over 10 minutes. Playback is still available.".into());
     }
 
-    let mut args = vec![
-        "-nostdin".into(),
-        "-hide_banner".into(),
-        "-loglevel".into(),
-        "error".into(),
-        "-protocol_whitelist".into(),
-        "file,pipe".into(),
-    ];
-    args.extend(input_codec_args(&feed));
-    args.extend(["-i".into(), feed.to_string_lossy().to_string()]);
-    // The converted stream (`-map 0:a:0`), so the waveform shows the audio
-    // the probes describe and the conversion encodes.
-    args.extend(crate::helpers::source_audio_map_args());
-    args.extend([
-        "-vn".into(),
-        "-sn".into(),
-        "-dn".into(),
-        "-ac".into(),
-        "1".into(),
-        "-ar".into(),
-        WAVEFORM_SAMPLE_RATE.to_string(),
-        "-t".into(),
-        MAX_WAVEFORM_SECONDS.to_string(),
-        "-f".into(),
-        "f32le".into(),
-        "pipe:1".into(),
-    ]);
+    let args = decode_args(&feed);
 
     let output = sidecar_output_cancellable(app, ffmpeg_bin_name(), args, 120, Some(&is_cancelled)).await;
     if is_cancelled() {
