@@ -134,6 +134,19 @@ describe('Playback keys settings section', () => {
     expect(register).not.toHaveBeenCalled()
   })
 
+  it('gives Change, Clear and Use suggested keys 44px targets with room between Change and Clear', async () => {
+    render(<Harness initial={{ enabled: false, bindings: { back: 'F13' } }} />)
+    const change = screen.getByRole('button', { name: 'Change the key for Back' })
+    const clear = screen.getByRole('button', { name: 'Clear the key for Back' })
+    for (const button of [change, clear, screen.getByRole('button', { name: 'Use suggested keys' })]) {
+      expect(button).toHaveClass('h-11')
+      expect(button).not.toHaveClass('h-7')
+    }
+    expect(clear).toHaveClass('border') // drawn as a button, not bare text next to Change
+    expect(change.parentElement).toHaveClass('gap-3')
+    await waitFor(() => expect(unregisterAll).toHaveBeenCalled())
+  })
+
   it('copies suggestions only when asked, and registers them only after turning on', async () => {
     render(<Harness />)
     fireEvent.click(screen.getByRole('button', { name: 'Use suggested keys' }))

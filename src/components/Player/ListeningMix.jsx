@@ -24,7 +24,10 @@ const toggleClass = pressed =>
   )
 // A 44px-high range input: the track stays thin, but the whole row takes the
 // pointer.
-const sliderClass = 'h-11 min-w-0 flex-1 cursor-pointer accent-foreground'
+// mix-range (index.css) draws the track with a border of at least 3:1
+// against the card in both themes (WCAG 1.4.11).
+const sliderClass = 'mix-range h-11 min-w-0 flex-1 cursor-pointer'
+const fillStyle = (value, max) => ({ '--mix-fill': `${Math.min(100, Math.max(0, (Number(value) / max) * 100) || 0)}%` })
 
 // Note shown with Separate channels on when the track has no channels to
 // separate (or its channels could not be counted). The toggle stays so the
@@ -55,6 +58,7 @@ export default function ListeningMix({
   probeAvailable,
   probed = true,
   stripsCleared = false,
+  stripsFromPreviousCleared = false,
   notice = '',
 }) {
   const noteId = useId()
@@ -83,7 +87,9 @@ export default function ListeningMix({
         ? 'Channels reset. Every channel is heard at 100%.'
         : stripsCleared
           ? 'The web view mixes this file down, so the Mute, Solo and volume settings you made for its channels were cleared.'
-          : '')
+          : stripsFromPreviousCleared
+            ? 'New track: the Mute, Solo and volume settings from the previous track were cleared. Every channel is heard at 100%.'
+            : '')
   const update = (i, patch) => onStrips(strips.map((s, j) => (j === i ? { ...s, ...patch } : s)))
   const reset = () => {
     // aria-disabled keeps the button (and keyboard focus) in place when
@@ -114,6 +120,7 @@ export default function ListeningMix({
             aria-describedby={noteId}
             aria-valuetext={volumePercent(volume)}
             className={sliderClass}
+            style={fillStyle(volume, 1)}
             onChange={e => onVolume(Number(e.target.value))}
           />
           <span className="w-10 shrink-0 text-right tabular-nums text-foreground">{volumePercent(volume)}</span>
@@ -225,6 +232,7 @@ function StripVolume({ label, strip, onChange }) {
         aria-label={`${label} volume`}
         aria-valuetext={volumePercent(strip.volume)}
         className={sliderClass}
+        style={fillStyle(strip.volume, CHANNEL_VOLUME_MAX)}
         onChange={e => onChange(Number(e.target.value))}
       />
       <span className="w-10 shrink-0 text-right type-small tabular-nums text-foreground">

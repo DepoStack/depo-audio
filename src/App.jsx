@@ -13,6 +13,7 @@ import useFileDrop from './hooks/useFileDrop'
 import useConversion from './hooks/useConversion'
 import useUpdater from './hooks/useUpdater'
 import usePlaybackKeys from './hooks/usePlaybackKeys'
+import { playbackKeysSidebarLabel } from './lib/playbackKeys'
 import UpdateBanner from './components/UpdateBanner'
 
 import { LogoSvg } from './components/common/Icons'
@@ -276,9 +277,7 @@ export default function App() {
           </div>
           <div className="py-0.5 type-small text-[hsl(var(--sub))]">{updaterLabel}</div>
           {playbackKeys.settings.enabled && (
-            <div className="py-0.5 type-small text-[hsl(var(--sub))]">
-              {playbackKeys.status ? playbackKeys.status : 'Playback keys on'}
-            </div>
+            <div className="py-0.5 type-small text-[hsl(var(--sub))]">{playbackKeysSidebarLabel(playbackKeys)}</div>
           )}
         </div>
 

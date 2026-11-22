@@ -297,9 +297,15 @@ export function createChannelMixer({
     setPlaying(playing) {
       playingSince = playing ? now() : null
     },
+    // Resolves to whether the context is running afterwards. Any state other
+    // than 'running' or 'closed' is resumed: 'suspended', and WebKit's
+    // 'interrupted' (for example after another app took the audio device).
     resume() {
-      if (disposed || context.state !== 'suspended') return Promise.resolve()
-      return Promise.resolve(context.resume?.()).catch(() => {})
+      if (disposed || context.state === 'closed') return Promise.resolve(false)
+      if (context.state === 'running') return Promise.resolve(true)
+      return Promise.resolve(context.resume?.())
+        .catch(() => {})
+        .then(() => !disposed && context.state === 'running')
     },
     dispose() {
       if (disposed) return

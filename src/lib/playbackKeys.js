@@ -328,6 +328,18 @@ export function backAmount(backstep) {
   return Number.isFinite(backstep) && backstep > 0 ? backstep : BACK_FALLBACK_SECONDS
 }
 
+// The sidebar line while the setting is on. A key the system refused is
+// named here too, so the person learns it outside Settings.
+export function playbackKeysSidebarLabel({ status = '', registration = {}, syncError = '' } = {}) {
+  const failed = Object.values(registration || {}).filter(r => r?.state === 'failed').length
+  let base = 'Playback keys on'
+  if (syncError) base = 'Playback keys on: keys could not be updated, see Settings'
+  else if (failed > 0)
+    base = `Playback keys on: ${failed} ${failed === 1 ? 'key' : 'keys'} not registered, see Settings`
+  if (!status) return base
+  return base === 'Playback keys on' ? status : `${base}. ${status}`
+}
+
 export const NO_PLAYER_MESSAGE = 'Key pressed, but the Player is not open.'
 export const NO_TRACK_MESSAGE = 'Key pressed, but no recording is loaded.'
 

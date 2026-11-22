@@ -218,6 +218,16 @@ describe('Player listening mix', () => {
     expect(screen.getAllByTestId('channel-strip')).toHaveLength(2)
     expect(screen.getByRole('button', { name: 'Solo Ch 1' })).toHaveAttribute('aria-pressed', 'false')
     expect(fake.channelGains(context).map(g => g.gain.value)).toEqual([1, 1])
+    // The dropped Solo is announced, not silently undone.
+    expect(screen.getByRole('button', { name: 'Separate channels' })).toHaveAttribute('aria-pressed', 'true')
+    expect(screen.getByRole('status')).toHaveTextContent(
+      'New track: the Mute, Solo and volume settings from the previous track were cleared. Every channel is heard at 100%.',
+    )
+    // A change on the new track replaces the message.
+    fireEvent.click(screen.getByRole('button', { name: 'Mute Ch 2' }))
+    expect(screen.getByRole('status')).toHaveTextContent('Hearing 1 of 2 channels.')
+    fireEvent.click(screen.getByRole('button', { name: 'Mute Ch 2' }))
+    expect(screen.getByRole('status')).toHaveTextContent('')
     view.unmount()
     expect(context.close).toHaveBeenCalled()
   })
@@ -321,5 +331,41 @@ describe('Player listening mix', () => {
     expect(screen.getByRole('button', { name: 'Separate channels' })).toHaveAttribute('aria-pressed', 'true')
     expect(screen.getByText(/could not count this track's channels/)).toBeInTheDocument()
     expect(screen.queryAllByTestId('channel-strip')).toHaveLength(0)
+  })
+  it('says nothing about cleared strips when the previous track had none changed', async () => {
+    await renderPlayer(['/out/four.wav', '/out/stereo.wav'])
+    fireEvent.click(screen.getByRole('button', { name: 'Separate channels' }))
+    await settle()
+    fireEvent.click(screen.getByRole('button', { name: 'Next track' }))
+    await settle()
+    expect(screen.getAllByTestId('channel-strip')).toHaveLength(2)
+    expect(screen.getByRole('status')).toHaveTextContent('')
+  })
+
+  it('reports a decode error on a new track without turning the working mix off', async () => {
+    const { audio } = await renderPlayer(['/out/four.wav', '/out/stereo.wav'])
+    fireEvent.click(screen.getByRole('button', { name: 'Separate channels' }))
+    await settle()
+    const mixed = fakeElement(audio())
+    fireEvent(mixed, new Event('loadedmetadata')) // the mix opened this file
+    fireEvent.click(screen.getByRole('button', { name: 'Next track' }))
+    await settle()
+    fireEvent(audio(), new Event('error'))
+    await settle()
+    expect(audio()).toBe(mixed)
+    expect(screen.getByText(/Couldn't decode stereo.wav/)).toBeInTheDocument()
+    expect(screen.queryByText(/Separate channels could not start/)).toBeNull()
+    expect(screen.getByRole('button', { name: 'Separate channels' })).toHaveAttribute('aria-pressed', 'true')
+  })
+
+  it('draws the volume tracks with a bordered, filled style', async () => {
+    await renderPlayer()
+    const slider = screen.getByRole('slider', { name: 'Volume' })
+    expect(slider).toHaveClass('mix-range')
+    expect(slider.style.getPropertyValue('--mix-fill')).toBe('100%')
+    fireEvent.click(screen.getByRole('button', { name: 'Separate channels' }))
+    await settle()
+    const ch1 = screen.getByRole('slider', { name: 'Ch 1 volume' })
+    expect(ch1.style.getPropertyValue('--mix-fill')).toBe('50%') // 100% of a 200% range
   })
 })

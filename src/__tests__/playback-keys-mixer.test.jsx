@@ -213,4 +213,51 @@ describe('Playback keys with Separate channels on', () => {
     expect(mixed.currentTime).toBe(10)
     expect(mixed.play).toHaveBeenCalledTimes(1)
   })
+  it('applies a Back press made before the swapped-in element has loaded', async () => {
+    window.localStorage.setItem('player-backstep', '3')
+    const { dispatcher, audio } = await renderMixed()
+    const plain = audio()
+    tap(dispatcher, 'playPause')
+    plain.advanceTo(40)
+
+    const mixed = await turnMixOn(audio)
+    tap(dispatcher, 'back') // 3 s back, before metadata
+    tap(dispatcher, 'forward') // then 2 s forward
+    expect(mixed.play).not.toHaveBeenCalled()
+    fireEvent(mixed, new Event('loadedmetadata'))
+    expect(mixed.currentTime).toBe(39)
+    expect(mixed.play).toHaveBeenCalledTimes(1)
+  })
+
+  it('goes back to normal playback when a key plays into a context that will not run', async () => {
+    const { dispatcher, audio } = await renderMixed()
+    const mixed = await turnMixOn(audio)
+    fireEvent(mixed, new Event('loadedmetadata'))
+    const context = fake.contexts[0]
+    // A context the web view keeps suspended (no autoplay without a gesture)
+    context.state = 'suspended'
+    context.resume.mockImplementation(() => Promise.resolve())
+    tap(dispatcher, 'playPause')
+    await settle()
+    await settle()
+    expect(
+      screen.getByText(/Separate channels could not start \(the web view kept Web Audio paused/),
+    ).toBeInTheDocument()
+    expect(audio()).not.toHaveAttribute('crossorigin')
+    expect(screen.getByRole('button', { name: 'Separate channels' })).toHaveAttribute('aria-pressed', 'false')
+  })
+
+  it('resumes a context WebKit reports as interrupted', async () => {
+    const { dispatcher, audio } = await renderMixed()
+    const mixed = await turnMixOn(audio)
+    fireEvent(mixed, new Event('loadedmetadata'))
+    const context = fake.contexts[0]
+    context.state = 'interrupted'
+    context.resume.mockClear()
+    tap(dispatcher, 'playPause')
+    await settle()
+    expect(context.resume).toHaveBeenCalled()
+    expect(screen.queryByText(/Separate channels could not start/)).toBeNull()
+    expect(screen.getByRole('button', { name: 'Separate channels' })).toHaveAttribute('aria-pressed', 'true')
+  })
 })

@@ -2,6 +2,7 @@ import { useEffect, useId, useState } from 'react'
 import { AlertTriangle } from 'lucide-react'
 import { Card, CardHeader, CardTitle, CardContent } from './ui/card'
 import { Button } from './ui/button'
+import { cn } from '../lib/utils'
 import { Switch } from './ui/switch'
 import { Segmented } from './ui/segmented'
 import {
@@ -119,11 +120,13 @@ function KeyRow({ action, accelerator, enabled, keys, onRecord, onClear, recordi
           </span>
         )}
       </div>
-      <div className="flex items-center gap-1.5">
+      {/* 44px targets (WCAG 2.5.5, AAA) with room between Change and Clear,
+          because Clear acts at once and releases the key system-wide. */}
+      <div className="flex items-center gap-3">
         <Button
           size="sm"
           variant={recording ? 'default' : 'outline'}
-          className={recording ? 'ring-1 ring-inset ring-foreground text-foreground' : undefined}
+          className={cn('h-11 px-3', recording && 'ring-1 ring-inset ring-foreground text-foreground')}
           aria-describedby={statusId}
           aria-label={
             recording
@@ -143,7 +146,13 @@ function KeyRow({ action, accelerator, enabled, keys, onRecord, onClear, recordi
           {recording ? 'Press a key…' : accelerator ? 'Change' : 'Assign'}
         </Button>
         {accelerator && !recording && (
-          <Button size="sm" variant="ghost" aria-label={`Clear the key for ${action.label}`} onClick={onClear}>
+          <Button
+            size="sm"
+            variant="outline"
+            className="h-11 px-3"
+            aria-label={`Clear the key for ${action.label}`}
+            onClick={onClear}
+          >
             Clear
           </Button>
         )}
@@ -243,6 +252,7 @@ export default function PlaybackKeysSettings({ prefs, keys }) {
             <Button
               size="sm"
               variant="outline"
+              className="h-11 px-3"
               onClick={() => update({ bindings: { ...bindings, ...Object.fromEntries(unsetSuggestions) } })}
             >
               Use suggested keys

@@ -8,6 +8,7 @@ import {
   normalizePlaybackKeys,
   playbackKeyNote,
   playbackKeyProblem,
+  playbackKeysSidebarLabel,
   NO_PLAYER_MESSAGE,
   NO_TRACK_MESSAGE,
   SUGGESTED_PLAYBACK_KEYS,
@@ -391,5 +392,29 @@ describe('hold to play', () => {
     dispatcher.handle('playPause', 'Released')
     expect(player.isPlaying()).toBe(true)
     expect(player.pause).not.toHaveBeenCalled()
+  })
+})
+
+describe('sidebar label', () => {
+  it('says the keys are on, or names keys the system refused', () => {
+    expect(playbackKeysSidebarLabel({ registration: { back: { state: 'registered' } } })).toBe('Playback keys on')
+    const oneFailed = { back: { state: 'registered' }, playPause: { state: 'failed', error: 'taken' } }
+    expect(playbackKeysSidebarLabel({ registration: oneFailed })).toBe(
+      'Playback keys on: 1 key not registered, see Settings',
+    )
+    const twoFailed = { ...oneFailed, forward: { state: 'failed' } }
+    expect(playbackKeysSidebarLabel({ registration: twoFailed })).toBe(
+      'Playback keys on: 2 keys not registered, see Settings',
+    )
+    expect(playbackKeysSidebarLabel({ syncError: 'Playback keys could not be released: x' })).toBe(
+      'Playback keys on: keys could not be updated, see Settings',
+    )
+  })
+
+  it('keeps a key-press status and the failure together', () => {
+    expect(playbackKeysSidebarLabel({ status: NO_PLAYER_MESSAGE })).toBe(NO_PLAYER_MESSAGE)
+    expect(playbackKeysSidebarLabel({ status: NO_PLAYER_MESSAGE, registration: { back: { state: 'failed' } } })).toBe(
+      `Playback keys on: 1 key not registered, see Settings. ${NO_PLAYER_MESSAGE}`,
+    )
   })
 })

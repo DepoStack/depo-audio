@@ -223,6 +223,21 @@ describe('createChannelMixer', () => {
     expect(isUnavailable()).toBe(true)
   })
 
+  it('reports whether the context runs after resume, for suspended and interrupted states', async () => {
+    const { mixer, context } = build(2)
+    await mixer.probeReady
+    expect(await mixer.resume()).toBe(true)
+    context.state = 'interrupted'
+    context.resume.mockClear()
+    expect(await mixer.resume()).toBe(true)
+    expect(context.resume).toHaveBeenCalledTimes(1)
+    context.state = 'suspended'
+    context.resume.mockImplementation(() => Promise.reject(new Error('not allowed')))
+    expect(await mixer.resume()).toBe(false)
+    mixer.dispose()
+    expect(await mixer.resume()).toBe(false)
+  })
+
   it('resumes a suspended context and closes everything on dispose', async () => {
     const { mixer, context } = build(2)
     await mixer.probeReady

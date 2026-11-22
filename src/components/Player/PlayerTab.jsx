@@ -108,7 +108,14 @@ export default function PlayerTab({ dropHandlerRef, onConvertFiles, openRequest,
   const [mix, setMix] = useState({ path: null, strips: [] })
   const [probeAvailable, setProbeAvailable] = useState(true)
   const [mixNotice, setMixNotice] = useState('')
+  // The track whose strips started at 100% because the previous track's
+  // Mute, Solo or volume changes were dropped (the Player says so).
+  const [stripsResetPath, setStripsResetPath] = useState(null)
   const mixerRef = useRef(null)
+  // True once an element with the mix on has loaded a file. The asset
+  // protocol's CORS then works, so a later error on another file is that
+  // file's own decode error, not a reason to turn the mix off.
+  const mixLoadedRef = useRef(false)
   // { time, play, pausedAt } to apply once a swapped-in element has loaded.
   // Until then, play/pause (buttons, in-app and playback keys) change `play`
   // instead of acting on an element that has not loaded yet.
@@ -254,6 +261,7 @@ export default function PlayerTab({ dropHandlerRef, onConvertFiles, openRequest,
       }
     }
     a?.pause()
+    mixLoadedRef.current = false
     setMixOn(nextMixOn)
     setAudioKey(k => k + 1)
   }
@@ -279,14 +287,29 @@ export default function PlayerTab({ dropHandlerRef, onConvertFiles, openRequest,
     }
   }
 
+  // While a swapped-in element has not loaded, a seek moves the position the
+  // restore will apply (setting currentTime on the new element would be
+  // overwritten by the restore). Like any seek, it clears the Backstep point.
+  const seekPending = time => {
+    const pending = restoreRef.current
+    if (!pending) return false
+    restoreRef.current = { ...pending, time: Math.max(0, time), pausedAt: null }
+    return true
+  }
   const seekBy = delta => {
     const a = audioRef.current
     if (!a) return
     restoreSeekRef.current = null
+    const pending = restoreRef.current
+    if (pending) {
+      seekPending(Math.min(pending.time + delta, duration || pending.time + delta))
+      return
+    }
     a.currentTime = Math.max(0, Math.min((a.currentTime || 0) + delta, a.duration || 0))
   }
   const seekTo = t => {
     restoreSeekRef.current = null
+    if (seekPending(t)) return
     if (audioRef.current) audioRef.current.currentTime = t
   }
 
@@ -470,6 +493,12 @@ export default function PlayerTab({ dropHandlerRef, onConvertFiles, openRequest,
       restoreRef.current = null
       restoreSeekRef.current = null
       mixerRef.current?.resetHeard()
+      // Strips belong to one track. When the previous track's strips had
+      // changes and the mix stays on, the new track starts at 100% and the
+      // Player says so instead of the muted channel coming back unannounced.
+      const dropped = mixOn && mix.path && mix.path !== activeTrack.path && mix.strips.some(stripChanged)
+      setStripsResetPath(dropped ? activeTrack.path : null)
+      if (mix.path && mix.path !== activeTrack.path) setMix({ path: null, strips: [] })
       setPlaying(false)
       setPlaybackError('')
       audioRef.current.load()
@@ -516,6 +545,8 @@ export default function PlayerTab({ dropHandlerRef, onConvertFiles, openRequest,
     [ownStrips, mixLayout],
   )
   const stripsCleared = ownStrips.length > mixLayout && ownStrips.some(stripChanged)
+  // Only until the person changes a strip on this track.
+  const stripsFromPreviousCleared = stripsResetPath === activePath && mix.path !== activePath
   const setStrips = next => setMix({ path: activePath, strips: next })
 
   const latestRef = useRef({})
@@ -755,6 +786,7 @@ export default function PlayerTab({ dropHandlerRef, onConvertFiles, openRequest,
                     probeAvailable={probeAvailable}
                     probed={probe.path === activePath}
                     stripsCleared={stripsCleared}
+                    stripsFromPreviousCleared={stripsFromPreviousCleared}
                     notice={mixNotice}
                   />
                 </CardContent>
@@ -948,6 +980,7 @@ export default function PlayerTab({ dropHandlerRef, onConvertFiles, openRequest,
               setDuration(e.target.duration)
               e.target.playbackRate = speed
               e.target.volume = mixOn ? 1 : volume
+              if (mixOn) mixLoadedRef.current = true
               const restore = restoreRef.current
               restoreRef.current = null
               if (restore) {
@@ -962,9 +995,23 @@ export default function PlayerTab({ dropHandlerRef, onConvertFiles, openRequest,
                 }
               }
             }}
-            onPlay={() => {
+            onPlay={e => {
               setPlaying(true)
-              mixerRef.current?.setPlaying(true)
+              const mixer = mixerRef.current
+              if (!mixer) return
+              mixer.setPlaying(true)
+              // A play from a playback key is not a user gesture. It is heard
+              // because wry turns on autoplay without a gesture (WKWebView:
+              // no media type needs user action; WebView2: the autoplay-policy
+              // flag, added only while tauri.conf.json sets no
+              // additionalBrowserArgs, which a contract test checks). If the
+              // context still does not run, the element would play with no
+              // sound, so the Player goes back to normal playback and says why.
+              const element = e.target
+              mixer.resume().then(running => {
+                if (running || mixerRef.current !== mixer || element.paused) return
+                latestRef.current.mixFailed('the web view kept Web Audio paused, so nothing would be heard')
+              })
             }}
             onPause={e => {
               setPlaying(false)
@@ -979,7 +1026,10 @@ export default function PlayerTab({ dropHandlerRef, onConvertFiles, openRequest,
             onError={() => {
               setPlaying(false)
               restoreSeekRef.current = null
-              if (mixOn) {
+              // Once the mix has opened a file, an error on another file (a new
+              // or auto-advanced track) is that file's decode error: the mix
+              // stays on for the next track.
+              if (mixOn && !mixLoadedRef.current) {
                 mixFailed('the web view would not open this file for Web Audio')
                 return
               }
