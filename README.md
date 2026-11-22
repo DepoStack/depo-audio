@@ -117,6 +117,17 @@ The MPG, VOB, TS, MTS, M2TS, WMV and ASF rows are smoke-tested at each
 release with synthetic files carrying MP2, AC-3 or WMAv2 audio. No real
 deposition recording in these containers has been tried yet.
 
+FTR recordings are read as the owner's interoperability notes describe them:
+one AAC stream per microphone (format tag 0x4180) or stereo streams of two
+microphones (0x8180), split by DepoAudio when FFmpeg's native FTR decoder
+cannot take the file as it is. FTR AAC without either flag is refused, as
+FTR's own player refuses it. The recording's start (its TLOC, TUTC or FILE
+time) goes into WAV outputs' BWF start time; the user name and free-text
+chunks are never copied, only noted as present. This has been checked with
+synthetic files and with one sample made by the owner's rebuild tool
+(`scripts/fixtures/trm/vendor-notes-samples/`), not with a recording made by
+FTR.
+
 ---
 
 ## Learned-model boundary

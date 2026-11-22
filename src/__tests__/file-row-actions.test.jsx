@@ -151,7 +151,7 @@ describe('Queued FTR recordings', () => {
     convertedIndex: 0,
     streams: [{ channels: 4, sampleRate: 16000, language: null, title: null }],
     durationSecs: 12.8,
-    trm: { openEnded, sessionFirst: true, sessionLast: false, decodePath: 'deinterleaved' },
+    trm: { openEnded, startBoundary: true, endBoundary: false, decodePath: 'deinterleaved' },
   })
   const recording = { path: '/case/CR1_20260101-0900_01d409706d824cb0.trm', name: 'CR1.trm', fmt: null }
 

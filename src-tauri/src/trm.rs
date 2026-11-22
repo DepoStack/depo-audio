@@ -1,37 +1,51 @@
 //! FTR (For The Record) `.trm` / `.tll` recordings: inspection and
-//! per-channel extraction.
+//! per-stream extraction.
 //!
-//! Source of the layout below: owner-supplied interoperability notes; not yet
-//! confirmed against a recorded file. It is described here in our own words.
-//! Everything is little-endian.
+//! Source of the layout below: the owner's latest interoperability notes on
+//! FTR's reader, writer and splitter, described here in our own words. They
+//! have been checked against a file made by the owner's rebuild tool (not by
+//! FTR, see `scripts/fixtures/trm/vendor-notes-samples/`), never against a
+//! real FTR recording. Everything is little-endian.
 //!
-//! - The file is a RIFF `AVI ` container. An optional 20-byte `FTRA` chunk
-//!   (five u32 values) can sit before `LIST hdrl`; it is reported, never used.
-//! - `avih` carries two session flags in `dwFlags`: `0x20000000` marks the
-//!   first file of a recording session and `0x40000000` the last.
-//! - The audio stream header (`strh` type `auds`) is stream 0; video streams
-//!   (`vids`) follow. An audio `dwLength` of `0x7FFFFFFF` means the recorder
-//!   never closed the file (or is still recording), so that length says
-//!   nothing about the audio.
-//! - The audio format (`strf`) is a WAVEFORMATEX whose tag, masked with
-//!   `0x3FFF`, is `0x0180` for FTR's AAC; `nChannels` is the microphone count.
+//! - The file is a RIFF `AVI `. Top-level chunks before `LIST movi` can
+//!   include `TUTC` and `TLOC` (u64 FILETIMEs: the file's start in UTC and in
+//!   local time), `USER` and `UDAT` (UTF-16LE user name and free text, which
+//!   DepoAudio only notes as present, never reads into text), `FILE` (the
+//!   file's own name, UTF-16LE) and the 20-byte `FTRA` (five u32 values;
+//!   informational for `.trm`). After `idx1` the recorder may append `peak`,
+//!   `SIGN` and `CERT`; they are skipped (a signature is reported as
+//!   "signed (not verified)", never checked or produced).
+//! - `avih` `dwFlags` carries two boundary flags: `0x20000000` (no earlier
+//!   file may be joined to this one) and `0x40000000` (no later file may be
+//!   joined). `dwStreams` can count an input that has no `strl`, so the
+//!   number of `strl` lists is what counts.
+//! - The audio stream header (`strh` type `auds`) has `dwScale` 1024 and
+//!   `dwRate` = sample rate for AAC; `dwLength` is the number of audio
+//!   chunks, and `0x7FFFFFFF` while recording (the file was never closed).
+//! - The audio format (`strf`) is a WAVEFORMATEX. The tag's low 12 bits
+//!   `0x180` mean FTR's AAC; bit `0x4000` means each interleaved stream is
+//!   mono (N = `nChannels` streams), bit `0x8000` each stream is stereo
+//!   (N = `nChannels` / 2). `0x180` with neither bit is refused, as FTR's own
+//!   splitter refuses it. MP2, MP3 and WMA tags are ordinary audio for FFmpeg.
 //! - Audio chunks (`00wb`) are found through `idx1` (offsets relative to the
 //!   `movi` list or absolute) or, without a usable index, by walking `movi`.
+//!   Level-meter chunks (`NNal`) and video chunks are ignored.
 //! - The chunk payloads, joined in file order, are one run of ADTS AAC-LC
 //!   frames that may cross chunk boundaries. The first frame whose ADTS
-//!   private bit is clear belongs to channel 0; from there frame `k` belongs
-//!   to channel `k mod N`. A frame with the original/copy bit set has five
+//!   private bit is clear belongs to stream 0; from there frame `k` belongs
+//!   to stream `k mod N`. A frame with the original/copy bit set has five
 //!   payload bytes scrambled by a self-inverse swap-and-invert, undone here.
 //!   FTR reads an 11-bit frame length and ignores the two header bits above
-//!   it; those bits are cleared in the channel files so a standard ADTS
-//!   reader sees the same length. Each channel is then a plain mono ADTS
-//!   stream.
+//!   it; those bits are cleared in the stream files so a standard ADTS
+//!   reader sees the same length. Each stream is then a plain mono (or
+//!   stereo) ADTS stream; stream `k` of a stereo-stream file holds channels
+//!   `2k` and `2k + 1`.
 //!
 //! The private bit is checked on every frame, not only the first: a round
-//! must open with a channel-0 frame and, once the file has shown that it
-//! marks the other channels, continue with frames that are not. When that
+//! must open with a stream-0 frame and, once the file has shown that it
+//! marks the other streams, continue with frames that are not. When that
 //! breaks (a lost or extra frame), the partial round is dropped, dealing
-//! restarts at the next channel-0 frame, and the restart is counted.
+//! restarts at the next stream-0 frame, and the restart is counted.
 //!
 //! Reading streams through the file in fixed-size pieces: memory stays
 //! bounded by one piece, one partial frame and one round of frames, whatever
@@ -43,15 +57,20 @@ use std::path::{Path, PathBuf};
 
 use serde::Serialize;
 
-/// WAVEFORMATEX tag of FTR's AAC once masked with [`FORMAT_TAG_MASK`].
+/// The codec in the low 12 bits of the WAVEFORMATEX tag: FTR's AAC.
 pub(crate) const FTR_AAC_TAG: u16 = 0x0180;
-/// The stored (unmasked) tag that FFmpeg's RIFF table maps to its `ftr`
-/// decoder; `0x4180 & 0x3FFF` is [`FTR_AAC_TAG`].
-pub(crate) const FFMPEG_FTR_TAG: u16 = 0x4180;
-const FORMAT_TAG_MASK: u16 = 0x3FFF;
+/// Tag bit: each interleaved stream is mono (N = nChannels streams).
+pub(crate) const MONO_STREAMS_FLAG: u16 = 0x4000;
+/// Tag bit: each interleaved stream is stereo (N = nChannels / 2 streams).
+pub(crate) const STEREO_STREAMS_FLAG: u16 = 0x8000;
+/// The tag FTR's notes recommend for new files: AAC, one mono stream per
+/// microphone.
+#[cfg(test)]
+pub(crate) const MONO_STREAMS_TAG: u16 = FTR_AAC_TAG | MONO_STREAMS_FLAG;
+const CODEC_MASK: u16 = 0x0FFF;
 const OPEN_ENDED_LENGTH: u32 = 0x7FFF_FFFF;
-const SESSION_FIRST_FLAG: u32 = 0x2000_0000;
-const SESSION_LAST_FLAG: u32 = 0x4000_0000;
+const START_BOUNDARY_FLAG: u32 = 0x2000_0000;
+const END_BOUNDARY_FLAG: u32 = 0x4000_0000;
 /// The registry and every conversion path cap court recordings at 16 channels.
 pub(crate) const MAX_TRM_CHANNELS: u16 = 16;
 const MAX_HEADER_LIST_BYTES: u64 = 1024 * 1024;
@@ -65,12 +84,33 @@ const CANCEL_CHECK_EVERY: u64 = 4096;
 const ADTS_SAMPLE_RATES: [u32; 13] = [
     96_000, 88_200, 64_000, 48_000, 44_100, 32_000, 24_000, 22_050, 16_000, 12_000, 11_025, 8_000, 7_350,
 ];
+/// `FILE` holds 256 UTF-16 units; `USER` 0x200 bytes and `UDAT` 0x400.
+const FILE_NAME_CHUNK_BYTES: u64 = 0x200;
+const PRIVATE_TEXT_CHUNK_MAX_BYTES: u64 = 0x400;
+/// 100 ns FILETIME ticks between 1601-01-01 and 1970-01-01.
+const FILETIME_UNIX_EPOCH: u64 = 116_444_736_000_000_000;
+const FILETIME_TICKS_PER_DAY: u64 = 24 * 60 * 60 * 10_000_000;
+/// What the export record and the queue say about a `SIGN`/`CERT` chunk.
+pub(crate) const SIGNED_NOT_VERIFIED: &str = "signed (not verified)";
 
 pub(crate) const TRM_CANCELLED_MESSAGE: &str = crate::helpers::AUDIO_PREPARATION_CANCELLED_MESSAGE;
 const TRM_CHANGED_MESSAGE: &str = "The FTR recording changed while it was being read.";
+/// FTR's own splitter refuses an AAC tag without a stream-layout bit; so
+/// does DepoAudio (FFmpeg's native decoder would read it without a check).
+pub(crate) const TRM_UNSPLITTABLE_MESSAGE: &str =
+    "This FTR recording's format isn't one FTR's own player can split, so DepoAudio does not convert it.";
+const TRM_FRAME_CHANNELS_MESSAGE: &str = "This FTR recording's audio frames carry a different number of channels than its header declares, so DepoAudio cannot tell which microphone is which and does not split it.";
 
-/// The optional `FTRA` chunk, as read. FTR's player is described as using it
-/// only for `.avi` audio, so DepoAudio reports it and does not act on it.
+/// A refusal that no other route may override: the file is not handed to
+/// FFmpeg's native decoder either.
+pub(crate) fn is_refusal(error: &str) -> bool {
+    error == TRM_UNSPLITTABLE_MESSAGE
+}
+
+/// The optional `FTRA` chunk, as read. FTR's reader uses it only for `.avi`
+/// files with a non-zero `c` (MP3 saved as `.avi`); for a `.trm` it is
+/// informational ({1, 0, 0, chunks, start or 0xFFFFFFFF}), so DepoAudio
+/// reports it and does not act on it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct FtraInfo {
@@ -82,7 +122,7 @@ pub(crate) struct FtraInfo {
 }
 
 /// How the audio chunks were found.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Default)]
 pub(crate) enum IndexKind {
     /// `idx1` offsets are absolute file positions.
     #[serde(rename = "idx1-absolute")]
@@ -91,61 +131,173 @@ pub(crate) enum IndexKind {
     #[serde(rename = "idx1-relative")]
     Idx1Relative,
     /// No usable `idx1`: the `movi` list was walked chunk by chunk.
+    #[default]
     #[serde(rename = "walked")]
     Walked,
+    /// The audio is not FTR AAC: FFmpeg reads the file as it is and
+    /// DepoAudio does not read its chunks.
+    #[serde(rename = "not-read")]
+    NotRead,
+}
+
+/// The audio codec the format tag names (low 12 bits).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Default)]
+pub(crate) enum AudioCodec {
+    /// 0x180: FTR's interleaved AAC.
+    #[default]
+    #[serde(rename = "ftr-aac")]
+    FtrAac,
+    /// 0x50.
+    #[serde(rename = "mp2")]
+    Mp2,
+    /// 0x55.
+    #[serde(rename = "mp3")]
+    Mp3,
+    /// 0x160 to 0x163.
+    #[serde(rename = "wma")]
+    Wma,
+}
+
+impl AudioCodec {
+    fn from_tag(tag: u16) -> Option<Self> {
+        match tag & CODEC_MASK {
+            FTR_AAC_TAG => Some(Self::FtrAac),
+            0x050 => Some(Self::Mp2),
+            0x055 => Some(Self::Mp3),
+            0x160..=0x163 => Some(Self::Wma),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn label(self) -> &'static str {
+        match self {
+            Self::FtrAac => "FTR AAC",
+            Self::Mp2 => "MPEG audio layer 2",
+            Self::Mp3 => "MP3",
+            Self::Wma => "Windows Media Audio",
+        }
+    }
+}
+
+/// How FTR AAC interleaves its streams, from the tag's high bits.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub(crate) enum StreamLayout {
+    /// Tag bit 0x4000: one mono stream per microphone.
+    #[serde(rename = "mono-streams")]
+    Mono,
+    /// Tag bit 0x8000: stereo streams, two microphones each.
+    #[serde(rename = "stereo-streams")]
+    Stereo,
+}
+
+/// Which chunk gave the start time that feeds the BWF start (`timing`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub(crate) enum StartBasis {
+    /// `TLOC`: local wall-clock time, as a BWF time reference counts it.
+    #[serde(rename = "tloc-local")]
+    Local,
+    /// `TUTC` only (no `TLOC`): UTC wall-clock time.
+    #[serde(rename = "tutc-utc")]
+    Utc,
+    /// Neither chunk: the FILETIME in the `FILE` chunk's name, whose time
+    /// zone the name does not state.
+    #[serde(rename = "file-name-unknown-zone")]
+    FileName,
 }
 
 /// What one full read of a `.trm` found. Counts are of what was read, not of
-/// what the header claims.
-#[derive(Debug, Clone, PartialEq, Serialize)]
+/// what the header claims. Private text (`USER`, `UDAT`) is never held here:
+/// only whether it is present.
+#[derive(Debug, Clone, PartialEq, Serialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct TrmInfo {
-    /// The WAVEFORMATEX tag as stored (unmasked).
+    /// The WAVEFORMATEX tag as stored.
     pub tag: u16,
+    pub audio_codec: AudioCodec,
+    /// FTR AAC only; None for other codecs.
+    pub stream_layout: Option<StreamLayout>,
     /// `nChannels`: the number of microphone channels.
     pub channels: u16,
-    /// From the first channel-0 ADTS header; None when no frame was found.
+    /// Interleaved streams N (FTR AAC): `channels` / `channels_per_stream`.
+    pub streams: u16,
+    /// 1 for mono streams, 2 for stereo streams (FTR AAC).
+    pub channels_per_stream: u16,
+    /// From the first stream-0 ADTS header; None when no frame was found.
     pub sample_rate: Option<u32>,
-    pub session_first: bool,
-    pub session_last: bool,
+    /// `strf` nSamplesPerSec.
+    pub format_sample_rate: u32,
+    /// `strh` dwScale and dwRate as stored (AAC: 1024 and the sample rate).
+    pub header_scale: Option<u32>,
+    pub header_rate: Option<u32>,
+    /// `strh` dwLength: the number of audio chunks the recorder counted;
+    /// None while it holds 0x7FFFFFFF (never closed).
+    pub header_chunk_count: Option<u32>,
+    /// `avih` dwStreams as stored; it can count an input with no `strl`.
+    pub declared_streams: Option<u32>,
+    /// `strl` lists actually present.
+    pub stream_lists: u32,
+    /// `avih` flag 0x20000000: no earlier file may be joined to this one.
+    pub start_boundary: bool,
+    /// `avih` flag 0x40000000: no later file may be joined to this one.
+    pub end_boundary: bool,
     /// The audio length field says the recorder never closed the file.
     pub open_ended: bool,
+    /// `TUTC` as RFC 3339 UTC (`…Z`); None without the chunk.
+    pub start_utc: Option<String>,
+    /// `TLOC` as a local date and time with no offset; None without it.
+    pub start_local: Option<String>,
+    /// Which time gives the start in `startTime` of the export record.
+    pub start_basis: Option<StartBasis>,
+    /// The `FILE` chunk: the name the recorder gave this file.
+    pub recorded_file_name: Option<String>,
+    /// A `USER` chunk with a non-empty user name (the name is never read
+    /// into DepoAudio's records, logs or messages).
+    pub user_name_present: bool,
+    /// A `UDAT` chunk with non-empty text (never read into DepoAudio's
+    /// records, logs or messages).
+    pub user_data_present: bool,
+    /// `SIGN`/`CERT` chunks after the index: "signed (not verified)".
+    pub signature: Option<&'static str>,
     pub index_kind: IndexKind,
     /// Audio chunks read.
     pub packets: u64,
-    /// Frames delivered to the channels (whole rounds only).
+    /// Frames delivered to the streams (whole rounds only).
     pub frames: u64,
+    /// Frames each stream received (one per round).
     pub frames_per_channel: u64,
     /// Delivered frames that needed descrambling.
     pub scrambled_frames: u64,
     /// Frames that start in one audio chunk and end in a later one.
     pub straddling_frames: u64,
-    /// Audio chunks that do not start and end on a channel-0 round boundary.
+    /// Audio chunks that do not start and end on a stream-0 round boundary.
     pub misaligned_packets: u64,
     /// Audio chunks that hold more than one whole round of frames.
     pub multi_round_packets: u64,
-    /// Bytes skipped before the first channel-0 frame.
+    /// Bytes skipped before the first stream-0 frame.
     pub resync_skipped_bytes: u64,
-    /// Times the channel order broke after the first channel-0 frame (a
-    /// channel-0 frame where another channel's was due, or the reverse) and
-    /// dealing restarted at the next channel-0 frame. The round delivered
+    /// Times the stream order broke after the first stream-0 frame (a
+    /// stream-0 frame where another stream's was due, or the reverse) and
+    /// dealing restarted at the next stream-0 frame. The round delivered
     /// just before a restart can hold a frame in the wrong slot.
     pub channel_resyncs: u64,
-    /// Unreadable bytes skipped after the first channel-0 frame, before the
+    /// Unreadable bytes skipped after the first stream-0 frame, before the
     /// last frame delivered.
     pub mid_stream_skipped_bytes: u64,
     /// Zero bytes skipped between whole rounds or after the last one.
     pub padding_bytes: u64,
     /// Non-zero bytes after the last frame delivered that are not a frame.
     pub trailing_skipped_bytes: u64,
-    /// The last round was missing channels; its frames were not delivered.
+    /// The last round was missing streams; its frames were not delivered.
     pub incomplete_final_round: bool,
     /// Frames read but not delivered (incomplete rounds, or frames out of
-    /// channel order).
+    /// stream order).
     pub dropped_frames: u64,
     /// Delivered frames with either of the two ADTS length bits FTR ignores
-    /// (`b3 & 3`) set; they are cleared in the channel files.
+    /// (`b3 & 3`) set; they are cleared in the stream files.
     pub length_high_bit_frames: u64,
+    /// Delivered frames whose ADTS channel configuration is not the
+    /// channels per stream the tag declares.
+    pub frame_channel_mismatches: u64,
     /// The file ends inside a chunk or a frame, or its chunk list stops at
     /// unreadable data.
     pub truncated: bool,
@@ -153,30 +305,36 @@ pub(crate) struct TrmInfo {
     /// not read their audio: every count here covers the first segment only,
     /// and the duration is not given.
     pub continuation_segments: u32,
-    /// The file grew between the inspection and the channel split; only the
+    /// The file grew between the inspection and the stream split; only the
     /// part inspected was read.
     pub grew_while_read: bool,
     pub ftra: Option<FtraInfo>,
     pub video_streams: u32,
-    /// Delivered frames per channel × 1024 samples ÷ sample rate.
+    /// Delivered frames per stream × 1024 samples ÷ sample rate.
     pub duration_secs: Option<f64>,
-    /// The file length this read covered; a later channel split reads no
+    /// The file length this read covered; a later stream split reads no
     /// further. Not part of the export record.
     #[serde(skip)]
     pub file_bytes: u64,
+    /// The start FILETIME behind `start_basis`. Not part of the export
+    /// record (`startUtc`/`startLocal` are).
+    #[serde(skip)]
+    pub start_filetime: Option<u64>,
 }
 
 impl TrmInfo {
     /// Whether FFmpeg's native `ftr` decoder can be expected to read this
     /// file as it is: the reasons it cannot, empty when it can. The native
     /// decoder takes each audio chunk as exactly one round starting at
-    /// channel 0, does not join frames across chunks, look for the channel-0
-    /// marker or skip padding, reads the 13-bit ADTS length, and FFmpeg maps
-    /// only the 0x4180 tag to it.
+    /// stream 0, does not join frames across chunks, look for the stream-0
+    /// marker or skip padding, and reads the 13-bit ADTS length. It decoded
+    /// both the mono-stream (0x4180) and the stereo-stream (0x8180) layouts
+    /// in channel order in DepoAudio's tests (FFmpeg 6.1.1).
     pub(crate) fn native_blockers(&self) -> Vec<&'static str> {
         let mut reasons = Vec::new();
-        if self.tag != FFMPEG_FTR_TAG {
-            reasons.push("format-tag-not-mapped-by-ffmpeg");
+        if self.audio_codec != AudioCodec::FtrAac {
+            reasons.push("not-ftr-aac");
+            return reasons;
         }
         if self.index_kind == IndexKind::Walked {
             reasons.push("no-usable-index");
@@ -214,7 +372,30 @@ impl TrmInfo {
         if self.length_high_bit_frames > 0 {
             reasons.push("frame-length-high-bits");
         }
+        if self.frame_channel_mismatches > 0 {
+            reasons.push("frame-channels-differ-from-header");
+        }
         reasons
+    }
+
+    /// The file's start as a BWF time reference: samples since midnight at
+    /// the source sample rate, from `TLOC` (local, as BWF counts it), else
+    /// `TUTC`, else the `FILE` name. None without a start or a rate.
+    pub(crate) fn start_timing(&self) -> Option<crate::manifest::SourceTiming> {
+        let filetime = self.start_filetime?;
+        let basis = self.start_basis?;
+        let rate = Some(self.sample_rate.unwrap_or(self.format_sample_rate)).filter(|rate| *rate > 0)?;
+        let ticks = filetime % FILETIME_TICKS_PER_DAY;
+        let samples = (u128::from(ticks) * u128::from(rate) + 5_000_000) / 10_000_000;
+        Some(crate::manifest::SourceTiming {
+            time_reference_samples: u64::try_from(samples).ok()?,
+            sample_rate: rate,
+            source: match basis {
+                StartBasis::Local => "ftr-tloc",
+                StartBasis::Utc => "ftr-tutc",
+                StartBasis::FileName => "ftr-file-name",
+            },
+        })
     }
 }
 
@@ -224,10 +405,14 @@ pub(crate) enum DecodePath {
     /// The file as it is, with FFmpeg's native `ftr` decoder.
     #[serde(rename = "native-ftr")]
     NativeFtr,
-    /// One mono ADTS file per channel, written by [`deinterleave_trm`] and
-    /// joined in channel order with FFmpeg's `amerge`.
+    /// One mono (or stereo) ADTS file per stream, written by
+    /// [`deinterleave_trm`] and joined in channel order with `amerge`.
     #[serde(rename = "deinterleaved")]
     Deinterleaved,
+    /// Not FTR AAC (MP2, MP3, WMA): the file as it is, with the decoder
+    /// FFmpeg picks for that codec.
+    #[serde(rename = "ffmpeg-plain")]
+    Plain,
 }
 
 /// The inspection and the route chosen from it, as the export record and the
@@ -241,9 +426,10 @@ pub(crate) struct TrmRoute {
     /// Why the native decoder was not used; empty when it was.
     pub route_reasons: Vec<String>,
     /// The options FFmpeg is given before each `-i`: `-c:a ftr` before the
-    /// recording itself, or `-f aac` before each temporary channel file.
+    /// recording itself, `-f aac` before each temporary stream file, or
+    /// nothing for a codec FFmpeg reads as it is.
     pub input_options: Vec<String>,
-    /// How many `-i` inputs FFmpeg reads: 1, or one per channel (joined in
+    /// How many `-i` inputs FFmpeg reads: 1, or one per stream (joined in
     /// channel order by the `amerge` step that opens the filter graph).
     pub input_count: u32,
 }
@@ -252,7 +438,8 @@ impl TrmRoute {
     pub(crate) fn new(info: TrmInfo, decode_path: DecodePath, route_reasons: Vec<String>) -> Self {
         let (input_options, input_count) = match decode_path {
             DecodePath::NativeFtr => (vec!["-c:a".to_string(), "ftr".to_string()], 1),
-            DecodePath::Deinterleaved => (vec!["-f".to_string(), "aac".to_string()], u32::from(info.channels)),
+            DecodePath::Deinterleaved => (vec!["-f".to_string(), "aac".to_string()], u32::from(info.streams)),
+            DecodePath::Plain => (Vec::new(), 1),
         };
         Self {
             info,
@@ -265,9 +452,13 @@ impl TrmRoute {
 }
 
 /// Native `ftr` when the layout allows it and the decoder is present and has
-/// not already failed on this file; otherwise the channels are split first.
+/// not already failed on this file; otherwise the streams are split first.
+/// A codec other than FTR AAC goes to FFmpeg as it is.
 pub(crate) fn choose_route(info: &TrmInfo, options: crate::helpers::FeedOptions) -> (DecodePath, Vec<String>) {
     let mut reasons: Vec<String> = info.native_blockers().into_iter().map(String::from).collect();
+    if info.audio_codec != AudioCodec::FtrAac {
+        return (DecodePath::Plain, reasons);
+    }
     if !options.native_ftr {
         reasons.push("native-decoder-unavailable".into());
     }
@@ -279,6 +470,60 @@ pub(crate) fn choose_route(info: &TrmInfo, options: crate::helpers::FeedOptions)
     } else {
         (DecodePath::Deinterleaved, reasons)
     }
+}
+
+/// The message for an FTR recording holding MP2, MP3 or WMA audio that
+/// FFmpeg could not decode as it is.
+pub(crate) fn plain_decode_error(info: &TrmInfo, error: &str) -> String {
+    format!(
+        "This FTR recording holds {} audio (format tag 0x{:04X}), which DepoAudio hands to FFmpeg as ordinary audio, and FFmpeg could not decode it: {error}",
+        info.audio_codec.label(),
+        info.tag
+    )
+}
+
+/// A FILETIME (100 ns since 1601-01-01) as a date and time: `…Z` when `utc`,
+/// with no offset otherwise. Whole seconds, plus seven fraction digits when
+/// the time has any. None outside what `time` can hold.
+fn filetime_text(filetime: u64, utc: bool) -> Option<String> {
+    let since_unix = i128::from(filetime) - i128::from(FILETIME_UNIX_EPOCH);
+    let time = time::OffsetDateTime::from_unix_timestamp_nanos(since_unix * 100).ok()?;
+    let ticks = filetime % 10_000_000;
+    let fraction = if ticks == 0 {
+        String::new()
+    } else {
+        format!(".{ticks:07}")
+    };
+    Some(format!(
+        "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}{fraction}{}",
+        time.year(),
+        u8::from(time.month()),
+        time.day(),
+        time.hour(),
+        time.minute(),
+        time.second(),
+        if utc { "Z" } else { "" }
+    ))
+}
+
+/// The FILETIME in an FTR file name `<name>_YYYYMMDD-HHMM_<16 hex>.<ext>`.
+fn filetime_from_file_name(name: &str) -> Option<u64> {
+    let stem = name.rsplit_once('.').map_or(name, |(stem, _)| stem);
+    let (_, hex) = stem.rsplit_once('_')?;
+    if hex.len() != 16 || !hex.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return None;
+    }
+    u64::from_str_radix(hex, 16).ok().filter(|value| *value > 0)
+}
+
+/// UTF-16LE text up to its first NUL.
+fn utf16_text(bytes: &[u8]) -> String {
+    let units: Vec<u16> = bytes
+        .chunks_exact(2)
+        .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
+        .take_while(|unit| *unit != 0)
+        .collect();
+    String::from_utf16_lossy(&units)
 }
 
 // ── Little-endian helpers ────────────────────────────────────────────────────
@@ -384,13 +629,29 @@ impl SourceReader {
 
 // ── Container header ─────────────────────────────────────────────────────────
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 struct Layout {
     tag: u16,
+    codec: AudioCodec,
+    stream_layout: Option<StreamLayout>,
     channels: u16,
-    session_first: bool,
-    session_last: bool,
+    streams: u16,
+    channels_per_stream: u16,
+    format_sample_rate: u32,
+    header_scale: Option<u32>,
+    header_rate: Option<u32>,
+    header_length: Option<u32>,
+    declared_streams: Option<u32>,
+    stream_lists: u32,
+    start_boundary: bool,
+    end_boundary: bool,
     open_ended: bool,
+    tutc: Option<u64>,
+    tloc: Option<u64>,
+    recorded_file_name: Option<String>,
+    user_name_present: bool,
+    user_data_present: bool,
+    signed: bool,
     ftra: Option<FtraInfo>,
     video_streams: u32,
     /// File offset of the `movi` list type, which idx1 offsets count from.
@@ -405,6 +666,8 @@ struct Layout {
 
 struct StreamHeader {
     kind: [u8; 4],
+    scale: Option<u32>,
+    rate: Option<u32>,
     length: Option<u32>,
     format: Vec<u8>,
 }
@@ -414,10 +677,15 @@ fn parse_header_list(body: &[u8], layout: &mut Layout) -> Result<(), String> {
     let mut streams: Vec<StreamHeader> = Vec::new();
     for (id, data) in sub_chunks(body) {
         match &id {
-            b"avih" => flags = u32_at(data, 12),
+            b"avih" => {
+                flags = u32_at(data, 12);
+                layout.declared_streams = u32_at(data, 24);
+            }
             b"LIST" if data.get(..4) == Some(b"strl") => {
                 let mut stream = StreamHeader {
                     kind: [0; 4],
+                    scale: None,
+                    rate: None,
                     length: None,
                     format: Vec::new(),
                 };
@@ -425,6 +693,8 @@ fn parse_header_list(body: &[u8], layout: &mut Layout) -> Result<(), String> {
                     match &inner {
                         b"strh" => {
                             stream.kind = fourcc_at(inner_data, 0).unwrap_or([0; 4]);
+                            stream.scale = u32_at(inner_data, 20);
+                            stream.rate = u32_at(inner_data, 24);
                             stream.length = u32_at(inner_data, 32);
                         }
                         b"strf" => stream.format = inner_data.iter().take(64).copied().collect(),
@@ -437,8 +707,11 @@ fn parse_header_list(body: &[u8], layout: &mut Layout) -> Result<(), String> {
         }
     }
     let flags = flags.ok_or("This FTR recording has no AVI main header (avih), so it cannot be read.")?;
-    layout.session_first = flags & SESSION_FIRST_FLAG != 0;
-    layout.session_last = flags & SESSION_LAST_FLAG != 0;
+    layout.start_boundary = flags & START_BOUNDARY_FLAG != 0;
+    layout.end_boundary = flags & END_BOUNDARY_FLAG != 0;
+    // The strl lists are what counts: avih dwStreams can include an input
+    // (the level meter) that has none.
+    layout.stream_lists = streams.len() as u32;
     layout.video_streams = streams.iter().filter(|stream| &stream.kind == b"vids").count() as u32;
     let audio = streams
         .iter()
@@ -449,8 +722,44 @@ fn parse_header_list(body: &[u8], layout: &mut Layout) -> Result<(), String> {
     };
     layout.tag = tag;
     layout.channels = channels;
+    layout.format_sample_rate = u32_at(&audio.format, 4).unwrap_or(0);
+    layout.header_scale = audio.scale;
+    layout.header_rate = audio.rate;
+    layout.header_length = audio.length.filter(|length| *length != OPEN_ENDED_LENGTH);
     layout.open_ended = audio.length == Some(OPEN_ENDED_LENGTH);
     Ok(())
+}
+
+/// Read up to `limit` bytes of a top-level chunk's data.
+fn read_chunk_data(file: &mut File, data: u64, size: u64, remaining: u64, limit: u64) -> Result<Vec<u8>, String> {
+    let mut bytes = vec![0u8; size.min(remaining).min(limit) as usize];
+    file.seek(SeekFrom::Start(data)).map_err(io_error)?;
+    file.read_exact(&mut bytes).map_err(io_error)?;
+    Ok(bytes)
+}
+
+/// Whether a private text chunk holds any text. Only this is kept.
+fn holds_text(file: &mut File, data: u64, size: u64, remaining: u64) -> Result<bool, String> {
+    let bytes = read_chunk_data(file, data, size, remaining, PRIVATE_TEXT_CHUNK_MAX_BYTES)?;
+    Ok(bytes.chunks_exact(2).any(|unit| unit != [0, 0]))
+}
+
+/// The streams the tag's layout bits make of `nChannels`, as FTR's splitter
+/// counts them, or the refusal.
+fn stream_layout(tag: u16, channels: u16) -> Result<(StreamLayout, u16, u16), String> {
+    let mono = tag & MONO_STREAMS_FLAG != 0;
+    let stereo = tag & STEREO_STREAMS_FLAG != 0;
+    match (mono, stereo) {
+        (true, false) => Ok((StreamLayout::Mono, channels, 1)),
+        (false, true) => {
+            let per_stream = channels.min(2);
+            if per_stream == 0 || !channels.is_multiple_of(per_stream) {
+                return Err(TRM_UNSPLITTABLE_MESSAGE.into());
+            }
+            Ok((StreamLayout::Stereo, channels / per_stream, per_stream))
+        }
+        _ => Err(TRM_UNSPLITTABLE_MESSAGE.into()),
+    }
 }
 
 fn read_layout(file: &mut File, file_len: u64) -> Result<Layout, String> {
@@ -463,20 +772,7 @@ fn read_layout(file: &mut File, file_len: u64) -> Result<Layout, String> {
     if &riff[0..4] != b"RIFF" || &riff[8..12] != b"AVI " {
         return Err("This file does not start like an FTR recording (RIFF AVI), so DepoAudio cannot read it.".into());
     }
-    let mut layout = Layout {
-        tag: 0,
-        channels: 0,
-        session_first: false,
-        session_last: false,
-        open_ended: false,
-        ftra: None,
-        video_streams: 0,
-        movi_pos: 0,
-        movi_end: 0,
-        idx1: None,
-        continuation_segments: 0,
-        truncated: false,
-    };
+    let mut layout = Layout::default();
     let mut have_header = false;
     let mut have_movi = false;
     let mut pos = 12u64;
@@ -489,17 +785,23 @@ fn read_layout(file: &mut File, file_len: u64) -> Result<Layout, String> {
         let size = u64::from(u32::from_le_bytes([head[4], head[5], head[6], head[7]]));
         let data = pos + 8;
         let remaining = file_len - data;
+        // Past idx1 the recorder appends only `peak`, `SIGN` and `CERT`
+        // (and an OpenDML file its AVIX segments): nothing there is audio
+        // DepoAudio reads, so nothing there counts as truncation either.
+        let after_index = layout.idx1.is_some();
         match &id {
+            _ if after_index && (&id == b"SIGN" || &id == b"CERT") => layout.signed = true,
+            b"RIFF" if available == 12 && &head[8..12] == b"AVIX" => {
+                layout.continuation_segments += 1;
+            }
+            _ if after_index => {}
             b"LIST" if available == 12 && &head[8..12] == b"hdrl" => {
                 if size > MAX_HEADER_LIST_BYTES {
                     return Err(
                         "This FTR recording's header list is implausibly large; the file may be damaged.".into(),
                     );
                 }
-                let take = size.min(remaining);
-                let mut body = vec![0u8; take as usize];
-                file.seek(SeekFrom::Start(data)).map_err(io_error)?;
-                file.read_exact(&mut body).map_err(io_error)?;
+                let body = read_chunk_data(file, data, size, remaining, MAX_HEADER_LIST_BYTES)?;
                 parse_header_list(body.get(4..).unwrap_or_default(), &mut layout)?;
                 have_header = true;
             }
@@ -517,9 +819,7 @@ fn read_layout(file: &mut File, file_len: u64) -> Result<Layout, String> {
                 layout.movi_end = data + size;
             }
             b"FTRA" if size >= 20 && remaining >= 20 => {
-                let mut values = [0u8; 20];
-                file.seek(SeekFrom::Start(data)).map_err(io_error)?;
-                file.read_exact(&mut values).map_err(io_error)?;
+                let values = read_chunk_data(file, data, 20, remaining, 20)?;
                 let value = |index: usize| u32_at(&values, index * 4).unwrap_or(0);
                 layout.ftra = Some(FtraInfo {
                     a: value(0),
@@ -529,7 +829,25 @@ fn read_layout(file: &mut File, file_len: u64) -> Result<Layout, String> {
                     e: value(4),
                 });
             }
-            b"idx1" if layout.idx1.is_none() => {
+            b"TUTC" | b"TLOC" if size >= 8 && remaining >= 8 => {
+                let bytes = read_chunk_data(file, data, 8, remaining, 8)?;
+                let value = u64::from_le_bytes(bytes.try_into().unwrap_or_default());
+                let value = Some(value).filter(|value| *value > 0);
+                if &id == b"TUTC" {
+                    layout.tutc = value;
+                } else {
+                    layout.tloc = value;
+                }
+            }
+            b"FILE" => {
+                let bytes = read_chunk_data(file, data, size, remaining, FILE_NAME_CHUNK_BYTES)?;
+                let name = utf16_text(&bytes);
+                let name = name.trim();
+                layout.recorded_file_name = (!name.is_empty()).then(|| name.to_string());
+            }
+            b"USER" => layout.user_name_present = holds_text(file, data, size, remaining)?,
+            b"UDAT" => layout.user_data_present = holds_text(file, data, size, remaining)?,
+            b"idx1" => {
                 if size == 0 {
                     // Never closed: the index runs to EOF, and nothing after
                     // it can be read as a chunk.
@@ -541,14 +859,11 @@ fn read_layout(file: &mut File, file_len: u64) -> Result<Layout, String> {
                     layout.truncated = true;
                 }
             }
-            b"RIFF" if available == 12 && &head[8..12] == b"AVIX" => {
-                layout.continuation_segments += 1;
-            }
             _ => {}
         }
         let next = data + size + (size & 1);
         if next > file_len {
-            if !matches!(&id, b"idx1") {
+            if !after_index && !matches!(&id, b"idx1") {
                 layout.truncated = true;
             }
             break;
@@ -561,17 +876,24 @@ fn read_layout(file: &mut File, file_len: u64) -> Result<Layout, String> {
     if !have_movi {
         return Err("This FTR recording has no audio data list (movi); the file may be empty or damaged.".into());
     }
-    if layout.tag & FORMAT_TAG_MASK != FTR_AAC_TAG {
+    let Some(codec) = AudioCodec::from_tag(layout.tag) else {
         return Err(format!(
-            "This recording's audio is not FTR AAC (format tag 0x{:04X}), so DepoAudio cannot read it as an FTR recording.",
+            "This recording's audio is not FTR AAC, MP2, MP3 or WMA (format tag 0x{:04X}), so DepoAudio cannot read it as an FTR recording.",
             layout.tag
         ));
-    }
+    };
+    layout.codec = codec;
     if layout.channels == 0 || layout.channels > MAX_TRM_CHANNELS {
         return Err(format!(
             "This FTR recording reports {} channels; DepoAudio reads 1 to {MAX_TRM_CHANNELS}. The header may be damaged.",
             layout.channels
         ));
+    }
+    if codec == AudioCodec::FtrAac {
+        let (kind, streams, per_stream) = stream_layout(layout.tag, layout.channels)?;
+        layout.stream_layout = Some(kind);
+        layout.streams = streams;
+        layout.channels_per_stream = per_stream;
     }
     Ok(layout)
 }
@@ -614,9 +936,16 @@ pub(crate) fn descramble_frame(frame: &mut [u8]) -> bool {
 /// Receives each delivered frame with its channel index.
 type FrameSink<'a> = dyn FnMut(usize, &[u8]) -> Result<(), String> + 'a;
 
-/// Deals frames from the joined chunk payloads to channels in rounds.
+/// ADTS channel configuration (1 = mono, 2 = stereo).
+fn adts_channel_config(header: &[u8]) -> u8 {
+    ((header[2] & 0x01) << 2) | (header[3] >> 6)
+}
+
+/// Deals frames from the joined chunk payloads to streams in rounds.
 struct Dealer<'a> {
     channels: usize,
+    /// The ADTS channel configuration each frame should carry.
+    expected_config: u8,
     buffer: Vec<u8>,
     /// A channel-0 frame has been seen: skipped data is no longer leading.
     synced: bool,
@@ -630,6 +959,7 @@ struct Dealer<'a> {
     round_ends: Vec<usize>,
     round_scrambled: u64,
     round_high_bits: u64,
+    round_config_mismatches: u64,
     /// Skipped bytes not yet attributed (leading, padding, mid-stream or
     /// trailing): that depends on what follows them.
     pending_skip: u64,
@@ -663,14 +993,17 @@ struct DealStats {
     trailing_skipped: u64,
     dropped: u64,
     high_bits: u64,
+    config_mismatches: u64,
     incomplete_final_round: bool,
     cut_final_frame: bool,
 }
 
 impl<'a> Dealer<'a> {
-    fn new(channels: usize, sink: Option<&'a mut FrameSink<'a>>, round_limit: Option<u64>) -> Self {
+    fn new(layout: &Layout, sink: Option<&'a mut FrameSink<'a>>, round_limit: Option<u64>) -> Self {
+        let channels = usize::from(layout.streams);
         Self {
             channels,
+            expected_config: layout.channels_per_stream as u8,
             buffer: Vec::with_capacity(READ_PIECE_BYTES + 4096),
             synced: false,
             resyncing: false,
@@ -679,6 +1012,7 @@ impl<'a> Dealer<'a> {
             round_ends: Vec::with_capacity(channels),
             round_scrambled: 0,
             round_high_bits: 0,
+            round_config_mismatches: 0,
             pending_skip: 0,
             pending_nonzero: false,
             pending_mid_round: false,
@@ -737,6 +1071,7 @@ impl<'a> Dealer<'a> {
         self.round_ends.clear();
         self.round_scrambled = 0;
         self.round_high_bits = 0;
+        self.round_config_mismatches = 0;
     }
 
     fn skip_byte(&mut self, byte: u8) {
@@ -842,6 +1177,9 @@ impl<'a> Dealer<'a> {
                 frame[3] &= !0x03;
                 self.round_high_bits += 1;
             }
+            if adts_channel_config(frame) != self.expected_config {
+                self.round_config_mismatches += 1;
+            }
             self.round_ends.push(self.round.len());
             index += length;
             if self.round_ends.len() == self.channels {
@@ -863,10 +1201,12 @@ impl<'a> Dealer<'a> {
         self.stats.rounds += 1;
         self.stats.scrambled += self.round_scrambled;
         self.stats.high_bits += self.round_high_bits;
+        self.stats.config_mismatches += self.round_config_mismatches;
         self.round.clear();
         self.round_ends.clear();
         self.round_scrambled = 0;
         self.round_high_bits = 0;
+        self.round_config_mismatches = 0;
         if self.round_limit.is_some_and(|limit| self.stats.rounds >= limit) {
             self.limit_reached = true;
         }
@@ -1072,6 +1412,50 @@ fn read_by_walking(
     Ok(!dealer.limit_reached && pos < end)
 }
 
+/// What the header chunks say, before any audio is read.
+fn header_info(layout: &Layout, file_len: u64, kind: IndexKind) -> TrmInfo {
+    let (start_filetime, start_basis) = match (layout.tloc, layout.tutc) {
+        (Some(local), _) => (Some(local), Some(StartBasis::Local)),
+        (None, Some(utc)) => (Some(utc), Some(StartBasis::Utc)),
+        (None, None) => match layout.recorded_file_name.as_deref().and_then(filetime_from_file_name) {
+            Some(named) => (Some(named), Some(StartBasis::FileName)),
+            None => (None, None),
+        },
+    };
+    TrmInfo {
+        tag: layout.tag,
+        audio_codec: layout.codec,
+        stream_layout: layout.stream_layout,
+        channels: layout.channels,
+        streams: layout.streams,
+        channels_per_stream: layout.channels_per_stream,
+        format_sample_rate: layout.format_sample_rate,
+        header_scale: layout.header_scale,
+        header_rate: layout.header_rate,
+        header_chunk_count: layout.header_length,
+        declared_streams: layout.declared_streams,
+        stream_lists: layout.stream_lists,
+        start_boundary: layout.start_boundary,
+        end_boundary: layout.end_boundary,
+        open_ended: layout.open_ended,
+        start_utc: layout.tutc.and_then(|time| filetime_text(time, true)),
+        start_local: layout.tloc.and_then(|time| filetime_text(time, false)),
+        start_basis,
+        start_filetime,
+        recorded_file_name: layout.recorded_file_name.clone(),
+        user_name_present: layout.user_name_present,
+        user_data_present: layout.user_data_present,
+        signature: layout.signed.then_some(SIGNED_NOT_VERIFIED),
+        index_kind: kind,
+        truncated: layout.truncated,
+        continuation_segments: layout.continuation_segments,
+        ftra: layout.ftra,
+        video_streams: layout.video_streams,
+        file_bytes: file_len,
+        ..TrmInfo::default()
+    }
+}
+
 fn build_info(
     layout: &Layout,
     file_len: u64,
@@ -1080,20 +1464,14 @@ fn build_info(
     stats: DealStats,
     sample_rate: Option<u32>,
 ) -> TrmInfo {
-    let channels = u64::from(layout.channels);
+    let streams = u64::from(layout.streams);
     let duration_secs = sample_rate
         .filter(|rate| *rate > 0 && layout.continuation_segments == 0)
         .map(|rate| (stats.rounds * SAMPLES_PER_FRAME) as f64 / f64::from(rate));
     TrmInfo {
-        tag: layout.tag,
-        channels: layout.channels,
         sample_rate,
-        session_first: layout.session_first,
-        session_last: layout.session_last,
-        open_ended: layout.open_ended,
-        index_kind: kind,
         packets: stats.packets,
-        frames: stats.rounds * channels,
+        frames: stats.rounds * streams,
         frames_per_channel: stats.rounds,
         scrambled_frames: stats.scrambled,
         straddling_frames: stats.straddling,
@@ -1107,13 +1485,10 @@ fn build_info(
         incomplete_final_round: stats.incomplete_final_round,
         dropped_frames: stats.dropped,
         length_high_bit_frames: stats.high_bits,
+        frame_channel_mismatches: stats.config_mismatches,
         truncated: layout.truncated || truncated || stats.cut_final_frame,
-        continuation_segments: layout.continuation_segments,
-        grew_while_read: false,
-        ftra: layout.ftra,
-        video_streams: layout.video_streams,
         duration_secs,
-        file_bytes: file_len,
+        ..header_info(layout, file_len, kind)
     }
 }
 
@@ -1133,22 +1508,25 @@ pub(crate) fn inspect_trm(path: &Path) -> Result<TrmInfo, String> {
 pub(crate) fn inspect_trm_with_cancel(path: &Path, cancelled: Cancel<'_>) -> Result<TrmInfo, String> {
     check_cancel(cancelled)?;
     let (layout, file_len, _) = open_layout(path, None)?;
-    let channels = usize::from(layout.channels);
+    if layout.codec != AudioCodec::FtrAac {
+        // MP2, MP3 or WMA: FFmpeg reads these as ordinary audio.
+        return Ok(header_info(&layout, file_len, IndexKind::NotRead));
+    }
     for kind in index_candidates(path, &layout)? {
-        let mut dealer = Dealer::new(channels, None, None);
+        let mut dealer = Dealer::new(&layout, None, None);
         if let Some(truncated) = read_by_index(path, &layout, file_len, kind, &mut dealer, cancelled)? {
             let (stats, rate) = dealer.finish();
             return Ok(build_info(&layout, file_len, kind, truncated, stats, rate));
         }
     }
-    let mut dealer = Dealer::new(channels, None, None);
+    let mut dealer = Dealer::new(&layout, None, None);
     let truncated = read_by_walking(path, &layout, file_len, &mut dealer, cancelled)?;
     let (stats, rate) = dealer.finish();
     Ok(build_info(&layout, file_len, IndexKind::Walked, truncated, stats, rate))
 }
 
 /// Read the recording again exactly as `info` describes it (same index kind,
-/// same channel count, no further than the length inspected and no more
+/// same stream layout, no further than the length inspected and no more
 /// rounds than inspected), delivering every frame to `sink`.
 fn extract<'s>(
     path: &Path,
@@ -1158,12 +1536,13 @@ fn extract<'s>(
 ) -> Result<TrmInfo, String> {
     check_cancel(cancelled)?;
     let (layout, file_len, grew) = open_layout(path, Some(info.file_bytes))?;
-    if layout.channels != info.channels {
+    if layout.channels != info.channels || layout.streams != info.streams || layout.codec != info.audio_codec {
         return Err(TRM_CHANGED_MESSAGE.into());
     }
-    let mut dealer = Dealer::new(usize::from(layout.channels), Some(sink), Some(info.frames_per_channel));
+    let mut dealer = Dealer::new(&layout, Some(sink), Some(info.frames_per_channel));
     let truncated = match info.index_kind {
         IndexKind::Walked => read_by_walking(path, &layout, file_len, &mut dealer, cancelled)?,
+        IndexKind::NotRead => return Err(TRM_CHANGED_MESSAGE.into()),
         kind => read_by_index(path, &layout, file_len, kind, &mut dealer, cancelled)?
             .ok_or_else(|| TRM_CHANGED_MESSAGE.to_string())?,
     };
@@ -1201,10 +1580,12 @@ impl Drop for ChannelFiles {
 /// The name prefix of every temporary channel file, for the startup sweep.
 pub(crate) const CHANNEL_FILE_PREFIX: &str = "depoaudio_trm_";
 
-/// Write each channel of a `.trm` to its own new mono ADTS `.aac` file in
-/// `out_dir` (descrambled, whole rounds only, so every channel has the same
-/// frame count). Streams: no channel is held in memory. The original is only
-/// read. On any error, no channel file is left behind.
+/// Write each stream of a `.trm` to its own new ADTS `.aac` file in
+/// `out_dir` (descrambled, whole rounds only, so every stream has the same
+/// frame count): one mono file per microphone, or for a stereo-stream file
+/// one stereo file per pair, in channel order. Streams: no stream is held in
+/// memory. The original is only read. On any error, no stream file is left
+/// behind.
 #[cfg(test)]
 pub(crate) fn deinterleave_trm(path: &Path, out_dir: &Path) -> Result<(TrmInfo, Vec<PathBuf>), String> {
     deinterleave_trm_with_cancel(path, out_dir, None, None)
@@ -1223,6 +1604,12 @@ pub(crate) fn deinterleave_trm_with_cancel(
         Some(info) => info.clone(),
         None => inspect_trm_with_cancel(path, cancelled)?,
     };
+    if info.audio_codec != AudioCodec::FtrAac {
+        return Err(format!(
+            "This FTR recording holds {} audio, which is not split into channels; FFmpeg reads it as it is.",
+            info.audio_codec.label()
+        ));
+    }
     if info.continuation_segments > 0 {
         return Err(
             "This FTR recording continues in further RIFF (AVIX) segments, which DepoAudio's channel split does not read yet, so it cannot be split without losing audio.".into(),
@@ -1233,25 +1620,28 @@ pub(crate) fn deinterleave_trm_with_cancel(
             "No complete round of FTR audio frames was found in this recording, so there is nothing to convert.".into(),
         );
     }
+    if info.frame_channel_mismatches > 0 {
+        return Err(TRM_FRAME_CHANNELS_MESSAGE.into());
+    }
     let stem = format!("{CHANNEL_FILE_PREFIX}{}", uuid::Uuid::new_v4().simple());
     let mut files = ChannelFiles {
         paths: Vec::new(),
         keep: false,
     };
-    let mut writers = Vec::with_capacity(usize::from(info.channels));
-    for channel in 0..info.channels {
-        let channel_path = out_dir.join(format!("{stem}_ch{channel}.aac"));
+    let mut writers = Vec::with_capacity(usize::from(info.streams));
+    for stream in 0..info.streams {
+        let stream_path = out_dir.join(format!("{stem}_ch{stream}.aac"));
         let file = fs::OpenOptions::new()
             .write(true)
             .create_new(true)
-            .open(&channel_path)
+            .open(&stream_path)
             .map_err(|error| format!("Could not create a temporary channel file: {error}"))?;
-        files.paths.push(channel_path);
+        files.paths.push(stream_path);
         writers.push(BufWriter::new(file));
     }
-    let mut sink = |channel: usize, frame: &[u8]| -> Result<(), String> {
+    let mut sink = |stream: usize, frame: &[u8]| -> Result<(), String> {
         writers
-            .get_mut(channel)
+            .get_mut(stream)
             .ok_or_else(|| TRM_CHANGED_MESSAGE.to_string())?
             .write_all(frame)
             .map_err(|error| format!("Could not write a temporary channel file: {error}"))
@@ -1400,12 +1790,20 @@ pub(crate) mod tests {
         /// Size of a video (`01dc`) chunk placed before the audio, listed
         /// first in idx1; 0 for none.
         pub lead_video: usize,
+        /// Top-level chunks placed between `LIST hdrl` and `LIST movi`.
+        pub header_extra: Vec<u8>,
+        /// Bytes appended after `idx1` (`peak`, `SIGN`, `CERT`).
+        pub trailer: Vec<u8>,
+        /// A level-meter (`01al`) chunk after every audio chunk, indexed.
+        pub level_meter: bool,
+        /// avih dwStreams; None writes the number of strl lists.
+        pub declared_streams: Option<u32>,
     }
 
     impl AviSpec {
         pub(crate) fn closed(channels: u16) -> Self {
             Self {
-                tag: FFMPEG_FTR_TAG,
+                tag: MONO_STREAMS_TAG,
                 channels,
                 flags: 0,
                 length: 0,
@@ -1414,6 +1812,10 @@ pub(crate) mod tests {
                 video_streams: 0,
                 open_movi: false,
                 lead_video: 0,
+                header_extra: Vec::new(),
+                trailer: Vec::new(),
+                level_meter: false,
+                declared_streams: None,
             }
         }
     }
@@ -1440,7 +1842,7 @@ pub(crate) mod tests {
 
     /// A RIFF AVI holding `packets` as `00wb` chunks.
     pub(crate) fn build_avi(spec: &AviSpec, packets: &[Vec<u8>]) -> Vec<u8> {
-        let streams = 1 + spec.video_streams;
+        let streams = spec.declared_streams.unwrap_or(1 + spec.video_streams);
         let mut avih = le(&[0, 0, 0, spec.flags, packets.len() as u32, 0, streams, 0, 0, 0]);
         avih.resize(56, 0);
         let mut strh = b"auds".to_vec();
@@ -1471,6 +1873,7 @@ pub(crate) mod tests {
             out.extend(chunk(b"FTRA", &le(&values)));
         }
         out.extend(list(b"hdrl", &hdrl));
+        out.extend(&spec.header_extra);
         let movi_header = out.len();
         let movi_pos = movi_header + 8;
         let mut movi = Vec::new();
@@ -1483,6 +1886,11 @@ pub(crate) mod tests {
             let header = movi_pos + 4 + movi.len();
             entries.push((*b"00wb", header, packet.len()));
             movi.extend(chunk(b"00wb", packet));
+            if spec.level_meter {
+                let header = movi_pos + 4 + movi.len();
+                entries.push((*b"01al", header, 6));
+                movi.extend(chunk(b"01al", &[0xFF, 0xF1, 0x60, 0x40, 0x00, 0x00]));
+            }
         }
         out.extend(list(b"movi", &movi));
         if spec.open_movi {
@@ -1504,6 +1912,7 @@ pub(crate) mod tests {
             }
             out.extend(idx1);
         }
+        out.extend(&spec.trailer);
         let riff_size = (out.len() - 8) as u32;
         out[4..8].copy_from_slice(&riff_size.to_le_bytes());
         out
@@ -1816,7 +2225,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn session_flags_ftra_and_video_streams_are_reported() {
+    fn boundary_flags_ftra_and_video_streams_are_reported() {
         let dir = TrmTestDir::new();
         let channels = fake_frames(1, 3);
         let (stream, lengths) = ftr_frame_stream(&channels);
@@ -1834,7 +2243,7 @@ pub(crate) mod tests {
             let path = write(&dir.0, "session.tll", &build_avi(&spec, &packets));
             let info = inspect_trm(&path).unwrap();
             assert_eq!(
-                (info.session_first, info.session_last),
+                (info.start_boundary, info.end_boundary),
                 (first, last),
                 "flags {flags:#x}"
             );
@@ -1853,20 +2262,70 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn other_ftr_aac_tags_are_read_but_not_sent_to_the_native_decoder() {
+    fn the_tag_bits_decide_the_stream_layout_and_aac_without_them_is_refused() {
         let dir = TrmTestDir::new();
         let channels = fake_frames(2, 3);
         let (stream, lengths) = ftr_frame_stream(&channels);
         let packets = round_packets(&stream, &lengths, 2, 1);
         let mut spec = AviSpec::closed(2);
-        spec.tag = 0x0180;
-        let path = write(&dir.0, "tag.trm", &build_avi(&spec, &packets));
-        let info = inspect_trm(&path).unwrap();
-        assert_eq!(info.native_blockers(), vec!["format-tag-not-mapped-by-ffmpeg"]);
+        let info = inspect_trm(&write(&dir.0, "mono.trm", &build_avi(&spec, &packets))).unwrap();
+        assert_eq!(
+            (info.stream_layout, info.streams, info.channels_per_stream),
+            (Some(StreamLayout::Mono), 2, 1)
+        );
+        assert_eq!(info.audio_codec, AudioCodec::FtrAac);
 
+        // FTR's splitter refuses 0x180 with neither layout bit, and so does
+        // DepoAudio, by every route (FFmpeg's native decoder would read it).
+        for tag in [0x0180u16, 0xC180] {
+            spec.tag = tag;
+            let path = write(&dir.0, "nobits.trm", &build_avi(&spec, &packets));
+            let error = inspect_trm(&path).unwrap_err();
+            assert_eq!(error, TRM_UNSPLITTABLE_MESSAGE, "tag {tag:#06x}");
+            assert!(error.starts_with("This FTR recording's format isn't one FTR's own player can split"));
+            assert!(is_refusal(&error));
+        }
+        // Stereo streams need an even microphone count above one.
+        let mut odd = AviSpec::closed(3);
+        odd.tag = 0x8180;
+        let path = write(&dir.0, "odd.trm", &build_avi(&odd, &packets));
+        assert_eq!(inspect_trm(&path).unwrap_err(), TRM_UNSPLITTABLE_MESSAGE);
+
+        // A tag for no codec FTR writes is still an error that names it.
         spec.tag = 0x0001;
         let path = write(&dir.0, "pcm.trm", &build_avi(&spec, &packets));
-        assert!(inspect_trm(&path).unwrap_err().contains("0x0001"));
+        let error = inspect_trm(&path).unwrap_err();
+        assert!(error.contains("0x0001") && !is_refusal(&error), "{error}");
+    }
+
+    #[test]
+    fn mp2_mp3_and_wma_tags_are_left_to_ffmpeg_as_plain_audio() {
+        let dir = TrmTestDir::new();
+        for (tag, codec) in [
+            (0x0050u16, AudioCodec::Mp2),
+            (0x0055, AudioCodec::Mp3),
+            (0x0160, AudioCodec::Wma),
+            (0x0163, AudioCodec::Wma),
+        ] {
+            let mut spec = AviSpec::closed(1);
+            spec.tag = tag;
+            let path = write(&dir.0, "plain.trm", &build_avi(&spec, &[vec![0x11; 40]]));
+            let info = inspect_trm(&path).unwrap();
+            assert_eq!(info.audio_codec, codec);
+            assert_eq!(info.index_kind, IndexKind::NotRead);
+            assert_eq!((info.stream_layout, info.streams, info.frames), (None, 0, 0));
+            assert_eq!(info.duration_secs, None);
+            let native = crate::helpers::FeedOptions {
+                native_ftr: true,
+                native_failed: false,
+            };
+            assert_eq!(
+                choose_route(&info, native),
+                (DecodePath::Plain, vec!["not-ftr-aac".to_string()])
+            );
+            assert!(deinterleave_trm(&path, &dir.0).unwrap_err().contains("not split"));
+            assert!(plain_decode_error(&info, "boom").contains(codec.label()));
+        }
     }
 
     #[test]
@@ -2473,5 +2932,379 @@ pub(crate) mod tests {
         let merged = decode_f32(&merged_decode_args(&files));
         assert_eq!(merged.len() as u64, info.frames_per_channel * 1024 * 4);
         assert_eq!(dominant_tones(&merged, 4, TONE_RATE), TONE_FREQUENCIES.to_vec());
+    }
+
+    // ── Layout details from the owner's latest notes ─────────────────────────
+
+    fn utf16_chunk(id: &[u8; 4], text: &str, size: usize) -> Vec<u8> {
+        let mut data: Vec<u8> = text.encode_utf16().flat_map(u16::to_le_bytes).collect();
+        data.resize(size, 0);
+        chunk(id, &data)
+    }
+
+    fn filetime_chunk(id: &[u8; 4], filetime: u64) -> Vec<u8> {
+        chunk(id, &filetime.to_le_bytes())
+    }
+
+    /// 2026-01-01 09:00:00 as a FILETIME, as in the owner's sample.
+    const SAMPLE_START: u64 = 0x01DC_7AFD_0268_A800;
+
+    #[test]
+    fn header_chunks_give_times_name_and_presence_only_for_private_text() {
+        let dir = TrmTestDir::new();
+        let channels = fake_frames(2, 3);
+        let (stream, lengths) = ftr_frame_stream(&channels);
+        let packets = round_packets(&stream, &lengths, 2, 1);
+        let mut spec = AviSpec::closed(2);
+        spec.index = Index::Absolute;
+        // Local time one hour ahead of UTC.
+        let mut extra = filetime_chunk(b"TUTC", SAMPLE_START);
+        extra.extend(filetime_chunk(b"TLOC", SAMPLE_START + 36_000_000_000 + 1_234_567));
+        extra.extend(utf16_chunk(b"USER", "Private Person", 0x200));
+        extra.extend(utf16_chunk(b"FILE", "Room 4_20260101-0900_01dc7afd0268a800.trm", 0x200));
+        extra.extend(utf16_chunk(b"UDAT", "private note text", 0x400));
+        extra.extend(chunk(b"FTRA", &le(&[1, 0, 0, 3, u32::MAX])));
+        spec.header_extra = extra;
+        // The level meter is counted in dwStreams but has no strl.
+        spec.declared_streams = Some(2);
+        spec.level_meter = true;
+        let mut trailer = chunk(b"peak", &[1, 2, 3, 4]);
+        trailer.extend(chunk(b"SIGN", &[9; 33]));
+        trailer.extend(chunk(b"CERT", &[7; 64]));
+        // A chunk after idx1 that claims more than the file holds is not
+        // truncation of the audio.
+        trailer.extend(b"zzzz\xFF\xFF\x00\x00");
+        spec.trailer = trailer;
+        let bytes = build_avi(&spec, &packets);
+        let path = write(&dir.0, "header.trm", &bytes);
+
+        let info = inspect_trm(&path).unwrap();
+        assert_eq!(info.start_utc.as_deref(), Some("2026-01-01T09:00:00Z"));
+        assert_eq!(info.start_local.as_deref(), Some("2026-01-01T10:00:00.1234567"));
+        assert_eq!(info.start_basis, Some(StartBasis::Local));
+        assert_eq!(
+            info.recorded_file_name.as_deref(),
+            Some("Room 4_20260101-0900_01dc7afd0268a800.trm")
+        );
+        assert!(info.user_name_present && info.user_data_present);
+        assert_eq!(info.signature, Some(SIGNED_NOT_VERIFIED));
+        assert_eq!((info.declared_streams, info.stream_lists), (Some(2), 1));
+        assert_eq!(info.ftra.map(|ftra| (ftra.a, ftra.d, ftra.e)), Some((1, 3, u32::MAX)));
+        assert_eq!((info.header_scale, info.header_rate), (Some(1024), Some(TONE_RATE)));
+        // Level-meter chunks are ignored; the audio is read as without them.
+        assert_eq!((info.packets, info.frames_per_channel), (3, 3));
+        assert!(!info.truncated);
+        assert!(info.native_blockers().is_empty(), "{:?}", info.native_blockers());
+
+        // The start feeds the BWF start: 10:00:00.1234567 local, at 16 kHz.
+        let timing = info.start_timing().unwrap();
+        assert_eq!(timing.source, "ftr-tloc");
+        assert_eq!(timing.sample_rate, TONE_RATE);
+        assert_eq!(timing.time_reference_samples, 36_000 * 16_000 + 1975);
+
+        // The private text never reaches the record (or its debug form).
+        let route = TrmRoute::new(info.clone(), DecodePath::NativeFtr, Vec::new());
+        let json = serde_json::to_string(&route).unwrap();
+        let debug = format!("{route:?}");
+        for private in ["Private Person", "private note"] {
+            assert!(!json.contains(private) && !debug.contains(private), "{private}");
+        }
+        assert!(json.contains("\"userNamePresent\":true"));
+
+        let (_, files) = deinterleave_trm(&path, &dir.0).unwrap();
+        for (channel, file) in files.iter().enumerate() {
+            assert_eq!(
+                split_adts(&fs::read(file).unwrap()),
+                expected_channel(&channels, channel, 3)
+            );
+        }
+    }
+
+    #[test]
+    fn without_tloc_the_start_is_utc_then_the_file_name_then_unknown() {
+        let dir = TrmTestDir::new();
+        let channels = fake_frames(1, 2);
+        let (stream, lengths) = ftr_frame_stream(&channels);
+        let packets = round_packets(&stream, &lengths, 1, 1);
+        let name = utf16_chunk(b"FILE", "CR4_20260101-0900_01dc7afd0268a800.tll", 0x200);
+        let empty_private = [utf16_chunk(b"USER", "", 0x200), utf16_chunk(b"UDAT", "", 0x400)].concat();
+        for (extra, basis, source) in [
+            (
+                [filetime_chunk(b"TUTC", SAMPLE_START), name.clone()].concat(),
+                Some(StartBasis::Utc),
+                Some("ftr-tutc"),
+            ),
+            (
+                [name.clone(), empty_private.clone()].concat(),
+                Some(StartBasis::FileName),
+                Some("ftr-file-name"),
+            ),
+            (empty_private.clone(), None, None),
+        ] {
+            let mut spec = AviSpec::closed(1);
+            spec.index = Index::Relative;
+            spec.header_extra = extra;
+            let info = inspect_trm(&write(&dir.0, "times.trm", &build_avi(&spec, &packets))).unwrap();
+            assert_eq!(info.start_basis, basis);
+            assert_eq!(info.start_timing().map(|timing| timing.source), source);
+            if source.is_some() {
+                // 09:00:00 at 16 kHz.
+                assert_eq!(info.start_timing().unwrap().time_reference_samples, 9 * 3600 * 16_000);
+            }
+            assert!(info.start_local.is_none());
+            assert!(!info.user_name_present && !info.user_data_present);
+            assert_eq!(info.signature, None);
+        }
+        assert_eq!(
+            filetime_from_file_name("x_20260101-0900_01dc7afd0268a800.trm"),
+            Some(SAMPLE_START)
+        );
+        assert_eq!(filetime_from_file_name("x_20260101-0900_01dc7afd0268a8.trm"), None);
+        assert_eq!(filetime_from_file_name("plain name.trm"), None);
+    }
+
+    /// Stereo ADTS frames: `left` Hz on channel 0, `right` Hz on channel 1.
+    pub(crate) fn stereo_tone_frames(dir: &Path, left: u32, right: u32, seconds: f64) -> Vec<Vec<u8>> {
+        let out = dir.join(format!("tone_{left}_{right}.aac"));
+        let status = std::process::Command::new("ffmpeg")
+            .args(["-nostdin", "-hide_banner", "-loglevel", "error"])
+            .args(["-f", "lavfi", "-i"])
+            .arg(format!(
+                "sine=frequency={left}:duration={seconds}:sample_rate={TONE_RATE}"
+            ))
+            .args(["-f", "lavfi", "-i"])
+            .arg(format!(
+                "sine=frequency={right}:duration={seconds}:sample_rate={TONE_RATE}"
+            ))
+            .args(["-filter_complex", "[0:a][1:a]amerge=inputs=2"])
+            .args(["-c:a", "aac", "-b:a", "64k", "-f", "adts", "-y"])
+            .arg(&out)
+            .status()
+            .unwrap();
+        assert!(status.success());
+        let bytes = fs::read(&out).unwrap();
+        fs::remove_file(&out).unwrap();
+        let frames = split_adts_13(&bytes);
+        assert!(frames.iter().all(|frame| adts_channel_config(frame) == 2));
+        frames
+    }
+
+    /// ADTS frames by the standard 13-bit length.
+    fn split_adts_13(bytes: &[u8]) -> Vec<Vec<u8>> {
+        let mut frames = Vec::new();
+        let mut pos = 0;
+        while pos + 7 <= bytes.len() {
+            let h = &bytes[pos..];
+            let len = ((usize::from(h[3]) & 3) << 11) | (usize::from(h[4]) << 3) | (usize::from(h[5]) >> 5);
+            frames.push(bytes[pos..pos + len].to_vec());
+            pos += len;
+        }
+        frames
+    }
+
+    #[test]
+    fn stereo_streams_are_split_into_stereo_files_in_channel_order() {
+        let dir = TrmTestDir::new();
+        // Layout only: two stereo streams of fake frames for 4 microphones.
+        let mut streams = fake_frames(2, 5);
+        for frame in streams.iter_mut().flatten() {
+            frame[3] = 0x80; // channel configuration 2
+        }
+        let (stream, lengths) = ftr_frame_stream(&streams);
+        let mut spec = AviSpec::closed(4);
+        spec.tag = 0x8180;
+        let path = write(
+            &dir.0,
+            "stereo.trm",
+            &build_avi(&spec, &round_packets(&stream, &lengths, 2, 1)),
+        );
+        let info = inspect_trm(&path).unwrap();
+        assert_eq!(
+            (
+                info.stream_layout,
+                info.channels,
+                info.streams,
+                info.channels_per_stream
+            ),
+            (Some(StreamLayout::Stereo), 4, 2, 2)
+        );
+        assert_eq!((info.frames, info.frames_per_channel), (10, 5));
+        assert!(info.native_blockers().is_empty(), "{:?}", info.native_blockers());
+        let route = TrmRoute::new(info.clone(), DecodePath::Deinterleaved, Vec::new());
+        assert_eq!(route.input_count, 2);
+        let (_, files) = deinterleave_trm(&path, &dir.0).unwrap();
+        assert_eq!(files.len(), 2);
+        for (index, file) in files.iter().enumerate() {
+            assert_eq!(
+                split_adts(&fs::read(file).unwrap()),
+                expected_channel(&streams, index, 5)
+            );
+        }
+        files.iter().for_each(|file| fs::remove_file(file).unwrap());
+
+        // Mono frames in a file whose tag says stereo streams: reported, not
+        // sent to the native decoder, and not split.
+        let mono = fake_frames(2, 5);
+        let (stream, lengths) = ftr_frame_stream(&mono);
+        let path = write(
+            &dir.0,
+            "mislabelled.trm",
+            &build_avi(&spec, &round_packets(&stream, &lengths, 2, 1)),
+        );
+        let info = inspect_trm(&path).unwrap();
+        assert_eq!(info.frame_channel_mismatches, 10);
+        assert_eq!(info.native_blockers(), vec!["frame-channels-differ-from-header"]);
+        assert_eq!(deinterleave_trm(&path, &dir.0).unwrap_err(), TRM_FRAME_CHANNELS_MESSAGE);
+    }
+
+    #[test]
+    fn stereo_streams_decode_the_same_by_native_ftr_and_the_split_route() {
+        if !aac_tools_available() {
+            return;
+        }
+        if !native_ftr_decoder_on_path() {
+            eprintln!("skipping: this FFmpeg has no native ftr decoder to cross-check against");
+            return;
+        }
+        let dir = TrmTestDir::new();
+        let [a, b, c, d] = TONE_FREQUENCIES;
+        let streams = vec![
+            stereo_tone_frames(&dir.0, a, b, 2.0),
+            stereo_tone_frames(&dir.0, c, d, 2.0),
+        ];
+        let (stream, lengths) = ftr_frame_stream(&streams);
+        let mut spec = AviSpec::closed(4);
+        spec.tag = 0x8180;
+        let path = write(
+            &dir.0,
+            "stereo.trm",
+            &build_avi(&spec, &round_packets(&stream, &lengths, 2, 1)),
+        );
+        let info = inspect_trm(&path).unwrap();
+        assert!(info.native_blockers().is_empty(), "{:?}", info.native_blockers());
+        let native = decode_f32(&[
+            "-c:a".into(),
+            "ftr".into(),
+            "-i".into(),
+            path.to_string_lossy().to_string(),
+            "-map".into(),
+            "0:a:0".into(),
+        ]);
+        let (_, files) = deinterleave_trm(&path, &dir.0).unwrap();
+        let merged = decode_f32(&merged_decode_args(&files));
+        assert_eq!(native.len() as u64, info.frames_per_channel * 1024 * 4);
+        assert_eq!(native.len(), merged.len());
+        let differing = native
+            .iter()
+            .zip(&merged)
+            .filter(|(x, y)| x.to_bits() != y.to_bits())
+            .count();
+        assert_eq!(differing, 0, "the routes differ in {differing} samples");
+        // Stream k holds channels 2k and 2k + 1, in order.
+        assert_eq!(dominant_tones(&merged, 4, TONE_RATE), TONE_FREQUENCIES.to_vec());
+        assert_eq!(dominant_tones(&native, 4, TONE_RATE), TONE_FREQUENCIES.to_vec());
+    }
+
+    pub(crate) fn vendor_notes_sample() -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../scripts/fixtures/trm/vendor-notes-samples/sample_hex_report.trm")
+    }
+
+    #[test]
+    fn vendor_notes_sample_is_inspected_as_its_hex_report_says() {
+        let path = vendor_notes_sample();
+        let before = fs::read(&path).unwrap();
+        assert_eq!(before.len(), 106_120);
+        let info = inspect_trm(&path).unwrap();
+        assert_eq!(info.tag, 0x4180);
+        assert_eq!(info.audio_codec, AudioCodec::FtrAac);
+        assert_eq!(
+            (
+                info.stream_layout,
+                info.channels,
+                info.streams,
+                info.channels_per_stream
+            ),
+            (Some(StreamLayout::Mono), 4, 4, 1)
+        );
+        assert_eq!((info.sample_rate, info.format_sample_rate), (Some(16_000), 16_000));
+        assert_eq!(
+            (info.header_scale, info.header_rate, info.header_chunk_count),
+            (Some(1024), Some(16_000), Some(240))
+        );
+        assert_eq!((info.declared_streams, info.stream_lists), (Some(1), 1));
+        assert!(info.start_boundary && info.end_boundary && !info.open_ended);
+        assert_eq!(info.index_kind, IndexKind::Idx1Absolute);
+        assert_eq!((info.packets, info.frames_per_channel, info.frames), (240, 240, 960));
+        assert_eq!(info.scrambled_frames, 960);
+        assert_eq!(info.duration_secs, Some(15.36));
+        assert_eq!(
+            info.ftra,
+            Some(FtraInfo {
+                a: 1,
+                b: 0,
+                c: 0,
+                d: 240,
+                e: u32::MAX
+            })
+        );
+        assert_eq!(info.start_utc.as_deref(), Some("2026-01-01T09:00:00Z"));
+        assert_eq!(info.start_local.as_deref(), Some("2026-01-01T09:00:00"));
+        assert_eq!(
+            info.recorded_file_name.as_deref(),
+            Some("Synthetic sample (not FTR)_20260101-0900_01dc7afd0268a800.trm")
+        );
+        assert!(!info.user_name_present && !info.user_data_present);
+        assert_eq!(info.signature, None);
+        assert!(!info.truncated && info.video_streams == 0);
+        assert_eq!(fs::read(&path).unwrap(), before, "the original is never modified");
+    }
+
+    #[test]
+    fn vendor_notes_sample_goes_to_the_native_decoder_and_starts_at_nine_utc() {
+        let info = inspect_trm(&vendor_notes_sample()).unwrap();
+        let native = crate::helpers::FeedOptions {
+            native_ftr: true,
+            native_failed: false,
+        };
+        assert_eq!(choose_route(&info, native), (DecodePath::NativeFtr, Vec::new()));
+        let timing = info.start_timing().unwrap();
+        assert_eq!(timing.source, "ftr-tloc");
+        assert_eq!(
+            (timing.time_reference_samples, timing.sample_rate),
+            (9 * 3600 * 16_000, 16_000)
+        );
+        let record = crate::manifest::start_time_record(Some(timing), Some(48_000), false, "wav");
+        assert!(record.known && record.written_to_output);
+        assert_eq!(record.seconds_since_midnight, Some(32_400.0));
+        assert_eq!(record.output_time_reference_samples, Some(9 * 3600 * 48_000));
+        assert!(record.note.contains("TLOC"), "{}", record.note);
+    }
+
+    #[test]
+    fn vendor_notes_sample_decodes_the_same_natively_and_split() {
+        if !aac_tools_available() {
+            return;
+        }
+        if !native_ftr_decoder_on_path() {
+            eprintln!("skipping: this FFmpeg has no native ftr decoder to cross-check against");
+            return;
+        }
+        let dir = TrmTestDir::new();
+        let path = vendor_notes_sample();
+        let native = decode_f32(&[
+            "-c:a".into(),
+            "ftr".into(),
+            "-i".into(),
+            path.to_string_lossy().to_string(),
+            "-map".into(),
+            "0:a:0".into(),
+        ]);
+        assert_eq!(native.len(), 245_760 * 4, "245 760 samples per channel");
+        assert!(native.iter().all(|sample| *sample == 0.0), "the sample is silent");
+        let (_, files) = deinterleave_trm(&path, &dir.0).unwrap();
+        assert_eq!(files.len(), 4);
+        let merged = decode_f32(&merged_decode_args(&files));
+        assert_eq!(merged.len(), native.len());
+        assert!(native.iter().zip(&merged).all(|(x, y)| x.to_bits() == y.to_bits()));
     }
 }

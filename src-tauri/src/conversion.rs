@@ -299,6 +299,9 @@ pub(crate) async fn do_convert(
     // FFmpeg's native FTR decoder failed on a file whose layout looked right
     // for it: split the channels and decode them instead. The export record
     // names the route and gives "native-decode-failed" as the reason.
+    if let Some(message) = plain_trm_decode_error(&feed, &error) {
+        return Err(message);
+    }
     if !feed.used_native_ftr() || cancel.cancelled() {
         return Err(error);
     }
@@ -323,6 +326,14 @@ pub(crate) async fn do_convert(
                 fallback.into_message()
             )
         })
+}
+
+/// For an FTR recording whose MP2, MP3 or WMA audio FFmpeg read as it is and
+/// failed to decode: the message naming the codec.
+fn plain_trm_decode_error(feed: &AudioFeed, error: &str) -> Option<String> {
+    feed.trm()
+        .filter(|route| route.decode_path == crate::trm::DecodePath::Plain)
+        .map(|route| crate::trm::plain_decode_error(&route.info, error))
 }
 
 /// Why `do_convert_inner` stopped: a decode failure is worth one retry by
@@ -1391,7 +1402,7 @@ mod tests {
         // WAV size estimate); build_proc_filters_with_gain uses it only to
         // place the fade-out.
         // An FTR feed answers from the recording itself, as the app's probes do.
-        let total_secs = if feed.trm().is_some() {
+        let total_secs = if feed.trm_frames_read() {
             feed.known_duration()
         } else {
             crate::ffmpeg::parse_duration_probe(&probe(crate::ffmpeg::duration_probe_args(feed.path())))
@@ -1404,9 +1415,12 @@ mod tests {
             channel_gains,
             proc: crate::ffmpeg::proc_filters(job, None, duration),
             probed: manifest::probed_from_feed(&feed).unwrap_or_else(|| {
-                serde_json::from_slice::<serde_json::Value>(&probe(crate::ffmpeg::manifest_probe_args(feed.path())))
-                    .map(|value| manifest::parse_probe(&value))
-                    .unwrap_or_default()
+                let probed = serde_json::from_slice::<serde_json::Value>(&probe(crate::ffmpeg::manifest_probe_args(
+                    feed.path(),
+                )))
+                .map(|value| manifest::parse_probe(&value))
+                .unwrap_or_default();
+                manifest::with_trm_timing(probed, &feed)
             }),
             duration_secs: total_secs,
         };
@@ -1417,7 +1431,8 @@ mod tests {
         args.splice(0..0, ["-loglevel".to_string(), "error".to_string()]);
         let status = std::process::Command::new("ffmpeg").args(&args).status().unwrap();
         if !status.success() {
-            return Err(format!("ffmpeg exited with {status}"));
+            let error = format!("ffmpeg exited with {status}");
+            return Err(plain_trm_decode_error(&feed, &error).unwrap_or(error));
         }
 
         let input = ManifestInput {
@@ -1474,8 +1489,11 @@ mod tests {
             assert!(!encoder.iter().any(|arg| arg == "-rf64"), "{}", output.name);
         }
         assert_eq!(record["channel"]["sourceChannelCount"], 4);
-        // A synthetic source carries no bext start, so none is claimed.
-        assert_eq!(record["startTime"]["known"], false);
+        // A synthetic source carries no bext start (nor, for FTR, a TLOC,
+        // TUTC or FILE time), so none is claimed.
+        if record["source"]["trm"]["startBasis"].is_null() {
+            assert_eq!(record["startTime"]["known"], false);
+        }
         record
     }
 
@@ -1724,6 +1742,177 @@ mod tests {
             .as_str()
             .unwrap()
             .starts_with("[0:a:0][1:a:0][2:a:0][3:a:0]amerge=inputs=4,pan=stereo"));
+    }
+
+    /// The WAV output's bext TimeReference, as FFmpeg reads it back.
+    fn wav_time_reference(path: &str) -> Option<u64> {
+        let output = std::process::Command::new("ffprobe")
+            .args(["-v", "quiet", "-print_format", "json", "-show_format", path])
+            .output()
+            .unwrap();
+        let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        value["format"]["tags"]["time_reference"].as_str()?.parse().ok()
+    }
+
+    #[test]
+    fn the_vendor_notes_sample_converts_natively_and_keeps_its_tloc_start() {
+        if !trm_fixture::aac_tools_available() {
+            return;
+        }
+        if !trm_fixture::native_ftr_decoder_on_path() {
+            eprintln!("skipping: this FFmpeg has no native ftr decoder");
+            return;
+        }
+        let dir = ConversionTestDir::new();
+        let trm = trm_fixture::vendor_notes_sample();
+        let original = fs::read(&trm).unwrap();
+        let out = dir.0.join("out");
+        fs::create_dir(&out).unwrap();
+        let conversion =
+            convert_with_system_ffmpeg_options(&court_job(&trm, &out, "keep", "wav"), None, native_options()).unwrap();
+        assert!(conversion.args.windows(2).any(|pair| pair == ["-c:a", "ftr"]));
+        let record = checked_export_record(&conversion.files[0], &trm);
+        let route = &record["source"]["trm"];
+        assert_eq!(route["decodePath"], "native-ftr");
+        assert_eq!(route["startUtc"], "2026-01-01T09:00:00Z");
+        assert_eq!(route["startBasis"], "tloc-local");
+        assert_eq!(route["userNamePresent"], false);
+        let start = &record["startTime"];
+        assert_eq!(start["known"], true);
+        assert_eq!(start["source"], "ftr-tloc");
+        assert_eq!(start["secondsSinceMidnight"], 32_400.0);
+        assert_eq!(start["writtenToOutput"], true);
+        let rate = record["output"]["sampleRate"].as_u64().unwrap();
+        assert_eq!(start["outputTimeReferenceSamples"], 9 * 3600 * rate);
+        assert_eq!(wav_time_reference(&conversion.files[0].path), Some(9 * 3600 * rate));
+        let samples = output_samples(&conversion.files[0].path);
+        assert_eq!(samples.len() as u64, 15_360 * rate / 1000 * 4);
+        assert_eq!(fs::read(&trm).unwrap(), original, "the original is never modified");
+    }
+
+    #[test]
+    fn a_stereo_stream_trm_splits_to_one_file_per_microphone_in_order() {
+        if !trm_fixture::aac_tools_available() {
+            return;
+        }
+        let dir = ConversionTestDir::new();
+        let [a, b, c, d] = trm_fixture::TONE_FREQUENCIES;
+        let streams = vec![
+            trm_fixture::stereo_tone_frames(&dir.0, a, b, SYNTHETIC_SECONDS),
+            trm_fixture::stereo_tone_frames(&dir.0, c, d, SYNTHETIC_SECONDS),
+        ];
+        let (stream, lengths) = trm_fixture::ftr_frame_stream(&streams);
+        let mut spec = trm_fixture::AviSpec::closed(4);
+        spec.tag = 0x8180;
+        let trm = dir.0.join("stereo_streams.trm");
+        fs::write(
+            &trm,
+            trm_fixture::build_avi(&spec, &trm_fixture::round_packets(&stream, &lengths, 2, 1)),
+        )
+        .unwrap();
+        let out = dir.0.join("out");
+        fs::create_dir(&out).unwrap();
+        // Without the native decoder: two stereo stream files joined by amerge.
+        let conversion = convert_with_system_ffmpeg(&court_job(&trm, &out, "split", "wav"), None).unwrap();
+        assert_eq!(conversion.feed_inputs.len(), 2);
+        assert!(conversion.args.iter().any(|arg| arg.contains("amerge=inputs=2")));
+        assert_no_channel_files_left(&conversion.feed_inputs);
+        assert_eq!(conversion.files.len(), 4);
+        for (index, file) in conversion.files.iter().enumerate() {
+            let samples = output_samples(&file.path);
+            assert_eq!(
+                trm_fixture::dominant_tones(&samples, 1, 48_000),
+                vec![trm_fixture::TONE_FREQUENCIES[index]],
+                "{}",
+                file.name
+            );
+            let record = checked_export_record(file, &trm);
+            let route = &record["source"]["trm"];
+            assert_eq!(route["streamLayout"], "stereo-streams");
+            assert_eq!(
+                (route["streams"].as_u64(), route["channelsPerStream"].as_u64()),
+                (Some(2), Some(2))
+            );
+            assert_eq!(route["inputCount"], 2);
+            assert_eq!(record["channel"]["sourceChannelIndex"], index);
+        }
+    }
+
+    #[test]
+    fn mp2_audio_in_an_ftr_file_is_converted_as_ordinary_audio_and_bad_mp3_is_named() {
+        if !trm_fixture::aac_tools_available() {
+            return;
+        }
+        let dir = ConversionTestDir::new();
+        let mp2 = dir.0.join("tone.mp2");
+        let status = std::process::Command::new("ffmpeg")
+            .args(["-nostdin", "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i"])
+            .arg("sine=frequency=440:duration=1:sample_rate=16000")
+            .args(["-c:a", "mp2", "-b:a", "64k", "-f", "mp2", "-y"])
+            .arg(&mp2)
+            .status()
+            .unwrap();
+        assert!(status.success());
+        let mut spec = trm_fixture::AviSpec::closed(1);
+        spec.tag = 0x0050;
+        let trm = dir.0.join("mp2_session.trm");
+        fs::write(&trm, trm_fixture::build_avi(&spec, &[fs::read(&mp2).unwrap()])).unwrap();
+        let out = dir.0.join("out");
+        fs::create_dir(&out).unwrap();
+        let mut job = court_job(&trm, &out, "keep", "wav");
+        job.labels.truncate(1);
+        job.chan_vols.truncate(1);
+        let conversion = convert_with_system_ffmpeg_options(&job, None, native_options()).unwrap();
+        assert!(!conversion.args.iter().any(|arg| arg == "ftr"));
+        assert_eq!(conversion.feed_inputs, vec![trm.to_string_lossy().to_string()]);
+        let samples = output_samples(&conversion.files[0].path);
+        assert!(trm_fixture::tone_power(&samples, 1, 0, 440, 48_000) > 1.0);
+        let record_path = manifest::manifest_path_for(Path::new(&conversion.files[0].path));
+        let record: serde_json::Value = serde_json::from_slice(&fs::read(&record_path).unwrap()).unwrap();
+        let errors = manifest::tests::schema_errors_for_value(&record);
+        assert!(errors.is_empty(), "{errors:#?}");
+        let route = &record["source"]["trm"];
+        assert_eq!(route["decodePath"], "ffmpeg-plain");
+        assert_eq!(route["audioCodec"], "mp2");
+        assert_eq!(route["routeReasons"], serde_json::json!(["not-ftr-aac"]));
+        assert_eq!(route["inputOptions"], serde_json::json!([]));
+        assert_eq!(record["channel"]["sourceChannelCount"], 1);
+
+        // MP3-tagged bytes FFmpeg cannot decode: the message names the codec.
+        spec.tag = 0x0055;
+        let bad = dir.0.join("bad_mp3.trm");
+        fs::write(&bad, trm_fixture::build_avi(&spec, &[vec![0x11; 400]])).unwrap();
+        let bad_out = dir.0.join("bad");
+        fs::create_dir(&bad_out).unwrap();
+        let mut job = court_job(&bad, &bad_out, "keep", "wav");
+        job.labels.truncate(1);
+        job.chan_vols.truncate(1);
+        let error = convert_with_system_ffmpeg_options(&job, None, native_options())
+            .err()
+            .unwrap();
+        assert!(error.contains("MP3"), "{error}");
+    }
+
+    #[test]
+    fn an_ftr_aac_tag_without_layout_bits_is_refused_even_with_the_native_decoder() {
+        let dir = ConversionTestDir::new();
+        let channels = trm_fixture::fake_frames(2, 3);
+        let (stream, lengths) = trm_fixture::ftr_frame_stream(&channels);
+        let mut spec = trm_fixture::AviSpec::closed(2);
+        spec.tag = 0x0180;
+        let trm = dir.0.join("no_layout_bits.trm");
+        fs::write(
+            &trm,
+            trm_fixture::build_avi(&spec, &trm_fixture::round_packets(&stream, &lengths, 2, 1)),
+        )
+        .unwrap();
+        let out = dir.0.join("out");
+        fs::create_dir(&out).unwrap();
+        let error = convert_with_system_ffmpeg_options(&court_job(&trm, &out, "keep", "wav"), None, native_options())
+            .err()
+            .unwrap();
+        assert_eq!(error, crate::trm::TRM_UNSPLITTABLE_MESSAGE);
+        assert_eq!(fs::read_dir(&out).unwrap().count(), 0, "nothing is written");
     }
 
     #[test]

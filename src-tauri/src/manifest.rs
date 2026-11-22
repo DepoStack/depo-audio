@@ -67,7 +67,14 @@ fn hex(bytes: &[u8]) -> String {
 pub(crate) struct SourceTiming {
     pub time_reference_samples: u64,
     pub sample_rate: u32,
+    /// Where the start came from: `bwf-bext-time-reference`, or for an FTR
+    /// recording `ftr-tloc`, `ftr-tutc` or `ftr-file-name` (see
+    /// `crate::trm::TrmInfo::start_timing`).
+    pub source: &'static str,
 }
+
+/// A start read from a source's own BWF `bext` chunk.
+pub(crate) const BEXT_TIMING_SOURCE: &str = "bwf-bext-time-reference";
 
 /// Facts about the conversion input that the manifest needs, read from one
 /// ffprobe `-show_format -show_streams -select_streams a` JSON document
@@ -112,15 +119,28 @@ fn audio_stream_count(probe: &serde_json::Value) -> Option<u32> {
 }
 
 /// Source facts an FTR feed already holds from reading the recording: its
-/// channel count, one audio stream, and no BWF start time. None for any other
-/// feed, which is probed with ffprobe.
+/// channel count, one audio stream, and the start from its TLOC/TUTC/FILE
+/// chunks. None for any other feed, and for an FTR recording whose audio
+/// FFmpeg reads as it is (MP2, MP3, WMA), which are probed with ffprobe.
 pub(crate) fn probed_from_feed(feed: &crate::helpers::AudioFeed) -> Option<ProbedSource> {
     let route = feed.trm()?;
+    if route.decode_path == crate::trm::DecodePath::Plain {
+        return None;
+    }
     Some(ProbedSource {
         channels: Some(u32::from(route.info.channels)),
-        timing: None,
+        timing: route.info.start_timing(),
         audio_stream_count: Some(1),
     })
+}
+
+/// An FTR recording's own start, for a feed probed with ffprobe (its AVI
+/// container carries no bext chunk).
+pub(crate) fn with_trm_timing(mut probed: ProbedSource, feed: &crate::helpers::AudioFeed) -> ProbedSource {
+    if let Some(timing) = feed.trm().and_then(|route| route.info.start_timing()) {
+        probed.timing = Some(timing);
+    }
+    probed
 }
 
 pub(crate) fn parse_probe(probe: &serde_json::Value) -> ProbedSource {
@@ -140,6 +160,7 @@ pub(crate) fn parse_probe(probe: &serde_json::Value) -> ProbedSource {
         (Some(time_reference_samples), Some(sample_rate)) => Some(SourceTiming {
             time_reference_samples,
             sample_rate,
+            source: BEXT_TIMING_SOURCE,
         }),
         _ => None,
     };
@@ -179,6 +200,21 @@ pub struct AudioStreamsInfo {
     /// it was closed) and the route a conversion would take now.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub trm: Option<crate::trm::TrmRoute>,
+    /// For an FTR recording DepoAudio refuses (as FTR's own splitter
+    /// would): why, for the queue notice.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub trm_refusal: Option<String>,
+}
+
+/// The queue's view of an FTR recording that DepoAudio refuses: no streams.
+pub(crate) fn trm_refused_streams(reason: String) -> AudioStreamsInfo {
+    AudioStreamsInfo {
+        converted_index: crate::helpers::SOURCE_AUDIO_STREAM,
+        streams: Vec::new(),
+        duration_secs: None,
+        trm: None,
+        trm_refusal: Some(reason),
+    }
 }
 
 /// The queue's view of an FTR recording, from reading it rather than from
@@ -196,6 +232,7 @@ pub(crate) fn trm_audio_streams(route: crate::trm::TrmRoute) -> AudioStreamsInfo
         }],
         duration_secs: route.info.duration_secs,
         trm: Some(route),
+        trm_refusal: None,
     }
 }
 
@@ -271,6 +308,7 @@ pub(crate) fn parse_audio_streams(probe: &serde_json::Value) -> AudioStreamsInfo
         streams,
         duration_secs,
         trm: None,
+        trm_refusal: None,
     }
 }
 
@@ -504,15 +542,21 @@ pub(crate) fn start_time_record(
     } else {
         "The output starts at the source start. This format has no bext chunk, and DepoAudio removes the copied time_reference tag from it, so the start is recorded here only."
     };
+    let origin = match timing.source {
+        "ftr-tloc" => "The start is the time of day in the FTR recording's TLOC chunk (local time). ",
+        "ftr-tutc" => "The start is the time of day in the FTR recording's TUTC chunk (UTC; the recording has no TLOC chunk). ",
+        "ftr-file-name" => "The start is the time of day in the name stored in the FTR recording's FILE chunk, which does not state its time zone. ",
+        _ => "",
+    };
     StartTimeRecord {
         known: true,
-        source: Some("bwf-bext-time-reference"),
+        source: Some(timing.source),
         source_time_reference_samples: Some(timing.time_reference_samples),
         source_sample_rate: Some(timing.sample_rate),
         seconds_since_midnight: Some((seconds * 1000.0).round() / 1000.0),
         output_time_reference_samples: output_reference,
         written_to_output: written,
-        note: note.into(),
+        note: format!("{origin}{note}"),
     }
 }
 
@@ -715,7 +759,8 @@ pub(crate) mod tests {
             probed.timing,
             Some(SourceTiming {
                 time_reference_samples: 158_760_000,
-                sample_rate: 44_100
+                sample_rate: 44_100,
+                source: BEXT_TIMING_SOURCE,
             })
         );
         // Upper-case tag names (some ffprobe builds) are read the same way.
@@ -768,6 +813,7 @@ pub(crate) mod tests {
         let timing = Some(SourceTiming {
             time_reference_samples: 48_000,
             sample_rate: 48_000,
+            source: BEXT_TIMING_SOURCE,
         });
         let clear = vec!["-metadata".to_string(), "time_reference=".to_string()];
         assert_eq!(
@@ -802,6 +848,7 @@ pub(crate) mod tests {
         let timing = SourceTiming {
             time_reference_samples: 158_760_000,
             sample_rate: 44_100,
+            source: BEXT_TIMING_SOURCE,
         };
         assert_eq!(rescale_time_reference(timing, 48_000), 172_800_000);
         assert_eq!(rescale_time_reference(timing, 44_100), 158_760_000);
@@ -809,11 +856,13 @@ pub(crate) mod tests {
         let one = SourceTiming {
             time_reference_samples: 1,
             sample_rate: 44_100,
+            source: BEXT_TIMING_SOURCE,
         };
         assert_eq!(rescale_time_reference(one, 48_000), 1);
         let huge = SourceTiming {
             time_reference_samples: u64::MAX,
             sample_rate: 8_000,
+            source: BEXT_TIMING_SOURCE,
         };
         assert_eq!(rescale_time_reference(huge, 192_000), u64::MAX);
     }
@@ -823,6 +872,7 @@ pub(crate) mod tests {
         let timing = Some(SourceTiming {
             time_reference_samples: 48_000,
             sample_rate: 48_000,
+            source: BEXT_TIMING_SOURCE,
         });
         assert_eq!(
             bext_args("wav", timing, Some(16_000), false),
@@ -1081,11 +1131,29 @@ pub(crate) mod tests {
         crate::trm::TrmRoute::new(
             crate::trm::TrmInfo {
                 tag: 0x4180,
+                audio_codec: crate::trm::AudioCodec::FtrAac,
+                stream_layout: Some(crate::trm::StreamLayout::Mono),
                 channels: 4,
+                streams: 4,
+                channels_per_stream: 1,
                 sample_rate: Some(16_000),
-                session_first: true,
-                session_last: false,
+                format_sample_rate: 16_000,
+                header_scale: Some(1024),
+                header_rate: Some(16_000),
+                header_chunk_count: None,
+                declared_streams: Some(2),
+                stream_lists: 2,
+                start_boundary: true,
+                end_boundary: false,
                 open_ended: true,
+                start_utc: Some("2026-01-01T09:00:00Z".into()),
+                start_local: Some("2026-01-01T09:00:00".into()),
+                start_basis: Some(crate::trm::StartBasis::Local),
+                start_filetime: Some(0x01DC_7AFD_0268_A800),
+                recorded_file_name: Some("Synthetic sample (not FTR)_20260101-0900_01dc7afd0268a800.trm".into()),
+                user_name_present: true,
+                user_data_present: false,
+                signature: Some(crate::trm::SIGNED_NOT_VERIFIED),
                 index_kind: crate::trm::IndexKind::Walked,
                 packets: 10,
                 frames: 40,
@@ -1102,6 +1170,7 @@ pub(crate) mod tests {
                 incomplete_final_round: true,
                 dropped_frames: 1,
                 length_high_bit_frames: 2,
+                frame_channel_mismatches: 0,
                 truncated: false,
                 continuation_segments: 0,
                 grew_while_read: true,
@@ -1148,7 +1217,30 @@ pub(crate) mod tests {
             );
             assert_eq!(value["source"]["trm"]["indexKind"], "walked");
             assert_eq!(value["source"]["trm"]["openEnded"], true);
+            assert_eq!(value["source"]["trm"]["startBoundary"], true);
+            assert_eq!(value["source"]["trm"]["startUtc"], "2026-01-01T09:00:00Z");
+            assert_eq!(value["source"]["trm"]["startBasis"], "tloc-local");
+            assert_eq!(value["source"]["trm"]["signature"], "signed (not verified)");
+            // Private text is recorded only as present or not.
+            assert_eq!(value["source"]["trm"]["userNamePresent"], true);
+            assert_eq!(value["source"]["trm"]["userDataPresent"], false);
+            assert!(value["source"]["trm"].get("startFiletime").is_none());
+            assert!(value["source"]["trm"].get("fileBytes").is_none());
         }
+        // A recording with MP3 audio, read by FFmpeg as it is.
+        let mut route = sample_trm_route(None, &[]);
+        route.info.audio_codec = crate::trm::AudioCodec::Mp3;
+        route.info.tag = 0x0055;
+        route.info.stream_layout = None;
+        route.info.index_kind = crate::trm::IndexKind::NotRead;
+        route.info.start_basis = Some(crate::trm::StartBasis::FileName);
+        route.info.signature = None;
+        let route = crate::trm::TrmRoute::new(route.info, crate::trm::DecodePath::Plain, vec!["not-ftr-aac".into()]);
+        assert!(route.input_options.is_empty());
+        let mut manifest = sample_input(&probed, &[], false);
+        manifest.source.trm = Some(route);
+        let errors = schema_errors(&manifest);
+        assert!(errors.is_empty(), "{errors:#?}");
         // A reason the schema does not list is rejected, so the two cannot drift.
         let mut manifest = sample_input(&probed, &[], false);
         manifest.source.trm = Some(sample_trm_route(None, &["made-up-reason"]));
@@ -1167,7 +1259,12 @@ pub(crate) mod tests {
         assert_eq!(info.duration_secs, Some(0.64));
         let value = serde_json::to_value(&info).unwrap();
         assert_eq!(value["trm"]["openEnded"], true);
-        assert_eq!(value["trm"]["sessionFirst"], true);
+        assert_eq!(value["trm"]["startBoundary"], true);
+        assert_eq!(value["trm"]["endBoundary"], false);
+        assert!(value.get("trmRefusal").is_none());
+        let refused = serde_json::to_value(trm_refused_streams(crate::trm::TRM_UNSPLITTABLE_MESSAGE.into())).unwrap();
+        assert_eq!(refused["streams"], serde_json::json!([]));
+        assert_eq!(refused["trmRefusal"], crate::trm::TRM_UNSPLITTABLE_MESSAGE);
     }
 
     #[test]
@@ -1508,7 +1605,8 @@ pub(crate) mod tests {
             probed.timing,
             Some(SourceTiming {
                 time_reference_samples: 158_760_000,
-                sample_rate: 44_100
+                sample_rate: 44_100,
+                source: BEXT_TIMING_SOURCE,
             })
         );
 
@@ -1523,7 +1621,8 @@ pub(crate) mod tests {
             carried.timing,
             Some(SourceTiming {
                 time_reference_samples: 172_800_000,
-                sample_rate: 48_000
+                sample_rate: 48_000,
+                source: BEXT_TIMING_SOURCE,
             })
         );
         // Without an RF64 option the file is plain RIFF with no JUNK chunk.

@@ -69,7 +69,7 @@ pub(crate) fn get_formats() -> Vec<FormatInfo> {
             note: Some("Ogg Opus with one mono stream per channel (mapping family 255).".into()) },
         FormatInfo { key: "ftr".into(), name: "FTR Recording".into(), vendor: "For The Record".into(),
             status: "experimental".into(), handler: "ftr".into(), channels: Some("4–16".into()),
-            note: Some("FTR interleaves one AAC stream per microphone. DepoAudio reads a file with FFmpeg's native FTR decoder when its layout allows, and otherwise splits the channels itself first; the export record says which. This reading is based on interoperability notes and has not yet been checked against a real FTR recording. Add all .trm, .ftr or .tll files of a session together.".into()) },
+            note: Some("FTR interleaves one AAC stream per microphone (or per pair of microphones). DepoAudio reads a file with FFmpeg's native FTR decoder when its layout allows, and otherwise splits the streams itself first; the export record says which. This reading is based on interoperability notes and has not yet been checked against a recording made by FTR. Add all .trm, .ftr or .tll files of a session together.".into()) },
         FormatInfo { key: "bwf".into(), name: "Broadcast WAV".into(), vendor: "CourtSmart / Various".into(),
             status: "supported".into(), handler: "passthrough".into(), channels: None, note: None },
         FormatInfo { key: "digitalcat".into(), name: "DigitalCAT Audio".into(), vendor: "Stenovations".into(),
@@ -467,6 +467,9 @@ pub(crate) struct AudioFeed {
     /// Options placed before every `-i` (a decoder or demuxer choice).
     input_codec: Vec<String>,
     trm: Option<crate::trm::TrmRoute>,
+    /// Channels in each input: 1, or 2 for a stereo-stream FTR recording
+    /// split into one stereo file per pair of microphones.
+    channels_per_input: u32,
     /// An FTR recording DepoAudio could not read, handed to FFmpeg's native
     /// decoder as it is: why the inspection failed.
     trm_inspection_error: Option<String>,
@@ -474,12 +477,21 @@ pub(crate) struct AudioFeed {
 }
 
 impl AudioFeed {
-    /// The file itself, read with FFmpeg's own choices.
+    /// The file itself, with the decoder its extension calls for (libopus
+    /// for SGMCA, see [`input_codec_args`]) and otherwise FFmpeg's own
+    /// choice. An FTR file read this way (MP2, MP3 or WMA audio) gets no
+    /// forced decoder: the native `ftr` decoder is only for FTR AAC.
     pub(crate) fn plain(path: PathBuf) -> Self {
+        let input_codec = if is_trm_path(&path) {
+            Vec::new()
+        } else {
+            input_codec_args(&path)
+        };
         Self {
             inputs: vec![path],
-            input_codec: Vec::new(),
+            input_codec,
             trm: None,
+            channels_per_input: 1,
             trm_inspection_error: None,
             _guards: Vec::new(),
         }
@@ -518,21 +530,25 @@ impl AudioFeed {
         args
     }
 
-    /// The arguments for one channel's own input, when the feed has one
-    /// input per channel (so a per-channel pass decodes only that channel).
-    pub(crate) fn channel_input_args(&self, channel: u32, per_input: &[String]) -> Option<Vec<String>> {
+    /// The arguments for the input that holds one channel, when the feed
+    /// has one input per channel or per pair (so a per-channel pass decodes
+    /// only that input), and the channel's index inside that input when the
+    /// input holds more than one.
+    pub(crate) fn channel_input_args(&self, channel: u32, per_input: &[String]) -> Option<(Vec<String>, Option<u32>)> {
         if !self.is_merged() {
             return None;
         }
-        let input = self.inputs.get(channel as usize)?;
+        let per = self.channels_per_input.max(1);
+        let input = self.inputs.get((channel / per) as usize)?;
         let mut args: Vec<String> = per_input.to_vec();
         args.extend(self.input_codec.iter().cloned());
         args.extend(["-i".into(), input.to_string_lossy().to_string()]);
-        Some(args)
+        Some((args, (per > 1).then_some(channel % per)))
     }
 
-    /// `[0:a:0][1:a:0]…amerge=inputs=N`: channel k of the joined stream is
-    /// input k's only channel.
+    /// `[0:a:0][1:a:0]…amerge=inputs=N`: the joined stream holds input 0's
+    /// channels, then input 1's, and so on (for stereo inputs, channels 2k
+    /// and 2k + 1 are input k's).
     fn merge_filter(&self) -> String {
         let labels: String = (0..self.inputs.len())
             .map(|index| format!("[{index}:{}]", source_audio_stream_specifier()))
@@ -595,15 +611,30 @@ impl AudioFeed {
         }
     }
 
+    /// The FTR route when DepoAudio read the recording's audio chunks
+    /// itself; None for other files and for an FTR recording whose audio
+    /// (MP2, MP3, WMA) FFmpeg reads as it is.
+    fn trm_read(&self) -> Option<&crate::trm::TrmRoute> {
+        self.trm
+            .as_ref()
+            .filter(|route| route.decode_path != crate::trm::DecodePath::Plain)
+    }
+
+    /// DepoAudio read this FTR recording's frames, so its duration and
+    /// channel count come from that read, not from ffprobe.
+    pub(crate) fn trm_frames_read(&self) -> bool {
+        self.trm_read().is_some()
+    }
+
     /// Channel count read from the recording itself (FTR), if any.
     pub(crate) fn known_channels(&self) -> Option<u32> {
-        self.trm.as_ref().map(|route| u32::from(route.info.channels))
+        self.trm_read().map(|route| u32::from(route.info.channels))
     }
 
     /// Duration from the frames actually read (FTR): never from a header
     /// length an unclosed recording leaves at its placeholder.
     pub(crate) fn known_duration(&self) -> Option<f64> {
-        self.trm.as_ref().and_then(|route| route.info.duration_secs)
+        self.trm_read().and_then(|route| route.info.duration_secs)
     }
 
     /// FFmpeg reads this FTR recording with its native decoder.
@@ -614,7 +645,7 @@ impl AudioFeed {
     }
 
     pub(crate) fn known_sample_rate(&self) -> Option<u32> {
-        self.trm.as_ref().and_then(|route| route.info.sample_rate)
+        self.trm_read().and_then(|route| route.info.sample_rate)
     }
 }
 
@@ -700,6 +731,9 @@ fn prepare_trm_feed(
         Err(error) if cancelled.is_some_and(|check| check()) || error == crate::trm::TRM_CANCELLED_MESSAGE => {
             return Err(error)
         }
+        // FTR's own splitter refuses this layout: so does DepoAudio, by
+        // every route.
+        Err(error) if crate::trm::is_refusal(&error) => return Err(error),
         // DepoAudio's reading of the layout is unconfirmed, so a file it
         // cannot read goes to FFmpeg's native decoder as it is, as before;
         // the export record gives the reason.
@@ -708,6 +742,7 @@ fn prepare_trm_feed(
                 inputs: vec![src.to_path_buf()],
                 input_codec: input_codec_args(src),
                 trm: None,
+                channels_per_input: 1,
                 trm_inspection_error: Some(error),
                 _guards: Vec::new(),
             })
@@ -720,17 +755,25 @@ fn prepare_trm_feed(
             inputs: vec![src.to_path_buf()],
             input_codec: input_codec_args(src),
             trm: Some(crate::trm::TrmRoute::new(info, decode_path, reasons)),
+            channels_per_input: 1,
             trm_inspection_error: None,
             _guards: Vec::new(),
+        }),
+        // MP2, MP3 or WMA in an FTR file: FFmpeg picks the decoder.
+        crate::trm::DecodePath::Plain => Ok(AudioFeed {
+            trm: Some(crate::trm::TrmRoute::new(info, decode_path, reasons)),
+            ..AudioFeed::plain(src.to_path_buf())
         }),
         crate::trm::DecodePath::Deinterleaved => {
             let (written, files) =
                 crate::trm::deinterleave_trm_with_cancel(src, &channel_file_dir()?, Some(&info), cancelled)?;
             let guards = files.iter().cloned().map(crate::safety::TempFile::new).collect();
+            let channels_per_input = u32::from(written.channels_per_stream.max(1));
             Ok(AudioFeed {
                 inputs: files,
                 input_codec: vec!["-f".into(), "aac".into()],
                 trm: Some(crate::trm::TrmRoute::new(written, decode_path, reasons)),
+                channels_per_input,
                 trm_inspection_error: None,
                 _guards: guards,
             })
@@ -1086,6 +1129,7 @@ mod tests {
                 .collect(),
             input_codec: vec!["-f".into(), "aac".into()],
             trm: None,
+            channels_per_input: 1,
             trm_inspection_error: None,
             _guards: Vec::new(),
         };
@@ -1138,11 +1182,25 @@ mod tests {
                 "[da_src]".to_string()
             )
         );
-        assert_eq!(
-            feed.channel_input_args(2, &[]).unwrap(),
-            ["-f", "aac", "-i", "/tmp/ch2.aac"]
-        );
+        let (args, inner) = feed.channel_input_args(2, &[]).unwrap();
+        assert_eq!(args, ["-f", "aac", "-i", "/tmp/ch2.aac"]);
+        assert_eq!(inner, None);
         assert!(feed.channel_input_args(3, &[]).is_none());
+
+        // A stereo-stream FTR split: input k holds channels 2k and 2k + 1.
+        let stereo = AudioFeed {
+            channels_per_input: 2,
+            inputs: feed.inputs[..2].to_vec(),
+            input_codec: feed.input_codec.clone(),
+            trm: None,
+            trm_inspection_error: None,
+            _guards: Vec::new(),
+        };
+        let (args, inner) = stereo.channel_input_args(3, &[]).unwrap();
+        assert_eq!(args, ["-f", "aac", "-i", "/tmp/ch1.aac"]);
+        assert_eq!(inner, Some(1));
+        assert_eq!(stereo.channel_input_args(0, &[]).unwrap().1, Some(0));
+        assert!(stereo.channel_input_args(4, &[]).is_none());
 
         let plain = AudioFeed::plain(PathBuf::from("/in.wav"));
         assert!(!plain.is_merged());
@@ -1199,6 +1257,41 @@ mod tests {
             ..native
         };
         assert!(prepare_audio_feed_with_cancel(&source, failed, None).is_err());
+    }
+
+    #[test]
+    fn an_ftr_layout_ftr_itself_refuses_is_not_handed_to_the_native_decoder() {
+        use crate::trm::tests as trm_fixture;
+        let dir = ReservationTestDir::new();
+        let channels = trm_fixture::fake_frames(2, 3);
+        let (stream, lengths) = trm_fixture::ftr_frame_stream(&channels);
+        let mut spec = trm_fixture::AviSpec::closed(2);
+        spec.tag = 0x0180;
+        let source = dir.path().join("no_layout_bits.trm");
+        fs::write(
+            &source,
+            trm_fixture::build_avi(&spec, &trm_fixture::round_packets(&stream, &lengths, 2, 1)),
+        )
+        .unwrap();
+        let native = FeedOptions {
+            native_ftr: true,
+            native_failed: false,
+        };
+        assert_eq!(
+            prepare_audio_feed_with_cancel(&source, native, None).unwrap_err(),
+            crate::trm::TRM_UNSPLITTABLE_MESSAGE
+        );
+
+        // MP2 audio in an FTR file: FFmpeg reads it as it is, with no
+        // decoder forced and no split.
+        spec.tag = 0x0050;
+        let plain = dir.path().join("mp2.trm");
+        fs::write(&plain, trm_fixture::build_avi(&spec, &[vec![0x11; 40]])).unwrap();
+        let feed = prepare_audio_feed_with_cancel(&plain, native, None).unwrap();
+        assert_eq!(feed.trm().unwrap().decode_path, crate::trm::DecodePath::Plain);
+        assert_eq!(feed.input_args(&[]), ["-i", plain.to_string_lossy().as_ref()]);
+        assert!(!feed.used_native_ftr() && !feed.trm_frames_read());
+        assert_eq!((feed.known_channels(), feed.known_duration()), (None, None));
     }
 
     #[test]

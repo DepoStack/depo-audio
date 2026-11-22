@@ -25,6 +25,9 @@ scripts/javascript-license-overrides/** text eol=lf
 # notices; keep them LF on Windows runners too.
 public/fonts/*.txt text eol=lf
 
+# The FTR sample's hex report is compared line by line; keep it LF.
+scripts/fixtures/trm/vendor-notes-samples/*.txt text eol=lf
+
 # Native Windows automation keeps conventional CRLF endings.
 *.bat text eol=crlf
 *.cmd text eol=crlf
@@ -40,6 +43,7 @@ public/fonts/*.txt text eol=lf
 *.onnx binary
 *.png binary
 *.tgz binary
+*.trm binary
 *.wav binary
 *.woff2 binary
 *.zip binary

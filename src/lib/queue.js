@@ -78,20 +78,33 @@ export function audioTrackNotice(info) {
 }
 
 // FTR recordings (.trm/.ftr/.tll). `info.trm` is what reading the file found
-// (probe_audio_streams_cmd): whether the recorder closed it, and the session
-// flags in its header. No answer means no notice.
-// The session marks come from header flags read as described in notes that
-// have not yet been checked against a real recording, so the notices say what
-// was (not) found, never that a file is missing.
+// (probe_audio_streams_cmd): whether the recorder closed it, its boundary
+// flags, whether it carries a signature, and its codec; `info.trmRefusal` is
+// why DepoAudio will not convert it. No answer means no notice.
+// The layout comes from the owner's interoperability notes, checked against a
+// sample made by the owner's rebuild tool, not against a recording made by FTR,
+// so the notices say what was (not) found, never that a file is missing.
 export const TRM_OPEN_ENDED_NOTICE =
   "This recording's header says it was never closed (or is still recording); DepoAudio read the audio written so far."
-export const TRM_SESSION_FIRST_MISSING =
-  "No queued file is marked as this session's first file; if the session has earlier files, add them too."
-export const TRM_SESSION_LAST_MISSING =
-  "No queued file is marked as this session's last file; if the session has later files, add them too."
+export const TRM_SIGNED_NOTICE =
+  'This recording carries a signature: signed (not verified). DepoAudio does not check signatures.'
+export const TRM_START_BOUNDARY_MISSING =
+  'The earliest queued file of this recording has no start-boundary mark, so FTR would accept earlier files before it; if there are any, add them too.'
+export const TRM_END_BOUNDARY_MISSING =
+  'The latest queued file of this recording has no end-boundary mark, so FTR would accept later files after it; if there are any, add them too.'
+
+const TRM_PLAIN_CODECS = { mp2: 'MPEG audio layer 2', mp3: 'MP3', wma: 'Windows Media Audio' }
 
 export function trmRecordingNotice(info) {
-  return info?.trm?.openEnded ? TRM_OPEN_ENDED_NOTICE : ''
+  if (info?.trmRefusal) return String(info.trmRefusal)
+  const trm = info?.trm
+  if (!trm) return ''
+  const parts = []
+  if (trm.openEnded) parts.push(TRM_OPEN_ENDED_NOTICE)
+  const plain = TRM_PLAIN_CODECS[trm.audioCodec]
+  if (plain) parts.push(`This FTR recording holds ${plain} audio, which FFmpeg reads as ordinary audio.`)
+  if (trm.signature) parts.push(TRM_SIGNED_NOTICE)
+  return parts.join(' ')
 }
 
 const DAY_MS = 24 * 60 * 60 * 1000
@@ -130,20 +143,37 @@ function trmSessionGroups(files) {
   return groups
 }
 
-// Session ends: queued chunks of one session (see trmSessionGroups) where none
-// is flagged as the session's first file, or none as its last. Only once
-// every chunk of the group has been read, so nothing is claimed about a file
-// that was not. The notice goes on the group's first queued file. Returns
-// { [path]: notice }.
+// FTR's boundary flags: a start boundary means FTR joins no earlier file to
+// this one, an end boundary that it joins no later file. Within one place and
+// run of dates (see trmSessionGroups), queued files in recording order
+// (canonical names: by the FILETIME in the name) are cut into recordings at
+// those marks. A recording whose earliest queued file has no start boundary
+// could have earlier files, and one whose latest has no end boundary later
+// ones. Only once every file of the group has been read, so nothing is claimed
+// about a file that was not. The notice goes on the recording's earliest
+// queued file. Returns { [path]: notice }.
 export function trmSessionNotices(files, audioStreams) {
   const notices = {}
-  for (const paths of trmSessionGroups(files)) {
+  for (const group of trmSessionGroups(files)) {
+    const paths = sortRecordingChunks(group)
     const routes = paths.map(path => audioStreams?.[path]?.trm)
     if (routes.some(route => !route)) continue
-    const parts = []
-    if (!routes.some(route => route.sessionFirst)) parts.push(TRM_SESSION_FIRST_MISSING)
-    if (!routes.some(route => route.sessionLast)) parts.push(TRM_SESSION_LAST_MISSING)
-    if (parts.length > 0) notices[paths[0]] = parts.join(' ')
+    const recordings = []
+    paths.forEach((path, index) => {
+      const route = routes[index]
+      const previous = recordings[recordings.length - 1]
+      if (!previous || route.startBoundary || previous.closed) recordings.push({ paths: [], routes: [] })
+      const current = recordings[recordings.length - 1]
+      current.paths.push(path)
+      current.routes.push(route)
+      current.closed = Boolean(route.endBoundary)
+    })
+    for (const recording of recordings) {
+      const parts = []
+      if (!recording.routes[0].startBoundary) parts.push(TRM_START_BOUNDARY_MISSING)
+      if (!recording.routes[recording.routes.length - 1].endBoundary) parts.push(TRM_END_BOUNDARY_MISSING)
+      if (parts.length > 0) notices[recording.paths[0]] = parts.join(' ')
+    }
   }
   return notices
 }

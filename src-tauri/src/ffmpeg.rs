@@ -222,7 +222,7 @@ pub(crate) async fn probe_duration_cancellable(
     feed: &AudioFeed,
     cancelled: CancelCheck<'_>,
 ) -> Option<f64> {
-    if feed.trm().is_some() {
+    if feed.trm_frames_read() {
         return feed.known_duration();
     }
     let output =
@@ -316,9 +316,10 @@ pub(crate) async fn probe_manifest_source_cancellable(
     else {
         return crate::manifest::ProbedSource::default();
     };
-    serde_json::from_slice::<serde_json::Value>(&out.stdout)
+    let probed = serde_json::from_slice::<serde_json::Value>(&out.stdout)
         .map(|probe| crate::manifest::parse_probe(&probe))
-        .unwrap_or_default()
+        .unwrap_or_default();
+    crate::manifest::with_trm_timing(probed, feed)
 }
 
 /// ffprobe arguments for the export record's source facts: format tags and

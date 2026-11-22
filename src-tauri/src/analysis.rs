@@ -419,9 +419,9 @@ fn loudness_pass_tail(channel: Option<u32>, map: Vec<String>) -> Vec<String> {
 /// not decode all 16 channels 16 times.
 fn feed_loudness_pass_args(feed: &AudioFeed, channel: Option<u32>, secs: &str) -> Vec<String> {
     let per_input = vec!["-t".to_string(), secs.to_string()];
-    if let Some(input) = channel.and_then(|channel| feed.channel_input_args(channel, &per_input)) {
+    if let Some((input, inner)) = channel.and_then(|channel| feed.channel_input_args(channel, &per_input)) {
         let mut args = input;
-        args.extend(loudness_pass_tail(None, crate::helpers::source_audio_map_args()));
+        args.extend(loudness_pass_tail(inner, crate::helpers::source_audio_map_args()));
         return args;
     }
     if feed.is_merged() {

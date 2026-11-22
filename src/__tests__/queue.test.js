@@ -1,8 +1,9 @@
 import { describe, expect, it } from 'vitest'
 import {
+  TRM_END_BOUNDARY_MISSING,
   TRM_OPEN_ENDED_NOTICE,
-  TRM_SESSION_FIRST_MISSING,
-  TRM_SESSION_LAST_MISSING,
+  TRM_SIGNED_NOTICE,
+  TRM_START_BOUNDARY_MISSING,
   audioTrackNotice,
   catJobPaths,
   mergeQueuedFiles,
@@ -101,10 +102,10 @@ describe('audioTrackNotice', () => {
 })
 
 describe('FTR recording notices', () => {
-  const route = (sessionFirst, sessionLast, openEnded = false) => ({
+  const route = (startBoundary, endBoundary, openEnded = false, extra = {}) => ({
     convertedIndex: 0,
     streams: [{ channels: 4 }],
-    trm: { sessionFirst, sessionLast, openEnded },
+    trm: { startBoundary, endBoundary, openEnded, ...extra },
   })
   const chunk = (location, time, filetime, ext = 'trm') => `/court/${location}_20260105-${time}_${filetime}.${ext}`
   const a = chunk('CR4', '0900', '01dc5f0000000001')
@@ -134,26 +135,68 @@ describe('FTR recording notices', () => {
     expect(ftrSessionKey('/court/session part 1.trm')).toBeNull()
   })
 
-  it('says which end of a session is missing, on the first queued chunk', () => {
+  it('says which boundary mark is missing, on the earliest queued file', () => {
     const files = [a, b, c].map(path => ({ path }))
     expect(
       trmSessionNotices(files, { [a]: route(true, false), [b]: route(false, false), [c]: route(false, true) }),
     ).toEqual({})
     expect(
       trmSessionNotices(files, { [a]: route(false, false), [b]: route(false, false), [c]: route(false, true) }),
-    ).toEqual({ [a]: TRM_SESSION_FIRST_MISSING })
+    ).toEqual({ [a]: TRM_START_BOUNDARY_MISSING })
     expect(
       trmSessionNotices(files, { [a]: route(true, false), [b]: route(false, false), [c]: route(false, false) }),
-    ).toEqual({ [a]: TRM_SESSION_LAST_MISSING })
+    ).toEqual({ [a]: TRM_END_BOUNDARY_MISSING })
     expect(trmSessionNotices([{ path: b }], { [b]: route(false, false) })).toEqual({
-      [b]: `${TRM_SESSION_FIRST_MISSING} ${TRM_SESSION_LAST_MISSING}`,
+      [b]: `${TRM_START_BOUNDARY_MISSING} ${TRM_END_BOUNDARY_MISSING}`,
     })
-    expect(TRM_SESSION_FIRST_MISSING).toBe(
-      "No queued file is marked as this session's first file; if the session has earlier files, add them too.",
+    expect(TRM_START_BOUNDARY_MISSING).toBe(
+      'The earliest queued file of this recording has no start-boundary mark, so FTR would accept earlier files before it; if there are any, add them too.',
     )
-    expect(TRM_SESSION_LAST_MISSING).toBe(
-      "No queued file is marked as this session's last file; if the session has later files, add them too.",
+    expect(TRM_END_BOUNDARY_MISSING).toBe(
+      'The latest queued file of this recording has no end-boundary mark, so FTR would accept later files after it; if there are any, add them too.',
     )
+  })
+
+  it('judges the earliest and latest file by recording order, not queue order or any file', () => {
+    // Queued out of order: the marks are on the right files once sorted.
+    const files = [c, a, b].map(path => ({ path }))
+    expect(
+      trmSessionNotices(files, { [a]: route(true, false), [b]: route(false, false), [c]: route(false, true) }),
+    ).toEqual({})
+    // A start mark on a later file is not a start for the earlier ones.
+    expect(
+      trmSessionNotices(files, { [a]: route(false, false), [b]: route(true, false), [c]: route(false, true) }),
+    ).toEqual({ [a]: `${TRM_START_BOUNDARY_MISSING} ${TRM_END_BOUNDARY_MISSING}` })
+  })
+
+  it('cuts a group into recordings at boundary marks', () => {
+    const files = [a, b, c].map(path => ({ path }))
+    // a is a stand-alone recording; b..c is another with both ends marked.
+    expect(
+      trmSessionNotices(files, { [a]: route(true, true), [b]: route(true, false), [c]: route(false, true) }),
+    ).toEqual({})
+    // An end mark on a, then b has no start mark: b's recording may have
+    // earlier files that are not queued.
+    expect(
+      trmSessionNotices(files, { [a]: route(true, true), [b]: route(false, false), [c]: route(false, true) }),
+    ).toEqual({ [b]: TRM_START_BOUNDARY_MISSING })
+  })
+
+  it('names a signature, a plain codec and a refusal on the file itself', () => {
+    expect(trmRecordingNotice(route(true, true, false, { signature: 'signed (not verified)' }))).toBe(TRM_SIGNED_NOTICE)
+    expect(TRM_SIGNED_NOTICE).toBe(
+      'This recording carries a signature: signed (not verified). DepoAudio does not check signatures.',
+    )
+    expect(trmRecordingNotice(route(true, true, true, { signature: 'signed (not verified)' }))).toBe(
+      `${TRM_OPEN_ENDED_NOTICE} ${TRM_SIGNED_NOTICE}`,
+    )
+    expect(trmRecordingNotice(route(true, true, false, { audioCodec: 'mp3' }))).toBe(
+      'This FTR recording holds MP3 audio, which FFmpeg reads as ordinary audio.',
+    )
+    expect(trmRecordingNotice(route(true, true, false, { audioCodec: 'ftr-aac' }))).toBe('')
+    const refusal =
+      "This FTR recording's format isn't one FTR's own player can split, so DepoAudio does not convert it."
+    expect(trmRecordingNotice({ convertedIndex: 0, streams: [], trmRefusal: refusal })).toBe(refusal)
   })
 
   it('keeps a session that runs past midnight together, and splits days apart', () => {
@@ -175,7 +218,7 @@ describe('FTR recording notices', () => {
         [before]: route(true, true),
         [later]: route(false, true),
       }),
-    ).toEqual({ [later]: TRM_SESSION_FIRST_MISSING })
+    ).toEqual({ [later]: TRM_START_BOUNDARY_MISSING })
   })
 
   it('claims nothing until every chunk of the session has been read', () => {

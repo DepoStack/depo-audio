@@ -118,12 +118,20 @@ pub async fn probe_audio_streams_cmd(
             match inspected {
                 Ok(info) => {
                     let (decode_path, route_reasons) = crate::trm::choose_route(&info, options);
-                    Ok(Some(crate::manifest::trm_audio_streams(crate::trm::TrmRoute::new(
-                        info,
-                        decode_path,
-                        route_reasons,
-                    ))))
+                    let route = crate::trm::TrmRoute::new(info, decode_path, route_reasons);
+                    if decode_path == crate::trm::DecodePath::Plain {
+                        // MP2, MP3 or WMA: what FFmpeg reads, plus what the
+                        // FTR header chunks say.
+                        return Ok(crate::ffmpeg::probe_audio_streams(&app, source).await.map(|streams| {
+                            crate::manifest::AudioStreamsInfo {
+                                trm: Some(route),
+                                ..streams
+                            }
+                        }));
+                    }
+                    Ok(Some(crate::manifest::trm_audio_streams(route)))
                 }
+                Err(error) if crate::trm::is_refusal(&error) => Ok(Some(crate::manifest::trm_refused_streams(error))),
                 // DepoAudio could not read the layout; a conversion then
                 // hands the file to FFmpeg's native decoder as it is, so the
                 // queue shows what ffprobe reads, as it did before.
