@@ -1,6 +1,6 @@
 // ── Local data in web view storage (DA-07) ──────────────────────────────────
 //
-// DepoAudio keeps transcripts, bookmarks, playback speed, backstep and the theme in the
+// DepoAudio keeps transcripts, bookmarks, playback speed, backstep, volume and the theme in the
 // app's web view storage (localStorage). The library and settings live in the
 // app data folder and are handled by the backend (src-tauri/src/localdata.rs).
 // These pure helpers collect that web data for a backup, restore it from one
@@ -10,7 +10,13 @@ import { TRANSCRIPT_KEY_PREFIX, loadSegments, storageKey } from './transcript'
 import { loadBookmarks } from './player'
 
 // Every fixed key DepoAudio writes. Transcripts use TRANSCRIPT_KEY_PREFIX.
-export const WEB_STORAGE_KEYS = ['player-bookmarks', 'player-speed', 'player-backstep', 'depoaudio-theme']
+export const WEB_STORAGE_KEYS = [
+  'player-bookmarks',
+  'player-speed',
+  'player-backstep',
+  'player-volume',
+  'depoaudio-theme',
+]
 const BOOKMARKS_KEY = 'player-bookmarks'
 const MAX_TRACK_PATH_CHARS = 4096
 

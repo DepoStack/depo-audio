@@ -1,5 +1,5 @@
-import { useState, useRef, useEffect, useId } from 'react'
-import { convertFileSrc } from '@tauri-apps/api/core'
+import { useState, useRef, useEffect, useId, useMemo } from 'react'
+import { convertFileSrc, invoke } from '@tauri-apps/api/core'
 import { open } from '@tauri-apps/plugin-dialog'
 import { Play, Pause, SkipBack, SkipForward, Bookmark, X, Plus, Repeat, Copy, Check } from 'lucide-react'
 import { cn, shouldIgnoreNavigationShortcut } from '../../lib/utils'
@@ -26,6 +26,14 @@ import Waveform from '../common/Waveform'
 import { WaveformIcon } from '../common/Icons'
 import WorkspaceHeader from '../common/WorkspaceHeader'
 import Transcript from './Transcript'
+import ListeningMix from './ListeningMix'
+import {
+  CHANNEL_PROBE_URL,
+  createChannelMixer,
+  initialStrips,
+  loadVolume,
+  probedChannelCount,
+} from '../../lib/channelMixer'
 
 // ── Global Audio Player ─────────────────────────────────────────────────────
 //
@@ -44,20 +52,34 @@ import Transcript from './Transcript'
 // Auto-backstep: resuming after a pause first rewinds the chosen number of
 // seconds (shown as "Backstep" in the transport). Seeks, track changes and
 // A-B loop wraps clear the pause point, so they never rewind.
+//
+// Listening mix: a master volume (saved like speed) and, for a file with 2 or
+// more channels, an opt-in "Separate channels" strip per channel. Turning it
+// on swaps in a new <audio> element with crossOrigin set and routes it
+// through Web Audio (lib/channelMixer.js); turning it off swaps back to plain
+// playback. The position and play state carry over. Strips reset for each
+// track and are not saved. Nothing here changes any file.
 
 const PLAYER_STORAGE_WARNING =
-  'Player bookmarks, speed and backstep cannot be saved in this session. Export important bookmark notes before closing DepoAudio.'
+  'Player bookmarks, speed, volume and backstep cannot be saved in this session. Export important bookmark notes before closing DepoAudio.'
 
 function loadPlayerStorageState() {
   try {
     return {
       speed: loadSpeed(window.localStorage.getItem('player-speed')),
       backstep: loadBackstep(window.localStorage.getItem('player-backstep')),
+      volume: loadVolume(window.localStorage.getItem('player-volume')),
       bookmarks: loadBookmarks(window.localStorage.getItem('player-bookmarks')),
       error: '',
     }
   } catch {
-    return { speed: 1, backstep: loadBackstep(null), bookmarks: [], error: PLAYER_STORAGE_WARNING }
+    return {
+      speed: 1,
+      backstep: loadBackstep(null),
+      volume: loadVolume(null),
+      bookmarks: [],
+      error: PLAYER_STORAGE_WARNING,
+    }
   }
 }
 
@@ -71,6 +93,19 @@ export default function PlayerTab({ dropHandlerRef, onConvertFiles, openRequest,
   const [initialStorage] = useState(loadPlayerStorageState)
   const [speed, setSpeedState] = useState(initialStorage.speed)
   const [backstep, setBackstepState] = useState(initialStorage.backstep)
+  const [volume, setVolumeState] = useState(initialStorage.volume)
+  // Listening mix. audioKey changes swap in a fresh <audio> element: a
+  // MediaElementSource can be made once per element, and only an element
+  // without crossOrigin plays exactly as before.
+  const [mixOn, setMixOn] = useState(false)
+  const [audioKey, setAudioKey] = useState(0)
+  const [probe, setProbe] = useState({ path: null, channels: null })
+  const [heard, setHeard] = useState({ path: null, count: null })
+  const [mix, setMix] = useState({ path: null, strips: [] })
+  const [probeAvailable, setProbeAvailable] = useState(true)
+  const [mixNotice, setMixNotice] = useState('')
+  const mixerRef = useRef(null)
+  const restoreRef = useRef(null) // { time, play } to apply after a swap
   const backstepRuleId = useId()
   // Position where the person last paused this track. Any seek (including our
   // own backstep and the A-B loop wrap) clears it, so only a plain resume rewinds.
@@ -173,7 +208,39 @@ export default function PlayerTab({ dropHandlerRef, onConvertFiles, openRequest,
     const start = resumePosition({ currentTime: a.currentTime, pausedAt: pausedAtRef.current, backstep, loopStart })
     pausedAtRef.current = null
     if (start !== a.currentTime) a.currentTime = start
+    mixerRef.current?.resume()
     a.play().catch(e => setPlaybackError(`Couldn't play ${activeTrack.name}: ${e}`))
+  }
+
+  const applyVolume = v => {
+    const next = loadVolume(v)
+    setVolumeState(next)
+    try {
+      window.localStorage.setItem('player-volume', String(next))
+    } catch {
+      setStorageError(PLAYER_STORAGE_WARNING)
+    }
+  }
+
+  // Swap the <audio> element, keeping position and play state.
+  const swapAudio = nextMixOn => {
+    const a = audioRef.current
+    restoreRef.current = a ? { time: a.currentTime || 0, play: !a.paused } : null
+    a?.pause()
+    setMixOn(nextMixOn)
+    setAudioKey(k => k + 1)
+  }
+  const toggleMix = () => {
+    setMixNotice('')
+    swapAudio(!mixOn)
+  }
+  // Kept until the person tries again: pressing Play must not hide why the
+  // channel strips went away.
+  const mixFailed = reason => {
+    setMixNotice(
+      `Separate channels could not start (${reason}), so the Player went back to normal playback. Nothing was changed in the file.`,
+    )
+    swapAudio(false)
   }
 
   const applyBackstep = s => {
@@ -342,6 +409,7 @@ export default function PlayerTab({ dropHandlerRef, onConvertFiles, openRequest,
   useEffect(() => {
     if (activeTrack && audioRef.current) {
       pausedAtRef.current = null
+      mixerRef.current?.resetHeard()
       setPlaying(false)
       setPlaybackError('')
       audioRef.current.load()
@@ -357,6 +425,85 @@ export default function PlayerTab({ dropHandlerRef, onConvertFiles, openRequest,
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeTrack?.path])
+
+  // Channel count of the active file, from the same probe Convert uses.
+  const activePath = activeTrack?.path ?? null
+  useEffect(() => {
+    if (!activePath) return undefined
+    let current = true
+    Promise.resolve()
+      .then(() => invoke('probe_audio_streams_cmd', { path: activePath }))
+      .then(info => {
+        if (current) setProbe({ path: activePath, channels: probedChannelCount(info) })
+      })
+      .catch(() => {
+        if (current) setProbe({ path: activePath, channels: null })
+      })
+    return () => {
+      current = false
+    }
+  }, [activePath])
+  const fileChannels = probe.path === activePath ? probe.channels : null
+  const heardChannels = heard.path === activePath ? heard.count : null
+  const strips = useMemo(
+    () =>
+      mix.path === activePath && mix.strips.length === (fileChannels || 0)
+        ? mix.strips
+        : initialStrips(fileChannels || 0),
+    [mix, activePath, fileChannels],
+  )
+  const setStrips = next => setMix({ path: activePath, strips: next })
+  const mixLayout = heardChannels != null && fileChannels && heardChannels < fileChannels ? heardChannels : fileChannels
+
+  const latestRef = useRef({})
+  useEffect(() => {
+    latestRef.current = { volume, strips, mixLayout, activePath, mixFailed }
+  })
+
+  // Build the Web Audio graph for the current element while the mix is on;
+  // close it when the mix goes off, the element is swapped or the tab unmounts.
+  useEffect(() => {
+    const audio = audioRef.current
+    if (!mixOn || !audio) return undefined
+    const latest = latestRef.current
+    let mixer
+    try {
+      mixer = createChannelMixer({
+        audio,
+        channels: latest.mixLayout || 2,
+        probeUrl: CHANNEL_PROBE_URL,
+        onHeardChannels: count => setHeard({ path: latestRef.current.activePath, count }),
+        onProbeUnavailable: () => setProbeAvailable(false),
+      })
+    } catch (error) {
+      const timer = window.setTimeout(() => latest.mixFailed(String(error?.message || error)), 0)
+      return () => window.clearTimeout(timer)
+    }
+    mixerRef.current = mixer
+    mixer.setMaster(latest.volume)
+    mixer.setStrips(latest.strips)
+    mixer.setPlaying(!audio.paused)
+    mixer.resume()
+    return () => {
+      mixer.dispose()
+      if (mixerRef.current === mixer) mixerRef.current = null
+    }
+  }, [mixOn, audioKey])
+
+  useEffect(() => {
+    const mixer = mixerRef.current
+    if (!mixer) return
+    if (mixLayout) mixer.setLayout(mixLayout)
+    mixer.setStrips(strips)
+  }, [strips, mixLayout, mixOn, audioKey])
+
+  // With the mix on, the element plays at full level into Web Audio and the
+  // master gain sets the volume; otherwise the element's own volume does.
+  useEffect(() => {
+    const a = audioRef.current
+    if (a) a.volume = mixOn ? 1 : volume
+    mixerRef.current?.setMaster(volume)
+  }, [volume, mixOn, audioKey, activePath])
 
   const audioSrc = activeTrack ? convertFileSrc(activeTrack.path) : ''
   const trackBookmarks = activeTrack ? bookmarks.filter(b => b.trackPath === activeTrack.path) : []
@@ -528,6 +675,18 @@ export default function PlayerTab({ dropHandlerRef, onConvertFiles, openRequest,
                     <span>{fmtTime(currentTime)}</span>
                     <span>{fmtTime(duration)}</span>
                   </div>
+                  <ListeningMix
+                    volume={volume}
+                    onVolume={applyVolume}
+                    fileChannels={fileChannels}
+                    mixOn={mixOn}
+                    onToggleMix={toggleMix}
+                    strips={strips}
+                    onStrips={setStrips}
+                    heardChannels={heardChannels}
+                    probeAvailable={probeAvailable}
+                    notice={mixNotice}
+                  />
                 </CardContent>
               </Card>
             </div>
@@ -708,16 +867,34 @@ export default function PlayerTab({ dropHandlerRef, onConvertFiles, openRequest,
       {activeTrack && (
         <div className="shrink-0 border-t border-border bg-card px-4 md:px-6 py-2.5">
           <audio
+            key={audioKey}
             ref={audioRef}
             src={audioSrc}
+            // Web Audio outputs silence for a cross-origin element without
+            // CORS; Tauri's asset protocol sends Access-Control-Allow-Origin.
+            crossOrigin={mixOn ? 'anonymous' : undefined}
             preload="metadata"
             onLoadedMetadata={e => {
               setDuration(e.target.duration)
               e.target.playbackRate = speed
+              e.target.volume = mixOn ? 1 : volume
+              const restore = restoreRef.current
+              restoreRef.current = null
+              if (restore) {
+                if (restore.time > 0) e.target.currentTime = Math.min(restore.time, e.target.duration || restore.time)
+                if (restore.play) {
+                  mixerRef.current?.resume()
+                  e.target.play().catch(err => setPlaybackError(`Couldn't play ${activeTrack.name}: ${err}`))
+                }
+              }
             }}
-            onPlay={() => setPlaying(true)}
+            onPlay={() => {
+              setPlaying(true)
+              mixerRef.current?.setPlaying(true)
+            }}
             onPause={e => {
               setPlaying(false)
+              mixerRef.current?.setPlaying(false)
               // A pause at the end of the track is not a resume point
               pausedAtRef.current = e.target.ended ? null : e.target.currentTime
             }}
@@ -726,6 +903,10 @@ export default function PlayerTab({ dropHandlerRef, onConvertFiles, openRequest,
             }}
             onError={() => {
               setPlaying(false)
+              if (mixOn) {
+                mixFailed('the web view would not open this file for Web Audio')
+                return
+              }
               setPlaybackError(
                 `Couldn't decode ${activeTrack?.name || 'this file'}. Convert the source to a standard audio format and try again.`,
               )
@@ -737,6 +918,7 @@ export default function PlayerTab({ dropHandlerRef, onConvertFiles, openRequest,
             }}
             onEnded={() => {
               setPlaying(false)
+              mixerRef.current?.setPlaying(false)
               const idx = tracks.findIndex(t => t.path === activeTrack.path)
               if (idx >= 0 && idx < tracks.length - 1) {
                 autoAdvanceRef.current = true

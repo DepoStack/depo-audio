@@ -5,6 +5,7 @@ import PlayerTab from '../components/Player/PlayerTab'
 
 vi.mock('@tauri-apps/api/core', () => ({
   convertFileSrc: path => `asset://${path}`,
+  invoke: vi.fn(() => Promise.resolve(null)),
 }))
 
 vi.mock('@tauri-apps/plugin-dialog', () => ({

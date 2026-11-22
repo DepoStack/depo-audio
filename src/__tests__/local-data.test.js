@@ -111,7 +111,13 @@ describe('clearing web data', () => {
   })
 
   it('removes every DepoAudio key and nothing else', () => {
-    expect(WEB_STORAGE_KEYS).toEqual(['player-bookmarks', 'player-speed', 'player-backstep', 'depoaudio-theme'])
+    expect(WEB_STORAGE_KEYS).toEqual([
+      'player-bookmarks',
+      'player-speed',
+      'player-backstep',
+      'player-volume',
+      'depoaudio-theme',
+    ])
     expect(clearWebData(storage)).toEqual({ removed: 6, failed: 0 })
     expect([...storage.data.keys()]).toEqual(['not-depoaudio'])
   })
