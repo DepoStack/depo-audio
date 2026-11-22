@@ -965,7 +965,9 @@ fn read_container(file: &mut File, file_len: u64) -> Result<Container, String> {
         return Err(damaged("its chunk directory is not closed correctly"));
     }
     let mut entries: Vec<Entry> = directory[..listed as usize]
-        .chunks_exact(DIRECTORY_ENTRY_BYTES as usize)
+        .as_chunks::<{ DIRECTORY_ENTRY_BYTES as usize }>()
+        .0
+        .iter()
         .map(|raw| Entry {
             tag: raw[..4].try_into().expect("four bytes"),
             id: le_u32(raw, 4),
@@ -1473,7 +1475,9 @@ fn parse_hex(text: &str) -> Option<Vec<u8>> {
         return None;
     }
     digits
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
         .map(|pair| {
             let high = char::from(pair[0]).to_digit(16)?;
             let low = char::from(pair[1]).to_digit(16)?;
@@ -1713,7 +1717,7 @@ enum PtchEffect {
 /// Windows-1252, which reads ASCII unchanged.
 fn decode_ptch_text(bytes: &[u8]) -> String {
     let utf16 = |body: &[u8], little: bool| -> String {
-        let units = body.chunks_exact(2).map(|pair| {
+        let units = body.as_chunks::<2>().0.iter().map(|pair| {
             if little {
                 u16::from_le_bytes([pair[0], pair[1]])
             } else {
@@ -1732,7 +1736,7 @@ fn decode_ptch_text(bytes: &[u8]) -> String {
     }
     let pairs = bytes.len() / 2;
     if pairs > 0 {
-        let zero_at = |parity: usize| bytes.chunks_exact(2).filter(|pair| pair[parity] == 0).count();
+        let zero_at = |parity: usize| bytes.as_chunks::<2>().0.iter().filter(|pair| pair[parity] == 0).count();
         let (even, odd) = (zero_at(0), zero_at(1));
         if odd * 2 >= pairs && even * 4 < pairs {
             return utf16(bytes, true);
@@ -3260,7 +3264,9 @@ pub(crate) mod tests {
     }
 
     fn i16s(data: &[u8]) -> Vec<i16> {
-        data.chunks_exact(2)
+        data.as_chunks::<2>()
+            .0
+            .iter()
             .map(|pair| i16::from_le_bytes([pair[0], pair[1]]))
             .collect()
     }
@@ -3369,9 +3375,15 @@ pub(crate) mod tests {
         assert_eq!(plain.len(), redacted.len());
         let (plain, redacted) = (i16s(&plain), i16s(&redacted));
         // Frames are (Judge, Witness) pairs at 8 kHz: 4 s is frame 32000.
-        for (frame, (a, b)) in plain.chunks_exact(2).zip(redacted.chunks_exact(2)).enumerate() {
+        for (frame, (a, b)) in plain
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .zip(redacted.as_chunks::<2>().0.iter())
+            .enumerate()
+        {
             if (32_000..48_000).contains(&frame) {
-                assert_eq!(b, [0, 0], "frame {frame} is not silent");
+                assert_eq!(*b, [0, 0], "frame {frame} is not silent");
             } else {
                 assert_eq!(a, b, "frame {frame} differs from the plain tone");
             }
@@ -3614,7 +3626,7 @@ pub(crate) mod tests {
         assert!((queue_streams_info(&path).duration_secs.unwrap() - 47.0 * block).abs() < 1e-9);
         let feed = prepare_feed(&path, &never).unwrap();
         let (_, data) = read_wav_data(&feed.path);
-        let blocks: Vec<&[u8]> = data.chunks_exact(1024).collect();
+        let blocks: Vec<&[u8; 1024]> = data.as_chunks::<1024>().0.iter().collect();
         assert_eq!(blocks.len(), 47);
         for (index, block) in blocks.iter().enumerate() {
             let silent = block.iter().all(|byte| *byte == 0);
@@ -4089,7 +4101,7 @@ pub(crate) mod tests {
             ["Judge", "Witness", "Plaintiff", "Ch 4", "Defense"]
         );
         let (_, data) = read_wav_data(&feed.path);
-        let samples: Vec<u8> = data.chunks_exact(2).map(|pair| pair[0]).collect();
+        let samples: Vec<u8> = data.as_chunks::<2>().0.iter().map(|pair| pair[0]).collect();
         assert_eq!(
             samples,
             [1, 2, 3, 0, 4, 11, 12, 13, 14, 15, 21, 22, 23, 0, 24, 31, 0, 32, 0, 33]
@@ -4277,8 +4289,10 @@ pub(crate) mod tests {
         assert!(everything.contains("joined"), "{everything}");
         assert!(everything.contains("remote-participant record"), "{everything}");
         assert!(everything.contains("no position"), "{everything}");
-        for secret in SECRETS {
-            assert!(!everything.contains(secret), "{secret} leaked: {everything}");
+        // Name a leak by its fixture index only, so a failing run never
+        // prints the secret text itself.
+        for (index, secret) in SECRETS.iter().enumerate() {
+            assert!(!everything.contains(secret), "fixture secret #{index} leaked");
         }
     }
 
@@ -4346,7 +4360,9 @@ pub(crate) mod tests {
         assert_eq!(le_u16(&fmt, 2), 2);
         assert_eq!(le_u16(&fmt, 12), 4);
         let samples: Vec<i16> = data
-            .chunks_exact(2)
+            .as_chunks::<2>()
+            .0
+            .iter()
             .map(|pair| i16::from_le_bytes([pair[0], pair[1]]))
             .collect();
         let expected: Vec<i16> = (0..10).flat_map(|index| [index, 1000 + index]).collect();

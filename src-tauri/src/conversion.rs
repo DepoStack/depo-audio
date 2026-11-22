@@ -2332,8 +2332,13 @@ mod tests {
     fn checked_dcr_record(output: &OutputFile, source: &Path, channels: u32) -> serde_json::Value {
         let path = manifest::manifest_path_for(Path::new(&output.path));
         let text = fs::read_to_string(&path).unwrap();
-        for secret in SECRETS {
-            assert!(!text.contains(secret), "{secret} reached the export record");
+        // Name a leak by its fixture index only, so a failing run never
+        // prints the secret text itself.
+        for (index, secret) in SECRETS.iter().enumerate() {
+            assert!(
+                !text.contains(secret),
+                "fixture secret #{index} reached the export record"
+            );
         }
         let record: serde_json::Value = serde_json::from_str(&text).unwrap();
         let errors = manifest::tests::schema_errors_for_value(&record);
@@ -2894,7 +2899,9 @@ mod tests {
             if &bytes[at..at + 4] == b"data" {
                 let end = (at + 8 + size).min(bytes.len());
                 return bytes[at + 8..end]
-                    .chunks_exact(2)
+                    .as_chunks::<2>()
+                    .0
+                    .iter()
                     .map(|pair| i16::from_le_bytes([pair[0], pair[1]]))
                     .collect();
             }
@@ -2965,12 +2972,14 @@ mod tests {
         // resampler's filter.
         let frame = |seconds: f64| (seconds * 48_000.0) as usize;
         for (index, (a, b)) in plain_samples
-            .chunks_exact(2)
-            .zip(redacted_samples.chunks_exact(2))
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .zip(redacted_samples.as_chunks::<2>().0.iter())
             .enumerate()
         {
             if (frame(4.01)..frame(5.99)).contains(&index) {
-                assert_eq!(b, [0, 0], "frame {index} is not silent");
+                assert_eq!(*b, [0, 0], "frame {index} is not silent");
             } else if index < frame(3.99) || index >= frame(6.01) {
                 assert_eq!(a, b, "frame {index} differs from the plain sample");
             }
