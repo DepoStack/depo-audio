@@ -3,6 +3,7 @@ mod catdetect;
 mod clock;
 mod commands;
 mod conversion;
+mod dcr;
 mod ffmpeg;
 mod helpers;
 mod localdata;

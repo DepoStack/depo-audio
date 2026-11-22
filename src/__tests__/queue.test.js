@@ -1,5 +1,12 @@
 import { describe, expect, it } from 'vitest'
-import { audioTrackNotice, catJobPaths, mergeQueuedFiles, partitionQueuePaths, reexportConfirmCopy } from '../lib/queue'
+import {
+  audioTrackNotice,
+  catJobPaths,
+  dcrQueueNotices,
+  mergeQueuedFiles,
+  partitionQueuePaths,
+  reexportConfirmCopy,
+} from '../lib/queue'
 
 describe('partitionQueuePaths', () => {
   it('separates TRS companions without discarding any dropped TRM chunks', () => {
@@ -85,5 +92,58 @@ describe('audioTrackNotice', () => {
     expect(audioTrackNotice(null)).toBe('')
     expect(audioTrackNotice(undefined)).toBe('')
     expect(audioTrackNotice([])).toBe('')
+  })
+})
+
+describe('dcrQueueNotices', () => {
+  const dcr = extra => ({
+    convertedIndex: 0,
+    streams: [{ channels: 3, sampleRate: 8000 }],
+    durationSecs: 3600,
+    dcr: {
+      codec: 'PCM 16-bit',
+      channelNames: ['Judge', 'Witness', 'Ch 3'],
+      conferenceChanges: [],
+      conferenceChangeCount: 0,
+      videoFrames: 0,
+      attachments: 0,
+      problem: null,
+      ...extra,
+    },
+  })
+
+  it('says nothing for files the DCR reader did not read', () => {
+    expect(dcrQueueNotices(null)).toEqual([])
+    expect(dcrQueueNotices({ streams: [] })).toEqual([])
+  })
+
+  it('names the channels read from the recording', () => {
+    expect(dcrQueueNotices(dcr())).toEqual([
+      'Channels read from the recording: Judge, Witness, Ch 3. Split outputs and export records use these names instead of the channel labels below.',
+    ])
+  })
+
+  it('flags each remote-participant change as a best guess, and counts the rest', () => {
+    const change = atSeconds => ({ atSeconds, kind: 'joined', channelsAfter: 3, bitGuessed: true })
+    const notices = dcrQueueNotices(
+      dcr({
+        conferenceChanges: [change(754), change(3600), change(3725.5), change(4000)],
+        conferenceChangeCount: 5,
+        videoFrames: 2,
+      }),
+    )
+    expect(notices.slice(1, 4)).toEqual([
+      "A remote participant joined or left at 00:12:34; DepoAudio's channel order after that point is a best guess.",
+      "A remote participant joined or left at 01:00:00; DepoAudio's channel order after that point is a best guess.",
+      "A remote participant joined or left at 01:02:05; DepoAudio's channel order after that point is a best guess.",
+    ])
+    expect(notices[4]).toBe('2 more remote-participant changes follow; the export record lists them.')
+    expect(notices[5]).toBe('This recording also holds video frames or attachments; only the audio is converted.')
+  })
+
+  it('shows only the reason when the recording cannot be converted', () => {
+    const problem =
+      "This recording is password protected; DepoAudio can't open protected recordings. Export it to WAV in the Liberty software."
+    expect(dcrQueueNotices(dcr({ problem }))).toEqual([problem])
   })
 })

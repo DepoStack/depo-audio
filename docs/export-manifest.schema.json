@@ -30,7 +30,42 @@
       "properties": {
         "fileName": { "type": "string", "description": "File name only, never a folder path." },
         "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$", "description": "SHA-256 of the original file as selected, before any format preparation." },
-        "sizeBytes": { "type": "integer", "minimum": 0 }
+        "sizeBytes": { "type": "integer", "minimum": 0 },
+        "dcr": {
+          "type": "object",
+          "description": "Present only when the source is a Liberty / BIS Digital .dcr recording read by DepoAudio's experimental reader. Format facts and channel names only: case, docket and password fields from the recording are never written here. The layout DepoAudio reads comes from owner-supplied interoperability notes and has not been checked against a recording from the Liberty software.",
+          "additionalProperties": false,
+          "required": ["version", "codec", "codecTag", "channels", "channelNames", "atoms", "videoFramesSkipped", "attachmentsSkipped", "conferenceChanges", "conferenceChangeCount", "checksum", "layoutSource"],
+          "properties": {
+            "version": { "type": "integer", "minimum": 0, "description": "Recorder format version, major x 100 + minor." },
+            "codec": { "type": "string", "description": "The audio codec as DepoAudio names it, for example \"PCM 16-bit\" or \"IMA ADPCM\"." },
+            "codecTag": { "type": "integer", "minimum": 0, "maximum": 65535, "description": "The WAVEFORMATEX format tag of one channel." },
+            "channels": { "type": "integer", "minimum": 1, "description": "Channels in the converted audio: every channel active at any point, in ascending channel-bit order." },
+            "channelNames": { "type": "array", "items": { "type": "string" }, "description": "One name per converted channel, in order, as read from the recording; \"Ch N\" where it names none." },
+            "atoms": { "type": "integer", "minimum": 0, "description": "Audio steps read (one block per active channel each)." },
+            "videoFramesSkipped": { "type": "integer", "minimum": 0 },
+            "attachmentsSkipped": { "type": "integer", "minimum": 0 },
+            "conferenceChanges": {
+              "type": "array",
+              "description": "Remote participants joining or leaving (the first 1000).",
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["atPerChannelByte", "atSeconds", "kind", "channelsAfter", "bitGuessed"],
+                "properties": {
+                  "atPerChannelByte": { "type": "integer", "minimum": 0 },
+                  "atSeconds": { "type": "number", "minimum": 0 },
+                  "kind": { "enum": ["joined", "left"] },
+                  "channelsAfter": { "type": "integer", "minimum": 0 },
+                  "bitGuessed": { "const": true, "description": "Which channel is added or removed is not known; DepoAudio's channel order after the change is a best guess." }
+                }
+              }
+            },
+            "conferenceChangeCount": { "type": "integer", "minimum": 0 },
+            "checksum": { "const": "not checked", "description": "The recording's checksums are not verified." },
+            "layoutSource": { "const": "owner-supplied interoperability notes; not yet confirmed against a recorded file" }
+          }
+        }
       }
     },
     "output": {

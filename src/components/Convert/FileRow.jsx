@@ -13,7 +13,7 @@ import {
   compareTarget,
   isPlayerPlayable,
 } from '../../lib/player'
-import { audioTrackNotice } from '../../lib/queue'
+import { audioTrackNotice, dcrQueueNotices } from '../../lib/queue'
 
 export default function FileRow({ file, streams, job, onRemove, converting, onOpenInPlayer }) {
   const [expanded, setExpanded] = useState(false)
@@ -24,6 +24,7 @@ export default function FileRow({ file, streams, job, onRemove, converting, onOp
   const isExp = file.fmt?.status === 'experimental'
   const isRej = file.fmt?.status === 'unsupported'
   const trackNotice = isRej ? '' : audioTrackNotice(streams)
+  const dcrNotices = isRej ? [] : dcrQueueNotices(streams)
 
   return (
     <div
@@ -61,6 +62,11 @@ export default function FileRow({ file, streams, job, onRemove, converting, onOp
           </div>
           <span className="type-small text-[hsl(var(--sub))] truncate block">{file.path}</span>
           {trackNotice && <span className="type-small text-[hsl(var(--text2))] block mt-0.5">{trackNotice}</span>}
+          {dcrNotices.map(notice => (
+            <span key={notice} className="type-small text-[hsl(var(--text2))] block mt-0.5">
+              {notice}
+            </span>
+          ))}
         </div>
         <div className="flex items-center gap-2 shrink-0">
           <StatusChip status={status} />

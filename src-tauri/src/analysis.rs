@@ -134,7 +134,8 @@ pub(crate) async fn analyze_channel_gains(
     let preparation_context = ctx.cloned();
     let preparation_cancelled: Arc<dyn Fn() -> bool + Send + Sync> =
         Arc::new(move || preparation_context.as_ref().is_some_and(ScanCtx::cancelled));
-    let prepared = crate::helpers::prepare_audio_feed_cancellable(source.to_path_buf(), preparation_cancelled).await;
+    let prepared =
+        crate::helpers::prepare_audio_feed_cancellable(app, source.to_path_buf(), preparation_cancelled).await;
     check(ctx)?;
     let (feed_path, _feed_guard) = prepared?;
     let feed = feed_path.as_path();
@@ -200,7 +201,8 @@ pub(crate) async fn analyze_audio(
     let preparation_context = ctx.cloned();
     let preparation_cancelled: Arc<dyn Fn() -> bool + Send + Sync> =
         Arc::new(move || preparation_context.as_ref().is_some_and(ScanCtx::cancelled));
-    let prepared = crate::helpers::prepare_audio_feed_cancellable(source.to_path_buf(), preparation_cancelled).await;
+    let prepared =
+        crate::helpers::prepare_audio_feed_cancellable(app, source.to_path_buf(), preparation_cancelled).await;
     check(ctx)?;
     let (feed_path, _feed_guard) = prepared?;
     let feed = feed_path.as_path();

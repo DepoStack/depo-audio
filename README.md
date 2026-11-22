@@ -104,11 +104,11 @@ Scanning is a bounded, cancellable local analysis pass. FFmpeg performs the sele
 | **FTR / TRM**                                | For The Record             | 🧪 Experimental                    |
 | **BWF**                                      | CourtSmart · Various       | ✅ Supported                       |
 | **DigitalCAT (.dm)**                         | Stenovations               | 🧪 Experimental                    |
+| **DCR**                                      | Liberty / BIS Digital      | 🧪 Experimental — unencrypted only |
 | **WAV, MP3, FLAC, M4A, OGG, Opus, WMA, AIF** | Standard                   | ✅ Supported                       |
 | **Video (MP4, MOV, MKV, AVI, WebM)**         | — audio track extracted    | ✅ Supported                       |
 | **Video (MPG, VOB, TS, MTS, M2TS, WMV, ASF)** | — audio track extracted   | ✅ Supported                       |
 | **AES (Eclipse AudioSync)**                  | Eclipse CAT                | 🔒 Encrypted — export to WAV first |
-| **DCR**                                      | Liberty · BIS Digital      | Closed — export to WAV first       |
 | **DS2 (DSS Pro)**                            | OM System / Olympus        | Closed — export to WAV first       |
 | **ARF / WRF**                                | Cisco Webex                | Closed — convert first             |
 | **MSV / DVF**                                | Sony IC recorder           | Closed — export to WAV first       |
@@ -116,6 +116,15 @@ Scanning is a bounded, cancellable local analysis pass. FFmpeg performs the sele
 The MPG, VOB, TS, MTS, M2TS, WMV and ASF rows are smoke-tested at each
 release with synthetic files carrying MP2, AC-3 or WMAv2 audio. No real
 deposition recording in these containers has been tried yet.
+
+DCR support reads unencrypted Liberty / BIS Digital recordings and has been
+tested with synthetic files only. The layout it reads comes from
+owner-supplied interoperability notes and has not been confirmed against a
+recording made by the Liberty software. Password-protected or encrypted
+recordings, Speex audio and other unknown codecs are refused with a message;
+export those to WAV in the Liberty software. A `.dcr` without the Liberty /
+BIS Digital signature gets export guidance, and a camera raw image named
+`.dcr` is called out as an image.
 
 ---
 

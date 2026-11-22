@@ -78,8 +78,14 @@ describe('FORMAT_ROWS intake rows', () => {
 
   it('keeps every closed format in the export-first group', () => {
     const closed = FORMAT_ROWS.filter(r => r.status === 'unsupported')
-    expect(closed.map(r => r.ext)).toEqual(['.aes', '.dcr', '.ds2', '.arf  .wrf', '.msv  .dvf'])
+    expect(closed.map(r => r.ext)).toEqual(['.aes', '.ds2', '.arf  .wrf', '.msv  .dvf'])
     expect(closed.every(r => r.group === 'export')).toBe(true)
+  })
+
+  it('lists Liberty / BIS Digital .dcr as an experimental court format tested with synthetic files only', () => {
+    const row = FORMAT_ROWS.find(r => r.ext === '.dcr')
+    expect(row).toMatchObject({ vendor: 'Liberty / BIS Digital', status: 'experimental', group: 'court' })
+    expect(row.note).toBe('Reads unencrypted recordings; tested with synthetic files only')
   })
 })
 

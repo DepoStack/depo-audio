@@ -163,6 +163,11 @@ pub struct AudioStreamsInfo {
     pub converted_index: u32,
     pub streams: Vec<AudioStreamSummary>,
     pub duration_secs: Option<f64>,
+    /// For a Liberty / BIS Digital `.dcr`: the reader's summary (codec,
+    /// channel names, remote-participant changes, or why it cannot be
+    /// converted). Absent for every other file.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dcr: Option<crate::dcr::DcrQueueInfo>,
 }
 
 fn bounded_tag(tags: &serde_json::Value, key: &str) -> Option<String> {
@@ -236,6 +241,7 @@ pub(crate) fn parse_audio_streams(probe: &serde_json::Value) -> AudioStreamsInfo
         converted_index: crate::helpers::SOURCE_AUDIO_STREAM,
         streams,
         duration_secs,
+        dcr: None,
     }
 }
 
@@ -318,6 +324,11 @@ pub(crate) struct FileRecord {
     pub file_name: String,
     pub sha256: String,
     pub size_bytes: u64,
+    /// For a Liberty / BIS Digital `.dcr` source: what the reader found
+    /// (format facts and channel names only; never case, docket or password
+    /// fields). Absent for every other source.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dcr: Option<crate::dcr::DcrSourceRecord>,
 }
 
 #[derive(Debug, Serialize, Clone, PartialEq)]
@@ -615,6 +626,7 @@ pub(crate) mod tests {
                 file_name: "synthetic_session.wav".into(),
                 sha256: "a".repeat(64),
                 size_bytes: 1024,
+                dcr: None,
             },
             probed,
             labels,

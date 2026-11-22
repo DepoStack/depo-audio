@@ -5,16 +5,16 @@ use std::sync::Arc;
 
 use tauri::{AppHandle, Emitter};
 
+use crate::dcr::DcrInfo;
 use crate::ffmpeg::{
     build_proc_filters_with_gain, ensure_ftr_decoder, probe_channels_cancellable, probe_duration_cancellable,
     probe_manifest_source_cancellable, run_ffmpeg_with_timeout,
 };
 use crate::helpers::{
     basename, input_codec_args, output_args, output_ext, prepare_audio_feed_with_cancel, safe_ffmpeg_input_prelude,
-    safe_label, source_audio_map_args, wav_estimated_bytes, wav_rf64_args,
+    safe_label, source_audio_map_args, wav_estimated_bytes, wav_rf64_args, PreparedFeed,
 };
 use crate::manifest::{self, FileRecord, ManifestInput, OutputFacts};
-use crate::safety::TempFile;
 use crate::types::{ConvertJob, OutputFile, ProgressEvent, CONVERSION_CANCELLED_MESSAGE};
 /// FTR's supported registry and the analysis engine both cap court recordings
 /// at 16 channels. Reject corrupt or unsupported headers before allocating
@@ -284,28 +284,46 @@ pub(crate) async fn do_convert(
     .await
     .map_err(|error| format!("Audio preparation task failed: {error}"))?;
     cancel.check()?;
-    let (feed_path, _feed_guard, source) = prepared?;
+    let (prepared, source) = prepared?;
+    let merge_cancel = cancel.clone();
+    let prepared = crate::helpers::finish_prepared_feed(app, prepared, &move || merge_cancel.cancelled()).await?;
+    cancel.check()?;
+    let (job, source) = with_dcr_facts(job, source, prepared.dcr.as_ref());
 
-    do_convert_inner(app, job, &feed_path, max_bytes, cancel, source).await
+    do_convert_inner(app, &job, &prepared.path, max_bytes, cancel, source).await
 }
 
 /// Prepare the selected file for FFmpeg (an SGMCA loses its vendor prefix in a
-/// temporary Ogg copy; every other format is used as is) and fingerprint the
-/// original file as the person selected it, before any preparation, for the
-/// export record (DA-08). The temporary copy, if any, lives as long as the
-/// returned guard.
+/// temporary Ogg copy, a Liberty / BIS DCR is demuxed into a temporary WAV;
+/// every other format is used as is) and fingerprint the original file as
+/// the person selected it, before any preparation, for the export record
+/// (DA-08). Temporary files live as long as the returned feed.
 fn prepare_source(
     src: &Path,
     cancelled: &(dyn Fn() -> bool + Send + Sync),
-) -> Result<(PathBuf, Option<TempFile>, FileRecord), String> {
-    let (feed, guard) = prepare_audio_feed_with_cancel(src, Some(cancelled))?;
+) -> Result<(PreparedFeed, FileRecord), String> {
+    let prepared = prepare_audio_feed_with_cancel(src, Some(cancelled))?;
     let (sha256, size_bytes) = manifest::sha256_file(src, cancelled)?;
     let source = FileRecord {
         file_name: basename(&src.to_string_lossy()),
         sha256,
         size_bytes,
+        dcr: None,
     };
-    Ok((feed, guard, source))
+    Ok((prepared, source))
+}
+
+/// For a DCR source: split outputs and the export record's labels use the
+/// channel names read from the recording ("Ch N" where it names none),
+/// in place of the queue-wide labels, and the record gets the `source.dcr`
+/// object. The Convert queue says so before the conversion starts.
+fn with_dcr_facts(job: &ConvertJob, mut source: FileRecord, dcr: Option<&DcrInfo>) -> (ConvertJob, FileRecord) {
+    let mut job = job.clone();
+    if let Some(info) = dcr {
+        job.labels = info.channel_names.clone();
+        source.dcr = Some(info.record());
+    }
+    (job, source)
 }
 
 /// What the probes found before the FFmpeg command is planned.
@@ -1290,7 +1308,18 @@ mod tests {
             !matches!(format.handler.as_str(), "rejected" | "ftr"),
             "this harness covers container formats only"
         );
-        let (feed, _feed_guard, source) = prepare_source(Path::new(&job.src_path), &|| false)?;
+        let (mut prepared, source) = prepare_source(Path::new(&job.src_path), &|| false)?;
+        if let Some(merge) = prepared.merge.take() {
+            let output = std::process::Command::new("ffmpeg").args(&merge.args).output().unwrap();
+            if !output.status.success() {
+                let codec = prepared.dcr.as_ref().map(|info| info.codec.clone()).unwrap_or_default();
+                return Err(crate::helpers::dcr_merge_error(&codec, &output.stderr));
+            }
+        }
+        let (job, source) = with_dcr_facts(job, source, prepared.dcr.as_ref());
+        let job = &job;
+        let feed = prepared.path.clone();
+        let _feed_guard = prepared.guard;
 
         let probe = |args: Vec<String>| {
             let output = std::process::Command::new("ffprobe").args(args).output().unwrap();
@@ -1835,6 +1864,7 @@ mod tests {
                 file_name: "session.wav".into(),
                 sha256: "a".repeat(64),
                 size_bytes: 12,
+                dcr: None,
             },
             probed: &probes.probed,
             labels: &job.labels,
@@ -2231,5 +2261,382 @@ mod tests {
         }
         // And the slice is a valid Direct Audio file in its own right.
         assert!(crate::sgmca::verify_written(&cut, None).is_ok());
+    }
+
+    // ── Liberty / BIS Digital DCR (synthetic) ───────────────────────────────
+    // Built by crate::dcr's test builder from generated tones, following the
+    // layout in crate::dcr (owner-supplied interoperability notes; not yet
+    // confirmed against a recorded file). No real recording is used.
+
+    use crate::dcr::tests::{waveformatex, DcrBuilder, SECRET_DOCKET};
+
+    const DCR_RATE: u32 = 16_000;
+    const DCR_NAMES: [&str; 4] = ["Judge", "Witness", "Plaintiff", "Defense"];
+
+    fn dcr_tone(index: usize, frame: u64) -> i16 {
+        let frequency = [300.0, 450.0, 600.0, 750.0][index];
+        crate::dcr::tests::sine_i16(frequency, SYNTHETIC_CHANNEL_VOLUMES[index], DCR_RATE, frame)
+    }
+
+    /// A 16-bit PCM DCR with one tone per active channel at
+    /// `SYNTHETIC_CHANNEL_VOLUMES`, with a video frame, two attachments and
+    /// plain-section markers between atoms.
+    fn synthetic_pcm_dcr(dir: &Path, name: &str, mask: u64, legacy: bool) -> PathBuf {
+        let channels = mask.count_ones() as usize;
+        let mut builder = DcrBuilder::new(crate::dcr::tests::pcm16_format(DCR_RATE), mask, &DCR_NAMES[..channels]);
+        if legacy {
+            builder = builder.legacy();
+        }
+        builder.marker(b"audi#mrk");
+        let frames = (SYNTHETIC_SECONDS * f64::from(DCR_RATE)) as u64;
+        for frame in 0..frames {
+            if frame == frames / 3 {
+                builder
+                    .video_frame(64)
+                    .attachment(32, 1)
+                    .marker(b"audi#mrk")
+                    .attachment(16, 0);
+            }
+            for channel in 0..channels {
+                builder.data.extend_from_slice(&dcr_tone(channel, frame).to_le_bytes());
+            }
+        }
+        builder.write(dir, name)
+    }
+
+    fn assert_duration_near(path: &Path, seconds: f64, tolerance: f64) {
+        let probe = ffprobe_json(path, &["-show_format"]);
+        let duration: f64 = probe["format"]["duration"].as_str().unwrap().parse().unwrap();
+        assert!(
+            (duration - seconds).abs() < tolerance,
+            "{} lasts {duration} s",
+            path.display()
+        );
+    }
+
+    /// The export record of a DCR conversion, checked against the schema and
+    /// the files, with no case, docket or password text anywhere in it.
+    fn checked_dcr_record(output: &OutputFile, source: &Path, channels: u32) -> serde_json::Value {
+        let path = manifest::manifest_path_for(Path::new(&output.path));
+        let text = fs::read_to_string(&path).unwrap();
+        for secret in [SECRET_DOCKET, "hunter2", "DOCKNOTA", "TIMEZONE"] {
+            assert!(!text.contains(secret), "{secret} reached the export record");
+        }
+        let record: serde_json::Value = serde_json::from_str(&text).unwrap();
+        let errors = manifest::tests::schema_errors_for_value(&record);
+        assert!(errors.is_empty(), "{}: {errors:#?}", path.display());
+        assert_eq!(record["source"]["fileName"], basename(&source.to_string_lossy()));
+        assert_eq!(record["source"]["sha256"], sha256_of(source));
+        assert_eq!(record["output"]["sha256"], sha256_of(Path::new(&output.path)));
+        assert_eq!(record["channel"]["sourceChannelCount"], channels);
+        let dcr = &record["source"]["dcr"];
+        assert_eq!(dcr["channels"], channels);
+        assert_eq!(dcr["checksum"], "not checked");
+        assert_eq!(
+            dcr["layoutSource"],
+            "owner-supplied interoperability notes; not yet confirmed against a recorded file"
+        );
+        record
+    }
+
+    fn assert_split_levels(conversion: &CourtConversion, base: &str, names: &[&str], volumes: &[f64], extension: &str) {
+        assert_eq!(conversion.files.len(), names.len());
+        let mut previous = f64::INFINITY;
+        for ((file, name), volume) in conversion.files.iter().zip(names).zip(volumes) {
+            assert_eq!(file.name, format!("{base}_{name}{extension}"));
+            let peak = max_volume_db(Path::new(&file.path));
+            let expected = 20.0 * volume.log10();
+            assert!(
+                (peak - expected).abs() < 1.5,
+                "{name}: peak {peak} dB, expected {expected:.1} dB"
+            );
+            assert!(
+                peak < previous - 3.0,
+                "{name} is not quieter than the channel before it"
+            );
+            previous = peak;
+        }
+    }
+
+    #[test]
+    fn synthetic_four_channel_pcm_dcr_splits_by_channel_name_in_mask_bit_order() {
+        if !court_fixture_tools_available() {
+            return;
+        }
+        let dir = ConversionTestDir::new();
+        // Bits 0, 1, 2 and 4: a gap at bit 3.
+        let source = synthetic_pcm_dcr(&dir.0, "hearing.dcr", 0b1_0111, false);
+        let original = fs::read(&source).unwrap();
+        let out = dir.0.join("split");
+        fs::create_dir(&out).unwrap();
+        let mut job = court_job(&source, &out, "split", "wav");
+        job.labels = ["Mic A", "Mic B", "Mic C", "Mic D"].map(String::from).to_vec();
+        let conversion = convert_with_system_ffmpeg(&job, None).unwrap();
+        assert_split_levels(&conversion, "hearing", &DCR_NAMES, &SYNTHETIC_CHANNEL_VOLUMES, ".wav");
+        for (index, file) in conversion.files.iter().enumerate() {
+            assert_audio(Path::new(&file.path), 1, "48000");
+            let record = checked_dcr_record(file, &source, 4);
+            assert_eq!(record["channel"]["label"], DCR_NAMES[index]);
+            assert_eq!(record["channel"]["sourceChannelIndex"], index);
+            let dcr = &record["source"]["dcr"];
+            assert_eq!(dcr["version"], 2100);
+            assert_eq!(dcr["codec"], "PCM 16-bit");
+            assert_eq!(dcr["codecTag"], 1);
+            assert_eq!(dcr["channelNames"], serde_json::json!(DCR_NAMES));
+            assert_eq!(dcr["atoms"], 32_000);
+            assert_eq!(dcr["videoFramesSkipped"], 1);
+            assert_eq!(dcr["attachmentsSkipped"], 2);
+            assert_eq!(dcr["conferenceChanges"], serde_json::json!([]));
+        }
+        assert_eq!(fs::read(&source).unwrap(), original, "the original is never modified");
+        assert!(!conversion.feed.exists(), "the temporary DCR feed was left behind");
+
+        for (mode, format, channels) in [("keep", "flac", 4), ("stereo", "wav", 2)] {
+            let out = dir.0.join(mode);
+            fs::create_dir(&out).unwrap();
+            let conversion = convert_with_system_ffmpeg(&court_job(&source, &out, mode, format), None).unwrap();
+            assert_eq!(conversion.files.len(), 1, "{mode}");
+            assert_audio(Path::new(&conversion.files[0].path), channels, "48000");
+            checked_dcr_record(&conversion.files[0], &source, 4);
+        }
+    }
+
+    #[test]
+    fn synthetic_legacy_two_channel_dcr_mixes_and_keeps_channel_order() {
+        if !court_fixture_tools_available() {
+            return;
+        }
+        let dir = ConversionTestDir::new();
+        let source = synthetic_pcm_dcr(&dir.0, "older.dcr", 0b11, true);
+        let out = dir.0.join("keep");
+        fs::create_dir(&out).unwrap();
+        let conversion = convert_with_system_ffmpeg(&court_job(&source, &out, "keep", "wav"), None).unwrap();
+        let output = Path::new(&conversion.files[0].path);
+        assert_audio(output, 2, "48000");
+        let left = max_volume_db_with(output, "pan=mono|c0=c0,volumedetect");
+        let right = max_volume_db_with(output, "pan=mono|c0=c1,volumedetect");
+        assert!((left - 20.0 * 0.5f64.log10()).abs() < 1.5, "left {left}");
+        assert!((right - 20.0 * 0.25f64.log10()).abs() < 1.5, "right {right}");
+        let record = checked_dcr_record(&conversion.files[0], &source, 2);
+        assert_eq!(record["source"]["dcr"]["version"], 2005);
+        // Version 20.xx keeps no channel names.
+        assert_eq!(record["channel"]["labels"], serde_json::json!(["Ch 1", "Ch 2"]));
+    }
+
+    /// FFmpeg-encoded mono tones for each channel, as (fmt chunk, data).
+    fn encoded_tones(dir: &Path, codec: &[&str], volumes: &[f64]) -> Vec<(Vec<u8>, Vec<u8>)> {
+        volumes
+            .iter()
+            .enumerate()
+            .map(|(index, volume)| {
+                let path = dir.join(format!("tone{index}.wav"));
+                let mut args: Vec<String> = vec![
+                    "-f".into(),
+                    "lavfi".into(),
+                    "-i".into(),
+                    format!(
+                        "sine=frequency={}:duration={SYNTHETIC_SECONDS}:sample_rate=8000",
+                        300 + 150 * index
+                    ),
+                    // lavfi's sine peaks at 1/8 of full scale.
+                    "-af".into(),
+                    format!("volume={}", volume * 8.0),
+                    "-ac".into(),
+                    "1".into(),
+                ];
+                args.extend(codec.iter().map(|arg| arg.to_string()));
+                args.extend([
+                    "-f".into(),
+                    "wav".into(),
+                    "-y".into(),
+                    path.to_string_lossy().to_string(),
+                ]);
+                run_ffmpeg(&args);
+                let bytes = fs::read(&path).unwrap();
+                fs::remove_file(&path).unwrap();
+                let mut at = 12;
+                let mut fmt = Vec::new();
+                loop {
+                    let id = &bytes[at..at + 4];
+                    let size = u32::from_le_bytes(bytes[at + 4..at + 8].try_into().unwrap()) as usize;
+                    if id == b"fmt " {
+                        fmt = bytes[at + 8..at + 8 + size].to_vec();
+                    }
+                    if id == b"data" {
+                        let end = (at + 8 + size).min(bytes.len());
+                        return (fmt, bytes[at + 8..end].to_vec());
+                    }
+                    at += 8 + size + size % 2;
+                }
+            })
+            .collect()
+    }
+
+    /// A DCR from per-channel coded block streams: atom N holds block N of
+    /// each channel active then. `joins_at` adds the last channel at that
+    /// block (a remote participant, `ptch#str`), silent before it.
+    fn coded_dcr(dir: &Path, name: &str, tones: &[(Vec<u8>, Vec<u8>)], joins_at: Option<usize>) -> PathBuf {
+        let fmt = tones[0].0.clone();
+        let align = usize::from(u16::from_le_bytes([fmt[12], fmt[13]]));
+        let blocks = tones.iter().map(|(_, data)| data.len() / align).min().unwrap();
+        let channels = tones.len();
+        let initial = if joins_at.is_some() { channels - 1 } else { channels };
+        let mut builder = DcrBuilder::new(fmt, (1u64 << initial) - 1, &DCR_NAMES[..initial]);
+        builder.marker(b"audi#mrk");
+        for block in 0..blocks {
+            if joins_at == Some(block) {
+                builder.participant(true, "1");
+            }
+            let present = if joins_at.is_some_and(|at| block < at) {
+                initial
+            } else {
+                channels
+            };
+            for (_, data) in &tones[..present] {
+                builder
+                    .data
+                    .extend_from_slice(&data[block * align..(block + 1) * align]);
+            }
+        }
+        builder.write(dir, name)
+    }
+
+    #[test]
+    fn synthetic_a_law_dcr_splits_in_channel_order() {
+        if !court_fixture_tools_available() {
+            return;
+        }
+        let dir = ConversionTestDir::new();
+        let volumes = &SYNTHETIC_CHANNEL_VOLUMES[..2];
+        let tones = encoded_tones(&dir.0, &["-c:a", "pcm_alaw"], volumes);
+        assert_eq!(&tones[0].0[..2], &[6, 0], "A-law format tag");
+        let source = coded_dcr(&dir.0, "alaw.dcr", &tones, None);
+        let out = dir.0.join("out");
+        fs::create_dir(&out).unwrap();
+        let conversion = convert_with_system_ffmpeg(&court_job(&source, &out, "split", "wav"), None).unwrap();
+        assert_split_levels(&conversion, "alaw", &DCR_NAMES[..2], volumes, ".wav");
+        let record = checked_dcr_record(&conversion.files[0], &source, 2);
+        assert_eq!(record["source"]["dcr"]["codec"], "A-law");
+    }
+
+    #[test]
+    fn synthetic_ima_adpcm_dcr_merges_channels_and_silences_a_late_participant() {
+        if !court_fixture_tools_available() {
+            return;
+        }
+        let dir = ConversionTestDir::new();
+        let volumes = &SYNTHETIC_CHANNEL_VOLUMES[..3];
+        let tones = encoded_tones(&dir.0, &["-c:a", "adpcm_ima_wav"], volumes);
+        assert_eq!(&tones[0].0[..2], &[0x11, 0], "IMA ADPCM format tag");
+        let align = usize::from(u16::from_le_bytes([tones[0].0[12], tones[0].0[13]]));
+        let blocks = tones[0].1.len() / align;
+        let joins_at = blocks / 2;
+        let source = coded_dcr(&dir.0, "remote.dcr", &tones, Some(joins_at));
+        let out = dir.0.join("out");
+        fs::create_dir(&out).unwrap();
+        let conversion = convert_with_system_ffmpeg(&court_job(&source, &out, "split", "wav"), None).unwrap();
+        assert!(!conversion.feed.exists(), "the merged feed was left behind");
+        let names = ["Judge", "Witness", "Ch 3"];
+        assert_eq!(conversion.files.len(), 3);
+        for (file, name) in conversion.files.iter().zip(names) {
+            assert_eq!(file.name, format!("remote_{}.wav", name.replace(' ', "_")));
+            assert_duration_near(Path::new(&file.path), SYNTHETIC_SECONDS, 0.3);
+        }
+        // Each channel at its own level, in order.
+        for (index, file) in conversion.files.iter().enumerate().take(2) {
+            let peak = max_volume_db(Path::new(&file.path));
+            let expected = 20.0 * volumes[index].log10();
+            assert!((peak - expected).abs() < 1.5, "{}: {peak} vs {expected}", file.name);
+        }
+        // The participant's channel is silent before the join and at its
+        // own level after it; the timeline stays aligned.
+        let late = Path::new(&conversion.files[2].path);
+        let samples_per_block = u16::from_le_bytes([tones[0].0[18], tones[0].0[19]]);
+        let join_seconds = (joins_at as f64 * f64::from(samples_per_block)) / 8000.0;
+        let before = max_volume_db_between(late, 0.0, join_seconds - 0.05);
+        let after = max_volume_db_between(late, join_seconds + 0.05, SYNTHETIC_SECONDS - 0.1);
+        assert!(before < -80.0, "the absent channel is not silent: {before} dB");
+        assert!(
+            (after - 20.0 * volumes[2].log10()).abs() < 1.5,
+            "after joining: {after} dB"
+        );
+
+        let record = checked_dcr_record(&conversion.files[2], &source, 3);
+        let dcr = &record["source"]["dcr"];
+        assert_eq!(dcr["codec"], "IMA ADPCM");
+        assert_eq!(dcr["conferenceChangeCount"], 1);
+        let change = &dcr["conferenceChanges"][0];
+        assert_eq!(change["kind"], "joined");
+        assert_eq!(change["channelsAfter"], 3);
+        assert_eq!(change["bitGuessed"], true);
+        assert_eq!(change["atPerChannelByte"], (joins_at * align) as u64);
+    }
+
+    #[test]
+    fn synthetic_mp3_and_gsm_dcrs_merge_their_mono_channels() {
+        if !court_fixture_tools_available() {
+            return;
+        }
+        let encoders = String::from_utf8_lossy(
+            &std::process::Command::new("ffmpeg")
+                .args(["-hide_banner", "-encoders"])
+                .output()
+                .unwrap()
+                .stdout,
+        )
+        .to_string();
+        let dir = ConversionTestDir::new();
+        let volumes = &SYNTHETIC_CHANNEL_VOLUMES[..2];
+        for (encoder, codec, tag) in [("libmp3lame", "MP3", 0x55u8), ("libgsm_ms", "GSM 6.10", 0x31)] {
+            if !encoders.contains(encoder) {
+                eprintln!("skipping {codec}: FFmpeg has no {encoder} encoder");
+                continue;
+            }
+            let mut args = vec!["-c:a", encoder];
+            if encoder == "libmp3lame" {
+                args.extend(["-b:a", "64k"]);
+            }
+            let tones = encoded_tones(&dir.0, &args, volumes);
+            assert_eq!(tones[0].0[0], tag, "{codec} format tag");
+            let name = format!("{}.dcr", encoder);
+            let source = coded_dcr(&dir.0, &name, &tones, None);
+            let out = dir.0.join(encoder);
+            fs::create_dir(&out).unwrap();
+            let conversion = convert_with_system_ffmpeg(&court_job(&source, &out, "split", "wav"), None)
+                .unwrap_or_else(|error| panic!("{codec}: {error}"));
+            assert_split_levels(&conversion, encoder, &DCR_NAMES[..2], volumes, ".wav");
+            assert!(!conversion.feed.exists(), "{codec}: the merged feed was left behind");
+            let record = checked_dcr_record(&conversion.files[0], &source, 2);
+            assert_eq!(record["source"]["dcr"]["codec"], codec);
+        }
+    }
+
+    #[test]
+    fn protected_and_unsupported_dcrs_fail_before_any_output() {
+        if !court_fixture_tools_available() {
+            return;
+        }
+        let dir = ConversionTestDir::new();
+        let mut protected = DcrBuilder::new(crate::dcr::tests::pcm16_format(DCR_RATE), 0b1, &["Judge"]);
+        protected.have_rec = "1";
+        protected.atom(&[&[0, 0]]);
+        let mut encrypted = DcrBuilder::new(crate::dcr::tests::pcm16_format(DCR_RATE), 0b1, &["Judge"]);
+        encrypted.atom(&[&[0, 0]]).marker(b"audi#crp").atom(&[&[9, 9]]);
+        let mut speex = DcrBuilder::new(waveformatex(0xA109, 8000, 1000, 20, 16, &[0; 4]), 0b1, &[]);
+        speex.atom(&[&[0; 20]]);
+        for (name, builder, expected) in [
+            ("protected.dcr", protected, crate::dcr::PROTECTED_MESSAGE),
+            ("encrypted.dcr", encrypted, crate::dcr::PROTECTED_MESSAGE),
+            ("speex.dcr", speex, crate::dcr::SPEEX_MESSAGE),
+        ] {
+            let source = builder.write(&dir.0, name);
+            let out = dir.0.join(format!("out-{name}"));
+            fs::create_dir(&out).unwrap();
+            let error = convert_with_system_ffmpeg(&court_job(&source, &out, "split", "wav"), None)
+                .err()
+                .unwrap_or_else(|| panic!("{name} converted"));
+            assert_eq!(error, expected, "{name}");
+            assert_eq!(fs::read_dir(&out).unwrap().count(), 0, "{name}: something was written");
+        }
     }
 }

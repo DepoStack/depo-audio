@@ -76,3 +76,47 @@ export function audioTrackNotice(info) {
     tags.length ? ` (${tags.join(', ')})` : ''
   }. The other ${others === 1 ? 'track is' : `${others} tracks are`} not converted.`
 }
+
+// HH:MM:SS for a queue notice.
+function clockTime(seconds) {
+  const total = Math.max(0, Math.floor(Number(seconds) || 0))
+  const pad = value => String(value).padStart(2, '0')
+  return `${pad(Math.floor(total / 3600))}:${pad(Math.floor((total % 3600) / 60))}:${pad(total % 60)}`
+}
+
+// Shown in full up to this many remote-participant changes; the rest are counted.
+const DCR_CHANGES_LISTED = 3
+
+// Plain notices for a queued Liberty / BIS Digital DCR, from the `dcr`
+// summary in probe_audio_streams_cmd's answer (DepoAudio's own reader, not
+// ffprobe). A recording that cannot be converted gets only the reason.
+// Nothing here comes from the recording's case or docket fields.
+export function dcrQueueNotices(info) {
+  const dcr = info?.dcr
+  if (!dcr || typeof dcr !== 'object') return []
+  if (dcr.problem) return [String(dcr.problem)]
+  const notices = []
+  const names = Array.isArray(dcr.channelNames) ? dcr.channelNames.filter(name => typeof name === 'string') : []
+  if (names.length > 0) {
+    notices.push(
+      `Channels read from the recording: ${names.join(', ')}. Split outputs and export records use these names instead of the channel labels below.`,
+    )
+  }
+  const changes = Array.isArray(dcr.conferenceChanges) ? dcr.conferenceChanges : []
+  for (const change of changes.slice(0, DCR_CHANGES_LISTED)) {
+    notices.push(
+      `A remote participant joined or left at ${clockTime(change?.atSeconds)}; DepoAudio's channel order after that point is a best guess.`,
+    )
+  }
+  const total = Number.isInteger(dcr.conferenceChangeCount) ? dcr.conferenceChangeCount : changes.length
+  const unlisted = total - Math.min(changes.length, DCR_CHANGES_LISTED)
+  if (unlisted > 0) {
+    notices.push(
+      `${unlisted} more remote-participant ${unlisted === 1 ? 'change follows' : 'changes follow'}; the export record lists them.`,
+    )
+  }
+  if (dcr.videoFrames > 0 || dcr.attachments > 0) {
+    notices.push('This recording also holds video frames or attachments; only the audio is converted.')
+  }
+  return notices
+}

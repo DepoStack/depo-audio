@@ -126,7 +126,7 @@ export default function PlayerTab({ dropHandlerRef, onConvertFiles, openRequest,
     if (conversionRequired.length > 0) {
       setConvertFirstPaths(prev => [...new Set([...prev, ...conversionRequired])])
       setPlaybackError(
-        'Court-recorder .sgmca/.trm/.ftr files require conversion before playback. Send them to Convert and create a standard audio file first.',
+        'Court-recorder .sgmca/.trm/.ftr/.dcr files require conversion before playback. Send them to Convert and create a standard audio file first.',
       )
     }
 

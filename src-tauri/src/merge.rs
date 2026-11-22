@@ -146,8 +146,8 @@ fn validate_merge_job(job: &MergeJob) -> Result<ValidatedMergeJob, String> {
 /// Strip an SGMCA vendor prefix once and keep the temporary Ogg feed alive for
 /// the whole merge. Reusing it avoids copying a potentially large recording
 /// for duration probing, sync detection, and final decoding independently.
-async fn prepare_merge_source(path: PathBuf) -> Result<(PathBuf, Option<TempFile>), String> {
-    crate::helpers::prepare_audio_feed_cancellable(path, Arc::new(|| false)).await
+async fn prepare_merge_source(app: &AppHandle, path: PathBuf) -> Result<(PathBuf, Option<TempFile>), String> {
+    crate::helpers::prepare_audio_feed_cancellable(app, path, Arc::new(|| false)).await
 }
 
 /// Result of analyzing sync between two audio files.
@@ -185,8 +185,8 @@ pub(crate) async fn detect_sync(app: &AppHandle, source_a: &str, source_b: &str)
     if source_a == source_b {
         return Err("Choose two different source files for sync detection".into());
     }
-    let (source_a, _guard_a) = prepare_merge_source(source_a).await?;
-    let (source_b, _guard_b) = prepare_merge_source(source_b).await?;
+    let (source_a, _guard_a) = prepare_merge_source(app, source_a).await?;
+    let (source_b, _guard_b) = prepare_merge_source(app, source_b).await?;
     detect_sync_paths(app, &source_a, &source_b).await
 }
 
@@ -338,7 +338,7 @@ pub(crate) async fn merge_audio(app: &AppHandle, job: &MergeJob) -> Result<Merge
     let mut prepared_sources = Vec::with_capacity(job.sources.len());
     let mut source_guards = Vec::new();
     for source in &job.sources {
-        let (prepared, guard) = prepare_merge_source(source.clone()).await?;
+        let (prepared, guard) = prepare_merge_source(app, source.clone()).await?;
         prepared_sources.push(prepared);
         if let Some(guard) = guard {
             source_guards.push(guard);

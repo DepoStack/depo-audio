@@ -366,7 +366,7 @@ async fn decode_waveform(app: &AppHandle, key: &FileKey, cancelled: Arc<AtomicBo
     let preparation_flag = cancelled.clone();
     let preparation_cancelled: Arc<dyn Fn() -> bool + Send + Sync> =
         Arc::new(move || preparation_flag.load(Ordering::Acquire));
-    let (feed, _feed_guard) = prepare_audio_feed_cancellable(source, preparation_cancelled)
+    let (feed, _feed_guard) = prepare_audio_feed_cancellable(app, source, preparation_cancelled)
         .await
         .map_err(|error| {
             if is_cancelled() {

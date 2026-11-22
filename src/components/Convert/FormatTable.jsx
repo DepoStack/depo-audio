@@ -78,6 +78,7 @@ function FormatRow({ row }) {
       <div className="min-w-0">
         <span className="block truncate font-mono text-[12px] text-foreground">{row.ext}</span>
         <span className="block truncate type-small text-[hsl(var(--sub))]">{row.vendor}</span>
+        {row.note && <span className="block type-small text-[hsl(var(--sub))]">{row.note}</span>}
       </div>
       <div className="flex items-center gap-3">
         <span className="tabular-nums text-[12px] text-[hsl(var(--sub))]">{row.ch}</span>
