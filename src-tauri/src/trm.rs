@@ -589,8 +589,10 @@ fn recorder_file_name(text: &str) -> Option<(String, u64)> {
 /// UTF-16LE text up to its first NUL.
 fn utf16_text(bytes: &[u8]) -> String {
     let units: Vec<u16> = bytes
-        .chunks_exact(2)
-        .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|pair| u16::from_le_bytes(*pair))
         .take_while(|unit| *unit != 0)
         .collect();
     String::from_utf16_lossy(&units)
@@ -3223,8 +3225,10 @@ pub(crate) mod tests {
         assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
         output
             .stdout
-            .chunks_exact(4)
-            .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|b| f32::from_le_bytes(*b))
             .collect()
     }
 
