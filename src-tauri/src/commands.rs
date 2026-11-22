@@ -704,7 +704,11 @@ pub fn local_data_clear_cmd(app: AppHandle, state: State<'_, AppState>) -> Resul
     let mut library = state.library.lock().unwrap_or_else(|e| e.into_inner());
     let mut prefs = state.prefs.lock().unwrap_or_else(|e| e.into_inner());
 
-    let outcome = crate::localdata::clear_app_data_in(&dir);
+    let mut outcome = crate::localdata::clear_app_data_in(&dir);
+    // Leftover temporary audio copies from runs that are no longer open; this
+    // run's own folder (a Scan or waveform may be using it) is kept.
+    let sweep = crate::workdir::sweep_now();
+    outcome.failed.extend(sweep.failed);
     let failed = |name: &str| outcome.failed.iter().any(|(failed, _)| failed == name);
 
     let mut warning = None;

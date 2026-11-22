@@ -19,6 +19,7 @@ mod safety;
 mod sgmca;
 pub mod types;
 mod waveform;
+mod workdir;
 
 use tauri::Manager;
 use types::AppState;
@@ -93,6 +94,11 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .manage(AppState::default())
         .setup(|app| {
+            // The private folder for temporary audio copies (workdir.rs).
+            match app.path().app_cache_dir() {
+                Ok(cache_dir) => workdir::launch(&cache_dir),
+                Err(error) => eprintln!("[workdir] No app cache folder: {error}"),
+            }
             setup_persistence(app.handle());
             // Auto-update is available only when the release overlay contains
             // a complete signed-updater configuration. Tauri exposes a missing

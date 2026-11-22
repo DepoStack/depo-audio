@@ -5,7 +5,6 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
 
 use regex::Regex;
-use uuid::Uuid;
 
 use crate::types::FormatInfo;
 
@@ -390,7 +389,7 @@ pub(crate) const AUDIO_PREPARATION_CANCELLED_MESSAGE: &str = "Audio preparation 
 fn strip_sgmca_header_with_cancel(
     src: &Path,
     cancelled: Option<&(dyn Fn() -> bool + Send + Sync)>,
-) -> Result<(PathBuf, bool), String> {
+) -> Result<(PathBuf, Option<crate::safety::TempFile>), String> {
     let is_cancelled = || cancelled.is_some_and(|check| check());
     if is_cancelled() {
         return Err(AUDIO_PREPARATION_CANCELLED_MESSAGE.into());
@@ -411,51 +410,35 @@ fn strip_sgmca_header_with_cancel(
         return Err(AUDIO_PREPARATION_CANCELLED_MESSAGE.into());
     }
     if offset == 0 {
-        return Ok((src.to_path_buf(), false));
+        return Ok((src.to_path_buf(), None));
     }
 
-    // Security note: UUID-based temp filenames are unpredictable, which is sufficient
-    // for a single-user desktop app. The system temp dir inherits OS-level permissions
-    // (typically user-only on macOS/Windows). For multi-user or server contexts, consider
-    // creating a private subdirectory with restrictive permissions (0o700).
-    // The copy keeps the .sgmca extension so every later step treats it as
-    // SGMCA (decoder choice included); FFmpeg finds the Ogg stream by content.
-    let tmp = std::env::temp_dir().join(format!(
-        "depoaudio_{}.sgmca",
-        Uuid::new_v4().to_string().replace('-', "")
-    ));
+    // The copy goes in DepoAudio's private work folder (workdir.rs). It
+    // keeps the .sgmca extension so every later step treats it as SGMCA
+    // (decoder choice included); FFmpeg finds the Ogg stream by content.
     file.seek(SeekFrom::Start(offset)).map_err(|e| e.to_string())?;
-    let copy_result = (|| -> Result<(), String> {
-        let mut out = fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&tmp)
-            .map_err(|error| error.to_string())?;
-        let mut chunk = vec![0u8; 65536];
-        loop {
-            if is_cancelled() {
-                return Err(AUDIO_PREPARATION_CANCELLED_MESSAGE.into());
-            }
-            let n = file.read(&mut chunk).map_err(|error| error.to_string())?;
-            if n == 0 {
-                break;
-            }
-            out.write_all(&chunk[..n]).map_err(|error| error.to_string())?;
-        }
+    let (guard, mut out) = crate::workdir::new_temp_file("depoaudio_", "sgmca")?;
+    // On any error or cancellation the guard drops and removes the copy.
+    let mut chunk = vec![0u8; 65536];
+    loop {
         if is_cancelled() {
             return Err(AUDIO_PREPARATION_CANCELLED_MESSAGE.into());
         }
-        out.sync_all().map_err(|error| error.to_string())
-    })();
-    if let Err(error) = copy_result {
-        let _ = fs::remove_file(&tmp);
-        return Err(error.to_string());
+        let n = file.read(&mut chunk).map_err(|error| error.to_string())?;
+        if n == 0 {
+            break;
+        }
+        out.write_all(&chunk[..n]).map_err(|error| error.to_string())?;
     }
-    Ok((tmp, true))
+    if is_cancelled() {
+        return Err(AUDIO_PREPARATION_CANCELLED_MESSAGE.into());
+    }
+    // Read back by this run only: no sync_all.
+    Ok((guard.path.clone(), Some(guard)))
 }
 
 #[cfg(test)]
-pub(crate) fn strip_sgmca_header(src: &Path) -> Result<(PathBuf, bool), String> {
+pub(crate) fn strip_sgmca_header(src: &Path) -> Result<(PathBuf, Option<crate::safety::TempFile>), String> {
     strip_sgmca_header_with_cancel(src, None)
 }
 
@@ -474,20 +457,13 @@ fn demux_dm_with_cancel(
     if crate::dm::audio_totals(&dm).0 == 0 {
         return Err("This .dm file has no audio left to convert: every block was recorded over or empty.".into());
     }
-    // Same temporary-file rules as the SGMCA copy above.
-    let tmp = std::env::temp_dir().join(format!("depoaudio_{}.wav", Uuid::new_v4().simple()));
-    let file = fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(&tmp)
-        .map_err(|error| format!("Could not create the temporary audio copy: {error}"))?;
-    let guard = crate::safety::TempFile::new(tmp);
+    // In the private work folder, like the SGMCA copy above.
+    let (guard, file) = crate::workdir::new_temp_file("depoaudio_", "wav")?;
     let mut writer = std::io::BufWriter::with_capacity(256 * 1024, file);
     crate::dm::write_wav(src, &dm, &mut writer, &is_cancelled)?;
-    let file = writer
+    // Read back by this run only: flushed, not sync_all'ed.
+    writer
         .into_inner()
-        .map_err(|error| format!("Could not write the temporary audio copy: {error}"))?;
-    file.sync_all()
         .map_err(|error| format!("Could not write the temporary audio copy: {error}"))?;
     if is_cancelled() {
         return Err(AUDIO_PREPARATION_CANCELLED_MESSAGE.into());
@@ -537,8 +513,7 @@ pub(crate) fn prepare_audio_feed_detailed(
         });
     }
 
-    let (feed, is_temp) = strip_sgmca_header_with_cancel(src, cancelled)?;
-    let guard = is_temp.then(|| crate::safety::TempFile::new(feed.clone()));
+    let (feed, guard) = strip_sgmca_header_with_cancel(src, cancelled)?;
     Ok(PreparedFeed {
         path: feed,
         guard,
@@ -868,10 +843,12 @@ mod tests {
         bytes.extend_from_slice(&stream);
         fs::write(&source, bytes).unwrap();
 
-        let (prepared, is_temp) = strip_sgmca_header(&source).unwrap();
-        assert!(is_temp);
+        let (prepared, guard) = strip_sgmca_header(&source).unwrap();
+        assert!(guard.is_some());
+        assert!(prepared.starts_with(crate::workdir::tests::test_root()));
         assert_eq!(fs::read(&prepared).unwrap(), stream);
-        fs::remove_file(prepared).unwrap();
+        drop(guard);
+        assert!(!prepared.exists(), "the copy goes with its guard");
     }
 
     #[test]
@@ -880,8 +857,8 @@ mod tests {
         let source = dir.path().join("plain.sgmca");
         fs::write(&source, crate::sgmca::fixtures::synthetic(5, 312, 0, |_| 30)).unwrap();
 
-        let (prepared, is_temp) = strip_sgmca_header(&source).unwrap();
-        assert!(!is_temp);
+        let (prepared, guard) = strip_sgmca_header(&source).unwrap();
+        assert!(guard.is_none());
         assert_eq!(prepared, source);
     }
 
@@ -912,6 +889,10 @@ mod tests {
 
         assert_eq!(error, AUDIO_PREPARATION_CANCELLED_MESSAGE);
         assert!(checks.load(Ordering::Relaxed) >= 5);
+        assert!(
+            crate::workdir::tests::thread_run_files().is_empty(),
+            "a cancelled copy is removed"
+        );
     }
 
     #[test]
@@ -939,6 +920,7 @@ mod tests {
 
         let prepared = prepare_audio_feed_detailed(&source, None).unwrap();
         assert_ne!(prepared.path, source);
+        assert!(prepared.path.starts_with(crate::workdir::tests::test_root()));
         assert_eq!(prepared.path.extension().unwrap(), "wav");
         let wav = fs::read(&prepared.path).unwrap();
         assert_eq!(&wav[..4], b"RIFF");
@@ -954,6 +936,22 @@ mod tests {
         let cancelled = || checks.fetch_add(1, Ordering::Relaxed) >= 2;
         let error = prepare_audio_feed_with_cancel(&source, Some(&cancelled)).unwrap_err();
         assert_eq!(error, AUDIO_PREPARATION_CANCELLED_MESSAGE);
+        assert!(
+            crate::workdir::tests::thread_run_files().is_empty(),
+            "nothing is left after success or cancellation"
+        );
+
+        // A .dm whose every block is recorded over is refused, and leaves
+        // nothing behind.
+        let erased = dir.path().join("erased.dm");
+        fs::write(
+            &erased,
+            crate::dm::tests::dm_bytes(&crate::dm::tests::gsm_format(), 520, &[(0, &block), (0, &block)]),
+        )
+        .unwrap();
+        let error = prepare_audio_feed_detailed(&erased, None).err().unwrap();
+        assert!(error.contains("no audio left"), "{error}");
+        assert!(crate::workdir::tests::thread_run_files().is_empty());
 
         // A copy cut off 300 bytes into its last block still gives the
         // complete blocks before it, and the queue still gets a duration.
