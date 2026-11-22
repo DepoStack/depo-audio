@@ -118,6 +118,44 @@ describe('recordingSessionNotice', () => {
     expect(recordingSessionNotice(sgmca(2, true))).toContain('still being recorded')
   })
 
+  it('names a last session left out and the bytes after it before converting', () => {
+    const info = {
+      ...sgmca(2, true),
+      unreadBytes: 12_897_485,
+      omittedSessions: [{ number: 3, reason: 'zero-length-header', last: true }],
+    }
+    expect(recordingSessionNotice(info)).toBe(
+      'This file holds 2 recording sessions; they are joined in order (gaps between them are not kept). ' +
+        'The last session (3) could not be read: its header says 0 bytes. 12.3 MB after it were not read. ' +
+        'This file looks like it is still being recorded, or it was cut short; only its complete audio is converted.',
+    )
+  })
+
+  it('names every other way a session or bytes are left out', () => {
+    expect(
+      recordingSessionNotice({
+        ...sgmca(1, true),
+        unreadBytes: 40,
+        omittedSessions: [{ number: 2, reason: 'no-complete-audio', last: true }],
+      }),
+    ).toContain(
+      'The last session (2) could not be read: it holds no complete audio yet. 40 bytes after it were not read.',
+    )
+    expect(
+      recordingSessionNotice({
+        ...sgmca(2),
+        unreadBytes: 0,
+        omittedSessions: [{ number: 2, reason: 'empty', last: false }],
+      }),
+    ).toContain('Session 2 holds no audio: its header says 0 bytes.')
+    expect(recordingSessionNotice({ ...sgmca(1, true), unreadBytes: 1, cutShortSession: 1 })).toContain(
+      'The last session (1) is shorter than its header says; only its complete pages are read. 1 byte after it was not read.',
+    )
+    expect(recordingSessionNotice({ ...sgmca(1, true), unreadBytes: 2048, omittedSessions: [] })).toContain(
+      '2.0 KB at the end of the file were not read.',
+    )
+  })
+
   it('stays quiet for one complete session and for any other file', () => {
     expect(recordingSessionNotice(sgmca(1))).toBe('')
     expect(recordingSessionNotice({ convertedIndex: 0, streams: [] })).toBe('')

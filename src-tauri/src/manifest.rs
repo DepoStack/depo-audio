@@ -200,6 +200,16 @@ pub struct AudioStreamsInfo {
     /// For an SGMCA file: it looked still recording or cut short.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub still_recording: Option<bool>,
+    /// For an SGMCA file: bytes after the last complete page read, which are
+    /// not converted (see `SgmcaInfo::unread_bytes`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub unread_bytes: Option<u64>,
+    /// For an SGMCA file: the recording sessions that are not read, and why.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub omitted_sessions: Option<Vec<crate::sgmca::OmittedSegment>>,
+    /// For an SGMCA file: a last session shorter than its header says.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cut_short_session: Option<u32>,
 }
 
 /// The queue's view of an SGMCA file, from its own headers and pages (ffprobe
@@ -218,6 +228,9 @@ pub(crate) fn sgmca_audio_streams(info: &crate::sgmca::SgmcaInfo) -> AudioStream
         duration_secs: (info.duration_seconds > 0.0).then_some(info.duration_seconds),
         recording_sessions: Some(info.segments.len() as u32),
         still_recording: Some(info.growing),
+        unread_bytes: Some(info.unread_bytes),
+        omitted_sessions: Some(info.omitted_segments.clone()),
+        cut_short_session: info.cut_short_segment,
     }
 }
 
@@ -294,6 +307,9 @@ pub(crate) fn parse_audio_streams(probe: &serde_json::Value) -> AudioStreamsInfo
         duration_secs,
         recording_sessions: None,
         still_recording: None,
+        unread_bytes: None,
+        omitted_sessions: None,
+        cut_short_session: None,
     }
 }
 
@@ -412,8 +428,23 @@ pub(crate) struct SgmcaSourceRecord {
     /// The file looked still recording or cut short; only complete pages
     /// were converted.
     pub growing: bool,
+    /// Bytes of the file after the last complete Ogg page converted, not
+    /// counting the headers of sessions left out; none of them is converted.
+    pub unread_bytes: u64,
+    /// Recording sessions in the file that were not converted, and why.
+    pub omitted_segments: Vec<SgmcaOmittedRecord>,
     /// No Direct Audio header: a bare Ogg Opus stream (older DepoAudio).
     pub legacy_bare_ogg: bool,
+}
+
+/// A recording session of an SGMCA source that was not converted.
+#[derive(Debug, Serialize, Clone, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct SgmcaOmittedRecord {
+    /// 1-based position of the segment header in the file.
+    pub index: u32,
+    /// `zero-length-header`, `no-complete-audio` or `empty`.
+    pub reason: &'static str,
 }
 
 #[derive(Debug, Serialize, Clone, PartialEq)]
@@ -460,6 +491,15 @@ pub(crate) fn sgmca_source_record(info: &crate::sgmca::SgmcaInfo) -> SgmcaSource
         guid_present: info.guid_present,
         segments: sgmca_segment_records(info),
         growing: info.growing,
+        unread_bytes: info.unread_bytes,
+        omitted_segments: info
+            .omitted_segments
+            .iter()
+            .map(|omitted| SgmcaOmittedRecord {
+                index: omitted.number,
+                reason: omitted.reason.as_str(),
+            })
+            .collect(),
         legacy_bare_ogg: info.container == crate::sgmca::Container::BareOgg,
     }
 }
@@ -822,6 +862,11 @@ pub(crate) mod tests {
                 },
             ],
             growing: true,
+            unread_bytes: 12_345,
+            omitted_segments: vec![SgmcaOmittedRecord {
+                index: 4,
+                reason: "zero-length-header",
+            }],
             legacy_bare_ogg: false,
         });
         manifest.output.format = "sgmca".into();
@@ -862,6 +907,8 @@ pub(crate) mod tests {
                 ..sgmca_segment("", 0, 1.0)
             }],
             growing: false,
+            unread_bytes: 0,
+            omitted_segments: Vec::new(),
             legacy_bare_ogg: true,
         });
         assert!(schema_errors(&manifest).is_empty());
@@ -871,8 +918,20 @@ pub(crate) mod tests {
         assert!(plain["source"].get("sgmca").is_none());
         assert!(plain["output"].get("sgmca").is_none());
 
+        assert_eq!(json["source"]["sgmca"]["unreadBytes"], 12_345);
+        assert_eq!(
+            json["source"]["sgmca"]["omittedSegments"],
+            serde_json::json!([{ "index": 4, "reason": "zero-length-header" }])
+        );
+
         let mut bad = json.clone();
         bad["output"]["sgmca"]["startSource"] = "guessed".into();
+        assert!(!schema_errors_for_value(&bad).is_empty());
+        let mut bad = json.clone();
+        bad["source"]["sgmca"]["omittedSegments"][0]["reason"] = "skipped".into();
+        assert!(!schema_errors_for_value(&bad).is_empty());
+        let mut bad = json.clone();
+        bad["source"]["sgmca"].as_object_mut().unwrap().remove("unreadBytes");
         assert!(!schema_errors_for_value(&bad).is_empty());
     }
 

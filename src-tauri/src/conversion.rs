@@ -405,6 +405,9 @@ fn plan_conversion(
     // `time_reference` tag removed, so only the export record holds the start.
     let proc = probes.proc.clone();
     let start_shifted = manifest::filters_shift_start(&proc);
+    if start_shifted {
+        refuse_trim_across_sessions(probes.sgmca_source.as_ref())?;
+    }
     let output_rate = manifest::output_sample_rate(&out_codec);
     let mut encoder_args = out_codec;
     if job.format == "sgmca" {
@@ -537,6 +540,14 @@ fn plan_conversion(
         _ => return Err(format!("Unknown mode: {}", job.mode)),
     }
 
+    // A delayed SGMCA output would no longer line up with a transcript;
+    // refuse it before FFmpeg runs (the check after writing refuses it too).
+    if job.format == "sgmca" {
+        if let Some(filter) = filter_chain.as_deref().and_then(delaying_filter) {
+            return Err(format!("{} Nothing was converted.", sgmca_delay_message(filter)));
+        }
+    }
+
     let sgmca_output = if job.format == "sgmca" {
         Some(plan_sgmca_output(
             probes.sgmca_source.as_ref(),
@@ -573,6 +584,93 @@ struct SgmcaOutputPlan {
     /// or is the time of conversion.
     start_offset_ms: Option<f64>,
     segments: Vec<crate::sgmca::PlannedSegment>,
+    /// How many 48 kHz samples the written output and each of its segments
+    /// must hold: known exactly for an SGMCA source whose start no filter
+    /// moved. None when nothing exact is known (other sources, or
+    /// leading-silence trim, whose effect FFmpeg does not report).
+    expected_samples: Option<ExpectedSamples>,
+}
+
+/// The samples an SGMCA output must hold, from the source's own pages.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ExpectedSamples {
+    total: u64,
+    /// One per output segment, in order: the matching source session's
+    /// samples (or the whole source when the sessions are joined into one).
+    segments: Vec<u64>,
+}
+
+/// A filter in `chain` that delays the audio without saying so:
+/// `alimiter` without `latency=1` outputs its 5 ms look-ahead as a delay and
+/// keeps the length, so every sample after it is late and the last 5 ms of
+/// the source are lost. None when no such filter is in the chain.
+fn delaying_filter(chain: &str) -> Option<&str> {
+    chain.split([',', ';']).find(|filter| {
+        // Drop the input pad labels, such as `[sp0]`, before the name.
+        let mut name = filter.trim();
+        while let Some(rest) = name.strip_prefix('[') {
+            name = rest.split_once(']').map_or("", |(_, after)| after);
+        }
+        let (filter_name, options) = name.split_once('=').unwrap_or((name, ""));
+        filter_name == "alimiter"
+            && !options
+                .split(':')
+                .any(|option| matches!(option.split('[').next(), Some("latency=1" | "latency=true")))
+    })
+}
+
+/// The check after an SGMCA output is written: no audio dropped, padded,
+/// delayed or moved. A filter that delays the audio is refused. When the
+/// samples are known exactly (`expected`), the output must hold exactly
+/// that many, and each segment exactly its source session's samples.
+fn check_sgmca_samples(
+    expected: Option<&ExpectedSamples>,
+    filter_chain: Option<&str>,
+    written: &crate::sgmca::SgmcaInfo,
+) -> Result<(), String> {
+    if let Some(filter) = filter_chain.and_then(delaying_filter) {
+        return Err(sgmca_delay_message(filter));
+    }
+    let Some(expected) = expected else {
+        return Ok(());
+    };
+    if written.samples != expected.total {
+        let (more, by) = if written.samples > expected.total {
+            ("more", written.samples - expected.total)
+        } else {
+            ("fewer", expected.total - written.samples)
+        };
+        return Err(format!(
+            "It holds {} samples (48 kHz) where the source holds {}: {by} {more}, so audio would have been {} the recording.",
+            written.samples,
+            expected.total,
+            if more == "more" { "added to" } else { "dropped from" }
+        ));
+    }
+    if written.segments.len() != expected.segments.len() {
+        return Err(format!(
+            "It has {} segments where {} were planned, one per recording session of the source.",
+            written.segments.len(),
+            expected.segments.len()
+        ));
+    }
+    for (index, (segment, &want)) in written.segments.iter().zip(&expected.segments).enumerate() {
+        if segment.samples != want {
+            return Err(format!(
+                "Its segment {} holds {} samples (48 kHz) where the matching source session holds {want}, so audio would have moved from one recording session to another.",
+                index + 1,
+                segment.samples
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn sgmca_delay_message(filter: &str) -> String {
+    let name = filter.split('=').next().unwrap_or(filter);
+    format!(
+        "The processing chain includes {name} without latency compensation, which delays every sample by its look-ahead and drops the same length from the end. CATalyst places Direct Audio against a transcript by time, so an SGMCA output must not be delayed. To convert to SGMCA, turn on Normalize Volume, or use Keep Original or Split Channels."
+    )
 }
 
 /// Where a BWF source's audio is placed in an SGMCA output.
@@ -617,6 +715,23 @@ fn bwf_start_text(timing: manifest::SourceTiming, date: &str) -> Option<BwfStart
     })
 }
 
+/// Leading-silence trim removes audio from the start by an amount FFmpeg does
+/// not report. On an SGMCA source with more than one recording session that
+/// would leave every session's place in the output, and so its start time,
+/// unknown (an SGMCA output would also lose its session boundaries), so it
+/// is refused before anything is converted.
+fn refuse_trim_across_sessions(source: Option<&crate::sgmca::SgmcaInfo>) -> Result<(), String> {
+    let sessions = source.map_or(0, |info| {
+        info.segments.iter().filter(|segment| segment.samples > 0).count()
+    });
+    if sessions > 1 {
+        return Err(format!(
+            "Trim Leading Silence cannot be used on this file: it holds {sessions} recording sessions, and trim removes audio from the start by an amount FFmpeg does not report, so where each session starts in the output, and its start time, would no longer be known (an SGMCA output would also lose the session boundaries). Turn off Trim Leading Silence to convert it. Nothing was converted."
+        ));
+    }
+    Ok(())
+}
+
 const CONVERSION_TIME_EXPLAINED: &str = "It is not when the recording was made. CATalyst lines Direct Audio up with a transcript by matching segment start times with stroke times, so this file will not line up with a transcript until a correct start is known.";
 
 /// Where an SGMCA output's segment start times come from, in order of
@@ -643,8 +758,38 @@ fn plan_sgmca_output(
                 start_text: text,
                 start_sample: 0,
             }],
+            expected_samples: None,
         })
     };
+    let mut plan = plan_sgmca_start(source, probed, shifted, conversion_time)?;
+    // An SGMCA source's samples are known exactly from its pages: unless a
+    // filter moved the start, the output must hold exactly those, each
+    // segment its own session's.
+    if let Some(info) = source.filter(|_| !shifted) {
+        let kept: Vec<u64> = info
+            .segments
+            .iter()
+            .map(|segment| segment.samples)
+            .filter(|&samples| samples > 0)
+            .collect();
+        plan.expected_samples = Some(ExpectedSamples {
+            total: info.samples,
+            segments: if plan.segments.len() == kept.len() {
+                kept
+            } else {
+                vec![info.samples]
+            },
+        });
+    }
+    Ok(plan)
+}
+
+fn plan_sgmca_start(
+    source: Option<&crate::sgmca::SgmcaInfo>,
+    probed: &manifest::ProbedSource,
+    shifted: bool,
+    conversion_time: impl Fn(&str) -> Result<SgmcaOutputPlan, String>,
+) -> Result<SgmcaOutputPlan, String> {
     if shifted {
         return conversion_time(
             "Leading-silence trim removed audio from the start by an amount FFmpeg does not report, so no source start time describes this output.",
@@ -702,6 +847,7 @@ fn plan_sgmca_output(
             // nothing is known or changed beyond what its headers say.
             start_offset_ms: None,
             segments,
+            expected_samples: None,
         });
     }
     if let (Some(timing), Some(date)) = (probed.timing, probed.origination_date.as_deref()) {
@@ -724,6 +870,7 @@ fn plan_sgmca_output(
                     start_text: start.text,
                     start_sample: 0,
                 }],
+                expected_samples: None,
             });
         }
     }
@@ -742,6 +889,7 @@ fn plan_sgmca_output(
 fn write_sgmca_output(
     path: &Path,
     plan: &SgmcaOutputPlan,
+    filter_chain: Option<&str>,
     cancelled: crate::sgmca::CancelCheck<'_>,
 ) -> Result<manifest::SgmcaOutputRecord, String> {
     let name = path.file_name().and_then(|name| name.to_str()).unwrap_or("output");
@@ -754,6 +902,7 @@ fn write_sgmca_output(
     fs::rename(&temp, path).map_err(|error| format!("Could not finish the SGMCA output: {error}"))?;
     let expected: Vec<String> = plan.segments.iter().map(|segment| segment.start_text.clone()).collect();
     let info = crate::sgmca::verify_written(path, Some(&expected), cancelled)?;
+    check_sgmca_samples(plan.expected_samples.as_ref(), filter_chain, &info)?;
     Ok(manifest::SgmcaOutputRecord {
         file_version: 1,
         guid_present: info.guid_present,
@@ -836,14 +985,16 @@ fn finish_outputs(
         for (output, record) in plan.planned.iter().zip(sgmca_records.iter_mut()) {
             let cancelled = || cancel.cancelled();
             *record = Some(
-                write_sgmca_output(&output.path, sgmca, Some(&cancelled)).map_err(|error| {
-                    cancel.check().err().unwrap_or_else(|| {
-                        format!(
-                            "{} failed the SGMCA format check, so the output was removed: {error}",
-                            basename(&output.path.to_string_lossy())
-                        )
-                    })
-                })?,
+                write_sgmca_output(&output.path, sgmca, plan.filter_chain.as_deref(), Some(&cancelled)).map_err(
+                    |error| {
+                        cancel.check().err().unwrap_or_else(|| {
+                            format!(
+                                "{} failed the SGMCA format check, so the output was removed: {error}",
+                                basename(&output.path.to_string_lossy())
+                            )
+                        })
+                    },
+                )?,
             );
         }
     }
@@ -1523,6 +1674,7 @@ mod tests {
     }
 
     /// What one synthetic conversion produced.
+    #[derive(Debug)]
     struct CourtConversion {
         files: Vec<OutputFile>,
         feed: PathBuf,
@@ -1537,6 +1689,16 @@ mod tests {
     fn convert_with_system_ffmpeg(
         job: &ConvertJob,
         channel_gains: Option<Vec<f64>>,
+    ) -> Result<CourtConversion, String> {
+        convert_with_system_ffmpeg_edited(job, channel_gains, &|_| {})
+    }
+
+    /// `convert_with_system_ffmpeg`, with `edit` applied to the plan after
+    /// FFmpeg ran and before the outputs are checked and recorded.
+    fn convert_with_system_ffmpeg_edited(
+        job: &ConvertJob,
+        channel_gains: Option<Vec<f64>>,
+        edit: &dyn Fn(&mut ConversionPlan),
     ) -> Result<CourtConversion, String> {
         validate_convert_request(job)?;
         let format = crate::helpers::detect_format_for_path(&job.src_path).ok_or("Unrecognised file format")?;
@@ -1568,13 +1730,14 @@ mod tests {
         };
 
         let mut output_cleanup = OutputCleanup::default();
-        let plan = plan_conversion(job, &feed, &probes, &mut output_cleanup)?;
+        let mut plan = plan_conversion(job, &feed, &probes, &mut output_cleanup)?;
         let mut args = plan.args.clone();
         args.splice(0..0, ["-loglevel".to_string(), "error".to_string()]);
         let status = std::process::Command::new("ffmpeg").args(&args).status().unwrap();
         if !status.success() {
             return Err(format!("ffmpeg exited with {status}"));
         }
+        edit(&mut plan);
 
         let input = ManifestInput {
             app_version: env!("CARGO_PKG_VERSION").into(),
@@ -1797,8 +1960,7 @@ mod tests {
         fs::create_dir(&out).unwrap();
 
         let error = convert_with_system_ffmpeg(&court_job(&sgmca, &out, "split", "wav"), None)
-            .err()
-            .expect("a file with no Direct Audio header must not convert");
+            .expect_err("a file with no Direct Audio header must not convert");
         assert!(error.contains("not a Direct Audio file"), "{error}");
         assert_eq!(fs::read_dir(&out).unwrap().count(), 0);
     }
@@ -2729,10 +2891,26 @@ mod tests {
         assert_sessions_in_order(&decoded[0], &boundaries);
         let record = checked_export_record(file, &growing);
         assert_eq!(record["source"]["sgmca"]["growing"], true);
+        // The cut-off page is recorded as unread, with the session it is in.
+        assert!(info.unread_bytes > 0);
+        assert_eq!(record["source"]["sgmca"]["unreadBytes"], info.unread_bytes);
+        assert_eq!(record["source"]["sgmca"]["omittedSegments"], serde_json::json!([]));
         let queue = manifest::sgmca_audio_streams(&info);
         assert_eq!(queue.recording_sessions, Some(2));
         assert_eq!(queue.still_recording, Some(true));
         assert_eq!(queue.streams[0].channels, Some(4));
+        assert_eq!(queue.cut_short_session, Some(2));
+        assert_eq!(queue.unread_bytes, Some(info.unread_bytes));
+
+        let sgmca_out = dir.0.join("sgmca-out");
+        fs::create_dir(&sgmca_out).unwrap();
+        // To SGMCA, the complete audio passes the sample check: each output
+        // session holds exactly the samples the reader counted.
+        let conversion = convert_with_system_ffmpeg(&court_job(&growing, &sgmca_out, "keep", "sgmca"), None).unwrap();
+        let written = crate::sgmca::verify_written(Path::new(&conversion.files[0].path), None, None).unwrap();
+        let samples =
+            |info: &crate::sgmca::SgmcaInfo| info.segments.iter().map(|segment| segment.samples).collect::<Vec<_>>();
+        assert_eq!(samples(&written), samples(&info));
     }
 
     #[test]
@@ -2751,15 +2929,14 @@ mod tests {
         let starts: Vec<String> = SESSION_STARTS.iter().map(|start| start.to_string()).collect();
         let info = crate::sgmca::verify_written(written, Some(&starts), None).unwrap();
         assert_eq!(info.segments.len(), 3);
-        // Each output session starts where the source's did; the sessions
-        // before the last have exactly the source's length.
+        // Each output session starts where the source's did and holds
+        // exactly the source session's samples (the check after writing
+        // refuses anything else).
         for (output, input) in info.segments.iter().zip(&source.segments) {
             assert_eq!(output.start_sample, input.start_sample);
-        }
-        for (output, input) in info.segments[..2].iter().zip(&source.segments) {
             assert_eq!(output.samples, input.samples);
         }
-        assert!((info.duration_seconds - source.duration_seconds).abs() <= 0.02);
+        assert_eq!(info.samples, source.samples);
         // Decoded through the reader, the tones come back in order.
         let decoded = decode_f32(written, 4);
         let boundaries: Vec<u64> = info.segments.iter().map(|segment| segment.start_sample).collect();
@@ -2775,21 +2952,27 @@ mod tests {
         assert_eq!(layout["segments"].as_array().unwrap().len(), 3);
         assert_eq!(layout["segments"][2]["startText"], SESSION_STARTS[2]);
 
-        // With leading-silence trim the start moves by an unknown amount, so
-        // the output is one session dated at conversion time.
-        let trimmed_out = dir.0.join("trimmed");
-        fs::create_dir(&trimmed_out).unwrap();
-        let mut job = court_job(&sgmca, &trimmed_out, "keep", "sgmca");
-        job.trim = true;
-        let trimmed = convert_with_system_ffmpeg(&job, None).unwrap();
-        let info = crate::sgmca::verify_written(Path::new(&trimmed.files[0].path), None, None).unwrap();
-        assert_eq!(info.segments.len(), 1);
-        let record = checked_export_record(&trimmed.files[0], &sgmca);
-        assert_eq!(record["output"]["sgmca"]["startSource"], "conversion-time");
-        assert!(record["output"]["sgmca"]["startNote"]
-            .as_str()
-            .unwrap()
-            .contains("Leading-silence trim"));
+        // Leading-silence trim moves the start by an amount FFmpeg does not
+        // report, which would leave every session's place and start time
+        // unknown: it is refused on a multi-session source, whatever the
+        // output format, before anything is written.
+        for format in ["sgmca", "wav"] {
+            let trimmed_out = dir.0.join(format!("trimmed-{format}"));
+            fs::create_dir(&trimmed_out).unwrap();
+            let mut job = court_job(&sgmca, &trimmed_out, "keep", format);
+            job.trim = true;
+            let error = convert_with_system_ffmpeg(&job, None).unwrap_err();
+            assert!(
+                error.starts_with("Trim Leading Silence cannot be used on this file: it holds 3 recording sessions"),
+                "{error}"
+            );
+            assert!(error.contains("Nothing was converted."), "{error}");
+            assert_eq!(
+                fs::read_dir(&trimmed_out).unwrap().count(),
+                0,
+                "no output or placeholder is left"
+            );
+        }
     }
 
     #[test]
@@ -3006,5 +3189,248 @@ mod tests {
             plan.note
         );
         assert!(crate::sgmca::parse_start_text(&plan.segments[0].start_text).is_some());
+    }
+
+    /// A copy of one of the owner's sample files (see
+    /// scripts/fixtures/sgmca/vendor-notes-samples/README.md), so the
+    /// committed file is never an input path.
+    fn vendor_sample_copy(dir: &Path, name: &str) -> PathBuf {
+        let copy = dir.join(name);
+        fs::copy(
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../scripts/fixtures/sgmca/vendor-notes-samples")
+                .join(name),
+            &copy,
+        )
+        .unwrap();
+        copy
+    }
+
+    fn two_channel_job(src: &Path, out: &Path, mode: &str, format: &str) -> ConvertJob {
+        let mut job = court_job(src, out, mode, format);
+        job.labels = ["Left", "Right"].map(String::from).to_vec();
+        job.chan_vols = vec![1.0; 2];
+        job
+    }
+
+    #[test]
+    fn vendor_notes_samples_convert_to_sgmca_with_every_sample_in_its_session() {
+        if !court_fixture_tools_available() {
+            return;
+        }
+        let dir = ConversionTestDir::new();
+        for (name, sessions) in [
+            ("tone_1segment.sgmca", vec![480_000u64]),
+            ("tone_2sessions.sgmca", vec![480_000, 240_000]),
+        ] {
+            let sgmca = vendor_sample_copy(&dir.0, name);
+            // Mix to Stereo with Normalize Volume: loudnorm, no limiter.
+            for mode in ["keep", "split", "stereo"] {
+                let out = dir.0.join(format!("{name}-{mode}"));
+                fs::create_dir(&out).unwrap();
+                let mut job = two_channel_job(&sgmca, &out, mode, "sgmca");
+                job.normalize = mode == "stereo";
+                let conversion =
+                    convert_with_system_ffmpeg(&job, None).unwrap_or_else(|error| panic!("{name} {mode}: {error}"));
+                assert_eq!(conversion.files.len(), if mode == "split" { 2 } else { 1 });
+                for file in &conversion.files {
+                    let info = crate::sgmca::verify_written(Path::new(&file.path), None, None).unwrap();
+                    let samples: Vec<u64> = info.segments.iter().map(|segment| segment.samples).collect();
+                    assert_eq!(samples, sessions, "{name} {mode}: {}", file.name);
+                    assert_eq!(info.samples, sessions.iter().sum::<u64>());
+                    let record: serde_json::Value =
+                        serde_json::from_slice(&fs::read(manifest::manifest_path_for(Path::new(&file.path))).unwrap())
+                            .unwrap();
+                    assert!(manifest::tests::schema_errors_for_value(&record).is_empty());
+                    assert_eq!(record["source"]["sgmca"]["unreadBytes"], 0);
+                    assert_eq!(record["source"]["sgmca"]["omittedSegments"], serde_json::json!([]));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn an_sgmca_output_that_does_not_hold_every_source_sample_is_removed() {
+        if !court_fixture_tools_available() {
+            return;
+        }
+        let dir = ConversionTestDir::new();
+        let sgmca = vendor_sample_copy(&dir.0, "tone_2sessions.sgmca");
+        // What the check is given is changed after FFmpeg ran, as if the
+        // output had gained a sample, or one session had lost a frame to
+        // the next.
+        type Change<'a> = &'a dyn Fn(&mut ExpectedSamples);
+        let cases: [(&str, Change, &str); 3] = [
+            (
+                "one-more",
+                &|expected| expected.total -= 1,
+                "It holds 720000 samples (48 kHz) where the source holds 719999: 1 more, so audio would have been added to the recording.",
+            ),
+            (
+                "one-fewer",
+                &|expected| expected.total += 1,
+                "It holds 720000 samples (48 kHz) where the source holds 720001: 1 fewer, so audio would have been dropped from the recording.",
+            ),
+            (
+                "moved",
+                &|expected| {
+                    expected.segments[0] += 960;
+                    expected.segments[1] -= 960;
+                },
+                "Its segment 1 holds 480000 samples (48 kHz) where the matching source session holds 480960, so audio would have moved from one recording session to another.",
+            ),
+        ];
+        for (label, change, message) in cases {
+            let out = dir.0.join(label);
+            fs::create_dir(&out).unwrap();
+            let error =
+                convert_with_system_ffmpeg_edited(&two_channel_job(&sgmca, &out, "keep", "sgmca"), None, &|plan| {
+                    change(plan.sgmca_output.as_mut().unwrap().expected_samples.as_mut().unwrap())
+                })
+                .unwrap_err();
+            assert_eq!(
+                error,
+                format!(
+                    "tone_2sessions_orig.sgmca failed the SGMCA format check, so the output was removed: {message}"
+                ),
+                "{label}"
+            );
+            assert_eq!(
+                fs::read_dir(&out).unwrap().count(),
+                0,
+                "{label}: the output and its record are removed"
+            );
+        }
+    }
+
+    #[test]
+    fn the_sample_check_refuses_a_delaying_limiter_and_any_count_that_differs() {
+        let dir = ConversionTestDir::new();
+        let written = crate::sgmca::inspect(&vendor_sample_copy(&dir.0, "tone_2sessions.sgmca"), None).unwrap();
+        let exact = ExpectedSamples {
+            total: 720_000,
+            segments: vec![480_000, 240_000],
+        };
+        assert_eq!(check_sgmca_samples(Some(&exact), None, &written), Ok(()));
+        assert_eq!(check_sgmca_samples(None, Some("highpass=f=80"), &written), Ok(()));
+        // The stereo mix's limiter as this branch builds it: same length,
+        // every sample 5 ms late, so the counts alone cannot see it.
+        let chain = "pan=stereo|c0=0.5*c0+0.5*c1|c1=0.5*c0+0.5*c1,volume=2,alimiter=limit=0.97:level=false";
+        let error = check_sgmca_samples(Some(&exact), Some(chain), &written).unwrap_err();
+        assert!(
+            error.starts_with("The processing chain includes alimiter without latency compensation"),
+            "{error}"
+        );
+        assert_eq!(delaying_filter(chain), Some("alimiter=limit=0.97:level=false"));
+        assert_eq!(
+            delaying_filter("[a]alimiter=limit=0.97[b]"),
+            Some("[a]alimiter=limit=0.97[b]")
+        );
+        assert_eq!(delaying_filter("alimiter"), Some("alimiter"));
+        assert_eq!(delaying_filter("alimiter=limit=0.97:level=false:latency=1"), None);
+        assert_eq!(delaying_filter("alimiter=latency=true:limit=0.97"), None);
+        assert_eq!(delaying_filter("loudnorm=I=-16:TP=-1.5:LRA=11,afade=t=in:d=0.5"), None);
+        let joined = ExpectedSamples {
+            total: 720_000,
+            segments: vec![720_000],
+        };
+        assert!(check_sgmca_samples(Some(&joined), None, &written)
+            .unwrap_err()
+            .contains("It has 2 segments where 1 were planned"));
+    }
+
+    #[test]
+    fn an_sgmca_output_is_never_planned_through_a_delaying_limiter() {
+        let dir = ConversionTestDir::new();
+        let sgmca = vendor_sample_copy(&dir.0, "tone_2sessions.sgmca");
+        let out = dir.0.join("out");
+        fs::create_dir(&out).unwrap();
+        let job = two_channel_job(&sgmca, &out, "stereo", "sgmca");
+        let probes = ConversionProbes {
+            channels: Some(2),
+            channel_gains: None,
+            proc: Vec::new(),
+            probed: manifest::ProbedSource::default(),
+            duration_secs: Some(15.0),
+            sgmca_source: Some(crate::sgmca::inspect(&sgmca, None).unwrap()),
+        };
+        let mut cleanup = OutputCleanup::default();
+        let result = plan_conversion(&job, &sgmca, &probes, &mut cleanup);
+        if let Some(chain) = result.as_ref().ok().and_then(|plan| plan.filter_chain.clone()) {
+            // The limiter compensates its look-ahead once that fix lands.
+            assert_eq!(delaying_filter(&chain), None, "{chain}");
+        } else {
+            let error = result.err().unwrap();
+            assert!(error.contains("alimiter without latency compensation"), "{error}");
+        }
+        drop(cleanup);
+        assert_eq!(fs::read_dir(&out).unwrap().count(), 0);
+    }
+
+    #[test]
+    #[ignore = "needs the alimiter latency fix (separate PR): Mix to Stereo without Normalize Volume adds alimiter without latency=1, which delays every sample by 5 ms, so the SGMCA check refuses this conversion"]
+    fn vendor_notes_two_session_sample_mixes_to_a_stereo_sgmca_with_every_sample_in_place() {
+        if !court_fixture_tools_available() {
+            return;
+        }
+        let dir = ConversionTestDir::new();
+        let sgmca = vendor_sample_copy(&dir.0, "tone_2sessions.sgmca");
+        let out = dir.0.join("out");
+        fs::create_dir(&out).unwrap();
+        let conversion = convert_with_system_ffmpeg(&two_channel_job(&sgmca, &out, "stereo", "sgmca"), None).unwrap();
+        let info = crate::sgmca::verify_written(Path::new(&conversion.files[0].path), None, None).unwrap();
+        let samples: Vec<u64> = info.segments.iter().map(|segment| segment.samples).collect();
+        assert_eq!(samples, [480_000, 240_000]);
+        // Each session's tones start where the session does: nothing late.
+        let decoded = decode_f32(Path::new(&conversion.files[0].path), 2);
+        let onset = decoded[0].iter().position(|sample| sample.abs() > 0.01).unwrap();
+        assert!(onset < 48, "the mix starts {onset} samples late");
+    }
+
+    #[test]
+    fn a_crashed_recording_records_the_session_and_bytes_left_out() {
+        if !court_fixture_tools_available() {
+            return;
+        }
+        let dir = ConversionTestDir::new();
+        // The owner's two-session sample, then a third session whose header
+        // was written but whose length never was, and 1000 bytes after it,
+        // as a recorder that stopped mid-session leaves the file.
+        let sample = vendor_sample_copy(&dir.0, "tone_2sessions.sgmca");
+        let mut bytes = fs::read(&sample).unwrap();
+        bytes.extend_from_slice(&crate::sgmca::segment_header("2026-11-22T10:30:00-0500", 0).unwrap());
+        bytes.extend_from_slice(&vec![0x4f; 1000]);
+        let crashed = dir.0.join("crashed.sgmca");
+        fs::write(&crashed, &bytes).unwrap();
+        let info = crate::sgmca::inspect(&crashed, None).unwrap();
+        assert_eq!(info.segments.len(), 2);
+        assert_eq!(info.unread_bytes, 1000);
+        let queue = manifest::sgmca_audio_streams(&info);
+        assert_eq!(queue.unread_bytes, Some(1000));
+        assert_eq!(
+            serde_json::to_value(&queue).unwrap()["omittedSessions"],
+            serde_json::json!([{ "number": 3, "reason": "zero-length-header", "last": true }])
+        );
+
+        let out = dir.0.join("out");
+        fs::create_dir(&out).unwrap();
+        let conversion = convert_with_system_ffmpeg(&two_channel_job(&crashed, &out, "keep", "sgmca"), None).unwrap();
+        let file = &conversion.files[0];
+        let written = crate::sgmca::verify_written(Path::new(&file.path), None, None).unwrap();
+        assert_eq!(written.samples, 720_000);
+        let record: serde_json::Value =
+            serde_json::from_slice(&fs::read(manifest::manifest_path_for(Path::new(&file.path))).unwrap()).unwrap();
+        assert!(manifest::tests::schema_errors_for_value(&record).is_empty());
+        let source = &record["source"]["sgmca"];
+        assert_eq!(source["growing"], true);
+        assert_eq!(source["unreadBytes"], 1000);
+        assert_eq!(
+            source["omittedSegments"],
+            serde_json::json!([{ "index": 3, "reason": "zero-length-header" }])
+        );
+        assert!(record["output"]["sgmca"]["startNote"]
+            .as_str()
+            .unwrap()
+            .contains("only its complete audio was converted"));
     }
 }

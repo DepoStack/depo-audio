@@ -273,9 +273,11 @@ pub(crate) struct PagePackets {
 }
 
 /// Reassembles the packets of the first logical stream from its pages,
-/// following lacing values across page boundaries. Pages of any other
-/// logical stream are skipped; reading stops at the stream's end-of-stream
-/// page, so a chained recording yields only its first link.
+/// following lacing values across page boundaries. A page of any other
+/// logical stream before the first stream's end-of-stream page is refused:
+/// a Direct Audio session holds one stream, and skipping a second one would
+/// leave audio out without saying so. Reading stops at the end-of-stream
+/// page; whatever follows it is the caller's to check.
 pub(crate) struct PacketReader<R: Read> {
     pages: PageReader<R>,
     serial: Option<u32>,
@@ -347,7 +349,12 @@ impl<R: Read> PacketReader<R> {
                     }
                     self.serial = Some(page.serial);
                 }
-                Some(serial) if serial != page.serial => continue,
+                Some(serial) if serial != page.serial => {
+                    return Err(format!(
+                        "The Ogg page at byte {} belongs to a second logical stream (serial {:#010x}) inside this session, before its first stream (serial {serial:#010x}) has ended. A Direct Audio session holds one Ogg stream; DepoAudio does not read this file rather than leave the second stream's audio out.",
+                        page.offset, page.serial
+                    ));
+                }
                 Some(_) => {}
             }
             self.pages_read += 1;
@@ -938,9 +945,21 @@ struct Layout {
     unread_tail: u64,
     /// The last segment's payload is shorter than its header says.
     cut_short: bool,
-    /// The number of a last segment header that counts no bytes yet.
-    empty_last_header: Option<usize>,
+    /// A last segment header that counts no bytes yet.
+    empty_last_header: Option<EmptyHeader>,
+    /// Segments before the last whose header counts no bytes and is
+    /// followed straight away by the next segment header: sessions with no
+    /// audio.
+    empty_segments: Vec<usize>,
     notes: Vec<String>,
+}
+
+/// A segment header whose length is 0.
+#[derive(Debug, Clone, Copy)]
+struct EmptyHeader {
+    number: usize,
+    header_offset: u64,
+    data_offset: u64,
 }
 
 const BARE_OGG_NOTE: &str = "This file has no Direct Audio header: it is a bare Ogg Opus stream, the layout earlier DepoAudio builds wrote. It is read as one recording session with no start time. CATalyst is not expected to open it.";
@@ -1011,6 +1030,7 @@ fn read_layout(file: &mut fs::File, file_len: u64) -> Result<Layout, String> {
             unread_tail: 0,
             cut_short: false,
             empty_last_header: None,
+            empty_segments: Vec::new(),
             notes: vec![BARE_OGG_NOTE.into()],
         });
     }
@@ -1040,6 +1060,7 @@ fn read_layout(file: &mut fs::File, file_len: u64) -> Result<Layout, String> {
     let mut unread_tail = 0;
     let mut cut_short = false;
     let mut empty_last_header = None;
+    let mut empty_segments = Vec::new();
     let mut index = 0;
     while at < file_len {
         index += 1;
@@ -1107,6 +1128,7 @@ fn read_layout(file: &mut fs::File, file_len: u64) -> Result<Layout, String> {
                     notes.push(format!(
                         "Segment {index} (byte {at}) has a length of 0, so it holds no audio; the sessions after it were read."
                     ));
+                    empty_segments.push(index);
                     at = data_offset;
                     continue;
                 }
@@ -1114,7 +1136,11 @@ fn read_layout(file: &mut fs::File, file_len: u64) -> Result<Layout, String> {
                 None => {}
             }
             unread_tail = available;
-            empty_last_header = Some(index);
+            empty_last_header = Some(EmptyHeader {
+                number: index,
+                header_offset: at,
+                data_offset,
+            });
             break;
         }
         let readable = declared.min(available);
@@ -1145,6 +1171,7 @@ fn read_layout(file: &mut fs::File, file_len: u64) -> Result<Layout, String> {
         unread_tail,
         cut_short,
         empty_last_header,
+        empty_segments,
         notes,
     })
 }
@@ -1210,8 +1237,17 @@ pub(crate) struct SgmcaInfo {
     /// shorter than its header says, or bytes after the last segment belong
     /// to none.
     pub growing: bool,
-    /// Bytes at the end of the file that no complete segment covers.
+    /// Bytes of the file after the last complete Ogg page that was read,
+    /// not counting the segment headers of sessions left out (those were
+    /// read): a last session's pages cut off partway, a session left out,
+    /// and bytes no header counts. Nothing in them is converted.
     pub unread_bytes: u64,
+    /// Recording sessions in the file that are not in `segments`, in file
+    /// order, and why.
+    pub omitted_segments: Vec<OmittedSegment>,
+    /// The number of a last session that is shorter than its header says,
+    /// so only its complete pages were read.
+    pub cut_short_segment: Option<u32>,
     pub pages: u64,
     pub audio_packets: u64,
     /// First segment's first audio granule and last segment's last granule.
@@ -1223,6 +1259,41 @@ pub(crate) struct SgmcaInfo {
     /// Plain-language remarks about the file (older layout, still recording,
     /// ignored bytes).
     pub notes: Vec<String>,
+}
+
+/// Why a recording session in the file is not read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub(crate) enum OmitReason {
+    /// The last segment header's length is 0: written, not yet updated.
+    ZeroLengthHeader,
+    /// The last session ends before its Opus headers, or holds them and no
+    /// audio page or end-of-stream page.
+    NoCompleteAudio,
+    /// A segment before the last whose length is 0 and which the next
+    /// segment header follows straight away: it holds nothing.
+    Empty,
+}
+
+impl OmitReason {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::ZeroLengthHeader => "zero-length-header",
+            Self::NoCompleteAudio => "no-complete-audio",
+            Self::Empty => "empty",
+        }
+    }
+}
+
+/// A recording session that is in the file but not read.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct OmittedSegment {
+    /// 1-based position of the segment header in the file.
+    pub number: u32,
+    pub reason: OmitReason,
+    /// It is the file's last segment.
+    pub last: bool,
 }
 
 /// Why opening a stream failed, and whether the cause is the data ending.
@@ -1575,7 +1646,7 @@ pub(crate) fn inspect(path: &Path, cancelled: CancelCheck<'_>) -> Result<SgmcaIn
     let count = layout.places.len();
     let mut segments: Vec<SegmentInfo> = Vec::with_capacity(count);
     let mut start_sample = 0u64;
-    let mut dropped_last = false;
+    let mut dropped_last: Option<&Place> = None;
     for (index, place) in layout.places.iter().enumerate() {
         let number = place.number;
         let last = index + 1 == count;
@@ -1585,7 +1656,7 @@ pub(crate) fn inspect(path: &Path, cancelled: CancelCheck<'_>) -> Result<SgmcaIn
             _ => message,
         };
         let Some(scan) = scan_segment(path, place, tolerant, last, cancelled).map_err(label)? else {
-            dropped_last = true;
+            dropped_last = Some(place);
             continue;
         };
         check_readable_layout(&scan.head, number)?;
@@ -1622,9 +1693,48 @@ pub(crate) fn inspect(path: &Path, cancelled: CancelCheck<'_>) -> Result<SgmcaIn
                 .into(),
         );
     }
-    let growing = layout.cut_short || layout.unread_tail > 0 || layout.empty_last_header.is_some() || dropped_last;
+    let growing =
+        layout.cut_short || layout.unread_tail > 0 || layout.empty_last_header.is_some() || dropped_last.is_some();
     let last_number = layout.places.last().map_or(count, |place| place.number);
-    if dropped_last {
+    // Every byte after the last complete page read, less the headers of the
+    // sessions left out (those were read).
+    let read_to = segments
+        .last()
+        .map_or(0, |segment| segment.data_offset + segment.bytes_read);
+    let omitted_headers = dropped_last.map_or(0, |place| {
+        place.data_offset - place.header_offset.unwrap_or(place.data_offset)
+    }) + layout
+        .empty_last_header
+        .map_or(0, |empty| empty.data_offset - empty.header_offset);
+    let unread_bytes = file_len.saturating_sub(read_to).saturating_sub(omitted_headers);
+    let mut omitted_segments: Vec<OmittedSegment> = layout
+        .empty_segments
+        .iter()
+        .map(|&number| OmittedSegment {
+            number: number as u32,
+            reason: OmitReason::Empty,
+            last: false,
+        })
+        .collect();
+    if let Some(place) = dropped_last {
+        omitted_segments.push(OmittedSegment {
+            number: place.number as u32,
+            reason: OmitReason::NoCompleteAudio,
+            last: layout.empty_last_header.is_none(),
+        });
+    }
+    if let Some(empty) = layout.empty_last_header {
+        omitted_segments.push(OmittedSegment {
+            number: empty.number as u32,
+            reason: OmitReason::ZeroLengthHeader,
+            last: true,
+        });
+    }
+    omitted_segments.sort_by_key(|omitted| omitted.number);
+    let cut_short_segment = (layout.cut_short && dropped_last.is_none())
+        .then(|| segments.last().map(|segment| segment.number))
+        .flatten();
+    if dropped_last.is_some() {
         notes.push(format!(
             "Segment {last_number} has no complete audio yet, so it was not read. The file may still be recording, or it was cut short."
         ));
@@ -1633,7 +1743,7 @@ pub(crate) fn inspect(path: &Path, cancelled: CancelCheck<'_>) -> Result<SgmcaIn
             "Segment {last_number} is shorter than its header says, so only its complete Ogg pages were read. The file may still be recording, or it was cut short."
         ));
     }
-    if let Some(number) = layout.empty_last_header {
+    if let Some(EmptyHeader { number, .. }) = layout.empty_last_header {
         notes.push(format!(
             "Segment {number} has a header but its length is not written yet, so it was not read. The file may still be recording, or it was cut short."
         ));
@@ -1676,7 +1786,9 @@ pub(crate) fn inspect(path: &Path, cancelled: CancelCheck<'_>) -> Result<SgmcaIn
         tags: first.tags.clone(),
         sgmca_layout: segments.iter().all(|segment| segment.head.is_sgmca_layout()),
         growing,
-        unread_bytes: layout.unread_tail,
+        unread_bytes,
+        omitted_segments,
+        cut_short_segment,
         pages: segments.iter().map(|segment| segment.pages).sum(),
         audio_packets: segments.iter().map(|segment| segment.audio_packets).sum(),
         start_granule: first.start_granule,
@@ -2738,6 +2850,14 @@ mod tests {
             .notes
             .iter()
             .any(|note| note.contains("shorter than its header says")));
+        // The bytes of the cut-off page are unread, and the session is named.
+        assert_eq!(info.cut_short_segment, Some(3));
+        assert!(info.omitted_segments.is_empty());
+        assert_eq!(
+            info.unread_bytes,
+            file.len() as u64 - 10 - (last.data_offset + last.bytes_read)
+        );
+        assert!(info.unread_bytes > 0);
 
         // A page appended after the last header update: the header counts
         // fewer bytes than the file holds.
@@ -2748,6 +2868,8 @@ mod tests {
         assert_eq!(info.unread_bytes, 200);
         assert_eq!(info.samples, full.samples);
         assert!(info.notes.iter().any(|note| note.contains("200 bytes")));
+        assert!(info.omitted_segments.is_empty());
+        assert_eq!(info.cut_short_segment, None);
 
         // A new session whose header was written but not yet updated.
         let mut started = file.clone();
@@ -2762,11 +2884,24 @@ mod tests {
             .iter()
             .any(|note| note.contains("Segment 4 has a header but its length is not written yet")));
         assert!(!info.notes.iter().any(|note| note.contains("shorter than its header")));
+        // Recorded: segment 4 left out for its zero length, and the 100
+        // bytes after its header not read.
+        assert_eq!(
+            info.omitted_segments,
+            vec![OmittedSegment {
+                number: 4,
+                reason: OmitReason::ZeroLengthHeader,
+                last: true,
+            }]
+        );
+        assert_eq!(info.unread_bytes, 100);
         // The same with nothing after the new header.
         let header_only = [file.as_slice(), &segment_header(START_3, 0).unwrap()].concat();
         let info = inspect(&write_temp(&dir, "header-only.sgmca", &header_only), None).unwrap();
         assert!(info.growing);
         assert_eq!(info.unread_bytes, 0);
+        assert_eq!(info.omitted_segments.len(), 1);
+        assert_eq!(info.omitted_segments[0].reason, OmitReason::ZeroLengthHeader);
 
         // A last session cut inside its headers holds no audio yet: it is
         // left out and the earlier ones are kept.
@@ -2780,6 +2915,17 @@ mod tests {
             .notes
             .iter()
             .any(|note| note.contains("Segment 3 has no complete audio yet")));
+        // Recorded: segment 3 left out, its 40 bytes after the header unread.
+        assert_eq!(
+            info.omitted_segments,
+            vec![OmittedSegment {
+                number: 3,
+                reason: OmitReason::NoCompleteAudio,
+                last: true,
+            }]
+        );
+        assert_eq!(info.unread_bytes, 40);
+        assert_eq!(info.cut_short_segment, None);
     }
 
     #[test]
@@ -3323,6 +3469,25 @@ mod tests {
                         .iter()
                         .any(|segment| (segment.data_offset + segment.payload_length) as usize == length);
                     assert_eq!(info.growing, !boundary, "cut at {length}");
+                    // Every byte is accounted for: read, a header of a
+                    // session left out, or recorded as unread.
+                    let last = info.segments.last().unwrap();
+                    let omitted_headers = 56
+                        * info
+                            .omitted_segments
+                            .iter()
+                            .filter(|omitted| omitted.reason != OmitReason::Empty)
+                            .count() as u64;
+                    assert_eq!(
+                        last.data_offset + last.bytes_read + omitted_headers + info.unread_bytes,
+                        length as u64,
+                        "cut at {length}"
+                    );
+                    assert_eq!(
+                        info.growing,
+                        info.unread_bytes > 0 || !info.omitted_segments.is_empty() || info.cut_short_segment.is_some(),
+                        "cut at {length}"
+                    );
                 }
                 Err(error) => {
                     assert!(length < first_end, "cut at {length}: {error}");
@@ -3483,5 +3648,88 @@ mod tests {
         let file = direct_audio(&[(START_1, &silent), (START_2, &silent)]);
         let error = inspect(&write_temp(&dir, "silent.sgmca", &file), None).unwrap_err();
         assert!(error.contains("holds any audio samples"), "{error}");
+    }
+
+    #[test]
+    fn a_second_logical_stream_inside_a_session_is_refused() {
+        let dir = tempdir::Dir::new();
+        let first = stream_with(&sgmca_head(4, 312), 0x5eed, 100, 0, |_| 30);
+        let second = stream_with(&sgmca_head(4, 312), 0x1234, 50, 0, |_| 30);
+        // The other stream's first page (its OpusHead) goes in after the
+        // first stream's third page, before that stream has ended.
+        let page_ends = |bytes: &[u8], count: usize| {
+            let mut pages = PageReader::new(bytes, 0);
+            for _ in 0..count {
+                pages.next_page().unwrap().unwrap();
+            }
+            pages.position() as usize
+        };
+        let split = page_ends(&first, 3);
+        let foreign = page_ends(&second, 1);
+        let mut payload = first[..split].to_vec();
+        payload.extend_from_slice(&second[..foreign]);
+        payload.extend_from_slice(&first[split..]);
+        let path = write_temp(&dir, "two-streams.sgmca", &direct_audio(&[(START_1, &payload)]));
+        let error = inspect(&path, None).unwrap_err();
+        let at = 40 + 56 + split;
+        assert!(
+            error.starts_with(&format!(
+                "Segment 1: The Ogg page at byte {at} belongs to a second logical stream (serial 0x00001234)"
+            )),
+            "{error}"
+        );
+        assert!(
+            error.contains("rather than leave the second stream's audio out"),
+            "{error}"
+        );
+
+        // The same in the second session, and as a whole second stream
+        // multiplexed into the first session's header pages.
+        let path = write_temp(
+            &dir,
+            "second-session.sgmca",
+            &direct_audio(&[(START_1, &first), (START_2, &payload)]),
+        );
+        assert!(inspect(&path, None)
+            .unwrap_err()
+            .starts_with("Segment 2: The Ogg page at byte"));
+        let mut grouped = first[..page_ends(&first, 1)].to_vec();
+        grouped.extend_from_slice(&second[..foreign]);
+        grouped.extend_from_slice(&first[page_ends(&first, 1)..]);
+        let path = write_temp(&dir, "grouped.sgmca", &direct_audio(&[(START_1, &grouped)]));
+        assert!(inspect(&path, None).unwrap_err().contains("second logical stream"));
+
+        // Another stream after the end-of-stream page is extra bytes, also
+        // refused (as before).
+        let after = [first.as_slice(), &second].concat();
+        let path = write_temp(&dir, "after-eos.sgmca", &direct_audio(&[(START_1, &after)]));
+        assert!(inspect(&path, None)
+            .unwrap_err()
+            .contains("after its end-of-stream page"));
+    }
+
+    #[test]
+    fn an_empty_session_between_two_is_recorded_as_left_out() {
+        let dir = tempdir::Dir::new();
+        let (file, streams) = three_sessions();
+        let mut bytes = file[..40 + 56 + streams[0].len()].to_vec();
+        bytes.extend_from_slice(&segment_header(START_2, 0).unwrap());
+        bytes.extend_from_slice(&file[40 + 56 + streams[0].len()..]);
+        let info = inspect(&write_temp(&dir, "gap.sgmca", &bytes), None).unwrap();
+        assert_eq!(info.segments.len(), 3);
+        assert!(!info.growing);
+        assert_eq!(info.unread_bytes, 0);
+        assert_eq!(
+            info.omitted_segments,
+            vec![OmittedSegment {
+                number: 2,
+                reason: OmitReason::Empty,
+                last: false,
+            }]
+        );
+        assert_eq!(
+            info.segments.iter().map(|segment| segment.number).collect::<Vec<_>>(),
+            [1, 3, 4]
+        );
     }
 }

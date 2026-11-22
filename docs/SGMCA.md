@@ -79,9 +79,10 @@ and the example `OpusHead` page's CRC (`0x801384E6`) by
 | Lengths that stop short | If a header's length (0, or short of its pages) leaves Ogg pages that no header counts, DepoAudio walks those pages; if another session's header follows them, the file is **refused**, naming the segment and bytes, because reading on from the headers would leave later sessions out without saying so. Uncounted pages at the very end of the file are the still-recording case below. |
 | Timestamps | A page's granule position must not be past the end of its packets (RFC 7845 §4): a jump means audio is missing or the timestamps are damaged, and the file is refused rather than given a length the audio does not have. Granule positions beyond the signed 64-bit range are refused, and the sums use checked arithmetic. |
 | Each stream | Every page's capture pattern, version, sequence and CRC; packets reassembled across pages; `OpusHead` checked against RFC 7845. Damage is reported as `Segment N: …` with the byte where it is. Bytes after a stream's end-of-stream page are refused. |
+| One stream per session | A page of a second logical stream (another serial number) inside a segment, before the first stream's end-of-stream page, is refused with the byte and both serial numbers: a session holds one Ogg stream, and skipping the other would leave its audio out without a word (`a_second_logical_stream_inside_a_session_is_refused`). |
 | Layouts read | Family 255 or 1 with one uncoupled stream per channel and an identity mapping, or family 0 (plain mono or stereo). Any other layout is refused. |
 | Joining | All sessions must have the same channel count (the notes say CATalyst refuses to append a different one), and the same Opus stream layout, or the file is refused with a message naming both counts. A different output gain is not refused but named in a note: the sessions are decoded as one feed, and which gain FFmpeg applies to a later session has not been checked. Sessions are joined in file order with no gap; the queue says so: "This file holds 3 recording sessions; they are joined in order (gaps between them are not kept)." |
-| Still recording | If the last segment is shorter than its header says, only its complete pages are read. If there are bytes after the last segment that no header counts (a page appended before the header was rewritten), they are not read. A last session with no complete audio yet is left out, whether or not its header's length covers what is there: one that ends before its `OpusHead` or `OpusTags` page, or holds those and no audio page or end-of-stream page. Each case is flagged (`growing`), noted, and shown in the queue. A test cuts a three-session file at every byte and checks that every session finished before the cut is read and nothing else is an error. |
+| Still recording | If the last segment is shorter than its header says, only its complete pages are read. If there are bytes after the last segment that no header counts (a page appended before the header was rewritten), they are not read. A last session with no complete audio yet is left out, whether or not its header's length covers what is there: one that ends before its `OpusHead` or `OpusTags` page, or holds those and no audio page or end-of-stream page. Each case is flagged (`growing`), noted, and recorded: the reader counts the **unread bytes** (every byte after the last complete page read, not counting the headers of sessions left out, which were read) and lists each **session left out** with its number and why (`zero-length-header`, `no-complete-audio`, or `empty` for a 0-length segment before the last). The queue shows the same facts before converting, for example "The last session (3) could not be read: its header says 0 bytes. 12.3 MB after it were not read.", and the export record keeps them (`unreadBytes`, `omittedSegments`). A test cuts a three-session file at every byte and checks that every session finished before the cut is read, that every byte of the file is read, a left-out session's header, or counted as unread, and that nothing else is an error. |
 | No samples | A file whose sessions together hold no audio samples (only headers and pre-skip) is refused by the reader with its own message, before FFmpeg is asked to read it. |
 | Start times | Each segment's text is kept as stored (bytes that are not printable ASCII are shown as `?`) and parsed into a local time and offset when it has the form above; text that does not parse is kept and named in a note. |
 | Duration | Per session: last granule position minus first sample minus pre-skip. The file's duration is the sum. |
@@ -135,8 +136,12 @@ Segment start times come from, in this order:
 3. otherwise the time of conversion, in this computer's local time (`conversion-time`). This is
    not when the recording was made, and the export record says so.
 
-Leading-silence trim moves the first sample by an amount FFmpeg does not report, so with trim
-the output is one segment dated at conversion time. DigitalCAT `.dm` files have no timeline
+Leading-silence trim moves the first sample by an amount FFmpeg does not report. On a source with
+one recording session the output is then one segment dated at conversion time, and the note says
+so. On an SGMCA source with **more than one** session, trim is **refused** before anything is
+converted, for every output format: the sessions' boundaries and start times could no longer be
+placed in the output, and a note that they were dropped would still leave a record that cannot
+locate them. Converting without trim keeps them. DigitalCAT `.dm` files have no timeline
 DepoAudio reads, so they fall under 3. The local offset comes from the operating system
 (`localtime_r` on macOS and Linux, `SystemTimeToTzSpecificLocalTime` on Windows); only the
 Linux path has been run here.
@@ -145,11 +150,34 @@ Every output is read back through the reader and removed unless it has the file 
 1, an identifier), complete segments with the planned start times in order, every start time in
 the form above, and family 255 with one uncoupled mono stream per channel.
 
+**No sample dropped, padded or moved.** When the source is an SGMCA file and no filter moved its
+start (no trim), its samples are known exactly from its pages, so the written output must hold
+exactly that many 48 kHz samples, and each output segment exactly as many as the matching source
+session. Anything else removes the output and fails with the numbers, for example "It holds
+720000 samples (48 kHz) where the source holds 720001: 1 fewer, so audio would have been dropped
+from the recording." The owner's two sample files convert to exactly 480 000 and 480 000 + 240 000
+samples per session in Keep Original, Split Channels and Mix to Stereo with Normalize Volume
+(`vendor_notes_samples_convert_to_sgmca_with_every_sample_in_its_session`), and changing what the
+check expects by one sample, or moving 960 samples between sessions, removes the output
+(`an_sgmca_output_that_does_not_hold_every_source_sample_is_removed`). For other sources the count
+is not known exactly (a resampled WAV, for example), so only the read-back above applies.
+
+A filter that **delays** the audio keeps the count and so needs its own check: `alimiter` without
+`latency=1` (which Mix to Stereo adds when Normalize Volume is off) outputs its 5 ms look-ahead as
+a delay, so every sample is 240 samples late and the last 5 ms are lost (measured with FFmpeg
+6.1; `adeclip`, `highpass`, `loudnorm` and `afade` were measured and do not shift the audio). An
+SGMCA output through such a chain is refused before FFmpeg runs, and the check after writing
+refuses it too. Fixing the limiter itself is separate work; until it lands, Mix to Stereo to SGMCA
+needs Normalize Volume, and the end-to-end test for the plain mix is marked as waiting for it.
+
 ## Export record
 
 An SGMCA source adds an optional `source.sgmca` object: `fileVersion`, `guidPresent`,
 `segments` (each with `startText`, `startLocal`, `utcOffset`, `startSample` in 48 kHz samples of
-the joined audio, `durationSecs`, `channels`, `mappingFamily`), `growing` and `legacyBareOgg`.
+the joined audio, `durationSecs`, `channels`, `mappingFamily`), `growing`, `unreadBytes` (bytes after
+the last complete page converted, not counting the headers of sessions left out), `omittedSegments`
+(each session in the file that was not converted: `index`, its 1-based place in the file, and
+`reason`: `zero-length-header`, `no-complete-audio` or `empty`) and `legacyBareOgg`.
 An SGMCA output adds `output.sgmca`: `fileVersion`, `guidPresent`, `startSource`, `startNote`,
 `startOffsetMs` (how far the first sample falls after the whole second the first header names,
 in milliseconds; null when the start was copied from the source's headers or is the conversion
