@@ -10,7 +10,7 @@ use crate::ffmpeg::{
     probe_manifest_source_cancellable, run_ffmpeg_with_timeout,
 };
 use crate::helpers::{
-    basename, input_codec_args, output_args, output_ext, prepare_audio_feed_with_cancel, safe_ffmpeg_input_prelude,
+    basename, input_codec_args, output_args, output_ext, prepare_audio_feed_detailed, safe_ffmpeg_input_prelude,
     safe_label, source_audio_map_args, wav_estimated_bytes, wav_rf64_args,
 };
 use crate::manifest::{self, FileRecord, ManifestInput, OutputFacts};
@@ -341,7 +341,8 @@ pub(crate) async fn do_convert(
 }
 
 /// Prepare the selected file for FFmpeg (an SGMCA loses its vendor prefix in a
-/// temporary Ogg copy; every other format is used as is) and fingerprint the
+/// temporary Ogg copy, a `.dm` has its audio read into a temporary WAV; every
+/// other format is used as is) and fingerprint the
 /// original file as the person selected it, before any preparation, for the
 /// export record (DA-08). The temporary copy, if any, lives as long as the
 /// returned guard.
@@ -349,14 +350,15 @@ fn prepare_source(
     src: &Path,
     cancelled: &(dyn Fn() -> bool + Send + Sync),
 ) -> Result<(PathBuf, Option<TempFile>, FileRecord), String> {
-    let (feed, guard) = prepare_audio_feed_with_cancel(src, Some(cancelled))?;
+    let prepared = prepare_audio_feed_detailed(src, Some(cancelled))?;
     let (sha256, size_bytes) = manifest::sha256_file(src, cancelled)?;
     let source = FileRecord {
         file_name: basename(&src.to_string_lossy()),
         sha256,
         size_bytes,
+        dm_timeline: prepared.dm_timeline,
     };
-    Ok((feed, guard, source))
+    Ok((prepared.path, prepared.guard, source))
 }
 
 /// What the probes found before the FFmpeg command is planned.
@@ -1304,16 +1306,6 @@ mod tests {
             .collect()
     }
 
-    /// A synthetic DigitalCAT `.dm`: DepoAudio hands `.dm` files to FFmpeg
-    /// unchanged, so a plain 4-channel WAV under that name exercises the path.
-    fn synthetic_dm(dir: &Path) -> PathBuf {
-        let wav = dir.join("synthetic_stream.wav");
-        synthetic_four_channel(&wav, &["-c:a", "pcm_s16le", "-f", "wav"]);
-        let dm = dir.join("synthetic_session.dm");
-        fs::rename(&wav, &dm).unwrap();
-        dm
-    }
-
     fn court_job(src: &Path, out_dir: &Path, mode: &str, format: &str) -> ConvertJob {
         let mut job = valid_job();
         job.src_path = src.to_string_lossy().to_string();
@@ -1744,25 +1736,414 @@ mod tests {
         }
     }
 
+    // ── Synthetic DigitalCAT .dm (FFmpeg on PATH) ──────────────────────────
+    //
+    // Every .dm here is built by the test from the layout in dm.rs (itself
+    // from owner-supplied notes, not yet checked against a recorded file):
+    // generated PCM, or GSM that FFmpeg's libgsm encoder made from a lavfi
+    // tone. No byte of a real DigitalCAT file is used.
+
+    /// FFmpeg and ffprobe are on PATH (no particular encoder needed).
+    fn dm_fixture_tools_available() -> bool {
+        let tools = std::process::Command::new("ffmpeg").arg("-version").output().is_ok()
+            && std::process::Command::new("ffprobe").arg("-version").output().is_ok();
+        if !tools {
+            assert!(
+                std::env::var_os("DEPOAUDIO_REQUIRE_FFMPEG_TESTS").is_none_or(|value| value != "1"),
+                "DEPOAUDIO_REQUIRE_FFMPEG_TESTS=1, but ffmpeg/ffprobe is not on PATH"
+            );
+            eprintln!("skipping: ffmpeg/ffprobe not on PATH");
+        }
+        tools
+    }
+
+    /// FFmpeg can encode Microsoft GSM (libgsm_ms), to make GSM fixtures.
+    fn gsm_encoder_available() -> bool {
+        let available = std::process::Command::new("ffmpeg")
+            .args(["-hide_banner", "-encoders"])
+            .output()
+            .is_ok_and(|output| String::from_utf8_lossy(&output.stdout).contains("libgsm_ms"));
+        if !available {
+            assert!(
+                std::env::var_os("DEPOAUDIO_REQUIRE_FFMPEG_TESTS").is_none_or(|value| value != "1"),
+                "DEPOAUDIO_REQUIRE_FFMPEG_TESTS=1, but ffmpeg has no libgsm_ms encoder"
+            );
+            eprintln!("skipping: ffmpeg has no libgsm_ms encoder");
+        }
+        available
+    }
+
+    /// The `fmt ` and `data` chunk bodies of a RIFF WAVE file.
+    fn wav_chunks(bytes: &[u8]) -> (Vec<u8>, Vec<u8>) {
+        assert_eq!(&bytes[0..4], b"RIFF");
+        assert_eq!(&bytes[8..12], b"WAVE");
+        let (mut fmt, mut data) = (None, None);
+        let mut at = 12;
+        while at + 8 <= bytes.len() {
+            let id = &bytes[at..at + 4];
+            let size = u32::from_le_bytes(bytes[at + 4..at + 8].try_into().unwrap()) as usize;
+            let body = &bytes[at + 8..(at + 8 + size).min(bytes.len())];
+            match id {
+                b"fmt " => fmt = Some(body.to_vec()),
+                b"data" => data = Some(body.to_vec()),
+                _ => {}
+            }
+            at += 8 + size + size % 2;
+        }
+        (fmt.expect("fmt chunk"), data.expect("data chunk"))
+    }
+
+    fn dm_job(src: &Path, out_dir: &Path, mode: &str, format: &str, rate: &str) -> ConvertJob {
+        let mut job = valid_job();
+        job.src_path = src.to_string_lossy().to_string();
+        job.out_dir = out_dir.to_string_lossy().to_string();
+        job.mode = mode.into();
+        job.format = format.into();
+        job.rate = rate.into();
+        job
+    }
+
+    /// The export record of a .dm conversion, checked against the schema and
+    /// the files on disk.
+    fn checked_dm_record(output: &OutputFile, source: &Path) -> serde_json::Value {
+        let path = manifest::manifest_path_for(Path::new(&output.path));
+        let record: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        let errors = manifest::tests::schema_errors_for_value(&record);
+        assert!(errors.is_empty(), "{}: {errors:#?}", path.display());
+        assert_eq!(record["source"]["fileName"], basename(&source.to_string_lossy()));
+        assert_eq!(record["source"]["sha256"], sha256_of(source));
+        assert_eq!(record["source"]["sizeBytes"], fs::metadata(source).unwrap().len());
+        assert_eq!(record["output"]["sha256"], sha256_of(Path::new(&output.path)));
+        assert_eq!(record["startTime"]["known"], false);
+        record
+    }
+
+    const DM_T0: u32 = 1_763_800_000; // 2025-11-22T08:26:40Z
+
     #[test]
-    fn synthetic_digitalcat_dm_converts_as_a_plain_container() {
-        if !court_fixture_tools_available() {
+    fn synthetic_pcm_dm_converts_to_its_samples_minus_recorded_over_blocks() {
+        if !dm_fixture_tools_available() {
             return;
         }
         let dir = ConversionTestDir::new();
-        let dm = synthetic_dm(&dir.0);
-        let split_out = dir.0.join("split");
+        // 16-bit mono at 11025 Hz: the block rule gives 2756 frames, 5512 bytes.
+        let format = crate::dm::tests::pcm_format(11025);
+        let frames = 2756usize;
+        let blocks: Vec<Vec<u8>> = (0..10)
+            .map(|block| {
+                (0..frames)
+                    .flat_map(|frame| {
+                        let t = (block * frames + frame) as f64 / 11025.0;
+                        let level = 0.1 + 0.05 * block as f64;
+                        let sample = (level * (2.0 * std::f64::consts::PI * 440.0 * t).sin() * 32767.0) as i16;
+                        sample.to_le_bytes()
+                    })
+                    .collect()
+            })
+            .collect();
+        let stamps = [
+            DM_T0,
+            DM_T0,
+            DM_T0 + 1,
+            0, // recorded over
+            0, // recorded over
+            DM_T0 + 2,
+            DM_T0 + 30, // pause
+            DM_T0 + 30,
+            // The record-over that erased blocks 3 and 4: its new blocks are
+            // appended at the end with the later clock (the notes' rule).
+            DM_T0 + 120,
+            DM_T0 + 120,
+        ];
+        let layout: Vec<(u32, &[u8])> = stamps.iter().zip(&blocks).map(|(s, b)| (*s, b.as_slice())).collect();
+        let dm = dir.0.join("synthetic_session.dm");
+        fs::write(&dm, crate::dm::tests::dm_bytes(&format, 5512, &layout)).unwrap();
+        let before = sha256_of(&dm);
+        let expected: Vec<u8> = stamps
+            .iter()
+            .zip(&blocks)
+            .filter(|(stamp, _)| **stamp != 0)
+            .flat_map(|(_, block)| block.iter().copied())
+            .collect();
+
+        let format_info = crate::helpers::detect_format_for_path(&dm.to_string_lossy()).unwrap();
+        assert_eq!(format_info.key, "digitalcat");
+        assert_eq!(format_info.status, "experimental");
+        let streams = crate::dm::streams_info(&dm).unwrap();
+        assert_eq!(streams.streams[0].sample_rate, Some(11025));
+        assert_eq!(streams.dm.as_ref().unwrap().blocks_erased, 2);
+        assert!(
+            streams.dm.as_ref().unwrap().stamps_monotonic,
+            "a record-over alone does not make the kept stamps go backwards"
+        );
+        assert!((streams.duration_secs.unwrap() - 8.0 * 2756.0 / 11025.0).abs() < 1e-9);
+
+        let keep_out = dir.0.join("keep");
+        fs::create_dir(&keep_out).unwrap();
+        let keep = convert_with_system_ffmpeg(&dm_job(&dm, &keep_out, "keep", "wav", "11025"), None).unwrap();
+        assert_ne!(keep.feed, dm);
+        assert!(!keep.feed.exists(), "the temporary WAV is removed after the conversion");
+        assert_eq!(keep.files.len(), 1);
+        assert_eq!(keep.files[0].name, "synthetic_session_orig.wav");
+        let (_, data) = wav_chunks(&fs::read(&keep.files[0].path).unwrap());
+        assert!(
+            data == expected,
+            "the output is the input PCM without the erased blocks, in file order"
+        );
+
+        let record = checked_dm_record(&keep.files[0], &dm);
+        assert_eq!(record["channel"]["sourceChannelCount"], 1);
+        let timeline = &record["source"]["dmTimeline"];
+        assert_eq!(timeline["formatTag"], 1);
+        assert_eq!(timeline["codecName"], "pcm_s16le");
+        assert_eq!(timeline["blockSize"], 5512);
+        assert_eq!(timeline["blocksTotal"], 10);
+        assert_eq!(timeline["blocksErased"], 2);
+        assert_eq!(timeline["shortFinalBlock"], false);
+        assert_eq!(timeline["stampsMonotonic"], true);
+        assert_eq!(
+            timeline["segments"],
+            serde_json::json!([
+                { "startSample": 0, "firstStampUtc": "2025-11-22T08:26:40Z", "blocks": 4 },
+                { "startSample": 4 * 2756, "firstStampUtc": "2025-11-22T08:27:10Z", "blocks": 2 },
+                { "startSample": 6 * 2756, "firstStampUtc": "2025-11-22T08:28:40Z", "blocks": 2 }
+            ])
+        );
+
+        // Mix to Stereo as MP3 reads the same feed.
         let mix_out = dir.0.join("mix");
-        fs::create_dir(&split_out).unwrap();
         fs::create_dir(&mix_out).unwrap();
+        let mix = convert_with_system_ffmpeg(&dm_job(&dm, &mix_out, "stereo", "mp3", "44100"), None).unwrap();
+        assert_eq!(mix.files[0].name, "synthetic_session.mp3");
+        let probe = ffprobe_json(Path::new(&mix.files[0].path), &["-show_format", "-show_streams"]);
+        assert_eq!(probe["streams"][0]["channels"], 2);
+        let duration: f64 = probe["format"]["duration"].as_str().unwrap().parse().unwrap();
+        assert!((duration - 8.0 * 0.25).abs() < 0.1, "mp3 lasts {duration} s");
+        checked_dm_record(&mix.files[0], &dm);
 
-        let split = convert_with_system_ffmpeg(&court_job(&dm, &split_out, "split", "wav"), None).unwrap();
-        assert_eq!(split.feed, dm, "a .dm file is passed to FFmpeg unchanged");
-        assert_split_outputs(&split, &dm, ".wav");
+        assert_eq!(sha256_of(&dm), before, "the original is never modified");
+    }
 
-        let mix = convert_with_system_ffmpeg(&court_job(&dm, &mix_out, "stereo", "mp3"), None).unwrap();
-        assert_mix_output(&mix, &dm, "synthetic_session.mp3");
-        assert!(dm.exists());
+    #[test]
+    fn a_dm_that_is_not_one_is_refused_before_any_output() {
+        if !dm_fixture_tools_available() {
+            return;
+        }
+        let dir = ConversionTestDir::new();
+        let dm = dir.0.join("not_audio.dm");
+        fs::write(&dm, b"DigitalCAT job notes, not audio").unwrap();
+        let format = crate::helpers::detect_format_for_path(&dm.to_string_lossy()).unwrap();
+        assert_eq!(format.key, "digitalcat-unrecognized");
+        assert_eq!(format.handler, "rejected");
+        // Preparation (what the conversion, scan and waveform all call) gives
+        // the plain message too.
+        let error = crate::helpers::prepare_audio_feed_with_cancel(&dm, None).unwrap_err();
+        assert!(error.starts_with(crate::dm::DM_HEADER_UNRECOGNIZED), "{error}");
+
+        // Every block recorded over: nothing to convert, nothing written.
+        let erased = dir.0.join("all_erased.dm");
+        let block = vec![0u8; 5512];
+        let format = crate::dm::tests::pcm_format(11025);
+        fs::write(
+            &erased,
+            crate::dm::tests::dm_bytes(&format, 5512, &[(0, &block), (0, &block)]),
+        )
+        .unwrap();
+        let out = dir.0.join("out");
+        fs::create_dir(&out).unwrap();
+        let error = convert_with_system_ffmpeg(&dm_job(&erased, &out, "keep", "wav", "11025"), None)
+            .err()
+            .unwrap();
+        assert!(error.contains("no audio left"), "{error}");
+        assert_eq!(fs::read_dir(&out).unwrap().count(), 0);
+    }
+
+    /// A tone encoded by FFmpeg's libgsm_ms at 8000 Hz (FFmpeg's GSM encoder
+    /// only takes 8 kHz): the WAVEFORMATEX and the GSM data.
+    fn synthetic_gsm(dir: &Path) -> (Vec<u8>, Vec<u8>, PathBuf) {
+        let wav = dir.join("synthetic_gsm.wav");
+        run_ffmpeg(&[
+            "-f".into(),
+            "lavfi".into(),
+            "-i".into(),
+            "sine=frequency=440:duration=2:sample_rate=8000".into(),
+            "-ac".into(),
+            "1".into(),
+            "-c:a".into(),
+            "libgsm_ms".into(),
+            "-f".into(),
+            "wav".into(),
+            "-y".into(),
+            wav.to_string_lossy().to_string(),
+        ]);
+        let (fmt, data) = wav_chunks(&fs::read(&wav).unwrap());
+        assert_eq!(
+            u16::from_le_bytes([fmt[0], fmt[1]]),
+            0x0031,
+            "FFmpeg wrote Microsoft GSM"
+        );
+        assert_eq!(u16::from_le_bytes([fmt[12], fmt[13]]), 65);
+        assert_eq!(data.len() % 65, 0);
+        (fmt, data, wav)
+    }
+
+    /// The decoded samples (16-bit little-endian) of `path` at its own rate.
+    fn decoded_pcm(path: &Path) -> Vec<u8> {
+        let output = std::process::Command::new("ffmpeg")
+            .args(["-nostdin", "-hide_banner", "-loglevel", "error", "-i"])
+            .arg(path)
+            .args(["-map", "0:a:0", "-f", "s16le", "-acodec", "pcm_s16le", "-"])
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+        output.stdout
+    }
+
+    /// GSM data cut into `block_size` blocks with rising stamps (4 per second).
+    fn gsm_blocks(data: &[u8], block_size: usize) -> Vec<(u32, &[u8])> {
+        data.chunks(block_size)
+            .enumerate()
+            .map(|(index, chunk)| (DM_T0 + index as u32 / 4, chunk))
+            .collect()
+    }
+
+    #[test]
+    fn synthetic_gsm_dm_decodes_exactly_like_the_gsm_wav_it_was_made_from() {
+        if !dm_fixture_tools_available() || !gsm_encoder_available() {
+            return;
+        }
+        let dir = ConversionTestDir::new();
+        let (fmt, data, gsm_wav) = synthetic_gsm(&dir.0);
+        // 8000 Hz GSM: nAvgBytesPerSec 1625, so (1625 / 65) >> 2 = 6 codec
+        // blocks, 390 bytes, per .dm block.
+        assert_eq!(u32::from_le_bytes(fmt[8..12].try_into().unwrap()), 1625);
+        let mut format = fmt.clone();
+        if format.len() < 20 {
+            format = crate::dm::tests::wave_format_bytes(0x31, 1, 8000, 1625, 65, 0, &320u16.to_le_bytes());
+        }
+        let blocks = gsm_blocks(&data, 390);
+        let dm = dir.0.join("synthetic_gsm.dm");
+        fs::write(&dm, crate::dm::tests::dm_bytes(&format, 390, &blocks)).unwrap();
+        let parsed = crate::dm::parse_dm(&dm, &|| false).unwrap();
+        // 50 codec blocks in 6-block .dm blocks leave a short last block,
+        // which is kept with a warning.
+        assert!(
+            parsed
+                .warnings
+                .iter()
+                .all(|warning| warning.starts_with("The last block is shorter")),
+            "{:?}",
+            parsed.warnings
+        );
+
+        let out = dir.0.join("out");
+        fs::create_dir(&out).unwrap();
+        let conversion = convert_with_system_ffmpeg(&dm_job(&dm, &out, "keep", "wav", "8000"), None).unwrap();
+        let (_, converted) = wav_chunks(&fs::read(&conversion.files[0].path).unwrap());
+        let direct = decoded_pcm(&gsm_wav);
+        assert!(!direct.is_empty());
+        assert!(
+            converted == direct,
+            "the .dm decodes to the same samples as its GSM WAV"
+        );
+
+        let record = checked_dm_record(&conversion.files[0], &dm);
+        let timeline = &record["source"]["dmTimeline"];
+        assert_eq!(timeline["codecName"], "gsm_ms");
+        assert_eq!(timeline["blockSize"], 390);
+        assert_eq!(timeline["blocksErased"], 0);
+        assert_eq!(timeline["stampsMonotonic"], true);
+        assert_eq!(timeline["shortFinalBlock"], data.len() % 390 != 0);
+        assert_eq!(timeline["segments"].as_array().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn a_gsm_dm_with_an_11025_hz_header_decodes_at_11025_hz() {
+        if !dm_fixture_tools_available() || !gsm_encoder_available() {
+            return;
+        }
+        let dir = ConversionTestDir::new();
+        let (_, data, gsm_wav) = synthetic_gsm(&dir.0);
+        // The SoundSync default header, around GSM data FFmpeg encoded at
+        // 8 kHz: GSM frames decode the same whatever rate the header states.
+        let format = crate::dm::tests::gsm_format();
+        let blocks = gsm_blocks(&data, 520);
+        let dm = dir.0.join("synthetic_default.dm");
+        fs::write(&dm, crate::dm::tests::dm_bytes(&format, 520, &blocks)).unwrap();
+
+        let out = dir.0.join("out");
+        fs::create_dir(&out).unwrap();
+        let conversion = convert_with_system_ffmpeg(&dm_job(&dm, &out, "keep", "wav", "11025"), None).unwrap();
+        let output = Path::new(&conversion.files[0].path);
+        let probe = ffprobe_json(output, &["-show_streams"]);
+        assert_eq!(probe["streams"][0]["sample_rate"], "11025");
+        let (_, converted) = wav_chunks(&fs::read(output).unwrap());
+        assert_eq!(converted.len(), data.len() / 65 * 320 * 2);
+        assert!(
+            converted == decoded_pcm(&gsm_wav),
+            "same samples, played at the stated rate"
+        );
+        let record = checked_dm_record(&conversion.files[0], &dm);
+        assert_eq!(record["output"]["sampleRate"], 11025);
+        assert_eq!(record["source"]["dmTimeline"]["blockSize"], 520);
+    }
+
+    #[test]
+    fn the_owner_gsm_sample_decodes_to_the_owner_decoded_wav() {
+        // A synthetic tone from the owner's rebuild tool, not a vendor or
+        // court file (scripts/fixtures/dm/vendor-notes-samples/README.md).
+        if !dm_fixture_tools_available() {
+            return;
+        }
+        let samples = Path::new(env!("CARGO_MANIFEST_DIR")).join("../scripts/fixtures/dm/vendor-notes-samples");
+        let dm = samples.join("tone_gsm.dm");
+        let before = sha256_of(&dm);
+        let bmf_before = sha256_of(&samples.join("tone_gsm.bmf"));
+        let parsed = crate::dm::parse_dm(&dm, &|| false).unwrap();
+        assert_eq!(
+            parsed.stamps,
+            [vec![1_700_000_000u32; 5], vec![1_700_000_001; 4]].concat()
+        );
+        assert!(parsed.warnings.is_empty(), "{:?}", parsed.warnings);
+
+        let dir = ConversionTestDir::new();
+        let out = dir.0.join("out");
+        fs::create_dir(&out).unwrap();
+        let conversion = convert_with_system_ffmpeg(&dm_job(&dm, &out, "keep", "wav", "11025"), None).unwrap();
+        let (fmt, converted) = wav_chunks(&fs::read(&conversion.files[0].path).unwrap());
+        let (reference_fmt, reference) = wav_chunks(&fs::read(samples.join("tone_gsm_decoded.wav")).unwrap());
+        assert_eq!(fmt[..16], reference_fmt[..16], "16-bit mono 11025 Hz PCM");
+        assert_eq!(reference.len(), 23040 * 2);
+        assert_eq!(converted.len(), reference.len());
+        let first_difference = converted.iter().zip(&reference).position(|(a, b)| a != b);
+        assert_eq!(first_difference, None, "sample for sample equal to the owner's decode");
+
+        let record = checked_dm_record(&conversion.files[0], &dm);
+        let timeline = &record["source"]["dmTimeline"];
+        assert_eq!(timeline["blocksTotal"], 9);
+        assert_eq!(timeline["blocksErased"], 0);
+        assert_eq!(timeline["shortFinalBlock"], false);
+        assert_eq!(
+            timeline["segments"],
+            serde_json::json!([{ "startSample": 0, "firstStampUtc": "2023-11-14T22:13:20Z", "blocks": 9 }])
+        );
+        let markers = &timeline["markerFile"];
+        assert_eq!(markers["status"], "read");
+        assert_eq!(markers["fileName"], "tone_gsm.bmf");
+        assert_eq!(markers["entries"], 2);
+        assert_eq!(markers["entriesMatchingABlock"], 2);
+        let record_text =
+            fs::read_to_string(manifest::manifest_path_for(Path::new(&conversion.files[0].path))).unwrap();
+        assert!(
+            !record_text.contains("Objection"),
+            "marker text never reaches the record"
+        );
+        assert_eq!(sha256_of(&dm), before, "the original is never modified");
+        assert_eq!(
+            sha256_of(&samples.join("tone_gsm.bmf")),
+            bmf_before,
+            "nor is the marker file"
+        );
     }
 
     /// A synthetic `.mkv` with two audio streams that differ in channel
@@ -1961,6 +2342,7 @@ mod tests {
                 file_name: "session.wav".into(),
                 sha256: "a".repeat(64),
                 size_bytes: 12,
+                dm_timeline: None,
             },
             probed: &probes.probed,
             labels: &job.labels,
@@ -2984,6 +3366,93 @@ mod tests {
                 cases.len(),
                 problems.join("\n")
             );
+        }
+
+        /// A DigitalCAT `.dm` reaches FFmpeg as a temporary WAV in the work
+        /// folder, so its conversions get the same alignment checks: a mono
+        /// 48 kHz PCM `.dm` holding channel 0 of the fixture converts in every
+        /// mode, plain, trimmed, faded and with everything but auto-level on,
+        /// with its clicks on the source's samples and its length kept unless
+        /// trim removed the leading silence.
+        #[test]
+        fn a_dm_source_lines_up_sample_for_sample() {
+            if !court_fixture_tools_available() {
+                return;
+            }
+            let dir = ConversionTestDir::new();
+            let format = crate::dm::tests::pcm_format(RATE as u32);
+            // The block rule for 16-bit mono at 48 kHz: 12000 frames.
+            let block_bytes = 24_000;
+            let pcm: Vec<u8> = (0..LEN)
+                .flat_map(|n| ((fixture_sample(n, 0) * 32767.0).round() as i16).to_le_bytes())
+                .collect();
+            let t0: u32 = 1_763_800_000;
+            let layout: Vec<(u32, &[u8])> = pcm.chunks(block_bytes).map(|block| (t0, block)).collect();
+            let dm = dir.0.join("alignment_session.dm");
+            fs::write(&dm, crate::dm::tests::dm_bytes(&format, block_bytes as u32, &layout)).unwrap();
+            let reference: Vec<f32> = (0..LEN)
+                .map(|n| ((fixture_sample(n, 0) * 32767.0).round() / 32768.0) as f32)
+                .collect();
+
+            let mut problems = Vec::new();
+            let mut index = 0;
+            for mode in ["keep", "stereo", "split"] {
+                for format in ["wav", "mp3"] {
+                    for bits in [0, 2, 4, 31] {
+                        let options = Options::from_bits(bits);
+                        let out = dir.0.join(format!("dm_case_{index}"));
+                        index += 1;
+                        fs::create_dir(&out).unwrap();
+                        let mut job = court_job(&dm, &out, mode, format);
+                        job.labels = vec!["Room".into()];
+                        job.chan_vols = vec![1.0];
+                        job.rate = RATE.to_string();
+                        job.normalize = options.normalize;
+                        job.trim = options.trim;
+                        job.fade = options.fade;
+                        job.hpf = options.hpf;
+                        job.declip = options.declip;
+                        let case = format!("dm {mode} {format} {options:?}");
+                        let conversion = match convert_with_system_ffmpeg(&job, None) {
+                            Ok(conversion) => conversion,
+                            Err(error) => {
+                                problems.push(format!("{case}: conversion failed: {error}"));
+                                continue;
+                            }
+                        };
+                        if conversion.feed == dm || conversion.feed.exists() {
+                            problems.push(format!("{case}: the feed was not a removed temporary WAV"));
+                        }
+                        let expected_channels = if mode == "stereo" { 2 } else { 1 };
+                        for file in &conversion.files {
+                            let channels = decode(Path::new(&file.path), RATE, expected_channels, false);
+                            let out_len = channels[0].len();
+                            let removed = LEN as i64 - out_len as i64;
+                            let trimmed = options.trim && mode != "split";
+                            if trimmed {
+                                let limit = (LEAD_SILENCE + 2) as i64 + 1;
+                                if !(1..=limit).contains(&removed) {
+                                    problems.push(format!("{case}: trim removed {removed} samples"));
+                                }
+                            } else if removed != 0 {
+                                problems.push(format!("{case}: {out_len} samples, the .dm holds {LEN}"));
+                            }
+                            let tolerance = i64::from(trimmed && options.normalize);
+                            let clicks = if options.fade { &CLICKS[..2] } else { &CLICKS[..] };
+                            for (channel_index, channel) in channels.iter().enumerate() {
+                                let lag = click_lag(&reference, channel, clicks, -removed, (RATE / 40) as i64);
+                                if lag.abs() > tolerance {
+                                    problems.push(format!(
+                                        "{case} channel {channel_index}: clicks are {lag} samples off the .dm"
+                                    ));
+                                }
+                            }
+                        }
+                        let _ = fs::remove_dir_all(&out);
+                    }
+                }
+            }
+            assert!(problems.is_empty(), "{}", problems.join("\n"));
         }
 
         #[test]

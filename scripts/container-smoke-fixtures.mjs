@@ -7,6 +7,18 @@
 // and M4A outputs with the same -map 0:a:0 and output options the app uses. A container is listed in the app only
 // when its row here passes on macOS and Windows.
 //
+// DigitalCAT .dm files are read by DepoAudio itself (src-tauri/src/dm.rs),
+// which writes the audio into a temporary WAV for FFmpeg. FFmpeg never sees a
+// .dm, so the smoke here makes synthetic .dm files in the documented layout
+// (docs/formats/dm.md), reads them into the same WAV layout dm.rs writes, and
+// requires each sidecar to decode that WAV and convert it like the app.
+// demuxDm below is a JavaScript reading of the layout, not dm.rs itself. To
+// tie the two together, scripts/fixtures/dm holds committed .dm files and the
+// WAV that dm.rs writes for each (a cargo test fails if dm.rs's output
+// changes); the self-test checks that demuxDm gives the same bytes, and the
+// release smoke feeds those dm.rs-written WAVs to each sidecar too, including
+// GSM 6.10 (the SoundSync default), which has no LGPL encoder in the sidecars.
+//
 // Nothing is downloaded and no recording is used: every byte of input is made
 // here. Fixtures live under RUNNER_TEMP and are removed by --clean.
 import assert from 'node:assert/strict'
@@ -115,8 +127,8 @@ function requireRunnerTemp() {
   if (!runnerTemp) throw new Error('RUNNER_TEMP is required for container smoke fixtures')
 }
 
-export function buildToneWav() {
-  const sampleCount = Math.round(SAMPLE_RATE * DURATION_SECONDS)
+export function buildToneWav(sampleRate = SAMPLE_RATE) {
+  const sampleCount = Math.round(sampleRate * DURATION_SECONDS)
   const output = Buffer.alloc(44 + sampleCount * 2)
   output.write('RIFF', 0, 'ascii')
   output.writeUInt32LE(output.length - 8, 4)
@@ -125,17 +137,283 @@ export function buildToneWav() {
   output.writeUInt32LE(16, 16)
   output.writeUInt16LE(1, 20)
   output.writeUInt16LE(1, 22)
-  output.writeUInt32LE(SAMPLE_RATE, 24)
-  output.writeUInt32LE(SAMPLE_RATE * 2, 28)
+  output.writeUInt32LE(sampleRate, 24)
+  output.writeUInt32LE(sampleRate * 2, 28)
   output.writeUInt16LE(2, 32)
   output.writeUInt16LE(16, 34)
   output.write('data', 36, 'ascii')
   output.writeUInt32LE(sampleCount * 2, 40)
   for (let sample = 0; sample < sampleCount; sample += 1) {
-    const value = Math.round(Math.sin((2 * Math.PI * 440 * sample) / SAMPLE_RATE) * 0.2 * 32_767)
+    const value = Math.round(Math.sin((2 * Math.PI * 440 * sample) / sampleRate) * 0.2 * 32_767)
     output.writeInt16LE(value, 44 + sample * 2)
   }
   return output
+}
+
+// ── DigitalCAT .dm ──────────────────────────────────────────────────────────
+
+// Decoders the WAVs read from .dm files need, for the formats SoundSync
+// offers besides plain PCM. build-ffmpeg-macos.sh and the Windows release
+// step gate on the same list.
+export const DM_DECODERS = ['gsm_ms', 'adpcm_ima_wav', 'adpcm_ms', 'pcm_alaw', 'pcm_mulaw']
+const DM_SAMPLE_RATE = 11_025
+// Block 1 of every fixture is marked recorded over (stamp 0) and must be
+// left out.
+const DM_ERASED_BLOCK = 1
+const DM_FIRST_STAMP = 1_763_800_000
+// Committed .dm files and the WAV dm.rs writes for each; GOLDEN_DM in
+// src-tauri/src/dm.rs lists the same names.
+const GOLDEN_DM_DIRECTORY = path.resolve(path.dirname(fileURLToPath(import.meta.url)), 'fixtures/dm')
+export const GOLDEN_DM = [
+  { name: 'gsm-default', codec: 'gsm_ms' },
+  { name: 'ima-adpcm-damaged', codec: 'adpcm_ima_wav' },
+  { name: 'adpcm-ms', codec: 'adpcm_ms' },
+  { name: 'mulaw-odd-format', codec: 'pcm_mulaw' },
+  { name: 'pcm-u8-odd', codec: 'pcm_u8' },
+]
+export const DM_FIXTURES = [
+  { label: 'DigitalCAT .dm (PCM)', fixture: 'dm-smoke-pcm.dm', encoder: null, codec: 'pcm_s16le' },
+  { label: 'DigitalCAT .dm (A-law)', fixture: 'dm-smoke-alaw.dm', encoder: 'pcm_alaw', codec: 'pcm_alaw' },
+  { label: 'DigitalCAT .dm (mu-law)', fixture: 'dm-smoke-mulaw.dm', encoder: 'pcm_mulaw', codec: 'pcm_mulaw' },
+  { label: 'DigitalCAT .dm (MS ADPCM)', fixture: 'dm-smoke-adpcm-ms.dm', encoder: 'adpcm_ms', codec: 'adpcm_ms' },
+  {
+    label: 'DigitalCAT .dm (IMA ADPCM)',
+    fixture: 'dm-smoke-adpcm-ima.dm',
+    encoder: 'adpcm_ima_wav',
+    codec: 'adpcm_ima_wav',
+  },
+]
+
+// The `fmt ` and `data` chunk bodies of a RIFF WAVE buffer.
+export function wavChunks(buffer) {
+  if (buffer.subarray(0, 4).toString('ascii') !== 'RIFF' || buffer.subarray(8, 12).toString('ascii') !== 'WAVE') {
+    throw new Error('not a RIFF WAVE file')
+  }
+  const chunks = {}
+  let at = 12
+  while (at + 8 <= buffer.length) {
+    const id = buffer.subarray(at, at + 4).toString('ascii')
+    const size = buffer.readUInt32LE(at + 4)
+    chunks[id] = buffer.subarray(at + 8, Math.min(at + 8 + size, buffer.length))
+    at += 8 + size + (size % 2)
+  }
+  if (!chunks['fmt '] || !chunks.data) throw new Error('WAVE file has no fmt or data chunk')
+  return { fmt: chunks['fmt '], data: chunks.data }
+}
+
+// The block size the recorder picks: a quarter second of whole codec blocks.
+export function dmBlockSize(fmt) {
+  const align = fmt.readUInt16LE(12)
+  return Math.max(1, Math.floor(fmt.readUInt32LE(8) / align) >> 2) * align
+}
+
+// A .dm: 16-byte header (version 1, header size 8, format size, block size),
+// the WAVEFORMATEX, then blocks of [u32 stamp][u32 length][bytes]. Stamps
+// rise one second every four blocks; DM_ERASED_BLOCK gets stamp 0.
+export function buildDm(fmt, data) {
+  const blockSize = dmBlockSize(fmt)
+  const header = Buffer.alloc(16)
+  header.writeUInt32LE(1, 0)
+  header.writeUInt32LE(8, 4)
+  header.writeUInt32LE(fmt.length, 8)
+  header.writeUInt32LE(blockSize, 12)
+  const parts = [header, fmt]
+  for (let index = 0; index * blockSize < data.length; index += 1) {
+    const payload = data.subarray(index * blockSize, (index + 1) * blockSize)
+    const blockHeader = Buffer.alloc(8)
+    blockHeader.writeUInt32LE(index === DM_ERASED_BLOCK ? 0 : DM_FIRST_STAMP + Math.floor(index / 4), 0)
+    blockHeader.writeUInt32LE(payload.length, 4)
+    parts.push(blockHeader, payload)
+  }
+  return Buffer.concat(parts)
+}
+
+// Samples per codec block as FFmpeg's decoders count them (dm.rs does the
+// same): from the block alignment, not the header's wSamplesPerBlock field.
+export function dmSamplesPerCodecBlock(fmt) {
+  const tag = fmt.readUInt16LE(0)
+  const channels = fmt.readUInt16LE(2)
+  const align = fmt.readUInt16LE(12)
+  const bits = fmt.readUInt16LE(14)
+  if ([1, 3, 6, 7, 0xfffe].includes(tag)) return 1
+  if (tag === 0x31) return 320
+  if (tag === 2) return align >= 7 * channels ? Math.floor(((align - 6 * channels) * 2) / channels) : 0
+  if (tag === 0x11) {
+    const groups = { 2: [4, 16], 3: [12, 32], 4: [4, 8], 5: [20, 32] }[bits]
+    if (!groups || align < 4 * channels) return 0
+    return 1 + Math.floor((align - 4 * channels) / (groups[0] * channels)) * groups[1]
+  }
+  return 0
+}
+
+// Read a .dm into the WAV layout dm.rs writes: its WAVEFORMATEX as `fmt `
+// (padded to even), a `fact` chunk for formats outside the PCM family when
+// the samples are countable, and the blocks that are not recorded over, in
+// file order, as `data`. Reading stops after the first short block (where
+// SoundSync's player stops), which keeps only its whole codec blocks, and
+// before an incomplete block at the end of the file.
+export function demuxDm(buffer) {
+  if (buffer.length < 16 || buffer.readUInt32LE(4) !== 8) throw new Error('not a .dm audio header')
+  const formatSize = buffer.readUInt32LE(8)
+  const blockSize = buffer.readUInt32LE(12)
+  if (formatSize < 16 || 16 + formatSize > buffer.length || blockSize === 0) throw new Error('bad .dm header')
+  const fmt = buffer.subarray(16, 16 + formatSize)
+  const tag = fmt.readUInt16LE(0)
+  const align = fmt.readUInt16LE(12)
+  const kept = []
+  let at = 16 + formatSize
+  while (at < buffer.length) {
+    if (at + 8 > buffer.length) break
+    const stamp = buffer.readUInt32LE(at)
+    const length = buffer.readUInt32LE(at + 4)
+    // A block claiming more than remains is the incomplete tail, whatever it claims.
+    if (at + 8 + length > buffer.length) break
+    if (length > blockSize) throw new Error('bad .dm block')
+    if (stamp !== 0) kept.push(buffer.subarray(at + 8, at + 8 + length - (length % align)))
+    at += 8 + length
+    if (length < blockSize) break
+  }
+  if (kept.length === 0 && at === 16 + formatSize) throw new Error('.dm has no complete block')
+  const data = Buffer.concat(kept)
+  const samplesPerBlock = dmSamplesPerCodecBlock(fmt)
+  const pcmFamily = [1, 3, 0xfffe].includes(tag)
+  const fact = !pcmFamily && samplesPerBlock > 0 ? Buffer.alloc(12) : Buffer.alloc(0)
+  if (fact.length) {
+    fact.write('fact', 0, 'ascii')
+    fact.writeUInt32LE(4, 4)
+    fact.writeUInt32LE((data.length / align) * samplesPerBlock, 8)
+  }
+  const fmtChunk = Buffer.alloc(8 + formatSize + (formatSize % 2))
+  fmtChunk.write('fmt ', 0, 'ascii')
+  fmtChunk.writeUInt32LE(formatSize, 4)
+  fmt.copy(fmtChunk, 8)
+  const dataHeader = Buffer.alloc(8)
+  dataHeader.write('data', 0, 'ascii')
+  dataHeader.writeUInt32LE(data.length, 4)
+  const body = [fmtChunk, fact, dataHeader, data, Buffer.alloc(data.length % 2)]
+  const riff = Buffer.alloc(12)
+  riff.write('RIFF', 0, 'ascii')
+  riff.writeUInt32LE(4 + body.reduce((total, part) => total + part.length, 0), 4)
+  riff.write('WAVE', 8, 'ascii')
+  return Buffer.concat([riff, ...body])
+}
+
+// The PCM a fixture's data must decode to: every block but the erased one.
+export function dmExpectedPcm(fmt, data) {
+  const blockSize = dmBlockSize(fmt)
+  return Buffer.concat([
+    data.subarray(0, DM_ERASED_BLOCK * blockSize),
+    data.subarray((DM_ERASED_BLOCK + 1) * blockSize),
+  ])
+}
+
+async function generateDm(ffmpeg) {
+  const tone = path.join(FIXTURE_DIRECTORY, 'dm-source-tone.wav')
+  try {
+    await writeFile(tone, buildToneWav(DM_SAMPLE_RATE), { flag: 'wx', mode: 0o600 })
+    for (const entry of DM_FIXTURES) {
+      const fixture = path.join(FIXTURE_DIRECTORY, entry.fixture)
+      if (await stat(fixture).catch(() => undefined))
+        throw new Error(`Refusing to replace ${entry.fixture}; run --clean first`)
+      let wav = buildToneWav(DM_SAMPLE_RATE)
+      if (entry.encoder) {
+        const encoded = path.join(FIXTURE_DIRECTORY, `${path.parse(entry.fixture).name}-source.wav`)
+        try {
+          run(
+            ffmpeg,
+            ['-hide_banner', '-v', 'error', '-xerror', '-i', tone, '-c:a', entry.encoder, '-f', 'wav', '-y', encoded],
+            `${entry.label} source encode`,
+          )
+          wav = await readFile(encoded)
+        } finally {
+          await rm(encoded, { force: true })
+        }
+      }
+      const { fmt, data } = wavChunks(wav)
+      await writeFile(fixture, buildDm(fmt, data), { flag: 'wx', mode: 0o600 })
+      console.log(`Generated ${entry.label} fixture ${entry.fixture}`)
+    }
+  } finally {
+    await rm(tone, { force: true })
+  }
+}
+
+async function checkDm(ffmpeg, ffprobe, tag) {
+  const decoders = run(ffmpeg, ['-hide_banner', '-decoders'], 'decoder list')
+  for (const decoder of DM_DECODERS) {
+    if (!new RegExp(`\\s${decoder}\\s`, 'u').test(decoders)) {
+      throw new Error(`${path.basename(ffmpeg)} lacks the ${decoder} decoder that .dm audio can need`)
+    }
+  }
+  for (const entry of DM_FIXTURES) {
+    const fixture = path.join(FIXTURE_DIRECTORY, entry.fixture)
+    await requireFile(fixture, `fixture for ${entry.label}`)
+    const feed = path.join(FIXTURE_DIRECTORY, `${tag}-${path.parse(entry.fixture).name}-feed.wav`)
+    try {
+      await writeFile(feed, demuxDm(await readFile(fixture)), { flag: 'wx', mode: 0o600 })
+      const found = streams(ffprobe, feed, entry.label)
+      if (found.length !== 1 || found[0].codec_name !== entry.codec) {
+        throw new Error(`${entry.label}: expected one ${entry.codec} stream, found ${JSON.stringify(found)}`)
+      }
+      run(
+        ffmpeg,
+        ['-hide_banner', '-v', 'error', '-xerror', '-i', feed, '-map', '0:a:0', '-f', 'null', '-'],
+        `${entry.label} audio decode`,
+      )
+      if (!entry.encoder) {
+        const decoded = spawnSync(
+          ffmpeg,
+          ['-hide_banner', '-v', 'error', '-xerror', '-i', feed, '-map', '0:a:0', '-f', 's16le', '-'],
+          { maxBuffer: 16 * 1024 * 1024, timeout: 120_000, windowsHide: true },
+        )
+        const { fmt, data } = wavChunks(buildToneWav(DM_SAMPLE_RATE))
+        if (decoded.status !== 0 || !Buffer.from(decoded.stdout).equals(dmExpectedPcm(fmt, data))) {
+          throw new Error(`${entry.label}: decoded samples are not the source minus the recorded-over block`)
+        }
+      }
+      for (const output of APP_OUTPUTS) {
+        const target = path.join(
+          FIXTURE_DIRECTORY,
+          `${tag}-${path.parse(entry.fixture).name}${output.variant ? `-${output.variant}` : ''}.${output.extension}`,
+        )
+        try {
+          run(
+            ffmpeg,
+            ['-hide_banner', '-v', 'error', '-xerror', '-i', feed, '-map', '0:a:0', ...output.args, '-y', target],
+            `${entry.label} to ${output.variant ?? output.extension}`,
+          )
+          const written = streams(ffprobe, target, `${entry.label} ${output.extension} output`)
+          if (written.length !== 1 || written[0].codec_type !== 'audio') {
+            throw new Error(`${entry.label}: ${output.extension} output must hold one audio stream`)
+          }
+        } finally {
+          await rm(target, { force: true })
+        }
+      }
+    } finally {
+      await rm(feed, { force: true })
+    }
+    console.log(`${path.basename(ffmpeg)}: ${entry.label} decodes`)
+  }
+}
+
+// The WAVs dm.rs wrote for the committed .dm files: each sidecar must see the
+// expected codec and decode every sample without error.
+async function checkGoldenDm(ffmpeg, ffprobe) {
+  for (const entry of GOLDEN_DM) {
+    const feed = path.join(GOLDEN_DM_DIRECTORY, `${entry.name}.wav`)
+    await requireFile(feed, `dm.rs-written WAV for ${entry.name}.dm`)
+    const found = streams(ffprobe, feed, `${entry.name}.wav`)
+    if (found.length !== 1 || found[0].codec_name !== entry.codec) {
+      throw new Error(`${entry.name}.wav: expected one ${entry.codec} stream, found ${JSON.stringify(found)}`)
+    }
+    run(
+      ffmpeg,
+      ['-hide_banner', '-v', 'error', '-xerror', '-i', feed, '-map', '0:a:0', '-f', 'null', '-'],
+      `${entry.name}.wav decode`,
+    )
+    console.log(`${path.basename(ffmpeg)}: dm.rs-written ${entry.name}.wav decodes`)
+  }
 }
 
 // Raw yuv420p frames: a grey picture whose brightness steps each frame.
@@ -230,6 +508,7 @@ async function generate(ffmpegArgument) {
   } finally {
     await Promise.all([rm(tone, { force: true }), rm(frames, { force: true })])
   }
+  await generateDm(ffmpeg)
 }
 
 async function check(ffmpegArgument, ffprobeArgument) {
@@ -283,6 +562,8 @@ async function check(ffmpegArgument, ffprobeArgument) {
     }
     console.log(`${path.basename(ffmpeg)}: ${container.label} (${container.extensions.join(', ')}) decodes`)
   }
+  await checkDm(ffmpeg, ffprobe, tag)
+  await checkGoldenDm(ffmpeg, ffprobe)
 }
 
 async function clean() {
@@ -330,6 +611,50 @@ async function selfTest() {
     assert.ok(constants.includes(`.${extension}`), `the format table must list .${extension}`)
   }
   assert.equal(new Set(CONTAINERS.map(container => container.fixture)).size, CONTAINERS.length)
+
+  // .dm: build a PCM fixture, read it back, and check the layout and that the
+  // recorded-over block is gone; a short last block keeps whole codec blocks.
+  const pcm = wavChunks(buildToneWav(DM_SAMPLE_RATE))
+  assert.equal(dmBlockSize(pcm.fmt), 5512)
+  const dm = buildDm(pcm.fmt, pcm.data)
+  assert.equal(dm.readUInt32LE(4), 8)
+  assert.equal(dm.readUInt32LE(12), 5512)
+  assert.equal(dm.readUInt32LE(16 + pcm.fmt.length + 8 + 5512), 0, 'block 1 is marked recorded over')
+  const fed = wavChunks(demuxDm(dm))
+  assert.ok(fed.fmt.equals(pcm.fmt))
+  assert.ok(fed.data.equals(dmExpectedPcm(pcm.fmt, pcm.data)))
+  assert.equal(fed.data.length, pcm.data.length - 5512)
+  const gsmFmt = Buffer.from('31000100112b0000bf08000041000000020040 01'.replace(/ /gu, ''), 'hex')
+  assert.equal(dmBlockSize(gsmFmt), 520)
+  const gsm = wavChunks(demuxDm(buildDm(gsmFmt, Buffer.alloc(520 * 3 + 100, 1))))
+  assert.equal(gsm.data.length, 520 * 2 + 65, 'erased block dropped, 35 stray bytes dropped')
+  assert.throws(() => demuxDm(Buffer.from('RIFF0000WAVEfmt ')), /not a \.dm audio header/u)
+  // Nothing after a short block is read, even a block that would be refused.
+  // (Block 1, the short one here, is also the recorded-over block.)
+  const shortThenMore = Buffer.concat([
+    buildDm(gsmFmt, Buffer.alloc(520 + 100, 1)),
+    Buffer.from([1, 0, 0, 0, 0xff, 0xff, 0, 0]),
+  ])
+  assert.equal(wavChunks(demuxDm(shortThenMore)).data.length, 520, 'block 1 is short and recorded over')
+  // demuxDm must give the same bytes dm.rs wrote for every committed fixture.
+  const goldenNames = (await readdir(GOLDEN_DM_DIRECTORY)).filter(name => name.endsWith('.dm')).sort()
+  assert.deepEqual(goldenNames, GOLDEN_DM.map(entry => `${entry.name}.dm`).sort(), 'every golden .dm is listed')
+  for (const entry of GOLDEN_DM) {
+    const written = await readFile(path.join(GOLDEN_DM_DIRECTORY, `${entry.name}.wav`))
+    const ours = demuxDm(await readFile(path.join(GOLDEN_DM_DIRECTORY, `${entry.name}.dm`)))
+    assert.ok(ours.equals(written), `demuxDm and dm.rs disagree on ${entry.name}.dm`)
+  }
+  const goldenSource = await readFile(path.join(repository, 'src-tauri/src/dm.rs'), 'utf8')
+  for (const entry of GOLDEN_DM) {
+    assert.ok(goldenSource.includes(`"${entry.name}",`), `dm.rs GOLDEN_DM lists ${entry.name}`)
+  }
+  assert.equal(new Set(DM_FIXTURES.map(entry => entry.fixture)).size, DM_FIXTURES.length)
+  const ffmpegBuild = await readFile(path.join(repository, 'scripts/build-ffmpeg-macos.sh'), 'utf8')
+  for (const decoder of DM_DECODERS) {
+    assert.match(ffmpegBuild, new RegExp(`for decoder in [^\\n]*\\b${decoder}\\b`, 'u'), `macOS gate lists ${decoder}`)
+  }
+  const dmSource = await readFile(path.join(repository, 'src-tauri/src/dm.rs'), 'utf8')
+  assert.ok(dmSource.includes('const EXPECTED_HEADER_SIZE: u32 = 8;'), 'dm.rs still reads header size 8')
 
   const root = await mkdtemp(path.join(os.tmpdir(), 'depoaudio-container-smoke-test-'))
   try {
