@@ -371,6 +371,21 @@ jobs:
         shell: pwsh
         run: Get-ChildItem src-tauri/binaries/
 
+      # DigitalCAT .dm audio reaches FFmpeg as a WAV that DepoAudio writes
+      # (src-tauri/src/dm.rs). These are the decoders its formats need besides
+      # PCM; scripts/build-ffmpeg-macos.sh gates the macOS sidecars on the same
+      # list, and the container smoke below decodes all but GSM.
+      - name: Check bundled FFmpeg has the DigitalCAT .dm decoders (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ffmpeg = 'src-tauri/binaries/ffmpeg-x86_64-pc-windows-msvc.exe'
+          $decoders = (& $ffmpeg -hide_banner -decoders) -join "`n"
+          if ($LASTEXITCODE -ne 0) { throw "Bundled FFmpeg could not list its decoders" }
+          foreach ($decoder in @('gsm_ms', 'adpcm_ima_wav', 'adpcm_ms', 'pcm_alaw', 'pcm_mulaw')) {
+            if ($decoders -notmatch "\s$decoder\s") { throw "Bundled FFmpeg lacks decoder $decoder" }
+          }
+
       - name: Generate synthetic FTR decode fixture (macOS)
         if: runner.os == 'macOS'
         run: >-

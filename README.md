@@ -103,7 +103,7 @@ Scanning is a bounded, cancellable local analysis pass. FFmpeg performs the sele
 | **SGMCA**                                    | Stenograph · Case CATalyst | ✅ Supported                       |
 | **FTR / TRM**                                | For The Record             | 🧪 Experimental                    |
 | **BWF**                                      | CourtSmart · Various       | ✅ Supported                       |
-| **DigitalCAT (.dm)**                         | Stenovations               | 🧪 Experimental                    |
+| **DigitalCAT / SoundSync (.dm)**             | Stenovations               | 🧪 Experimental                    |
 | **WAV, MP3, FLAC, M4A, OGG, Opus, WMA, AIF** | Standard                   | ✅ Supported                       |
 | **Video (MP4, MOV, MKV, AVI, WebM)**         | — audio track extracted    | ✅ Supported                       |
 | **Video (MPG, VOB, TS, MTS, M2TS, WMV, ASF)** | — audio track extracted   | ✅ Supported                       |
@@ -116,6 +116,12 @@ Scanning is a bounded, cancellable local analysis pass. FFmpeg performs the sele
 The MPG, VOB, TS, MTS, M2TS, WMV and ASF rows are smoke-tested at each
 release with synthetic files carrying MP2, AC-3 or WMAv2 audio. No real
 deposition recording in these containers has been tried yet.
+
+DigitalCAT / SoundSync `.dm` files: DepoAudio reads the audio inside into a
+temporary WAV for FFmpeg, skips blocks that were recorded over, and keeps the
+audio in file order. It has been tested with synthetic files only, built from
+owner-supplied notes on the layout ([`docs/formats/dm.md`](docs/formats/dm.md))
+that have not yet been checked against a recorded file.
 
 ---
 

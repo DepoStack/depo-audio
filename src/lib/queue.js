@@ -61,6 +61,22 @@ export function reexportConfirmCopy({ queued, queuedAtOpen, incoming }) {
   }
 }
 
+// Plain notice for a queued DigitalCAT .dm, from probe_audio_streams_cmd's
+// `dm` answer (read from the file's own block headers): how many
+// recorded-over blocks are skipped, and whether stamps run backwards because
+// part of the file was recorded over. Nothing to say, or no answer, means no
+// notice.
+export function dmNotice(info) {
+  const dm = info?.dm
+  if (!dm || typeof dm !== 'object') return ''
+  const erased = Number.isInteger(dm.blocksErased) && dm.blocksErased > 0 ? dm.blocksErased : 0
+  const parts = [
+    erased ? `${erased} recorded-over ${erased === 1 ? 'block' : 'blocks'} skipped.` : '',
+    dm.stampsMonotonic === false ? 'Parts of this file were recorded over; audio is kept in file order.' : '',
+  ]
+  return parts.filter(Boolean).join(' ')
+}
+
 // Plain notice for a queued file with more than one audio track. `info` is
 // probe_audio_streams_cmd's answer: every audio stream in file order and the
 // index of the one DepoAudio converts (the same stream the export record

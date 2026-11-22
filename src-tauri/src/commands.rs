@@ -95,7 +95,8 @@ pub async fn detect_format(path: String) -> Option<FormatInfo> {
 /// notice and the WAV size estimate. Read-only: one ffprobe of the original
 /// file. Returns None when the file is not probed here: a rejected format, or
 /// an SGMCA, whose Ogg stream sits behind a vendor prefix and is only read
-/// from a temporary copy at conversion time.
+/// from a temporary copy at conversion time. A `.dm` is answered from its own
+/// header and block headers (no FFmpeg), with what was recorded over.
 #[tauri::command]
 pub async fn probe_audio_streams_cmd(
     app: AppHandle,
@@ -105,6 +106,16 @@ pub async fn probe_audio_streams_cmd(
     crate::safety::check_file_safe(source)?;
     match detect_format_blocking(path.clone()).await {
         Some(format) if format.handler == "rejected" || format.key == "sgmca" => Ok(None),
+        // FFmpeg cannot read a .dm; its own header answers instead.
+        Some(format) if format.key == "digitalcat" => {
+            let source = source.to_path_buf();
+            Ok(
+                tauri::async_runtime::spawn_blocking(move || crate::dm::streams_info(&source))
+                    .await
+                    .ok()
+                    .flatten(),
+            )
+        }
         Some(_) => Ok(crate::ffmpeg::probe_audio_streams(&app, source).await),
         None => Ok(None),
     }

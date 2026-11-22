@@ -1,5 +1,12 @@
 import { describe, expect, it } from 'vitest'
-import { audioTrackNotice, catJobPaths, mergeQueuedFiles, partitionQueuePaths, reexportConfirmCopy } from '../lib/queue'
+import {
+  audioTrackNotice,
+  catJobPaths,
+  dmNotice,
+  mergeQueuedFiles,
+  partitionQueuePaths,
+  reexportConfirmCopy,
+} from '../lib/queue'
 
 describe('partitionQueuePaths', () => {
   it('separates TRS companions without discarding any dropped TRM chunks', () => {
@@ -85,5 +92,27 @@ describe('audioTrackNotice', () => {
     expect(audioTrackNotice(null)).toBe('')
     expect(audioTrackNotice(undefined)).toBe('')
     expect(audioTrackNotice([])).toBe('')
+  })
+})
+
+describe('dmNotice', () => {
+  it('says how many recorded-over blocks are skipped', () => {
+    const dm = { blocksErased: 12, stampsMonotonic: true }
+    expect(dmNotice({ streams: [{}], dm })).toBe('12 recorded-over blocks skipped.')
+    expect(dmNotice({ dm: { blocksErased: 1, stampsMonotonic: true } })).toBe('1 recorded-over block skipped.')
+  })
+  it('says when stamps go backwards and audio stays in file order', () => {
+    expect(dmNotice({ dm: { blocksErased: 0, stampsMonotonic: false } })).toBe(
+      'Parts of this file were recorded over; audio is kept in file order.',
+    )
+    expect(dmNotice({ dm: { blocksErased: 3, stampsMonotonic: false } })).toBe(
+      '3 recorded-over blocks skipped. Parts of this file were recorded over; audio is kept in file order.',
+    )
+  })
+  it('is empty with nothing to report or no answer', () => {
+    expect(dmNotice({ dm: { blocksErased: 0, stampsMonotonic: true } })).toBe('')
+    expect(dmNotice({ streams: [{}] })).toBe('')
+    expect(dmNotice(null)).toBe('')
+    expect(dmNotice({ dm: { blocksErased: 'many' } })).toBe('')
   })
 })

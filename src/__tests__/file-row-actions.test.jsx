@@ -303,3 +303,27 @@ describe('Compare with original', () => {
     expect(screen.getByRole('alert')).toHaveTextContent("Original can't be played here; open the output in Player.")
   })
 })
+
+describe('Queued DigitalCAT .dm rows', () => {
+  afterEach(cleanup)
+
+  it('say what was recorded over and that audio stays in file order', () => {
+    const dm = {
+      path: '/case/session.dm',
+      name: 'session.dm',
+      fmt: { key: 'digitalcat', name: 'DigitalCAT Audio', status: 'experimental' },
+    }
+    const streams = {
+      convertedIndex: 0,
+      streams: [{ channels: 1, sampleRate: 11025 }],
+      durationSecs: 60,
+      dm: { codecName: 'gsm_ms', blocksTotal: 240, blocksErased: 12, shortFinalBlock: false, stampsMonotonic: false },
+    }
+    render(<FileRow file={dm} streams={streams} onRemove={vi.fn()} converting={false} />)
+    expect(
+      screen.getByText(
+        '12 recorded-over blocks skipped. Parts of this file were recorded over; audio is kept in file order.',
+      ),
+    ).toBeTruthy()
+  })
+})
