@@ -112,14 +112,21 @@ describe('clearing web data', () => {
       'player-bookmarks': '[]',
       'player-speed': '2',
       'player-backstep': '3',
+      'player-volume': '0.8',
       'depoaudio-theme': 'dark',
       'not-depoaudio': 'kept',
     })
   })
 
   it('removes every DepoAudio key and nothing else', () => {
-    expect(WEB_STORAGE_KEYS).toEqual(['player-bookmarks', 'player-speed', 'player-backstep', 'depoaudio-theme'])
-    expect(clearWebData(storage)).toEqual({ removed: 7, failed: 0 })
+    expect(WEB_STORAGE_KEYS).toEqual([
+      'player-bookmarks',
+      'player-speed',
+      'player-backstep',
+      'player-volume',
+      'depoaudio-theme',
+    ])
+    expect(clearWebData(storage)).toEqual({ removed: 8, failed: 0 })
     expect([...storage.data.keys()]).toEqual(['not-depoaudio'])
   })
 

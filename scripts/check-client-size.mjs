@@ -4,10 +4,17 @@ import { fileURLToPath } from 'node:url'
 
 const distDirectory = fileURLToPath(new URL('../dist/', import.meta.url))
 const budgets = {
-  // Raised from 560 KiB with the transcript proofing view: it already sat at
-  // 559.9 KiB, and the cue-tag tokenizer that replaced the regex tag stripper
-  // (src/lib/transcript.js stripCueTags) adds ~0.2 KiB.
-  javascript: 561 * 1024,
+  // Raised from 560 KiB with the Player listening mix and playback keys
+  // (~33 KiB over main's 548.6 KiB, to ~581.9 KiB): the Player tab chunk
+  // (mix strips, swap and restore), the Settings chunk (Playback keys
+  // section), the global-shortcut plugin with the key dispatcher in the app
+  // shell, the channel-count worklet and the speaker colors. The budget sums
+  // every emitted .js file, so lazy-loading the playback-keys code would move
+  // bytes between chunks without bringing the total under 560 KiB. The
+  // transcript proofing view (with its cue-tag tokenizer) was budgeted
+  // separately at 561 KiB; this merge keeps the larger 592 KiB and does not
+  // raise it further.
+  javascript: 592 * 1024,
   // Raised from 64 KiB with the DepoStack brand foundation: the bundled
   // Archivo/Fragment Mono @font-face rules with their size-adjusted fallbacks
   // (src/styles/fonts.css) and the type-role utilities add ~2 KiB over main

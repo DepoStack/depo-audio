@@ -464,6 +464,17 @@ expect(
   !bundleResources.some(resource => /(?:^|\/)(?:model|models|onnxruntime)(?:\/|$)|\.onnx$/i.test(resource)),
   'tauri.conf.json must not bundle learned-model material or ONNX Runtime',
 )
+// Playback keys can press Play with Separate channels on, which is not a user
+// gesture. That is heard because wry's autoplay default adds
+// --autoplay-policy=no-user-gesture-required to WebView2, but only while no
+// additionalBrowserArgs are set (src/components/Player/PlayerTab.jsx onPlay).
+// Setting them, or turning autoplay off, needs that path rechecked first.
+expect(
+  (tauriConfig.app?.windows ?? []).every(
+    window => window.additionalBrowserArgs === undefined && window.autoplay !== false,
+  ),
+  'tauri.conf.json windows must not set additionalBrowserArgs or turn off autoplay (playback keys and Separate channels rely on gesture-free playback)',
+)
 // tauri-build 2.7+ statically links the MSVC runtime into the Windows binary
 // unless this is false. Keep the dynamic linking every earlier candidate was
 // built with; embedding the runtime is a ledger and owner decision, not a default.
@@ -949,8 +960,8 @@ expect(
 )
 expect(
   javascriptNoticeComponents.schemaVersion === 1 &&
-    javascriptNoticeComponents.componentCount === 58 &&
-    javascriptNoticeComponents.javascriptComponentCount === 56 &&
+    javascriptNoticeComponents.componentCount === 59 &&
+    javascriptNoticeComponents.javascriptComponentCount === 57 &&
     javascriptNoticeComponents.generatedCssComponentCount === 2 &&
     javascriptNoticeComponents.bundledFontCount === 2 &&
     ['Archivo', 'Fragment Mono'].every(family =>
@@ -978,7 +989,7 @@ const hasJavaScriptNoticeSourceClosure =
   thirdPartyInventory.includes('JavaScript and generated CSS notice status') &&
   thirdPartyInventory.includes('DepoAudio-owned compatibility module') &&
   thirdPartyInventory.includes('an SBOM does not replace copyright notices or license') &&
-  thirdPartyInventory.includes('56 JavaScript packages') &&
+  thirdPartyInventory.includes('57 JavaScript packages') &&
   javascriptNoticeComponents.unresolvedComponentCount === 0 &&
   javascriptNoticeComponents.unresolvedComponents?.length === 0
 expect(
