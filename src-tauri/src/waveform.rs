@@ -359,7 +359,7 @@ async fn decode_waveform(app: &AppHandle, key: &FileKey, cancelled: Arc<AtomicBo
     let preparation_flag = cancelled.clone();
     let preparation_cancelled: Arc<dyn Fn() -> bool + Send + Sync> =
         Arc::new(move || preparation_flag.load(Ordering::Acquire));
-    let feed = prepare_audio_feed_cancellable(app, source, preparation_cancelled)
+    let feed = prepare_audio_feed_cancellable(app, source.clone(), preparation_cancelled.clone())
         .await
         .map_err(|error| {
             if is_cancelled() {
@@ -383,6 +383,50 @@ async fn decode_waveform(app: &AppHandle, key: &FileKey, cancelled: Arc<AtomicBo
         return Err("Waveform disabled for recordings over 10 minutes. Playback is still available.".into());
     }
 
+    let mut output = run_waveform_decoder(app, &feed, &is_cancelled).await;
+    if is_cancelled() {
+        return Err(WAVEFORM_CANCELLED_MESSAGE.into());
+    }
+    // FFmpeg's native FTR decoder failed: split the channels and decode them
+    // instead, as conversion and Scan do.
+    if output.is_err() && feed.used_native_ftr() {
+        drop(feed);
+        let split = crate::helpers::prepare_audio_feed_after_native_failure(source, preparation_cancelled).await;
+        if is_cancelled() {
+            return Err(WAVEFORM_CANCELLED_MESSAGE.into());
+        }
+        let first = output.err().unwrap_or_default();
+        let split = split.map_err(|error| format!("{first}; splitting its channels also failed: {error}"))?;
+        output = run_waveform_decoder(app, &split, &is_cancelled).await;
+        if is_cancelled() {
+            return Err(WAVEFORM_CANCELLED_MESSAGE.into());
+        }
+    }
+    let stdout = output?;
+
+    // The key is checked again only after FFmpeg has finished. A changed
+    // source is neither delivered nor cached, even when FFmpeg exited cleanly.
+    let restat_path = key.canonical_path.clone();
+    let current_key = tauri::async_runtime::spawn_blocking(move || FileKey::inspect(&restat_path))
+        .await
+        .map_err(|error| format!("Could not re-inspect the recording: {error}"))??;
+    if current_key != *key {
+        return Err("The recording changed while its waveform was being decoded. Try again.".into());
+    }
+    if is_cancelled() {
+        return Err(WAVEFORM_CANCELLED_MESSAGE.into());
+    }
+
+    samples_to_peaks(&stdout, WAVEFORM_BUCKETS).map(Arc::new)
+}
+
+/// Decode `feed` to mono f32 PCM for the waveform; the error names FFmpeg's
+/// last message.
+async fn run_waveform_decoder(
+    app: &AppHandle,
+    feed: &crate::helpers::AudioFeed,
+    is_cancelled: &(dyn Fn() -> bool + Sync),
+) -> Result<Vec<u8>, String> {
     let mut args = vec![
         "-nostdin".into(),
         "-hide_banner".into(),
@@ -411,11 +455,9 @@ async fn decode_waveform(app: &AppHandle, key: &FileKey, cancelled: Arc<AtomicBo
         "pipe:1".into(),
     ]);
 
-    let output = sidecar_output_cancellable(app, ffmpeg_bin_name(), args, 120, Some(&is_cancelled)).await;
-    if is_cancelled() {
-        return Err(WAVEFORM_CANCELLED_MESSAGE.into());
-    }
-    let output = output.ok_or_else(|| "Waveform decoder timed out or could not start".to_string())?;
+    let output = sidecar_output_cancellable(app, ffmpeg_bin_name(), args, 120, Some(is_cancelled))
+        .await
+        .ok_or_else(|| "Waveform decoder timed out or could not start".to_string())?;
     if !output.success {
         let detail = String::from_utf8_lossy(&output.stderr);
         let detail = detail
@@ -425,21 +467,7 @@ async fn decode_waveform(app: &AppHandle, key: &FileKey, cancelled: Arc<AtomicBo
             .unwrap_or("unknown FFmpeg error");
         return Err(format!("Waveform decoder failed: {detail}"));
     }
-
-    // The key is checked again only after FFmpeg has finished. A changed
-    // source is neither delivered nor cached, even when FFmpeg exited cleanly.
-    let restat_path = key.canonical_path.clone();
-    let current_key = tauri::async_runtime::spawn_blocking(move || FileKey::inspect(&restat_path))
-        .await
-        .map_err(|error| format!("Could not re-inspect the recording: {error}"))??;
-    if current_key != *key {
-        return Err("The recording changed while its waveform was being decoded. Try again.".into());
-    }
-    if is_cancelled() {
-        return Err(WAVEFORM_CANCELLED_MESSAGE.into());
-    }
-
-    samples_to_peaks(&output.stdout, WAVEFORM_BUCKETS).map(Arc::new)
+    Ok(output.stdout)
 }
 
 /// Join or start a bounded waveform request. Disk inspection happens before

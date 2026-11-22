@@ -94,6 +94,13 @@ pub fn run() {
         .manage(AppState::default())
         .setup(|app| {
             setup_persistence(app.handle());
+            // Temporary FTR channel files a killed or crashed run left behind.
+            std::thread::spawn(|| {
+                let removed = helpers::sweep_stale_channel_files();
+                if removed > 0 {
+                    eprintln!("[startup] Removed {removed} leftover temporary FTR channel file(s)");
+                }
+            });
             // Auto-update is available only when the release overlay contains
             // a complete signed-updater configuration. Tauri exposes a missing
             // plugin configuration as JSON null; registering the updater in

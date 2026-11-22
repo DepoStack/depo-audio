@@ -115,14 +115,21 @@ pub async fn probe_audio_streams_cmd(
             let inspected = tauri::async_runtime::spawn_blocking(move || crate::trm::inspect_trm(&trm_path))
                 .await
                 .map_err(|error| format!("FTR inspection task failed: {error}"))?;
-            Ok(inspected.ok().map(|info| {
-                let (decode_path, route_reasons) = crate::trm::choose_route(&info, options);
-                crate::manifest::trm_audio_streams(crate::trm::TrmRoute {
-                    info,
-                    decode_path,
-                    route_reasons,
-                })
-            }))
+            match inspected {
+                Ok(info) => {
+                    let (decode_path, route_reasons) = crate::trm::choose_route(&info, options);
+                    Ok(Some(crate::manifest::trm_audio_streams(crate::trm::TrmRoute::new(
+                        info,
+                        decode_path,
+                        route_reasons,
+                    ))))
+                }
+                // DepoAudio could not read the layout; a conversion then
+                // hands the file to FFmpeg's native decoder as it is, so the
+                // queue shows what ffprobe reads, as it did before.
+                Err(_) if options.native_ftr => Ok(crate::ffmpeg::probe_audio_streams(&app, source).await),
+                Err(_) => Ok(None),
+            }
         }
         Some(_) => Ok(crate::ffmpeg::probe_audio_streams(&app, source).await),
         None => Ok(None),

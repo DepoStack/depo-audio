@@ -69,7 +69,7 @@ pub(crate) fn get_formats() -> Vec<FormatInfo> {
             note: Some("Ogg Opus with one mono stream per channel (mapping family 255).".into()) },
         FormatInfo { key: "ftr".into(), name: "FTR Recording".into(), vendor: "For The Record".into(),
             status: "experimental".into(), handler: "ftr".into(), channels: Some("4–16".into()),
-            note: Some("FTR interleaves one AAC stream per microphone. DepoAudio reads a file with FFmpeg's native FTR decoder when its layout allows, and otherwise splits the channels itself first; the export record says which. This reading is based on interoperability notes and has not yet been checked against a real FTR recording. Add all .trm or .tll files of a session together.".into()) },
+            note: Some("FTR interleaves one AAC stream per microphone. DepoAudio reads a file with FFmpeg's native FTR decoder when its layout allows, and otherwise splits the channels itself first; the export record says which. This reading is based on interoperability notes and has not yet been checked against a real FTR recording. Add all .trm, .ftr or .tll files of a session together.".into()) },
         FormatInfo { key: "bwf".into(), name: "Broadcast WAV".into(), vendor: "CourtSmart / Various".into(),
             status: "supported".into(), handler: "passthrough".into(), channels: None, note: None },
         FormatInfo { key: "digitalcat".into(), name: "DigitalCAT Audio".into(), vendor: "Stenovations".into(),
@@ -467,6 +467,9 @@ pub(crate) struct AudioFeed {
     /// Options placed before every `-i` (a decoder or demuxer choice).
     input_codec: Vec<String>,
     trm: Option<crate::trm::TrmRoute>,
+    /// An FTR recording DepoAudio could not read, handed to FFmpeg's native
+    /// decoder as it is: why the inspection failed.
+    trm_inspection_error: Option<String>,
     _guards: Vec<crate::safety::TempFile>,
 }
 
@@ -477,6 +480,7 @@ impl AudioFeed {
             inputs: vec![path],
             input_codec: Vec::new(),
             trm: None,
+            trm_inspection_error: None,
             _guards: Vec::new(),
         }
     }
@@ -489,6 +493,12 @@ impl AudioFeed {
     /// The FTR route taken, for the export record.
     pub(crate) fn trm(&self) -> Option<&crate::trm::TrmRoute> {
         self.trm.as_ref()
+    }
+
+    /// Why DepoAudio could not read this FTR recording itself, when it was
+    /// handed to FFmpeg's native decoder as it is instead.
+    pub(crate) fn trm_inspection_error(&self) -> Option<&str> {
+        self.trm_inspection_error.as_deref()
     }
 
     /// Several inputs that `amerge` joins into the converted stream.
@@ -608,6 +618,73 @@ impl AudioFeed {
     }
 }
 
+/// The folder, inside the system temporary folder, that holds DepoAudio's
+/// temporary FTR channel files and nothing else.
+const CHANNEL_FILE_DIR: &str = "depoaudio_trm_channels";
+/// Channel files older than this are left over from a run that was killed
+/// or crashed: a live conversion's files are far younger.
+pub(crate) const STALE_CHANNEL_FILE_AGE: std::time::Duration = std::time::Duration::from_secs(24 * 60 * 60);
+
+fn channel_file_dir() -> Result<PathBuf, String> {
+    let dir = std::env::temp_dir().join(CHANNEL_FILE_DIR);
+    fs::create_dir_all(&dir)
+        .map_err(|error| format!("Could not create a temporary folder for channel files: {error}"))?;
+    Ok(dir)
+}
+
+/// A file name the channel split writes: `depoaudio_trm_<32 hex>_ch<N>.aac`.
+fn is_channel_file_name(name: &str) -> bool {
+    let Some(rest) = name
+        .strip_prefix(crate::trm::CHANNEL_FILE_PREFIX)
+        .and_then(|rest| rest.strip_suffix(".aac"))
+    else {
+        return false;
+    };
+    let Some((id, channel)) = rest.split_once("_ch") else {
+        return false;
+    };
+    id.len() == 32
+        && id.bytes().all(|byte| byte.is_ascii_hexdigit())
+        && !channel.is_empty()
+        && channel.bytes().all(|byte| byte.is_ascii_digit())
+}
+
+/// Remove channel files that a killed or crashed run left in `dir`: regular
+/// files named as the channel split names them and last written more than
+/// `max_age` ago, so a conversion still running in another DepoAudio window
+/// keeps its files. Returns how many were removed. Never touches anything
+/// else, and never follows a link.
+pub(crate) fn sweep_stale_channel_files_in(dir: &Path, max_age: std::time::Duration) -> usize {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return 0;
+    };
+    let now = std::time::SystemTime::now();
+    let mut removed = 0;
+    for entry in entries.filter_map(Result::ok) {
+        let name = entry.file_name();
+        if !is_channel_file_name(&name.to_string_lossy()) {
+            continue;
+        }
+        let Ok(metadata) = fs::symlink_metadata(entry.path()) else {
+            continue;
+        };
+        let stale = metadata
+            .modified()
+            .ok()
+            .and_then(|modified| now.duration_since(modified).ok())
+            .is_some_and(|age| age > max_age);
+        if metadata.is_file() && stale && fs::remove_file(entry.path()).is_ok() {
+            removed += 1;
+        }
+    }
+    removed
+}
+
+/// The startup sweep of DepoAudio's own channel-file folder.
+pub(crate) fn sweep_stale_channel_files() -> usize {
+    sweep_stale_channel_files_in(&std::env::temp_dir().join(CHANNEL_FILE_DIR), STALE_CHANNEL_FILE_AGE)
+}
+
 /// The selected file is an FTR recording (`.trm`, `.ftr`, `.tll`).
 pub(crate) fn is_trm_path(path: &Path) -> bool {
     detect_format_by_extension(&path.to_string_lossy()).is_some_and(|format| format.handler == "ftr")
@@ -618,31 +695,43 @@ fn prepare_trm_feed(
     options: FeedOptions,
     cancelled: Option<&(dyn Fn() -> bool + Send + Sync)>,
 ) -> Result<AudioFeed, String> {
-    let info = crate::trm::inspect_trm_with_cancel(src, cancelled)?;
+    let info = match crate::trm::inspect_trm_with_cancel(src, cancelled) {
+        Ok(info) => info,
+        Err(error) if cancelled.is_some_and(|check| check()) || error == crate::trm::TRM_CANCELLED_MESSAGE => {
+            return Err(error)
+        }
+        // DepoAudio's reading of the layout is unconfirmed, so a file it
+        // cannot read goes to FFmpeg's native decoder as it is, as before;
+        // the export record gives the reason.
+        Err(error) if options.native_ftr && !options.native_failed => {
+            return Ok(AudioFeed {
+                inputs: vec![src.to_path_buf()],
+                input_codec: input_codec_args(src),
+                trm: None,
+                trm_inspection_error: Some(error),
+                _guards: Vec::new(),
+            })
+        }
+        Err(error) => return Err(error),
+    };
     let (decode_path, reasons) = crate::trm::choose_route(&info, options);
     match decode_path {
         crate::trm::DecodePath::NativeFtr => Ok(AudioFeed {
             inputs: vec![src.to_path_buf()],
             input_codec: input_codec_args(src),
-            trm: Some(crate::trm::TrmRoute {
-                info,
-                decode_path,
-                route_reasons: reasons,
-            }),
+            trm: Some(crate::trm::TrmRoute::new(info, decode_path, reasons)),
+            trm_inspection_error: None,
             _guards: Vec::new(),
         }),
         crate::trm::DecodePath::Deinterleaved => {
             let (written, files) =
-                crate::trm::deinterleave_trm_with_cancel(src, &std::env::temp_dir(), Some(&info), cancelled)?;
+                crate::trm::deinterleave_trm_with_cancel(src, &channel_file_dir()?, Some(&info), cancelled)?;
             let guards = files.iter().cloned().map(crate::safety::TempFile::new).collect();
             Ok(AudioFeed {
                 inputs: files,
                 input_codec: vec!["-f".into(), "aac".into()],
-                trm: Some(crate::trm::TrmRoute {
-                    info: written,
-                    decode_path,
-                    route_reasons: reasons,
-                }),
+                trm: Some(crate::trm::TrmRoute::new(written, decode_path, reasons)),
+                trm_inspection_error: None,
                 _guards: guards,
             })
         }
@@ -997,6 +1086,7 @@ mod tests {
                 .collect(),
             input_codec: vec!["-f".into(), "aac".into()],
             trm: None,
+            trm_inspection_error: None,
             _guards: Vec::new(),
         };
         assert!(feed.is_merged());
@@ -1082,6 +1172,62 @@ mod tests {
 
         assert!(input_codec_args(Path::new("ordinary.wav")).is_empty());
         assert_eq!(input_codec_args(Path::new("session.SGMCA")), ["-c:a", "libopus"]);
+    }
+
+    #[test]
+    fn an_ftr_recording_depoaudio_cannot_read_goes_to_the_native_decoder_when_present() {
+        let dir = ReservationTestDir::new();
+        let source = dir.path().join("unreadable.trm");
+        fs::write(&source, b"RIFF\x10\0\0\0AVI LIST\x04\0\0\0junk").unwrap();
+        let native = FeedOptions {
+            native_ftr: true,
+            native_failed: false,
+        };
+        let feed = prepare_audio_feed_with_cancel(&source, native, None).unwrap();
+        assert!(feed.trm().is_none());
+        assert!(
+            !feed.used_native_ftr(),
+            "no layout was read, so there is no split route to retry"
+        );
+        assert!(feed.trm_inspection_error().unwrap().contains("FTR recording"));
+        assert_eq!(feed.input_args(&[])[..2], ["-c:a", "ftr"]);
+
+        // Without the decoder, or once it has failed, the reason is the error.
+        assert!(prepare_audio_feed_with_cancel(&source, FeedOptions::default(), None).is_err());
+        let failed = FeedOptions {
+            native_failed: true,
+            ..native
+        };
+        assert!(prepare_audio_feed_with_cancel(&source, failed, None).is_err());
+    }
+
+    #[test]
+    fn the_startup_sweep_removes_only_stale_channel_files() {
+        let dir = ReservationTestDir::new();
+        let old = std::time::SystemTime::now() - std::time::Duration::from_secs(3 * 24 * 60 * 60);
+        let id = "0123456789abcdef0123456789abcdef";
+        let stale = dir.path().join(format!("depoaudio_trm_{id}_ch0.aac"));
+        let fresh = dir.path().join(format!("depoaudio_trm_{id}_ch1.aac"));
+        let other = dir.path().join(format!("depoaudio_trm_{id}_ch2.wav"));
+        let named = dir.path().join("depoaudio_trm_notours_ch0.aac");
+        for path in [&stale, &fresh, &other, &named] {
+            fs::write(path, b"x").unwrap();
+        }
+        for path in [&stale, &other, &named] {
+            fs::File::options()
+                .write(true)
+                .open(path)
+                .unwrap()
+                .set_modified(old)
+                .unwrap();
+        }
+        assert_eq!(sweep_stale_channel_files_in(dir.path(), STALE_CHANNEL_FILE_AGE), 1);
+        assert!(!stale.exists());
+        assert!(fresh.exists() && other.exists() && named.exists());
+        assert_eq!(
+            sweep_stale_channel_files_in(&dir.path().join("missing"), STALE_CHANNEL_FILE_AGE),
+            0
+        );
     }
 
     #[test]

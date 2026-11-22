@@ -356,6 +356,10 @@ pub(crate) struct FileRecord {
     /// For an FTR recording: what reading it found and how it was decoded.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub trm: Option<crate::trm::TrmRoute>,
+    /// For an FTR recording DepoAudio could not read: why. FFmpeg's native
+    /// `ftr` decoder then read the file as it is, without DepoAudio's checks.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub trm_inspection_error: Option<String>,
 }
 
 #[derive(Debug, Serialize, Clone, PartialEq)]
@@ -654,6 +658,7 @@ pub(crate) mod tests {
                 sha256: "a".repeat(64),
                 size_bytes: 1024,
                 trm: None,
+                trm_inspection_error: None,
             },
             probed,
             labels,
@@ -1073,8 +1078,8 @@ pub(crate) mod tests {
     }
 
     fn sample_trm_route(ftra: Option<crate::trm::FtraInfo>, reasons: &[&str]) -> crate::trm::TrmRoute {
-        crate::trm::TrmRoute {
-            info: crate::trm::TrmInfo {
+        crate::trm::TrmRoute::new(
+            crate::trm::TrmInfo {
                 tag: 0x4180,
                 channels: 4,
                 sample_rate: Some(16_000),
@@ -1088,21 +1093,30 @@ pub(crate) mod tests {
                 scrambled_frames: 20,
                 straddling_frames: 3,
                 misaligned_packets: 2,
+                multi_round_packets: 1,
                 resync_skipped_bytes: 0,
+                channel_resyncs: 1,
+                mid_stream_skipped_bytes: 9,
+                padding_bytes: 10,
+                trailing_skipped_bytes: 3,
                 incomplete_final_round: true,
                 dropped_frames: 1,
+                length_high_bit_frames: 2,
                 truncated: false,
+                continuation_segments: 0,
+                grew_while_read: true,
                 ftra,
                 video_streams: 1,
                 duration_secs: Some(0.64),
+                file_bytes: 4096,
             },
-            decode_path: if reasons.is_empty() {
+            if reasons.is_empty() {
                 crate::trm::DecodePath::NativeFtr
             } else {
                 crate::trm::DecodePath::Deinterleaved
             },
-            route_reasons: reasons.iter().map(|reason| reason.to_string()).collect(),
-        }
+            reasons.iter().map(|reason| reason.to_string()).collect(),
+        )
     }
 
     #[test]

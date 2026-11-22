@@ -380,6 +380,7 @@ fn prepare_source(
         sha256,
         size_bytes,
         trm: feed.trm().cloned(),
+        trm_inspection_error: feed.trm_inspection_error().map(str::to_string),
     };
     Ok((feed, source))
 }
@@ -1642,6 +1643,11 @@ mod tests {
         assert_eq!(native_record["source"]["trm"]["decodePath"], "native-ftr");
         assert_eq!(native_record["source"]["trm"]["routeReasons"], serde_json::json!([]));
         assert_eq!(
+            native_record["source"]["trm"]["inputOptions"],
+            serde_json::json!(["-c:a", "ftr"])
+        );
+        assert_eq!(native_record["source"]["trm"]["inputCount"], 1);
+        assert_eq!(
             native_record["processing"]["mapArgs"],
             serde_json::json!(["-map", "0:a:0"])
         );
@@ -1657,6 +1663,11 @@ mod tests {
             serde_json::json!(["-map", "[da_out]"])
         );
         assert_eq!(split_record["source"]["trm"]["indexKind"], "idx1-absolute");
+        assert_eq!(
+            split_record["source"]["trm"]["inputOptions"],
+            serde_json::json!(["-f", "aac"])
+        );
+        assert_eq!(split_record["source"]["trm"]["inputCount"], 4);
         assert_eq!(split_record["audioStream"]["sourceAudioStreamCount"], 1);
         assert_eq!(fs::read(&trm).unwrap(), original, "the original is never modified");
     }
@@ -2160,6 +2171,7 @@ mod tests {
                 sha256: "a".repeat(64),
                 size_bytes: 12,
                 trm: None,
+                trm_inspection_error: None,
             },
             probed: &probes.probed,
             labels: &job.labels,

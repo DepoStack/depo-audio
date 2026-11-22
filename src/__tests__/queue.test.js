@@ -11,7 +11,7 @@ import {
   trmRecordingNotice,
   trmSessionNotices,
 } from '../lib/queue'
-import { ftrSessionKey } from '../utils'
+import { ftrRecordingDate, ftrSessionKey } from '../utils'
 
 describe('partitionQueuePaths', () => {
   it('separates TRS companions without discarding any dropped TRM chunks', () => {
@@ -114,15 +114,18 @@ describe('FTR recording notices', () => {
   it('names an unclosed recording and nothing else', () => {
     expect(trmRecordingNotice(route(true, true, true))).toBe(TRM_OPEN_ENDED_NOTICE)
     expect(TRM_OPEN_ENDED_NOTICE).toBe(
-      'This recording was not closed properly; DepoAudio read the audio that was written.',
+      "This recording's header says it was never closed (or is still recording); DepoAudio read the audio written so far.",
     )
     expect(trmRecordingNotice(route(true, true))).toBe('')
     expect(trmRecordingNotice({ streams: [] })).toBe('')
     expect(trmRecordingNotice(null)).toBe('')
   })
 
-  it('groups chunks by folder, location and date', () => {
+  it('groups chunks by folder and location, with the date read separately', () => {
     expect(ftrSessionKey(a)).toBe(ftrSessionKey(b))
+    expect(ftrSessionKey(a)).toBe(ftrSessionKey(a.replace('20260105', '20260106')))
+    expect(ftrRecordingDate(a)).toBe('20260105')
+    expect(ftrRecordingDate('/court/session part 1.trm')).toBeNull()
     expect(ftrSessionKey(a)).not.toBe(ftrSessionKey(chunk('CR5', '0900', '01dc5f0000000001')))
     expect(ftrSessionKey(a)).not.toBe(ftrSessionKey(a.replace('/court/', '/other/')))
     expect(ftrSessionKey('C:\\court\\CR4_20260105-0900_01dc5f0000000001.TRM')).toBe(
@@ -145,7 +148,34 @@ describe('FTR recording notices', () => {
     expect(trmSessionNotices([{ path: b }], { [b]: route(false, false) })).toEqual({
       [b]: `${TRM_SESSION_FIRST_MISSING} ${TRM_SESSION_LAST_MISSING}`,
     })
-    expect(TRM_SESSION_FIRST_MISSING).toBe("This session's first file isn't in the queue.")
+    expect(TRM_SESSION_FIRST_MISSING).toBe(
+      "No queued file is marked as this session's first file; if the session has earlier files, add them too.",
+    )
+    expect(TRM_SESSION_LAST_MISSING).toBe(
+      "No queued file is marked as this session's last file; if the session has later files, add them too.",
+    )
+  })
+
+  it('keeps a session that runs past midnight together, and splits days apart', () => {
+    const night = path => path.replace('20260105', '20260106')
+    const before = chunk('CR4', '2350', '01dc5f0000000010')
+    const after = night(chunk('CR4', '0005', '01dc5f0000000011'))
+    const files = [before, after].map(path => ({ path }))
+    expect(trmSessionNotices(files, { [before]: route(true, false), [after]: route(false, true) })).toEqual({})
+    // Month and year ends are consecutive days too.
+    const dec = '/court/CR4_20261231-2350_01dc5f0000000020.trm'
+    const jan = '/court/CR4_20270101-0005_01dc5f0000000021.trm'
+    expect(
+      trmSessionNotices([{ path: jan }, { path: dec }], { [dec]: route(true, false), [jan]: route(false, true) }),
+    ).toEqual({})
+    // Two days apart: two groups, each judged on its own.
+    const later = before.replace('20260105', '20260107')
+    expect(
+      trmSessionNotices([{ path: before }, { path: later }], {
+        [before]: route(true, true),
+        [later]: route(false, true),
+      }),
+    ).toEqual({ [later]: TRM_SESSION_FIRST_MISSING })
   })
 
   it('claims nothing until every chunk of the session has been read', () => {

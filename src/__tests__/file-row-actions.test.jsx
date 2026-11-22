@@ -158,7 +158,9 @@ describe('Queued FTR recordings', () => {
   it('says when the recorder did not close the file', () => {
     render(<FileRow file={recording} streams={trmStreams(true)} onRemove={vi.fn()} converting={false} />)
     expect(
-      screen.getByText('This recording was not closed properly; DepoAudio read the audio that was written.'),
+      screen.getByText(
+        "This recording's header says it was never closed (or is still recording); DepoAudio read the audio written so far.",
+      ),
     ).toBeTruthy()
   })
 
@@ -167,13 +169,17 @@ describe('Queued FTR recordings', () => {
       <FileRow
         file={recording}
         streams={trmStreams(false)}
-        sessionNotice="This session's last file isn't in the queue."
+        sessionNotice="No queued file is marked as this session's last file; if the session has later files, add them too."
         onRemove={vi.fn()}
         converting={false}
       />,
     )
     expect(screen.queryByText(/not closed properly/)).toBeNull()
-    expect(screen.getByText("This session's last file isn't in the queue.")).toBeTruthy()
+    expect(
+      screen.getByText(
+        "No queued file is marked as this session's last file; if the session has later files, add them too.",
+      ),
+    ).toBeTruthy()
   })
 })
 

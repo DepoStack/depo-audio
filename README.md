@@ -21,7 +21,7 @@ Open and convert proprietary court-recording formats, improve levels and clippin
 
 DepoAudio handles the audio side of a deposition or hearing, end to end:
 
-- 🎧 **Convert** proprietary court formats (Stenograph SGMCA, FTR `.trm`, CourtSmart BWF) and standard audio to WAV, MP3, FLAC, Opus, M4A, or SGMCA (Direct Audio) — mix to stereo, keep the channel layout, or split one file per source channel and name it by role.
+- 🎧 **Convert** proprietary court formats (Stenograph SGMCA, FTR `.trm`/`.tll`, CourtSmart BWF) and standard audio to WAV, MP3, FLAC, Opus, M4A, or SGMCA (Direct Audio) — mix to stereo, keep the channel layout, or split one file per source channel and name it by role.
 - **Improve** audio with local, non-learned controls for microphone-channel leveling, clipped peaks, high-pass filtering, normalization, silence trim, and fades.
 - ▶️ **Play & review** in a built-in player — color-coded audio tracks, 0.5×–2× speed, A-B loop, bookmarks, and a synced transcript editor.
 - 🗂️ **Organize** every conversion into an auto-filed case library, and pull recordings straight from installed court software.
@@ -101,7 +101,7 @@ Scanning is a bounded, cancellable local analysis pass. FFmpeg performs the sele
 | Format                                       | Vendor                     | Status                             |
 | -------------------------------------------- | -------------------------- | ---------------------------------- |
 | **SGMCA**                                    | Stenograph · Case CATalyst | ✅ Supported                       |
-| **FTR / TRM**                                | For The Record             | 🧪 Experimental                    |
+| **FTR / TRM / TLL**                          | For The Record             | 🧪 Experimental                    |
 | **BWF**                                      | CourtSmart · Various       | ✅ Supported                       |
 | **DigitalCAT (.dm)**                         | Stenovations               | 🧪 Experimental                    |
 | **WAV, MP3, FLAC, M4A, OGG, Opus, WMA, AIF** | Standard                   | ✅ Supported                       |

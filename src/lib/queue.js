@@ -1,4 +1,4 @@
-import { ftrSessionKey, sortRecordingChunks } from '../utils'
+import { ftrRecordingDate, ftrSessionKey, sortRecordingChunks } from '../utils'
 
 export function partitionQueuePaths(inputs = []) {
   const uniquePaths = [
@@ -80,30 +80,64 @@ export function audioTrackNotice(info) {
 // FTR recordings (.trm/.ftr/.tll). `info.trm` is what reading the file found
 // (probe_audio_streams_cmd): whether the recorder closed it, and the session
 // flags in its header. No answer means no notice.
+// The session marks come from header flags read as described in notes that
+// have not yet been checked against a real recording, so the notices say what
+// was (not) found, never that a file is missing.
 export const TRM_OPEN_ENDED_NOTICE =
-  'This recording was not closed properly; DepoAudio read the audio that was written.'
-export const TRM_SESSION_FIRST_MISSING = "This session's first file isn't in the queue."
-export const TRM_SESSION_LAST_MISSING = "This session's last file isn't in the queue."
+  "This recording's header says it was never closed (or is still recording); DepoAudio read the audio written so far."
+export const TRM_SESSION_FIRST_MISSING =
+  "No queued file is marked as this session's first file; if the session has earlier files, add them too."
+export const TRM_SESSION_LAST_MISSING =
+  "No queued file is marked as this session's last file; if the session has later files, add them too."
 
 export function trmRecordingNotice(info) {
   return info?.trm?.openEnded ? TRM_OPEN_ENDED_NOTICE : ''
 }
 
-// Session completeness: queued chunks of one session (same folder, location
-// and date in the canonical FTR name) where none is flagged as the session's
-// first file, or none as its last. Only once every chunk of the group has
-// been read, so nothing is claimed about a file that was not. The notice goes
-// on the group's first queued file. Returns { [path]: notice }.
-export function trmSessionNotices(files, audioStreams) {
-  const groups = new Map()
+const DAY_MS = 24 * 60 * 60 * 1000
+const dateMs = date => Date.UTC(Number(date.slice(0, 4)), Number(date.slice(4, 6)) - 1, Number(date.slice(6, 8)))
+
+// Queued chunks of one place (folder and location in the canonical FTR name),
+// split into runs of consecutive recording dates, so a session that runs past
+// midnight stays one group. Two sessions recorded at one place on the same
+// day (or on consecutive days) share a group, so one session's marks can hide
+// the other's missing end: this can under-report, never over-report.
+function trmSessionGroups(files) {
+  const places = new Map()
   for (const file of files || []) {
     const key = ftrSessionKey(file?.path)
     if (!key) continue
-    if (!groups.has(key)) groups.set(key, [])
-    groups.get(key).push(file.path)
+    if (!places.has(key)) places.set(key, [])
+    places.get(key).push(file.path)
   }
+  const groups = []
+  for (const paths of places.values()) {
+    const dates = [...new Set(paths.map(ftrRecordingDate))].sort()
+    const runOf = new Map()
+    let run = -1
+    dates.forEach((date, index) => {
+      if (index === 0 || dateMs(date) - dateMs(dates[index - 1]) !== DAY_MS) run += 1
+      runOf.set(date, run)
+    })
+    const runs = []
+    for (const path of paths) {
+      const index = runOf.get(ftrRecordingDate(path))
+      if (!runs[index]) runs[index] = []
+      runs[index].push(path)
+    }
+    groups.push(...runs.filter(Boolean))
+  }
+  return groups
+}
+
+// Session ends: queued chunks of one session (see trmSessionGroups) where none
+// is flagged as the session's first file, or none as its last. Only once
+// every chunk of the group has been read, so nothing is claimed about a file
+// that was not. The notice goes on the group's first queued file. Returns
+// { [path]: notice }.
+export function trmSessionNotices(files, audioStreams) {
   const notices = {}
-  for (const paths of groups.values()) {
+  for (const paths of trmSessionGroups(files)) {
     const routes = paths.map(path => audioStreams?.[path]?.trm)
     if (routes.some(route => !route)) continue
     const parts = []

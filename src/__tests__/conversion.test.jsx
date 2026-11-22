@@ -356,7 +356,7 @@ describe('conversion cancellation', () => {
     await act(async () => result.current.addFiles(['C:\\case\\session.trs', 'C:\\case\\part-1.ftr']))
 
     expect(result.current.files.map(file => file.path)).toEqual(['C:\\case\\part-1.ftr'])
-    expect(result.current.queueNotice).toContain('All 1 dropped FTR/TRM chunk is queued')
+    expect(result.current.queueNotice).toContain('All 1 dropped FTR chunk is queued')
   })
 
   it('keeps valid outputs visible when library filing finishes with a warning', async () => {

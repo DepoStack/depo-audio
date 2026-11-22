@@ -185,12 +185,16 @@ pub(crate) async fn detect_sync(app: &AppHandle, source_a: &str, source_b: &str)
     if source_a == source_b {
         return Err("Choose two different source files for sync detection".into());
     }
-    let source_a = prepare_merge_source(app, source_a).await?;
-    let source_b = prepare_merge_source(app, source_b).await?;
-    detect_sync_paths(app, &source_a, &source_b).await
+    let mut source_a = prepare_merge_source(app, source_a).await?;
+    let mut source_b = prepare_merge_source(app, source_b).await?;
+    detect_sync_paths(app, &mut source_a, &mut source_b).await
 }
 
-async fn detect_sync_paths(app: &AppHandle, source_a: &AudioFeed, source_b: &AudioFeed) -> Result<SyncResult, String> {
+async fn detect_sync_paths(
+    app: &AppHandle,
+    source_a: &mut AudioFeed,
+    source_b: &mut AudioFeed,
+) -> Result<SyncResult, String> {
     // A short, low-rate decode contains enough speech for sync detection while
     // bounding temporary disk use and correlation work.
     let tmp_a = decode_to_mono(app, source_a, SYNC_SAMPLE_RATE, SYNC_DECODE_SECS).await?;
@@ -365,7 +369,8 @@ pub(crate) async fn merge_audio(app: &AppHandle, job: &MergeJob) -> Result<Merge
     // Step 1: Detect sync offsets relative to the first source
     let mut offsets = vec![0.0f64]; // First source is reference (offset = 0)
     for i in 1..feeds.len() {
-        let sync = detect_sync_paths(app, &feeds[0], &feeds[i]).await?;
+        let (reference, rest) = feeds.split_at_mut(1);
+        let sync = detect_sync_paths(app, &mut reference[0], &mut rest[i - 1]).await?;
         if !sync.is_same_event {
             return Err(format!(
                 "Source {} could not be confidently matched to the reference recording",
@@ -377,7 +382,7 @@ pub(crate) async fn merge_audio(app: &AppHandle, job: &MergeJob) -> Result<Merge
 
     // Step 2: Decode all sources to 48kHz mono
     let mut decoded_files = Vec::new();
-    for src in &feeds {
+    for src in &mut feeds {
         let tmp = decode_to_mono(app, src, 48_000, MAX_MERGE_DURATION_SECS + 1).await?;
         decoded_files.push(tmp);
     }
@@ -619,7 +624,23 @@ fn best_quality_strategy(sources: &[Vec<f32>], offsets: &[i64], total_samples: u
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
-async fn decode_to_mono(app: &AppHandle, feed: &AudioFeed, rate: u32, max_secs: u32) -> Result<TempFile, String> {
+/// Decode `feed` to mono. If FFmpeg's native FTR decoder fails, the feed is
+/// replaced by the split-channel route and decoded once more, as conversion
+/// and Scan do; later passes then use the split route too.
+async fn decode_to_mono(app: &AppHandle, feed: &mut AudioFeed, rate: u32, max_secs: u32) -> Result<TempFile, String> {
+    match decode_feed_to_mono(app, feed, rate, max_secs).await {
+        Err(error) if feed.used_native_ftr() => {
+            let source = feed.path().to_path_buf();
+            *feed = crate::helpers::prepare_audio_feed_after_native_failure(source, Arc::new(|| false))
+                .await
+                .map_err(|split| format!("{error}; splitting its channels also failed: {split}"))?;
+            decode_feed_to_mono(app, feed, rate, max_secs).await
+        }
+        other => other,
+    }
+}
+
+async fn decode_feed_to_mono(app: &AppHandle, feed: &AudioFeed, rate: u32, max_secs: u32) -> Result<TempFile, String> {
     let tmp_path = std::env::temp_dir().join(format!(
         "depoaudio_merge_{}.wav",
         Uuid::new_v4().to_string().replace('-', "")

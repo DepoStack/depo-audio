@@ -31,6 +31,7 @@
         "fileName": { "type": "string", "description": "File name only, never a folder path." },
         "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$", "description": "SHA-256 of the original file as selected, before any format preparation." },
         "sizeBytes": { "type": "integer", "minimum": 0 },
+        "trmInspectionError": { "type": "string", "description": "Only for an FTR recording DepoAudio could not read: why. FFmpeg's native ftr decoder then read the file as it is (ffmpeg -c:a ftr -i <source>), without DepoAudio's layout checks, and there is no trm object. Written by versions after 1.1.0." },
         "trm": {
           "type": "object",
           "description": "Only for an FTR recording (.trm, .ftr, .tll): what DepoAudio found when it read the file, and how FFmpeg decoded it. The layout reading follows owner-supplied interoperability notes and has not yet been confirmed against a recorded file. Written by versions after 1.1.0.",
@@ -50,10 +51,18 @@
             "scrambledFrames": { "type": "integer", "minimum": 0, "description": "Delivered frames that were descrambled." },
             "straddlingFrames": { "type": "integer", "minimum": 0, "description": "Frames that begin in one audio chunk and end in a later one." },
             "misalignedPackets": { "type": "integer", "minimum": 0, "description": "Audio chunks that do not start and end on a channel-0 round boundary." },
-            "resyncSkippedBytes": { "type": "integer", "minimum": 0, "description": "Bytes skipped to reach a channel-0 frame." },
+            "multiRoundPackets": { "type": "integer", "minimum": 0, "description": "Audio chunks that hold more than one whole round of frames. Written by versions after 1.1.0 that check it." },
+            "resyncSkippedBytes": { "type": "integer", "minimum": 0, "description": "Bytes skipped before the first channel-0 frame." },
+            "channelResyncs": { "type": "integer", "minimum": 0, "description": "Times the channel order broke after the first channel-0 frame (a channel-0 frame where another channel's was due, or the reverse, as after a lost or extra frame): the partial round was dropped and dealing restarted at the next channel-0 frame. The round delivered just before a restart can hold a frame in the wrong slot. Written by versions after 1.1.0 that check it." },
+            "midStreamSkippedBytes": { "type": "integer", "minimum": 0, "description": "Unreadable bytes skipped after the first channel-0 frame and before the last frame delivered. Written by versions after 1.1.0 that check it." },
+            "paddingBytes": { "type": "integer", "minimum": 0, "description": "Zero bytes skipped between whole rounds or after the last one. Not treated as truncation. Written by versions after 1.1.0 that check it." },
+            "trailingSkippedBytes": { "type": "integer", "minimum": 0, "description": "Non-zero bytes after the last frame delivered that are not a frame. Written by versions after 1.1.0 that check it." },
             "incompleteFinalRound": { "type": "boolean", "description": "The last round was missing channels and was not delivered." },
-            "droppedFrames": { "type": "integer", "minimum": 0, "description": "Frames read but not delivered because their round was incomplete." },
+            "droppedFrames": { "type": "integer", "minimum": 0, "description": "Frames read but not delivered: their round was incomplete, or they were out of channel order." },
+            "lengthHighBitFrames": { "type": "integer", "minimum": 0, "description": "Delivered frames with either of the two ADTS frame-length bits FTR ignores set; DepoAudio cleared them in the temporary channel files. Written by versions after 1.1.0 that check it." },
             "truncated": { "type": "boolean", "description": "The file ends inside a chunk or a frame, or its chunk list stops at unreadable data." },
+            "continuationSegments": { "type": "integer", "minimum": 0, "description": "RIFF AVIX (OpenDML) segments after the first RIFF. DepoAudio does not read their audio: the counts cover the first segment only and durationSecs is null. Written by versions after 1.1.0 that check it." },
+            "grewWhileRead": { "type": "boolean", "description": "The file grew between DepoAudio's inspection and its channel split (a recording still being written); only the part inspected was converted. Written by versions after 1.1.0 that check it." },
             "ftra": {
               "type": ["object", "null"],
               "description": "The optional FTRA chunk's five values, as read; null when the file has none. Reported only; DepoAudio does not use them.",
@@ -71,13 +80,15 @@
               }
             },
             "videoStreams": { "type": "integer", "minimum": 0, "description": "Video stream headers in the file; video is never converted." },
-            "durationSecs": { "type": ["number", "null"], "minimum": 0, "description": "Frames per channel x 1024 samples / sample rate." },
+            "durationSecs": { "type": ["number", "null"], "minimum": 0, "description": "Frames per channel x 1024 samples / sample rate; null when no frame was found or the file has continuation segments." },
             "decodePath": { "enum": ["native-ftr", "deinterleaved"], "description": "native-ftr: FFmpeg's ftr decoder read the file as it is. deinterleaved: DepoAudio wrote each channel to a temporary mono ADTS file (descrambled, equal frame counts) and FFmpeg joined them in channel order with amerge." },
             "routeReasons": {
               "type": "array",
               "description": "Why the native decoder was not used; empty for native-ftr.",
-              "items": { "enum": ["format-tag-not-mapped-by-ffmpeg", "no-usable-index", "open-ended", "truncated", "frames-cross-chunks", "chunks-not-on-round-boundaries", "data-before-channel-0", "incomplete-rounds", "native-decoder-unavailable", "native-decode-failed"] }
-            }
+              "items": { "enum": ["format-tag-not-mapped-by-ffmpeg", "no-usable-index", "open-ended", "truncated", "frames-cross-chunks", "chunks-not-on-round-boundaries", "several-rounds-per-chunk", "data-before-channel-0", "channel-order-resynced", "unreadable-data", "zero-padding", "incomplete-rounds", "frame-length-high-bits", "native-decoder-unavailable", "native-decode-failed"] }
+            },
+            "inputOptions": { "type": "array", "items": { "type": "string" }, "description": "The options FFmpeg was given before each -i: [\"-c:a\", \"ftr\"] before the recording itself (native-ftr), or [\"-f\", \"aac\"] before each temporary channel file (deinterleaved). Written by versions after 1.1.0 that record it." },
+            "inputCount": { "type": "integer", "minimum": 1, "maximum": 16, "description": "How many -i inputs FFmpeg read: 1 for native-ftr, or one temporary channel file per channel for deinterleaved, which filterChain joins in channel order with amerge before anything else. The temporary files are deleted afterwards. Written by versions after 1.1.0 that record it." }
           }
         }
       }
@@ -107,7 +118,7 @@
         "filterOption": { "enum": ["-af", "-filter_complex", null], "description": "The FFmpeg option that carried filterChain, or null when no filter ran." },
         "filterChain": { "type": ["string", "null"], "description": "The exact FFmpeg filter string used. In split mode it is the whole graph; channel.sourceChannelIndex names this file's branch." },
         "encoderArgs": { "type": "array", "items": { "type": "string" }, "description": "The exact FFmpeg encoder and metadata arguments for this output, without file paths. Stream selection is in mapArgs." },
-        "mapArgs": { "type": "array", "items": { "type": "string" }, "description": "The exact FFmpeg -map arguments for this output: -map 0:a:0 (the converted source stream) for stereo and keep, -map [opN] (this channel's branch of filterChain) for split. The command is: ffmpeg -i <source> [filterOption filterChain] mapArgs encoderArgs <output>. Written by versions after 1.1.0." }
+        "mapArgs": { "type": "array", "items": { "type": "string" }, "description": "The exact FFmpeg -map arguments for this output: for stereo and keep, -map 0:a:0 (the converted source stream), or -map [da_out] when an FTR recording was read as one input per channel (filterChain then ends in [da_out]); -map [opN] (this channel's branch of filterChain) for split. The command is: ffmpeg <inputs> [filterOption filterChain] mapArgs encoderArgs <output>, where <inputs> is -i <source>, or for an FTR recording source.trm.inputCount times source.trm.inputOptions -i <input> (the recording itself, or each temporary channel file in channel order). Written by versions after 1.1.0." }
       }
     },
     "channel": {

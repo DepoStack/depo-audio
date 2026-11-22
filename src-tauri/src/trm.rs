@@ -11,7 +11,8 @@
 //!   first file of a recording session and `0x40000000` the last.
 //! - The audio stream header (`strh` type `auds`) is stream 0; video streams
 //!   (`vids`) follow. An audio `dwLength` of `0x7FFFFFFF` means the recorder
-//!   never closed the file, so that length says nothing about the audio.
+//!   never closed the file (or is still recording), so that length says
+//!   nothing about the audio.
 //! - The audio format (`strf`) is a WAVEFORMATEX whose tag, masked with
 //!   `0x3FFF`, is `0x0180` for FTR's AAC; `nChannels` is the microphone count.
 //! - Audio chunks (`00wb`) are found through `idx1` (offsets relative to the
@@ -21,7 +22,16 @@
 //!   private bit is clear belongs to channel 0; from there frame `k` belongs
 //!   to channel `k mod N`. A frame with the original/copy bit set has five
 //!   payload bytes scrambled by a self-inverse swap-and-invert, undone here.
-//!   Each channel is then a plain mono ADTS stream.
+//!   FTR reads an 11-bit frame length and ignores the two header bits above
+//!   it; those bits are cleared in the channel files so a standard ADTS
+//!   reader sees the same length. Each channel is then a plain mono ADTS
+//!   stream.
+//!
+//! The private bit is checked on every frame, not only the first: a round
+//! must open with a channel-0 frame and, once the file has shown that it
+//! marks the other channels, continue with frames that are not. When that
+//! breaks (a lost or extra frame), the partial round is dropped, dealing
+//! restarts at the next channel-0 frame, and the restart is counted.
 //!
 //! Reading streams through the file in fixed-size pieces: memory stays
 //! bounded by one piece, one partial frame and one round of frames, whatever
@@ -35,7 +45,8 @@ use serde::Serialize;
 
 /// WAVEFORMATEX tag of FTR's AAC once masked with [`FORMAT_TAG_MASK`].
 pub(crate) const FTR_AAC_TAG: u16 = 0x0180;
-/// The masked-tag variant FFmpeg's RIFF table maps to its `ftr` decoder.
+/// The stored (unmasked) tag that FFmpeg's RIFF table maps to its `ftr`
+/// decoder; `0x4180 & 0x3FFF` is [`FTR_AAC_TAG`].
 pub(crate) const FFMPEG_FTR_TAG: u16 = 0x4180;
 const FORMAT_TAG_MASK: u16 = 0x3FFF;
 const OPEN_ENDED_LENGTH: u32 = 0x7FFF_FFFF;
@@ -49,11 +60,14 @@ const ADTS_HEADER_BYTES: usize = 7;
 /// Scrambled bytes reach index 12, so a frame must be at least this long.
 const SCRAMBLE_MIN_FRAME_BYTES: usize = 13;
 const SAMPLES_PER_FRAME: u64 = 1024;
+/// How many index entries or chunks are read between cancellation checks.
+const CANCEL_CHECK_EVERY: u64 = 4096;
 const ADTS_SAMPLE_RATES: [u32; 13] = [
     96_000, 88_200, 64_000, 48_000, 44_100, 32_000, 24_000, 22_050, 16_000, 12_000, 11_025, 8_000, 7_350,
 ];
 
 pub(crate) const TRM_CANCELLED_MESSAGE: &str = crate::helpers::AUDIO_PREPARATION_CANCELLED_MESSAGE;
+const TRM_CHANGED_MESSAGE: &str = "The FTR recording changed while it was being read.";
 
 /// The optional `FTRA` chunk, as read. FTR's player is described as using it
 /// only for `.avi` audio, so DepoAudio reports it and does not act on it.
@@ -108,28 +122,57 @@ pub(crate) struct TrmInfo {
     pub straddling_frames: u64,
     /// Audio chunks that do not start and end on a channel-0 round boundary.
     pub misaligned_packets: u64,
-    /// Bytes skipped to reach a channel-0 frame (at the start, or after
-    /// unreadable data).
+    /// Audio chunks that hold more than one whole round of frames.
+    pub multi_round_packets: u64,
+    /// Bytes skipped before the first channel-0 frame.
     pub resync_skipped_bytes: u64,
+    /// Times the channel order broke after the first channel-0 frame (a
+    /// channel-0 frame where another channel's was due, or the reverse) and
+    /// dealing restarted at the next channel-0 frame. The round delivered
+    /// just before a restart can hold a frame in the wrong slot.
+    pub channel_resyncs: u64,
+    /// Unreadable bytes skipped after the first channel-0 frame, before the
+    /// last frame delivered.
+    pub mid_stream_skipped_bytes: u64,
+    /// Zero bytes skipped between whole rounds or after the last one.
+    pub padding_bytes: u64,
+    /// Non-zero bytes after the last frame delivered that are not a frame.
+    pub trailing_skipped_bytes: u64,
     /// The last round was missing channels; its frames were not delivered.
     pub incomplete_final_round: bool,
-    /// Frames read but not delivered (incomplete rounds).
+    /// Frames read but not delivered (incomplete rounds, or frames out of
+    /// channel order).
     pub dropped_frames: u64,
+    /// Delivered frames with either of the two ADTS length bits FTR ignores
+    /// (`b3 & 3`) set; they are cleared in the channel files.
+    pub length_high_bit_frames: u64,
     /// The file ends inside a chunk or a frame, or its chunk list stops at
     /// unreadable data.
     pub truncated: bool,
+    /// RIFF `AVIX` (OpenDML) segments after the first RIFF. DepoAudio does
+    /// not read their audio: every count here covers the first segment only,
+    /// and the duration is not given.
+    pub continuation_segments: u32,
+    /// The file grew between the inspection and the channel split; only the
+    /// part inspected was read.
+    pub grew_while_read: bool,
     pub ftra: Option<FtraInfo>,
     pub video_streams: u32,
     /// Delivered frames per channel × 1024 samples ÷ sample rate.
     pub duration_secs: Option<f64>,
+    /// The file length this read covered; a later channel split reads no
+    /// further. Not part of the export record.
+    #[serde(skip)]
+    pub file_bytes: u64,
 }
 
 impl TrmInfo {
     /// Whether FFmpeg's native `ftr` decoder can be expected to read this
     /// file as it is: the reasons it cannot, empty when it can. The native
-    /// decoder takes each audio chunk as whole rounds starting at channel 0,
-    /// does not join frames across chunks or look for the channel-0 marker,
-    /// and FFmpeg maps only the 0x4180 tag to it.
+    /// decoder takes each audio chunk as exactly one round starting at
+    /// channel 0, does not join frames across chunks, look for the channel-0
+    /// marker or skip padding, reads the 13-bit ADTS length, and FFmpeg maps
+    /// only the 0x4180 tag to it.
     pub(crate) fn native_blockers(&self) -> Vec<&'static str> {
         let mut reasons = Vec::new();
         if self.tag != FFMPEG_FTR_TAG {
@@ -150,11 +193,26 @@ impl TrmInfo {
         if self.misaligned_packets > 0 {
             reasons.push("chunks-not-on-round-boundaries");
         }
+        if self.multi_round_packets > 0 {
+            reasons.push("several-rounds-per-chunk");
+        }
         if self.resync_skipped_bytes > 0 {
             reasons.push("data-before-channel-0");
         }
+        if self.channel_resyncs > 0 {
+            reasons.push("channel-order-resynced");
+        }
+        if self.mid_stream_skipped_bytes > 0 || self.trailing_skipped_bytes > 0 {
+            reasons.push("unreadable-data");
+        }
+        if self.padding_bytes > 0 {
+            reasons.push("zero-padding");
+        }
         if self.dropped_frames > 0 {
             reasons.push("incomplete-rounds");
+        }
+        if self.length_high_bit_frames > 0 {
+            reasons.push("frame-length-high-bits");
         }
         reasons
     }
@@ -182,6 +240,28 @@ pub(crate) struct TrmRoute {
     pub decode_path: DecodePath,
     /// Why the native decoder was not used; empty when it was.
     pub route_reasons: Vec<String>,
+    /// The options FFmpeg is given before each `-i`: `-c:a ftr` before the
+    /// recording itself, or `-f aac` before each temporary channel file.
+    pub input_options: Vec<String>,
+    /// How many `-i` inputs FFmpeg reads: 1, or one per channel (joined in
+    /// channel order by the `amerge` step that opens the filter graph).
+    pub input_count: u32,
+}
+
+impl TrmRoute {
+    pub(crate) fn new(info: TrmInfo, decode_path: DecodePath, route_reasons: Vec<String>) -> Self {
+        let (input_options, input_count) = match decode_path {
+            DecodePath::NativeFtr => (vec!["-c:a".to_string(), "ftr".to_string()], 1),
+            DecodePath::Deinterleaved => (vec!["-f".to_string(), "aac".to_string()], u32::from(info.channels)),
+        };
+        Self {
+            info,
+            decode_path,
+            route_reasons,
+            input_options,
+            input_count,
+        }
+    }
 }
 
 /// Native `ftr` when the layout allows it and the decoder is present and has
@@ -243,6 +323,65 @@ fn sub_chunks(body: &[u8]) -> Vec<([u8; 4], &[u8])> {
     chunks
 }
 
+// ── Reading the file ─────────────────────────────────────────────────────────
+
+#[cfg(test)]
+thread_local! {
+    /// Bytes this thread has read from recordings through [`SourceReader`].
+    static SOURCE_BYTES_READ: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// The recording, read through a counter in tests.
+struct Source(File);
+
+impl Read for Source {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let read = self.0.read(buf)?;
+        #[cfg(test)]
+        SOURCE_BYTES_READ.with(|count| count.set(count.get() + read as u64));
+        Ok(read)
+    }
+}
+
+impl Seek for Source {
+    fn seek(&mut self, pos: SeekFrom) -> std::io::Result<u64> {
+        self.0.seek(pos)
+    }
+}
+
+/// A buffered reader that keeps track of its own position, so moving to a
+/// position inside the buffer (the next chunk header, the payload right after
+/// it) reuses the buffer instead of discarding it.
+struct SourceReader {
+    inner: BufReader<Source>,
+    pos: u64,
+}
+
+impl SourceReader {
+    fn open(path: &Path) -> Result<Self, String> {
+        Ok(Self {
+            inner: BufReader::with_capacity(READ_PIECE_BYTES, Source(File::open(path).map_err(io_error)?)),
+            pos: 0,
+        })
+    }
+
+    fn seek_to(&mut self, target: u64) -> Result<(), String> {
+        if target != self.pos {
+            // Positions stay far below i64::MAX: they are offsets in a file.
+            let delta = target.wrapping_sub(self.pos) as i64;
+            self.inner.seek_relative(delta).map_err(io_error)?;
+            self.pos = target;
+        }
+        Ok(())
+    }
+
+    fn read_exact(&mut self, buf: &mut [u8]) -> Result<(), String> {
+        self.inner.read_exact(buf).map_err(io_error)?;
+        self.pos += buf.len() as u64;
+        Ok(())
+    }
+}
+
 // ── Container header ─────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone)]
@@ -260,6 +399,7 @@ struct Layout {
     movi_end: u64,
     /// `idx1` data start and usable byte count.
     idx1: Option<(u64, u64)>,
+    continuation_segments: u32,
     truncated: bool,
 }
 
@@ -334,6 +474,7 @@ fn read_layout(file: &mut File, file_len: u64) -> Result<Layout, String> {
         movi_pos: 0,
         movi_end: 0,
         idx1: None,
+        continuation_segments: 0,
         truncated: false,
     };
     let mut have_header = false;
@@ -362,7 +503,7 @@ fn read_layout(file: &mut File, file_len: u64) -> Result<Layout, String> {
                 parse_header_list(body.get(4..).unwrap_or_default(), &mut layout)?;
                 have_header = true;
             }
-            b"LIST" if available == 12 && &head[8..12] == b"movi" => {
+            b"LIST" if available == 12 && &head[8..12] == b"movi" && !have_movi => {
                 layout.movi_pos = data;
                 have_movi = true;
                 if size < 4 || size > remaining {
@@ -388,13 +529,20 @@ fn read_layout(file: &mut File, file_len: u64) -> Result<Layout, String> {
                     e: value(4),
                 });
             }
-            b"idx1" => {
-                // A zero size means the index was never closed: it runs to EOF.
-                let usable = if size == 0 { remaining } else { size.min(remaining) };
-                layout.idx1 = Some((data, usable));
+            b"idx1" if layout.idx1.is_none() => {
+                if size == 0 {
+                    // Never closed: the index runs to EOF, and nothing after
+                    // it can be read as a chunk.
+                    layout.idx1 = Some((data, remaining));
+                    break;
+                }
+                layout.idx1 = Some((data, size.min(remaining)));
                 if size > remaining {
                     layout.truncated = true;
                 }
+            }
+            b"RIFF" if available == 12 && &head[8..12] == b"AVIX" => {
+                layout.continuation_segments += 1;
             }
             _ => {}
         }
@@ -470,13 +618,31 @@ type FrameSink<'a> = dyn FnMut(usize, &[u8]) -> Result<(), String> + 'a;
 struct Dealer<'a> {
     channels: usize,
     buffer: Vec<u8>,
+    /// A channel-0 frame has been seen: skipped data is no longer leading.
     synced: bool,
+    /// The channel order broke and no channel-0 frame has restarted it yet.
+    resyncing: bool,
+    /// A frame after channel 0 in a round has carried the private bit, so
+    /// this file marks the other channels and a clear bit there means a new
+    /// round. Until then only the round's first frame is checked.
+    marks_others: bool,
     round: Vec<u8>,
     round_ends: Vec<usize>,
     round_scrambled: u64,
+    round_high_bits: u64,
+    /// Skipped bytes not yet attributed (leading, padding, mid-stream or
+    /// trailing): that depends on what follows them.
+    pending_skip: u64,
+    pending_nonzero: bool,
+    /// The pending skip began inside a round (and cost that round).
+    pending_mid_round: bool,
     /// The bytes left at the last chunk boundary start a frame begun there.
     carry_pending: bool,
     packet_start_ok: bool,
+    packet_rounds_start: u64,
+    /// Stop once this many rounds are delivered.
+    round_limit: Option<u64>,
+    limit_reached: bool,
     sample_rate: Option<u32>,
     stats: DealStats,
     sink: Option<&'a mut FrameSink<'a>>,
@@ -485,28 +651,42 @@ struct Dealer<'a> {
 #[derive(Debug, Default, Clone)]
 struct DealStats {
     packets: u64,
-    frames: u64,
     rounds: u64,
     scrambled: u64,
     straddling: u64,
     misaligned: u64,
+    multi_round: u64,
     resync_skipped: u64,
+    channel_resyncs: u64,
+    mid_stream_skipped: u64,
+    padding: u64,
+    trailing_skipped: u64,
     dropped: u64,
+    high_bits: u64,
     incomplete_final_round: bool,
-    trailing_bytes: u64,
+    cut_final_frame: bool,
 }
 
 impl<'a> Dealer<'a> {
-    fn new(channels: usize, sink: Option<&'a mut FrameSink<'a>>) -> Self {
+    fn new(channels: usize, sink: Option<&'a mut FrameSink<'a>>, round_limit: Option<u64>) -> Self {
         Self {
             channels,
             buffer: Vec::with_capacity(READ_PIECE_BYTES + 4096),
             synced: false,
+            resyncing: false,
+            marks_others: false,
             round: Vec::new(),
             round_ends: Vec::with_capacity(channels),
             round_scrambled: 0,
+            round_high_bits: 0,
+            pending_skip: 0,
+            pending_nonzero: false,
+            pending_mid_round: false,
             carry_pending: false,
             packet_start_ok: true,
+            packet_rounds_start: 0,
+            round_limit,
+            limit_reached: false,
             sample_rate: None,
             stats: DealStats::default(),
             sink,
@@ -514,13 +694,31 @@ impl<'a> Dealer<'a> {
     }
 
     fn begin_packet(&mut self) {
-        self.packet_start_ok = self.buffer.is_empty() && self.round_ends.is_empty();
+        self.packet_start_ok = self.buffer.is_empty() && self.round_ends.is_empty() && self.pending_skip == 0;
+        self.packet_rounds_start = self.stats.rounds;
     }
 
     fn end_packet(&mut self) -> Result<(), String> {
         self.process()?;
+        if self.limit_reached {
+            return Ok(());
+        }
         self.stats.packets += 1;
-        let end_ok = self.buffer.is_empty() && self.round_ends.is_empty() && self.synced;
+        if self.stats.rounds - self.packet_rounds_start > 1 {
+            self.stats.multi_round += 1;
+        }
+        // Zero bytes after a whole round, to the end of the chunk: padding.
+        if self.synced
+            && self.round_ends.is_empty()
+            && !self.pending_nonzero
+            && !self.pending_mid_round
+            && self.buffer.iter().all(|byte| *byte == 0)
+        {
+            self.stats.padding += self.pending_skip + self.buffer.len() as u64;
+            self.pending_skip = 0;
+            self.buffer.clear();
+        }
+        let end_ok = self.buffer.is_empty() && self.round_ends.is_empty() && self.pending_skip == 0 && self.synced;
         if !(self.packet_start_ok && end_ok) {
             self.stats.misaligned += 1;
         }
@@ -538,22 +736,47 @@ impl<'a> Dealer<'a> {
         self.round.clear();
         self.round_ends.clear();
         self.round_scrambled = 0;
+        self.round_high_bits = 0;
+    }
+
+    fn skip_byte(&mut self, byte: u8) {
+        if self.pending_skip == 0 {
+            self.pending_nonzero = false;
+            self.pending_mid_round = !self.round_ends.is_empty();
+        }
+        self.pending_skip += 1;
+        self.pending_nonzero |= byte != 0;
+    }
+
+    /// Attribute skipped bytes once a frame follows them.
+    fn settle_pending(&mut self) {
+        if self.pending_skip == 0 {
+            return;
+        }
+        if !self.synced {
+            self.stats.resync_skipped += self.pending_skip;
+        } else if !self.pending_nonzero && !self.pending_mid_round {
+            self.stats.padding += self.pending_skip;
+        } else {
+            self.stats.mid_stream_skipped += self.pending_skip;
+        }
+        self.pending_skip = 0;
+        self.pending_nonzero = false;
+        self.pending_mid_round = false;
     }
 
     fn process(&mut self) -> Result<(), String> {
         let mut index = 0usize;
-        while self.buffer.len() - index >= ADTS_HEADER_BYTES {
+        while !self.limit_reached && self.buffer.len() - index >= ADTS_HEADER_BYTES {
             let at_carry = index == 0 && self.carry_pending;
             let header = &self.buffer[index..index + ADTS_HEADER_BYTES];
             let length = ftr_frame_length(header);
             if !is_ftr_frame_header(header) || length < ADTS_HEADER_BYTES {
                 // Unreadable data: give up the round in progress and look for
                 // the next channel-0 frame, byte by byte.
-                if self.synced {
-                    self.drop_round();
-                    self.synced = false;
-                }
-                self.stats.resync_skipped += 1;
+                let byte = self.buffer[index];
+                self.skip_byte(byte);
+                self.drop_round();
                 index += 1;
                 if at_carry {
                     self.carry_pending = false;
@@ -567,24 +790,57 @@ impl<'a> Dealer<'a> {
                 self.carry_pending = false;
             }
             let channel_zero = self.buffer[index + 2] & 0x02 == 0;
-            if !self.synced {
-                if !channel_zero {
-                    self.stats.resync_skipped += length as u64;
+            let round_start = self.round_ends.is_empty();
+            let out_of_order = if round_start {
+                !channel_zero
+            } else {
+                channel_zero && self.marks_others
+            };
+            if out_of_order {
+                if !self.synced {
+                    // Frames of other channels before the first channel 0.
+                    self.pending_skip += length as u64;
+                    self.pending_nonzero = true;
                     index += length;
                     continue;
                 }
-                self.synced = true;
+                if !self.resyncing {
+                    self.stats.channel_resyncs += 1;
+                    self.resyncing = true;
+                }
+                if channel_zero {
+                    // A new round began before this one was complete.
+                    self.drop_round();
+                } else {
+                    // Another channel's frame where channel 0's was due.
+                    self.stats.dropped += 1;
+                    index += length;
+                    continue;
+                }
             }
-            if self.round_ends.is_empty() && self.sample_rate.is_none() {
-                self.sample_rate = adts_sample_rate(&self.buffer[index..]);
+            self.settle_pending();
+            self.synced = true;
+            if !round_start && !channel_zero {
+                self.marks_others = true;
+            }
+            if channel_zero && round_start {
+                self.resyncing = false;
+                if self.sample_rate.is_none() {
+                    self.sample_rate = adts_sample_rate(&self.buffer[index..]);
+                }
             }
             if at_carry {
                 self.stats.straddling += 1;
             }
             let start = self.round.len();
             self.round.extend_from_slice(&self.buffer[index..index + length]);
-            if descramble_frame(&mut self.round[start..]) {
+            let frame = &mut self.round[start..];
+            if descramble_frame(frame) {
                 self.round_scrambled += 1;
+            }
+            if frame[3] & 0x03 != 0 {
+                frame[3] &= !0x03;
+                self.round_high_bits += 1;
             }
             self.round_ends.push(self.round.len());
             index += length;
@@ -604,12 +860,16 @@ impl<'a> Dealer<'a> {
                 start = end;
             }
         }
-        self.stats.frames += self.round_ends.len() as u64;
         self.stats.rounds += 1;
         self.stats.scrambled += self.round_scrambled;
+        self.stats.high_bits += self.round_high_bits;
         self.round.clear();
         self.round_ends.clear();
         self.round_scrambled = 0;
+        self.round_high_bits = 0;
+        if self.round_limit.is_some_and(|limit| self.stats.rounds >= limit) {
+            self.limit_reached = true;
+        }
         Ok(())
     }
 
@@ -618,18 +878,33 @@ impl<'a> Dealer<'a> {
             self.stats.incomplete_final_round = true;
             self.drop_round();
         }
-        self.stats.trailing_bytes = self.buffer.len() as u64;
+        // What is left is either the start of a frame the file cuts off, or
+        // bytes after the last frame.
+        let leftover = std::mem::take(&mut self.buffer);
+        let cut_frame = leftover.first() == Some(&0xFF)
+            && (leftover.len() < ADTS_HEADER_BYTES
+                || (is_ftr_frame_header(&leftover) && ftr_frame_length(&leftover) > leftover.len()));
+        if cut_frame {
+            self.stats.cut_final_frame = true;
+        } else {
+            for byte in leftover {
+                self.skip_byte(byte);
+            }
+        }
+        if self.pending_skip > 0 {
+            if !self.synced {
+                self.stats.resync_skipped += self.pending_skip;
+            } else if self.pending_nonzero {
+                self.stats.trailing_skipped += self.pending_skip;
+            } else {
+                self.stats.padding += self.pending_skip;
+            }
+        }
         (self.stats, self.sample_rate)
     }
 }
 
 // ── Reading the audio chunks ─────────────────────────────────────────────────
-
-enum IndexOutcome {
-    Done(IndexKind, bool),
-    /// The index is missing, empty or does not match the chunks it lists.
-    Unusable,
-}
 
 type Cancel<'a> = Option<&'a (dyn Fn() -> bool + Send + Sync)>;
 
@@ -643,81 +918,97 @@ fn check_cancel(cancelled: Cancel<'_>) -> Result<(), String> {
 
 /// Feed `size` payload bytes at `data` to the dealer as one chunk, in pieces.
 fn feed_payload(
-    reader: &mut BufReader<File>,
+    reader: &mut SourceReader,
     data: u64,
     size: u64,
     piece: &mut [u8],
     dealer: &mut Dealer<'_>,
     cancelled: Cancel<'_>,
 ) -> Result<(), String> {
-    reader.seek(SeekFrom::Start(data)).map_err(io_error)?;
+    reader.seek_to(data)?;
     dealer.begin_packet();
     let mut left = size;
-    while left > 0 {
+    while left > 0 && !dealer.limit_reached {
         check_cancel(cancelled)?;
         let take = left.min(piece.len() as u64) as usize;
-        reader.read_exact(&mut piece[..take]).map_err(io_error)?;
+        reader.read_exact(&mut piece[..take])?;
         dealer.feed(&piece[..take])?;
         left -= take as u64;
     }
     dealer.end_packet()
 }
 
-/// Read every `00wb` chunk `idx1` lists, checking each listed chunk header
-/// against the file before using it. Any mismatch makes the whole index
-/// unusable, checked before a single byte is delivered (`dry_run`), so the
-/// caller can fall back to walking without having written anything.
+/// The index kinds worth trying, most likely first. As FFmpeg's AVI reader
+/// does, the first entry of any type decides: an offset at or before the
+/// `movi` list can only count from it. The other kind is tried next, in case
+/// that entry misleads (a large video chunk first, say).
+fn index_candidates(path: &Path, layout: &Layout) -> Result<Vec<IndexKind>, String> {
+    let Some((idx_start, idx_len)) = layout.idx1 else {
+        return Ok(Vec::new());
+    };
+    if idx_len < 16 {
+        return Ok(Vec::new());
+    }
+    let mut reader = SourceReader::open(path)?;
+    reader.seek_to(idx_start)?;
+    let mut entry = [0u8; 16];
+    reader.read_exact(&mut entry)?;
+    let offset = u64::from(u32_at(&entry, 8).unwrap_or(0));
+    Ok(if offset <= layout.movi_pos {
+        vec![IndexKind::Idx1Relative, IndexKind::Idx1Absolute]
+    } else {
+        vec![IndexKind::Idx1Absolute, IndexKind::Idx1Relative]
+    })
+}
+
+/// Read every `00wb` chunk `idx1` lists, reading offsets as `kind` says and
+/// checking each listed chunk header against the file before using it.
+/// Returns None when the index does not match the file, and otherwise
+/// whether the last chunk was cut off by EOF.
 fn read_by_index(
     path: &Path,
     layout: &Layout,
     file_len: u64,
-    mut dealer: Option<&mut Dealer<'_>>,
+    kind: IndexKind,
+    dealer: &mut Dealer<'_>,
     cancelled: Cancel<'_>,
-) -> Result<IndexOutcome, String> {
+) -> Result<Option<bool>, String> {
     let Some((idx_start, idx_len)) = layout.idx1 else {
-        return Ok(IndexOutcome::Unusable);
+        return Ok(None);
     };
-    let mut index = BufReader::new(File::open(path).map_err(io_error)?);
-    index.seek(SeekFrom::Start(idx_start)).map_err(io_error)?;
-    let mut payload = BufReader::with_capacity(READ_PIECE_BYTES, File::open(path).map_err(io_error)?);
+    let mut index = SourceReader::open(path)?;
+    index.seek_to(idx_start)?;
+    let mut payload = SourceReader::open(path)?;
     let mut piece = vec![0u8; READ_PIECE_BYTES];
-    let mut kind = None;
     let mut last_end = layout.movi_pos;
     let mut truncated = false;
-    let mut entries = idx_len / 16;
     let mut entry = [0u8; 16];
     let mut audio_entries = 0u64;
-    while entries > 0 {
-        entries -= 1;
-        if audio_entries.is_multiple_of(4096) {
+    for entry_number in 0..idx_len / 16 {
+        if entry_number.is_multiple_of(CANCEL_CHECK_EVERY) {
             check_cancel(cancelled)?;
         }
-        index.read_exact(&mut entry).map_err(io_error)?;
+        if dealer.limit_reached {
+            break;
+        }
+        index.read_exact(&mut entry)?;
         if &entry[0..4] != b"00wb" {
             continue;
         }
         let offset = u64::from(u32_at(&entry, 8).unwrap_or(0));
         let size = u64::from(u32_at(&entry, 12).unwrap_or(0));
-        // The first audio entry decides for the whole index: an offset
-        // before the movi list can only be relative to it. Later relative
-        // offsets can pass movi_pos in value, so they are not tested again.
-        let kind = *kind.get_or_insert(if offset < layout.movi_pos {
-            IndexKind::Idx1Relative
-        } else {
-            IndexKind::Idx1Absolute
-        });
         let header = match kind {
             IndexKind::Idx1Relative => layout.movi_pos.saturating_add(offset),
             _ => offset,
         };
         if header < last_end || header + 8 > file_len {
-            return Ok(IndexOutcome::Unusable);
+            return Ok(None);
         }
         let mut chunk = [0u8; 8];
-        payload.seek(SeekFrom::Start(header)).map_err(io_error)?;
-        payload.read_exact(&mut chunk).map_err(io_error)?;
+        payload.seek_to(header)?;
+        payload.read_exact(&mut chunk)?;
         if &chunk[0..4] != b"00wb" || u64::from(u32_at(&chunk, 4).unwrap_or(0)) != size {
-            return Ok(IndexOutcome::Unusable);
+            return Ok(None);
         }
         let data = header + 8;
         let available = size.min(file_len - data);
@@ -726,14 +1017,9 @@ fn read_by_index(
         }
         audio_entries += 1;
         last_end = data + available;
-        if let Some(dealer) = dealer.as_deref_mut() {
-            feed_payload(&mut payload, data, available, &mut piece, dealer, cancelled)?;
-        }
+        feed_payload(&mut payload, data, available, &mut piece, dealer, cancelled)?;
     }
-    match kind {
-        Some(kind) if audio_entries > 0 => Ok(IndexOutcome::Done(kind, truncated)),
-        _ => Ok(IndexOutcome::Unusable),
-    }
+    Ok((audio_entries > 0).then_some(truncated))
 }
 
 /// Walk `movi` from its first chunk: skip each chunk (padded to even), read
@@ -747,19 +1033,19 @@ fn read_by_walking(
     dealer: &mut Dealer<'_>,
     cancelled: Cancel<'_>,
 ) -> Result<bool, String> {
-    let mut reader = BufReader::with_capacity(READ_PIECE_BYTES, File::open(path).map_err(io_error)?);
+    let mut reader = SourceReader::open(path)?;
     let mut piece = vec![0u8; READ_PIECE_BYTES];
     let end = layout.movi_end.min(file_len);
     let mut pos = layout.movi_pos + 4;
     let mut steps = 0u64;
-    while pos + 8 <= end {
+    while pos + 8 <= end && !dealer.limit_reached {
         steps += 1;
-        if steps.is_multiple_of(4096) {
+        if steps.is_multiple_of(CANCEL_CHECK_EVERY) {
             check_cancel(cancelled)?;
         }
         let mut head = [0u8; 8];
-        reader.seek(SeekFrom::Start(pos)).map_err(io_error)?;
-        reader.read_exact(&mut head).map_err(io_error)?;
+        reader.seek_to(pos)?;
+        reader.read_exact(&mut head)?;
         let id = &head[0..4];
         if id == [0, 0, 0, 0] {
             return Ok(false);
@@ -783,11 +1069,12 @@ fn read_by_walking(
         pos = data + size + (size & 1);
     }
     // Fewer than 8 bytes left: a chunk header was cut off.
-    Ok(pos < end)
+    Ok(!dealer.limit_reached && pos < end)
 }
 
 fn build_info(
     layout: &Layout,
+    file_len: u64,
     kind: IndexKind,
     truncated: bool,
     stats: DealStats,
@@ -795,7 +1082,7 @@ fn build_info(
 ) -> TrmInfo {
     let channels = u64::from(layout.channels);
     let duration_secs = sample_rate
-        .filter(|rate| *rate > 0)
+        .filter(|rate| *rate > 0 && layout.continuation_segments == 0)
         .map(|rate| (stats.rounds * SAMPLES_PER_FRAME) as f64 / f64::from(rate));
     TrmInfo {
         tag: layout.tag,
@@ -811,48 +1098,31 @@ fn build_info(
         scrambled_frames: stats.scrambled,
         straddling_frames: stats.straddling,
         misaligned_packets: stats.misaligned,
+        multi_round_packets: stats.multi_round,
         resync_skipped_bytes: stats.resync_skipped,
+        channel_resyncs: stats.channel_resyncs,
+        mid_stream_skipped_bytes: stats.mid_stream_skipped,
+        padding_bytes: stats.padding,
+        trailing_skipped_bytes: stats.trailing_skipped,
         incomplete_final_round: stats.incomplete_final_round,
         dropped_frames: stats.dropped,
-        truncated: layout.truncated || truncated || stats.trailing_bytes > 0,
+        length_high_bit_frames: stats.high_bits,
+        truncated: layout.truncated || truncated || stats.cut_final_frame,
+        continuation_segments: layout.continuation_segments,
+        grew_while_read: false,
         ftra: layout.ftra,
         video_streams: layout.video_streams,
         duration_secs,
+        file_bytes: file_len,
     }
 }
 
-fn scan<'s>(
-    path: &Path,
-    index_hint: Option<IndexKind>,
-    sink: Option<&'s mut FrameSink<'s>>,
-    cancelled: Cancel<'_>,
-) -> Result<TrmInfo, String> {
-    check_cancel(cancelled)?;
+fn open_layout(path: &Path, bound: Option<u64>) -> Result<(Layout, u64, bool), String> {
     let mut file = File::open(path).map_err(io_error)?;
-    let file_len = file.metadata().map_err(io_error)?.len();
+    let actual_len = file.metadata().map_err(io_error)?.len();
+    let file_len = bound.map_or(actual_len, |bound| bound.min(actual_len));
     let layout = read_layout(&mut file, file_len)?;
-    drop(file);
-
-    let try_index = index_hint.is_none_or(|kind| kind != IndexKind::Walked);
-    // Check the whole index before delivering anything, so a damaged index
-    // never leaves half-written channels behind.
-    let index_ok = try_index
-        && matches!(
-            read_by_index(path, &layout, file_len, None, cancelled)?,
-            IndexOutcome::Done(..)
-        );
-    let mut dealer = Dealer::new(usize::from(layout.channels), sink);
-    let (kind, truncated) = if index_ok {
-        match read_by_index(path, &layout, file_len, Some(&mut dealer), cancelled)? {
-            IndexOutcome::Done(kind, truncated) => (kind, truncated),
-            IndexOutcome::Unusable => return Err("The FTR recording changed while it was being read.".into()),
-        }
-    } else {
-        let truncated = read_by_walking(path, &layout, file_len, &mut dealer, cancelled)?;
-        (IndexKind::Walked, truncated)
-    };
-    let (stats, sample_rate) = dealer.finish();
-    Ok(build_info(&layout, kind, truncated, stats, sample_rate))
+    Ok((layout, file_len, actual_len > file_len))
 }
 
 /// Read a `.trm` through once and report its layout. Never modifies it.
@@ -861,7 +1131,55 @@ pub(crate) fn inspect_trm(path: &Path) -> Result<TrmInfo, String> {
 }
 
 pub(crate) fn inspect_trm_with_cancel(path: &Path, cancelled: Cancel<'_>) -> Result<TrmInfo, String> {
-    scan(path, None, None, cancelled)
+    check_cancel(cancelled)?;
+    let (layout, file_len, _) = open_layout(path, None)?;
+    let channels = usize::from(layout.channels);
+    for kind in index_candidates(path, &layout)? {
+        let mut dealer = Dealer::new(channels, None, None);
+        if let Some(truncated) = read_by_index(path, &layout, file_len, kind, &mut dealer, cancelled)? {
+            let (stats, rate) = dealer.finish();
+            return Ok(build_info(&layout, file_len, kind, truncated, stats, rate));
+        }
+    }
+    let mut dealer = Dealer::new(channels, None, None);
+    let truncated = read_by_walking(path, &layout, file_len, &mut dealer, cancelled)?;
+    let (stats, rate) = dealer.finish();
+    Ok(build_info(&layout, file_len, IndexKind::Walked, truncated, stats, rate))
+}
+
+/// Read the recording again exactly as `info` describes it (same index kind,
+/// same channel count, no further than the length inspected and no more
+/// rounds than inspected), delivering every frame to `sink`.
+fn extract<'s>(
+    path: &Path,
+    info: &TrmInfo,
+    sink: &'s mut FrameSink<'s>,
+    cancelled: Cancel<'_>,
+) -> Result<TrmInfo, String> {
+    check_cancel(cancelled)?;
+    let (layout, file_len, grew) = open_layout(path, Some(info.file_bytes))?;
+    if layout.channels != info.channels {
+        return Err(TRM_CHANGED_MESSAGE.into());
+    }
+    let mut dealer = Dealer::new(usize::from(layout.channels), Some(sink), Some(info.frames_per_channel));
+    let truncated = match info.index_kind {
+        IndexKind::Walked => read_by_walking(path, &layout, file_len, &mut dealer, cancelled)?,
+        kind => read_by_index(path, &layout, file_len, kind, &mut dealer, cancelled)?
+            .ok_or_else(|| TRM_CHANGED_MESSAGE.to_string())?,
+    };
+    if dealer.limit_reached {
+        // Every inspected round was delivered, so the inspection describes
+        // what was read. If the recording is still being written, what
+        // follows was not inspected and is not read.
+        return Ok(TrmInfo {
+            grew_while_read: grew,
+            ..info.clone()
+        });
+    }
+    let (stats, rate) = dealer.finish();
+    let mut written = build_info(&layout, file_len, info.index_kind, truncated, stats, rate);
+    written.grew_while_read = grew;
+    Ok(written)
 }
 
 /// Removes the per-channel files unless the extraction completed.
@@ -880,6 +1198,9 @@ impl Drop for ChannelFiles {
     }
 }
 
+/// The name prefix of every temporary channel file, for the startup sweep.
+pub(crate) const CHANNEL_FILE_PREFIX: &str = "depoaudio_trm_";
+
 /// Write each channel of a `.trm` to its own new mono ADTS `.aac` file in
 /// `out_dir` (descrambled, whole rounds only, so every channel has the same
 /// frame count). Streams: no channel is held in memory. The original is only
@@ -890,7 +1211,8 @@ pub(crate) fn deinterleave_trm(path: &Path, out_dir: &Path) -> Result<(TrmInfo, 
 }
 
 /// [`deinterleave_trm`] with cancellation, reusing an earlier inspection's
-/// index choice when given.
+/// index choice when given. A recording that grew since that inspection
+/// (one still being written) is read only as far as it was inspected.
 pub(crate) fn deinterleave_trm_with_cancel(
     path: &Path,
     out_dir: &Path,
@@ -901,12 +1223,17 @@ pub(crate) fn deinterleave_trm_with_cancel(
         Some(info) => info.clone(),
         None => inspect_trm_with_cancel(path, cancelled)?,
     };
+    if info.continuation_segments > 0 {
+        return Err(
+            "This FTR recording continues in further RIFF (AVIX) segments, which DepoAudio's channel split does not read yet, so it cannot be split without losing audio.".into(),
+        );
+    }
     if info.frames_per_channel == 0 {
         return Err(
             "No complete round of FTR audio frames was found in this recording, so there is nothing to convert.".into(),
         );
     }
-    let stem = format!("depoaudio_trm_{}", uuid::Uuid::new_v4().simple());
+    let stem = format!("{CHANNEL_FILE_PREFIX}{}", uuid::Uuid::new_v4().simple());
     let mut files = ChannelFiles {
         paths: Vec::new(),
         keep: false,
@@ -923,11 +1250,13 @@ pub(crate) fn deinterleave_trm_with_cancel(
         writers.push(BufWriter::new(file));
     }
     let mut sink = |channel: usize, frame: &[u8]| -> Result<(), String> {
-        writers[channel]
+        writers
+            .get_mut(channel)
+            .ok_or_else(|| TRM_CHANGED_MESSAGE.to_string())?
             .write_all(frame)
             .map_err(|error| format!("Could not write a temporary channel file: {error}"))
     };
-    let written = scan(path, Some(info.index_kind), Some(&mut sink), cancelled)?;
+    let written = extract(path, &info, &mut sink, cancelled)?;
     for writer in writers {
         let file = writer
             .into_inner()
@@ -937,12 +1266,11 @@ pub(crate) fn deinterleave_trm_with_cancel(
     }
     check_cancel(cancelled)?;
     if written.frames_per_channel != info.frames_per_channel {
-        return Err("The FTR recording changed while it was being read.".into());
+        return Err(TRM_CHANGED_MESSAGE.into());
     }
     files.keep = true;
     Ok((written, std::mem::take(&mut files.paths)))
 }
-
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
@@ -1050,7 +1378,7 @@ pub(crate) mod tests {
         (stream, lengths)
     }
 
-    #[derive(Clone, Copy, PartialEq)]
+    #[derive(Clone, Copy, PartialEq, Debug)]
     pub(crate) enum Index {
         Absolute,
         Relative,
@@ -1069,6 +1397,9 @@ pub(crate) mod tests {
         pub video_streams: u32,
         /// Leave the movi list size at 0 (never closed).
         pub open_movi: bool,
+        /// Size of a video (`01dc`) chunk placed before the audio, listed
+        /// first in idx1; 0 for none.
+        pub lead_video: usize,
     }
 
     impl AviSpec {
@@ -1082,6 +1413,7 @@ pub(crate) mod tests {
                 ftra: None,
                 video_streams: 0,
                 open_movi: false,
+                lead_video: 0,
             }
         }
     }
@@ -1143,9 +1475,13 @@ pub(crate) mod tests {
         let movi_pos = movi_header + 8;
         let mut movi = Vec::new();
         let mut entries = Vec::new();
+        if spec.lead_video > 0 {
+            entries.push((*b"01dc", movi_pos + 4, spec.lead_video));
+            movi.extend(chunk(b"01dc", &vec![0x5A; spec.lead_video]));
+        }
         for packet in packets {
             let header = movi_pos + 4 + movi.len();
-            entries.push((header, packet.len()));
+            entries.push((*b"00wb", header, packet.len()));
             movi.extend(chunk(b"00wb", packet));
         }
         out.extend(list(b"movi", &movi));
@@ -1154,12 +1490,12 @@ pub(crate) mod tests {
         }
         if spec.index != Index::None {
             let mut idx = Vec::new();
-            for (header, size) in entries {
+            for (id, header, size) in entries {
                 let offset = match spec.index {
                     Index::Relative => header - movi_pos,
                     _ => header,
                 };
-                idx.extend(b"00wb");
+                idx.extend(id);
                 idx.extend(le(&[0x10, offset as u32, size as u32]));
             }
             let mut idx1 = chunk(b"idx1", &idx);
@@ -1266,6 +1602,11 @@ pub(crate) mod tests {
         let aligned = write(
             &dir.0,
             "aligned.trm",
+            &build_avi(&AviSpec::closed(2), &round_packets(&stream, &lengths, 2, 1)),
+        );
+        let doubled = write(
+            &dir.0,
+            "doubled.trm",
             &build_avi(&AviSpec::closed(2), &round_packets(&stream, &lengths, 2, 2)),
         );
         let straddled = write(
@@ -1297,6 +1638,15 @@ pub(crate) mod tests {
         let (path, reasons) = choose_route(&inspect_trm(&straddled).unwrap(), native);
         assert_eq!(path, DecodePath::Deinterleaved);
         assert!(reasons.contains(&"frames-cross-chunks".to_string()), "{reasons:?}");
+        // Two whole rounds per chunk: FFmpeg's native decoder can lose audio
+        // in some outputs, so it is split instead.
+        let info = inspect_trm(&doubled).unwrap();
+        assert_eq!(info.multi_round_packets, 2);
+        assert_eq!(info.misaligned_packets, 0);
+        assert_eq!(
+            choose_route(&info, native),
+            (DecodePath::Deinterleaved, vec!["several-rounds-per-chunk".to_string()])
+        );
     }
 
     #[test]
@@ -1429,7 +1779,7 @@ pub(crate) mod tests {
         let dir = TrmTestDir::new();
         let channels = fake_frames(3, 6);
         let (stream, lengths) = ftr_frame_stream(&channels);
-        let packets = round_packets(&stream, &lengths, 3, 2);
+        let packets = round_packets(&stream, &lengths, 3, 1);
         for (index, kind) in [
             (Index::Relative, IndexKind::Idx1Relative),
             (Index::AbsoluteZeroSize, IndexKind::Idx1Absolute),
@@ -1439,9 +1789,13 @@ pub(crate) mod tests {
             let path = write(&dir.0, "indexed.trm", &build_avi(&spec, &packets));
             let info = inspect_trm(&path).unwrap();
             assert_eq!(info.index_kind, kind);
-            assert_eq!(info.packets, 3);
+            assert_eq!(info.packets, 6);
             assert_eq!(info.frames_per_channel, 6);
             assert_eq!(info.misaligned_packets, 0);
+            // A never-closed (zero-size) index runs to EOF: it is not a sign
+            // of a cut-off file.
+            assert!(!info.truncated, "{index:?}");
+            assert!(info.native_blockers().is_empty(), "{:?}", info.native_blockers());
         }
     }
 
@@ -1615,6 +1969,333 @@ pub(crate) mod tests {
         assert_eq!(fs::read_dir(&dir.0).unwrap().count(), 1);
     }
 
+    /// The frames of `channels`, marked and scrambled as in a recording, one
+    /// frame per audio chunk; `edit` may drop or repeat frames first.
+    fn single_frame_packets(channels: &[Vec<Vec<u8>>], edit: impl FnOnce(&mut Vec<Vec<u8>>)) -> Vec<Vec<u8>> {
+        let (stream, lengths) = ftr_frame_stream(channels);
+        let mut frames = Vec::new();
+        let mut pos = 0;
+        for length in lengths {
+            frames.push(stream[pos..pos + length].to_vec());
+            pos += length;
+        }
+        edit(&mut frames);
+        frames
+    }
+
+    fn bytes_read_by(run: impl FnOnce()) -> u64 {
+        SOURCE_BYTES_READ.with(|count| count.set(0));
+        run();
+        SOURCE_BYTES_READ.with(std::cell::Cell::get)
+    }
+
+    #[test]
+    fn small_chunks_are_read_about_once_not_once_per_chunk() {
+        let dir = TrmTestDir::new();
+        let channels = fake_frames(4, 3000);
+        let (stream, lengths) = ftr_frame_stream(&channels);
+        let packets = round_packets(&stream, &lengths, 4, 1);
+        for index in [Index::Absolute, Index::None] {
+            let mut spec = AviSpec::closed(4);
+            spec.index = index;
+            let path = write(&dir.0, "small.trm", &build_avi(&spec, &packets));
+            let size = fs::metadata(&path).unwrap().len();
+            let mut info = None;
+            let inspected = bytes_read_by(|| info = Some(inspect_trm(&path).unwrap()));
+            let info = info.unwrap();
+            assert_eq!(info.frames_per_channel, 3000);
+            let mut files = Vec::new();
+            let split = bytes_read_by(|| {
+                files = deinterleave_trm_with_cancel(&path, &dir.0, Some(&info), None)
+                    .unwrap()
+                    .1;
+            });
+            files.iter().for_each(|file| fs::remove_file(file).unwrap());
+            // Each pass reads the file (and the index) about once: a seek per
+            // chunk must not refill the read buffer every time.
+            assert!(
+                inspected < size * 3,
+                "{index:?}: inspection read {inspected} bytes of a {size}-byte file"
+            );
+            assert!(
+                split < size * 3,
+                "{index:?}: the split read {split} bytes of a {size}-byte file"
+            );
+        }
+    }
+
+    #[test]
+    fn a_lost_frame_mid_file_restarts_at_channel_0_instead_of_rotating_channels() {
+        let dir = TrmTestDir::new();
+        let channels = fake_frames(3, 8);
+        // Round 3's channel-1 frame is missing.
+        let packets = single_frame_packets(&channels, |frames| {
+            frames.remove(3 * 3 + 1);
+        });
+        let path = write(&dir.0, "lost.trm", &build_avi(&AviSpec::closed(3), &packets));
+        let info = inspect_trm(&path).unwrap();
+        assert_eq!(info.channel_resyncs, 1);
+        assert_eq!(info.frames_per_channel, 7);
+        assert_eq!(info.dropped_frames, 2);
+        assert_eq!(info.resync_skipped_bytes, 0);
+        assert!(info.native_blockers().contains(&"channel-order-resynced"));
+
+        let (_, files) = deinterleave_trm(&path, &dir.0).unwrap();
+        for (channel, file) in files.iter().enumerate() {
+            let mut expected = expected_channel(&channels, channel, 8);
+            expected.remove(3);
+            assert_eq!(split_adts(&fs::read(file).unwrap()), expected, "channel {channel}");
+        }
+    }
+
+    #[test]
+    fn a_file_that_marks_only_channel_0_frames_is_dealt_round_robin() {
+        let dir = TrmTestDir::new();
+        // fake_frames leaves the private bit clear on every frame.
+        let channels = fake_frames(3, 4);
+        let packets: Vec<Vec<u8>> = (0..4)
+            .map(|round| channels.iter().flat_map(|frames| frames[round].clone()).collect())
+            .collect();
+        let path = write(&dir.0, "unmarked.trm", &build_avi(&AviSpec::closed(3), &packets));
+        let info = inspect_trm(&path).unwrap();
+        assert_eq!((info.frames_per_channel, info.channel_resyncs), (4, 0));
+        let (_, files) = deinterleave_trm(&path, &dir.0).unwrap();
+        for (channel, file) in files.iter().enumerate() {
+            assert_eq!(split_adts(&fs::read(file).unwrap()), channels[channel]);
+        }
+    }
+
+    #[test]
+    fn a_missing_channel_0_frame_and_an_extra_frame_are_both_caught() {
+        let dir = TrmTestDir::new();
+        let channels = fake_frames(3, 8);
+        // Round 2's channel-0 frame is missing: its other frames are skipped.
+        let packets = single_frame_packets(&channels, |frames| {
+            frames.remove(2 * 3);
+        });
+        let path = write(&dir.0, "nozero.trm", &build_avi(&AviSpec::closed(3), &packets));
+        let info = inspect_trm(&path).unwrap();
+        assert_eq!(
+            (info.channel_resyncs, info.frames_per_channel, info.dropped_frames),
+            (1, 7, 2)
+        );
+        let (_, files) = deinterleave_trm(&path, &dir.0).unwrap();
+        for (channel, file) in files.iter().enumerate() {
+            let mut expected = expected_channel(&channels, channel, 8);
+            expected.remove(2);
+            assert_eq!(split_adts(&fs::read(file).unwrap()), expected, "channel {channel}");
+        }
+        files.iter().for_each(|file| fs::remove_file(file).unwrap());
+
+        // Round 3's channel-1 frame appears twice. Only the private bit marks
+        // a channel, so that round's last slot gets the repeat; the frame it
+        // displaced is dropped and dealing restarts at round 4.
+        let packets = single_frame_packets(&channels, |frames| {
+            let repeat = frames[3 * 3 + 1].clone();
+            frames.insert(3 * 3 + 2, repeat);
+        });
+        let path = write(&dir.0, "extra.trm", &build_avi(&AviSpec::closed(3), &packets));
+        let info = inspect_trm(&path).unwrap();
+        assert_eq!(
+            (info.channel_resyncs, info.frames_per_channel, info.dropped_frames),
+            (1, 8, 1)
+        );
+        assert!(info.native_blockers().contains(&"channel-order-resynced"));
+        let (_, files) = deinterleave_trm(&path, &dir.0).unwrap();
+        for (channel, file) in files.iter().enumerate().take(2) {
+            assert_eq!(
+                split_adts(&fs::read(file).unwrap()),
+                expected_channel(&channels, channel, 8)
+            );
+        }
+        let last = split_adts(&fs::read(&files[2]).unwrap());
+        let expected = expected_channel(&channels, 2, 8);
+        assert_eq!(last.len(), 8);
+        assert_eq!(last[..3], expected[..3]);
+        assert_eq!(last[4..], expected[4..]);
+    }
+
+    #[test]
+    fn padding_and_trailing_bytes_are_not_called_truncation_or_a_late_start() {
+        let dir = TrmTestDir::new();
+        let channels = fake_frames(3, 5);
+        let (stream, lengths) = ftr_frame_stream(&channels);
+        let aligned = round_packets(&stream, &lengths, 3, 1);
+
+        let mut padded = aligned.clone();
+        padded.last_mut().unwrap().extend([0u8; 10]);
+        let info = inspect_trm(&write(&dir.0, "padded.trm", &build_avi(&AviSpec::closed(3), &padded))).unwrap();
+        assert_eq!(info.frames_per_channel, 5);
+        assert_eq!(info.padding_bytes, 10);
+        assert!(!info.truncated);
+        // FFmpeg's native decoder rejects a chunk with bytes after its frames
+        // (FFmpeg 6.1.1), so padding still takes the split route.
+        assert_eq!(info.native_blockers(), vec!["zero-padding"]);
+
+        let mut tail = aligned.clone();
+        tail.last_mut().unwrap().extend([0x11u8; 10]);
+        let info = inspect_trm(&write(&dir.0, "tail.trm", &build_avi(&AviSpec::closed(3), &tail))).unwrap();
+        assert_eq!(info.frames_per_channel, 5);
+        assert_eq!(info.trailing_skipped_bytes, 10);
+        assert_eq!((info.resync_skipped_bytes, info.mid_stream_skipped_bytes), (0, 0));
+        assert!(!info.truncated);
+        assert!(info.native_blockers().contains(&"unreadable-data"));
+        assert!(!info.native_blockers().contains(&"data-before-channel-0"));
+
+        // A last frame the file cuts off is truncation.
+        let mut cut = aligned.clone();
+        cut.push(channels[0][0][..15].to_vec());
+        let info = inspect_trm(&write(&dir.0, "cut.trm", &build_avi(&AviSpec::closed(3), &cut))).unwrap();
+        assert!(info.truncated);
+        assert_eq!(info.frames_per_channel, 5);
+
+        // Garbage between rounds is counted as mid-stream, not as leading.
+        let mut middle = aligned;
+        middle[2].splice(0..0, [0x11u8; 9]);
+        let info = inspect_trm(&write(&dir.0, "middle.trm", &build_avi(&AviSpec::closed(3), &middle))).unwrap();
+        assert_eq!(info.frames_per_channel, 5);
+        assert_eq!((info.resync_skipped_bytes, info.mid_stream_skipped_bytes), (0, 9));
+    }
+
+    #[test]
+    fn frame_length_bits_ftr_ignores_are_cleared_in_the_channel_files() {
+        let dir = TrmTestDir::new();
+        let mut channels = fake_frames(2, 4);
+        channels[1][2][3] |= 0x01;
+        let (stream, lengths) = ftr_frame_stream(&channels);
+        let path = write(
+            &dir.0,
+            "bits.trm",
+            &build_avi(&AviSpec::closed(2), &round_packets(&stream, &lengths, 2, 1)),
+        );
+        let info = inspect_trm(&path).unwrap();
+        assert_eq!(info.length_high_bit_frames, 1);
+        assert_eq!(info.native_blockers(), vec!["frame-length-high-bits"]);
+        let (_, files) = deinterleave_trm(&path, &dir.0).unwrap();
+        let mut expected = expected_channel(&channels, 1, 4);
+        expected[2][3] &= !0x03;
+        assert_eq!(split_adts(&fs::read(&files[1]).unwrap()), expected);
+    }
+
+    #[test]
+    fn a_relative_index_that_opens_with_a_large_video_chunk_is_still_relative() {
+        let dir = TrmTestDir::new();
+        let channels = fake_frames(2, 4);
+        let (stream, lengths) = ftr_frame_stream(&channels);
+        let mut spec = AviSpec::closed(2);
+        spec.index = Index::Relative;
+        spec.lead_video = 20_000;
+        spec.video_streams = 1;
+        let path = write(
+            &dir.0,
+            "video.trm",
+            &build_avi(&spec, &round_packets(&stream, &lengths, 2, 1)),
+        );
+        let info = inspect_trm(&path).unwrap();
+        assert_eq!(info.index_kind, IndexKind::Idx1Relative);
+        assert!(info.native_blockers().is_empty(), "{:?}", info.native_blockers());
+        assert_eq!(info.frames_per_channel, 4);
+    }
+
+    #[test]
+    fn a_recording_that_grows_after_inspection_is_split_as_inspected() {
+        let dir = TrmTestDir::new();
+        let channels = fake_frames(2, 8);
+        let (stream, lengths) = ftr_frame_stream(&channels);
+        let packets = round_packets(&stream, &lengths, 2, 1);
+        let mut spec = AviSpec::closed(2);
+        spec.index = Index::None;
+        spec.length = 0x7FFF_FFFF;
+        spec.open_movi = true;
+        let early = build_avi(&spec, &packets[..4]);
+        // The recorder appends four more chunks; the header stays as it was.
+        let mut grown = early.clone();
+        grown.extend_from_slice(&build_avi(&spec, &packets)[early.len()..]);
+        let path = write(&dir.0, "live.trm", &early);
+        let info = inspect_trm(&path).unwrap();
+        assert_eq!(info.frames_per_channel, 4);
+        fs::write(&path, &grown).unwrap();
+        assert_eq!(inspect_trm(&path).unwrap().frames_per_channel, 8);
+        let (written, files) = deinterleave_trm_with_cancel(&path, &dir.0, Some(&info), None).unwrap();
+        assert_eq!(written.frames_per_channel, 4);
+        assert!(written.grew_while_read);
+        for (channel, file) in files.iter().enumerate() {
+            assert_eq!(
+                split_adts(&fs::read(file).unwrap()),
+                expected_channel(&channels, channel, 4)
+            );
+        }
+    }
+
+    #[test]
+    fn a_channel_count_that_changed_since_inspection_is_an_error_not_a_panic() {
+        let dir = TrmTestDir::new();
+        let channels = fake_frames(4, 3);
+        let (stream, lengths) = ftr_frame_stream(&channels);
+        let path = write(
+            &dir.0,
+            "four.trm",
+            &build_avi(&AviSpec::closed(4), &round_packets(&stream, &lengths, 4, 1)),
+        );
+        let mut info = inspect_trm(&path).unwrap();
+        info.channels = 2;
+        let error = deinterleave_trm_with_cancel(&path, &dir.0, Some(&info), None).unwrap_err();
+        assert_eq!(error, TRM_CHANGED_MESSAGE);
+        assert_eq!(
+            fs::read_dir(&dir.0).unwrap().count(),
+            1,
+            "no channel file is left behind"
+        );
+    }
+
+    #[test]
+    fn opendml_continuation_segments_are_reported_and_not_split() {
+        let dir = TrmTestDir::new();
+        let channels = fake_frames(2, 3);
+        let (stream, lengths) = ftr_frame_stream(&channels);
+        let mut bytes = build_avi(&AviSpec::closed(2), &round_packets(&stream, &lengths, 2, 1));
+        let mut avix = list(b"movi", &chunk(b"00wb", &stream));
+        avix.splice(0..0, b"AVIX".iter().copied());
+        bytes.extend(chunk(b"RIFF", &avix));
+        let path = write(&dir.0, "avix.trm", &bytes);
+        let info = inspect_trm(&path).unwrap();
+        assert_eq!(info.continuation_segments, 1);
+        assert_eq!(info.duration_secs, None);
+        assert_eq!(info.frames_per_channel, 3);
+        assert!(!info.truncated);
+        assert!(deinterleave_trm(&path, &dir.0).unwrap_err().contains("AVIX"));
+        assert_eq!(fs::read_dir(&dir.0).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn cancellation_is_checked_through_long_runs_of_other_index_entries() {
+        let dir = TrmTestDir::new();
+        let channels = fake_frames(1, 1);
+        let (stream, lengths) = ftr_frame_stream(&channels);
+        let mut bytes = build_avi(&AviSpec::closed(1), &round_packets(&stream, &lengths, 1, 1));
+        // 20,000 entries after the one audio entry that list no audio.
+        let idx = bytes.windows(4).rposition(|w| w == b"idx1").unwrap();
+        let mut extra = Vec::new();
+        for _ in 0..20_000 {
+            extra.extend(b"ix00");
+            extra.extend(le(&[0, 4, 0]));
+        }
+        bytes.extend(&extra);
+        let size = u32_at(&bytes, idx + 4).unwrap() + extra.len() as u32;
+        bytes[idx + 4..idx + 8].copy_from_slice(&size.to_le_bytes());
+        let riff = (bytes.len() - 8) as u32;
+        bytes[4..8].copy_from_slice(&riff.to_le_bytes());
+        let path = write(&dir.0, "entries.trm", &bytes);
+        assert_eq!(inspect_trm(&path).unwrap().frames_per_channel, 1);
+
+        let calls = std::sync::atomic::AtomicUsize::new(0);
+        let cancelled = || calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst) >= 3;
+        assert_eq!(
+            inspect_trm_with_cancel(&path, Some(&cancelled)).unwrap_err(),
+            TRM_CANCELLED_MESSAGE
+        );
+    }
+
     // ── FFmpeg-backed checks ─────────────────────────────────────────────────
 
     pub(crate) fn native_ftr_decoder_on_path() -> bool {
@@ -1742,6 +2423,31 @@ pub(crate) mod tests {
             differing, 0,
             "native ftr and the deinterleaved route differ in {differing} samples"
         );
+        assert_eq!(dominant_tones(&merged, 4, TONE_RATE), TONE_FREQUENCIES.to_vec());
+    }
+
+    #[test]
+    fn channel_files_decode_in_full_when_frames_carry_the_length_bits_ftr_ignores() {
+        if !aac_tools_available() {
+            return;
+        }
+        let dir = TrmTestDir::new();
+        let mut channels = tone_channels(&dir.0, 2.0);
+        for frame in channels.iter_mut().flatten() {
+            frame[3] |= 0x01;
+        }
+        let (stream, lengths) = ftr_frame_stream(&channels);
+        let path = write(
+            &dir.0,
+            "bits.trm",
+            &build_avi(&AviSpec::closed(4), &round_packets(&stream, &lengths, 4, 1)),
+        );
+        let info = inspect_trm(&path).unwrap();
+        assert_eq!(info.length_high_bit_frames, info.frames);
+        assert_eq!(info.native_blockers(), vec!["frame-length-high-bits"]);
+        let (_, files) = deinterleave_trm(&path, &dir.0).unwrap();
+        let merged = decode_f32(&merged_decode_args(&files));
+        assert_eq!(merged.len() as u64, info.frames_per_channel * 1024 * 4);
         assert_eq!(dominant_tones(&merged, 4, TONE_RATE), TONE_FREQUENCIES.to_vec());
     }
 
