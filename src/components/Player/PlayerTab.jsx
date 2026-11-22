@@ -194,6 +194,16 @@ export default function PlayerTab({ dropHandlerRef, onConvertFiles, openRequest,
     if (audioRef.current) audioRef.current.currentTime = t
   }
 
+  // Play from a transcript line: seek there and play, with no backstep.
+  const playFrom = t => {
+    const a = audioRef.current
+    if (!a || !activeTrack) return
+    setPlaybackError('')
+    pausedAtRef.current = null
+    a.currentTime = t
+    if (a.paused) a.play().catch(e => setPlaybackError(`Couldn't play ${activeTrack.name}: ${e}`))
+  }
+
   const applySpeed = s => {
     setSpeedState(s)
     try {
@@ -491,7 +501,7 @@ export default function PlayerTab({ dropHandlerRef, onConvertFiles, openRequest,
           <WorkspaceHeader
             eyebrow="Local review"
             title="Review a recording"
-            description="Use the waveform, playlist, bookmarks, and synced transcript to work through the record."
+            description="Use the waveform, playlist and bookmarks to work through the record, and proof a transcript against it."
             status={`${tracks.length} track${tracks.length === 1 ? '' : 's'} loaded locally`}
             className="md:col-span-2"
           />
@@ -696,7 +706,9 @@ export default function PlayerTab({ dropHandlerRef, onConvertFiles, openRequest,
                 trackPath={activeTrack.path}
                 currentTime={currentTime}
                 playing={playing}
+                duration={duration}
                 onSeek={seekTo}
+                onPlayFrom={playFrom}
                 onStorageError={setTranscriptStorageError}
               />
             </div>

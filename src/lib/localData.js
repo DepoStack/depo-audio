@@ -6,16 +6,20 @@
 // These pure helpers collect that web data for a backup, restore it from one
 // without replacing anything the person already has, and clear it.
 
-import { TRANSCRIPT_KEY_PREFIX, loadSegments, storageKey } from './transcript'
+import { SYNC_KEY_PREFIX, TRANSCRIPT_KEY_PREFIX, loadSegments, storageKey } from './transcript'
 import { loadBookmarks } from './player'
 
-// Every fixed key DepoAudio writes. Transcripts use TRANSCRIPT_KEY_PREFIX.
+// Every fixed key DepoAudio writes. Transcripts use TRANSCRIPT_KEY_PREFIX and
+// their per-track sync settings SYNC_KEY_PREFIX.
 export const WEB_STORAGE_KEYS = ['player-bookmarks', 'player-speed', 'player-backstep', 'depoaudio-theme']
 const BOOKMARKS_KEY = 'player-bookmarks'
 const MAX_TRACK_PATH_CHARS = 4096
 
 export function isDepoAudioKey(key) {
-  return typeof key === 'string' && (key.startsWith(TRANSCRIPT_KEY_PREFIX) || WEB_STORAGE_KEYS.includes(key))
+  return (
+    typeof key === 'string' &&
+    (key.startsWith(TRANSCRIPT_KEY_PREFIX) || key.startsWith(SYNC_KEY_PREFIX) || WEB_STORAGE_KEYS.includes(key))
+  )
 }
 
 function keysOf(storage) {

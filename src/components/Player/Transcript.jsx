@@ -1,55 +1,59 @@
-import { useState, useRef, useEffect, useMemo } from 'react'
+import { useState, useRef, useEffect, useMemo, useId } from 'react'
 import { open, save } from '@tauri-apps/plugin-dialog'
 import { readTextFile, writeTextFile } from '@tauri-apps/plugin-fs'
-import { Upload, Download, Copy, Check, Crosshair, Plus, X, Locate, Trash2 } from 'lucide-react'
+import { Upload, Copy, Check, Flag, Locate, Trash2, Download, X } from 'lucide-react'
 import { cn } from '../../lib/utils'
-import { fmtTime } from '../../utils'
+import { basename } from '../../utils'
 import {
-  createSegmentAtTime,
+  DEFAULT_SYNC,
+  describeDetection,
+  detectTimeKind,
+  findActiveIndex,
+  flagRows,
+  flagsToCsv,
+  flagsToText,
+  fmtClock,
+  fmtElapsed,
+  linePositions,
+  MAX_FLAG_NOTE_CHARS,
+  normalizeSync,
+  parseClockInput,
   parseTranscript,
-  toPlainText,
-  toSRT,
-  canExportSrt,
-  findActiveTranscriptIndex,
   readStoredSegments,
+  readStoredSync,
   removeStoredSegments,
   saveStoredSegments,
-  TRANSCRIPT_SAVE_DEBOUNCE_MS,
+  saveStoredSync,
+  setFlagNote,
+  shiftForLineAt,
+  toggleFlag,
 } from '../../lib/transcript'
 import { Card, CardHeader, CardTitle } from '../ui/card'
 import { Button } from '../ui/button'
 import { ConfirmDialog } from '../ui/confirm-dialog'
 
-// ── Synced transcript editor ────────────────────────────────────────────────
+// ── Transcript proofing ─────────────────────────────────────────────────────
 //
-// Proof an existing transcript against the audio, or build one from scratch:
-//   • Import SRT / VTT / TXT (or paste); edit every line inline (autosaved).
-//   • Timed lines highlight and follow as audio plays; click a time to jump.
-//   • "Stamp" a line with the current audio position to anchor plain text.
-//   • Enter starts a new line stamped at the current position (fast capture).
-//   • Export to SRT or TXT, or copy to the clipboard.
+// Proof an existing transcript against the audio. DepoAudio never writes or
+// edits transcript text: that is done in CAT software.
+//   • Open SRT, WebVTT or timestamped text (CAT ASCII/TXT exports).
+//   • The line at the playhead is highlighted and followed ("Follow audio").
+//   • Click a line, or press Enter on it, to play from its time. Arrow keys,
+//     Home, End, Page Up and Page Down move between lines.
+//   • Sync shift ("Transcript is ahead by 1.5 s") and, for time-of-day
+//     stamps, the recording's start time. Both change only when the person
+//     changes them, and are saved per track.
+//   • F flags a line for review with an optional note. Flags never change
+//     the text, and can be saved as CSV or text.
 //
-// Parsing/serialization lives in lib/transcript.js (characterization-tested).
-// Transcripts persist per track in localStorage, keyed by file path.
-// "Delete transcript for this track" removes only that stored copy (DA-07);
-// Settings → Your data backs up, restores or clears all of them.
+// Lines and flags persist per track in localStorage ("transcript:<path>", the
+// key earlier versions used, so their saved transcripts open here read-only);
+// sync settings use "transcript-sync:<path>". "Remove this transcript from
+// DepoAudio" deletes only those stored copies (DA-07).
 
 const STORAGE_WARNING =
-  'Transcript autosave is unavailable. Unsaved changes are retained only in this open session; export them before closing DepoAudio.'
-const volatileTranscriptDrafts = new Map()
-const failedTranscriptDrafts = new Set()
-
-function persistTranscriptDraft(path, segments) {
-  const saved = saveStoredSegments(browserStorage(), path, segments)
-  if (saved) {
-    if (volatileTranscriptDrafts.get(path) === segments) volatileTranscriptDrafts.delete(path)
-    failedTranscriptDrafts.delete(path)
-  } else {
-    volatileTranscriptDrafts.set(path, segments)
-    failedTranscriptDrafts.add(path)
-  }
-  return saved
-}
+  'Saving is unavailable on this computer. Flags and sync changes are kept only while DepoAudio is open; export your flags before closing it.'
+const volatileState = new Map()
 
 function browserStorage() {
   try {
@@ -59,180 +63,226 @@ function browserStorage() {
   }
 }
 
-function reducedMotionRequested() {
-  try {
-    return window.matchMedia?.('(prefers-reduced-motion: reduce)').matches === true
-  } catch {
-    return false
-  }
-}
-
 function loadTrackState(path) {
-  const stored = readStoredSegments(browserStorage(), path)
-  const volatileDraft = volatileTranscriptDrafts.get(path)
+  const kept = volatileState.get(path)
+  if (kept) return { ...kept, path }
+  const storage = browserStorage()
+  const stored = readStoredSegments(storage, path)
+  // An empty or unreadable entry keeps no key (DA-07: the key names the track).
+  if (stored.storageAvailable && stored.segments.length === 0) removeStoredSegments(storage, path)
+  const storedSync = readStoredSync(storage, path)
   return {
     path,
-    segments: volatileDraft ?? stored.segments,
-    storageError: stored.storageAvailable && !failedTranscriptDrafts.has(path) ? '' : STORAGE_WARNING,
+    segments: stored.segments,
+    sync: storedSync ?? { ...DEFAULT_SYNC, timeKind: detectTimeKind(stored.segments) ?? 'elapsed' },
+    detection: null,
+    storageError: stored.storageAvailable ? '' : STORAGE_WARNING,
   }
 }
 
-export default function Transcript({ trackPath, currentTime, playing, onSeek, onStorageError }) {
-  const [trackState, setTrackState] = useState(() => loadTrackState(trackPath))
-  if (trackState.path !== trackPath) {
-    setTrackState(loadTrackState(trackPath))
-  }
-  const segments = useMemo(() => (trackState.path === trackPath ? trackState.segments : []), [trackState, trackPath])
-  const storageError = trackState.path === trackPath ? trackState.storageError : ''
-  const setSegments = update =>
-    setTrackState(previous => {
-      const currentState = previous.path === trackPath ? previous : loadTrackState(trackPath)
-      return {
-        ...currentState,
-        path: trackPath,
-        segments: typeof update === 'function' ? update(currentState.segments) : update,
-      }
-    })
+const PAGE_LINES = 8
+
+export default function Transcript({ trackPath, currentTime, playing, duration, onSeek, onPlayFrom, onStorageError }) {
+  const [state, setState] = useState(() => loadTrackState(trackPath))
+  if (state.path !== trackPath) setState(loadTrackState(trackPath))
+  const { segments, sync, detection, storageError } = state.path === trackPath ? state : loadTrackState(trackPath)
+
   const [follow, setFollow] = useState(true)
   const [copied, setCopied] = useState(false)
-  const [paste, setPaste] = useState('')
-  const [showExport, setShowExport] = useState(false)
+  const [message, setMessage] = useState('')
   const [operationError, setOperationError] = useState('')
   const [confirmDelete, setConfirmDelete] = useState(false)
-  const rowRefs = useRef({})
-  const focusId = useRef(null)
-  const saveTimerRef = useRef(null)
-  const pendingSaveRef = useRef(null)
-
-  // Persist per track after typing settles. A track switch flushes the previous
-  // snapshot, and unmount cleanup flushes once more so the debounce never loses
-  // the user's last edit.
-  useEffect(() => {
-    if (trackState.path !== trackPath) return undefined
-
-    if (pendingSaveRef.current && pendingSaveRef.current.path !== trackState.path) {
-      const previous = pendingSaveRef.current
-      pendingSaveRef.current = null
-      persistTranscriptDraft(previous.path, previous.segments)
-      onStorageError?.(failedTranscriptDrafts.size > 0 ? STORAGE_WARNING : '')
-    }
-
-    volatileTranscriptDrafts.set(trackState.path, trackState.segments)
-    pendingSaveRef.current = { path: trackState.path, segments: trackState.segments }
-    window.clearTimeout(saveTimerRef.current)
-    saveTimerRef.current = window.setTimeout(() => {
-      const pending = pendingSaveRef.current
-      if (!pending || pending.path !== trackState.path) return
-      pendingSaveRef.current = null
-      saveTimerRef.current = null
-      const saved = persistTranscriptDraft(pending.path, pending.segments)
-      const nextError = saved ? '' : STORAGE_WARNING
-      onStorageError?.(failedTranscriptDrafts.size > 0 ? STORAGE_WARNING : '')
-      setTrackState(previous =>
-        previous.path === pending.path && previous.storageError !== nextError
-          ? { ...previous, storageError: nextError }
-          : previous,
-      )
-    }, TRANSCRIPT_SAVE_DEBOUNCE_MS)
-
-    return () => window.clearTimeout(saveTimerRef.current)
-  }, [trackState.path, trackState.segments, trackPath, onStorageError])
-
-  useEffect(
-    () => () => {
-      window.clearTimeout(saveTimerRef.current)
-      const pending = pendingSaveRef.current
-      pendingSaveRef.current = null
-      if (pending) {
-        persistTranscriptDraft(pending.path, pending.segments)
-        onStorageError?.(failedTranscriptDrafts.size > 0 ? STORAGE_WARNING : '')
-      }
-    },
-    [onStorageError],
-  )
+  const [pendingImport, setPendingImport] = useState(null)
+  const [focusIndex, setFocusIndex] = useState(0)
+  const [startDraft, setStartDraft] = useState('')
+  const [startError, setStartError] = useState('')
+  const listRef = useRef(null)
+  const startId = useId()
+  const rowRefs = useRef([])
 
   useEffect(() => {
-    if (!onStorageError) return
-    onStorageError(failedTranscriptDrafts.size > 0 ? STORAGE_WARNING : storageError)
+    onStorageError?.(storageError)
   }, [onStorageError, storageError])
 
-  // The active (currently-playing) timed segment
-  const activeId = useMemo(() => {
-    const activeIndex = findActiveTranscriptIndex(segments, currentTime)
-    return activeIndex < 0 ? null : segments[activeIndex]?.id
-  }, [segments, currentTime])
+  // Every change is written at once. When storage fails, the state is kept in
+  // memory for this session (also across track switches) and the person is told.
+  const commit = patch => {
+    const next = { segments, sync, detection, ...patch, path: trackPath }
+    const storage = browserStorage()
+    const saved =
+      saveStoredSegments(storage, trackPath, next.segments) &&
+      (next.segments.length === 0 || saveStoredSync(storage, trackPath, next.sync))
+    next.storageError = saved ? '' : STORAGE_WARNING
+    if (saved) volatileState.delete(trackPath)
+    else volatileState.set(trackPath, next)
+    setState(next)
+  }
 
-  // Auto-scroll the active line into view while following playback
-  useEffect(() => {
-    if (!follow || !playing || !activeId) return
-    rowRefs.current[activeId]?.scrollIntoView({
-      block: 'nearest',
-      behavior: reducedMotionRequested() ? 'auto' : 'smooth',
-    })
-  }, [activeId, follow, playing])
+  const setSync = patch => commit({ sync: normalizeSync({ ...sync, ...patch }) })
 
-  // Focus a newly created row's text field
+  const positions = useMemo(() => linePositions(segments, sync), [segments, sync])
+  const activeIndex = useMemo(() => findActiveIndex(positions, currentTime), [positions, currentTime])
+  const flags = useMemo(() => flagRows(segments, sync), [segments, sync])
+  const timedCount = positions.filter(p => p.own != null).length
+  const needsStart = sync.timeKind === 'time-of-day' && sync.recordingStart == null
+  const hasTimes = segments.some(s => s.start != null)
+  const safeFocus = Math.min(focusIndex, Math.max(0, segments.length - 1))
+
+  // Follow the line at the playhead inside the list only (the page never scrolls).
   useEffect(() => {
-    if (focusId.current) {
-      rowRefs.current[focusId.current]?.querySelector('textarea')?.focus()
-      focusId.current = null
+    if (!follow || activeIndex < 0) return
+    const list = listRef.current
+    const row = rowRefs.current[activeIndex]
+    if (!list || !row) return
+    const top = row.offsetTop - list.offsetTop
+    if (top < list.scrollTop || top + row.offsetHeight > list.scrollTop + list.clientHeight) {
+      list.scrollTop = Math.max(0, top - list.clientHeight / 3)
     }
-  })
+  }, [activeIndex, follow, playing])
 
-  const update = (id, patch) => setSegments(prev => prev.map(s => (s.id === id ? { ...s, ...patch } : s)))
-  const remove = id => setSegments(prev => prev.filter(s => s.id !== id))
+  const focusRow = index => {
+    const next = Math.max(0, Math.min(segments.length - 1, index))
+    setFocusIndex(next)
+    rowRefs.current[next]?.focus({ preventScroll: false })
+  }
 
-  const addLine = (afterId = null) => {
-    const seg = createSegmentAtTime(currentTime)
-    focusId.current = seg.id
-    setSegments(prev => {
-      if (afterId == null) return [...prev, seg]
-      const i = prev.findIndex(s => s.id === afterId)
-      const next = [...prev]
-      next.splice(i + 1, 0, seg)
-      return next
+  const playLine = index => {
+    const at = positions[index]?.playFrom
+    setFocusIndex(index)
+    if (at == null) {
+      setMessage(
+        needsStart
+          ? 'Enter the time the recording started to play from a line.'
+          : 'This line has no time, so it cannot be played from.',
+      )
+      return
+    }
+    setMessage('')
+    ;(onPlayFrom ?? onSeek)?.(at)
+  }
+
+  const flagLine = index => {
+    const line = segments[index]
+    if (!line) return
+    commit({ segments: toggleFlag(segments, line.id) })
+    setMessage(line.flag ? `Flag removed from line ${index + 1}.` : `Line ${index + 1} flagged for review.`)
+  }
+
+  const onRowKey = (event, index) => {
+    if (event.metaKey || event.ctrlKey || event.altKey) return
+    const moves = {
+      ArrowDown: index + 1,
+      ArrowUp: index - 1,
+      Home: 0,
+      End: segments.length - 1,
+      PageDown: index + PAGE_LINES,
+      PageUp: index - PAGE_LINES,
+    }
+    if (event.key in moves) {
+      event.preventDefault()
+      event.stopPropagation()
+      focusRow(moves[event.key])
+    } else if (event.key === 'Enter') {
+      event.preventDefault()
+      event.stopPropagation()
+      playLine(index)
+    } else if (event.key === 'f' || event.key === 'F') {
+      event.preventDefault()
+      event.stopPropagation()
+      flagLine(index)
+    }
+  }
+
+  // ── Import ────────────────────────────────────────────────────────────────
+
+  const applyImport = ({ parsed, name }) => {
+    setPendingImport(null)
+    commit({
+      segments: parsed.segments,
+      sync: { ...DEFAULT_SYNC, timeKind: parsed.timeKind ?? 'elapsed' },
+      detection: { ...parsed, name },
     })
+    setFocusIndex(0)
+    setStartDraft('')
+    setMessage('')
   }
 
   const importFile = async () => {
     setOperationError('')
     try {
-      const sel = await open({ multiple: false, filters: [{ name: 'Transcript', extensions: ['srt', 'vtt', 'txt'] }] })
+      const sel = await open({
+        multiple: false,
+        filters: [{ name: 'Transcript', extensions: ['srt', 'vtt', 'txt', 'asc', 'ascii'] }],
+      })
       if (!sel) return
       const path = typeof sel === 'string' ? sel : sel.path
       const text = await readTextFile(path)
-      setSegments(parseTranscript(text, path.split('.').pop()?.toLowerCase()))
+      const parsed = parseTranscript(text, path.split('.').pop(), { duration })
+      if (parsed.segments.length === 0) {
+        setOperationError(`No transcript lines were found in ${basename(path)}. Nothing was changed.`)
+        return
+      }
+      const next = { parsed, name: basename(path) }
+      if (segments.length > 0) setPendingImport(next)
+      else applyImport(next)
     } catch (error) {
-      setOperationError(`Transcript import failed: ${String(error)}`)
+      setOperationError(`The transcript could not be opened: ${String(error)}`)
     }
   }
 
-  const usePaste = () => {
-    if (!paste.trim()) return
-    setSegments(parseTranscript(paste, 'txt'))
-    setPaste('')
+  // ── Sync ──────────────────────────────────────────────────────────────────
+
+  const nudge = delta => setSync({ shift: Math.round((sync.shift + delta) * 10) / 10 })
+
+  const setLineToNow = () => {
+    const line = segments[safeFocus]
+    const shift = shiftForLineAt(line?.start, currentTime, sync)
+    if (shift == null) {
+      setMessage('Choose a line that has a time, then press "Set this line to now".')
+      return
+    }
+    setSync({ shift })
+    setMessage(`Line ${safeFocus + 1} now plays from ${fmtElapsed(currentTime)}.`)
   }
 
-  const exportFile = async fmt => {
-    if (fmt === 'srt' && !canExportSrt(segments)) return
-    setShowExport(false)
+  const saveStart = event => {
+    event.preventDefault()
+    const value = parseClockInput(startDraft)
+    if (value == null) {
+      setStartError('Type the start time as hours, minutes and seconds, for example 09:30:00 or 2:05:10 PM.')
+      return
+    }
+    setStartError('')
+    setStartDraft('')
+    setSync({ recordingStart: value })
+  }
+
+  // ── Flags export, copy, remove ────────────────────────────────────────────
+
+  const exportFlags = async () => {
     setOperationError('')
+    const stem = basename(trackPath).replace(/\.[^.]+$/, '') || 'recording'
     try {
-      const content = fmt === 'srt' ? toSRT(segments) : toPlainText(segments)
       const path = await save({
-        defaultPath: `transcript.${fmt}`,
-        filters: [{ name: fmt.toUpperCase(), extensions: [fmt] }],
+        defaultPath: `${stem} proofing flags.csv`,
+        filters: [
+          { name: 'CSV', extensions: ['csv'] },
+          { name: 'Text', extensions: ['txt'] },
+        ],
       })
-      if (path) await writeTextFile(path, content)
+      if (!path) return
+      const content = /\.txt$/i.test(path) ? flagsToText(flags, basename(trackPath)) : flagsToCsv(flags)
+      await writeTextFile(path, content)
+      setMessage(`${flags.length} ${flags.length === 1 ? 'flag' : 'flags'} saved to ${basename(path)}.`)
     } catch (error) {
-      setOperationError(`Transcript export failed: ${String(error)}`)
+      setOperationError(`The flags could not be saved: ${String(error)}`)
     }
   }
 
-  const copyAll = async () => {
+  const copyText = async () => {
     setOperationError('')
     try {
-      await navigator.clipboard.writeText(toPlainText(segments))
+      await navigator.clipboard.writeText(segments.map(s => (s.speaker ? `${s.speaker}: ` : '') + s.text).join('\n'))
       setCopied(true)
       setTimeout(() => setCopied(false), 1500)
     } catch (error) {
@@ -240,104 +290,73 @@ export default function Transcript({ trackPath, currentTime, playing, onSeek, on
     }
   }
 
-  // DA-07: remove this track's saved copy. Any pending autosave is dropped so
-  // it cannot write the old lines back; exported files are never touched.
   const deleteTranscript = () => {
     setOperationError('')
-    window.clearTimeout(saveTimerRef.current)
-    saveTimerRef.current = null
-    pendingSaveRef.current = null
-    volatileTranscriptDrafts.delete(trackPath)
+    volatileState.delete(trackPath)
     const removed = removeStoredSegments(browserStorage(), trackPath)
-    if (removed) failedTranscriptDrafts.delete(trackPath)
-    setSegments([])
+    setState({
+      path: trackPath,
+      segments: [],
+      sync: { ...DEFAULT_SYNC },
+      detection: null,
+      storageError: removed ? '' : STORAGE_WARNING,
+    })
     if (!removed) {
       setOperationError(
-        "The saved transcript could not be deleted because this app's storage is unavailable. It is cleared on screen; try again after restarting DepoAudio.",
+        "DepoAudio's stored copy could not be removed because this app's storage is unavailable. It is cleared on screen; try again after restarting DepoAudio.",
       )
     }
   }
 
-  const srtReady = canExportSrt(segments)
+  const shiftLabel =
+    sync.shift === 0
+      ? 'No sync shift'
+      : `Transcript is ${sync.shift > 0 ? 'ahead' : 'behind'} by ${Math.abs(sync.shift).toFixed(1)} s`
+  const shiftTitle =
+    sync.shift === 0
+      ? 'Lines play from the times in the transcript.'
+      : `Each line plays ${Math.abs(sync.shift).toFixed(1)} s ${sync.shift > 0 ? 'later' : 'earlier'} than its time in the transcript.`
+
+  const pill = on =>
+    cn(
+      'inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[12px] transition-colors',
+      on
+        ? 'bg-secondary text-foreground ring-1 ring-inset ring-foreground'
+        : 'text-[hsl(var(--sub))] hover:text-foreground',
+    )
+  const smallButton =
+    'inline-flex items-center gap-1 rounded border border-border px-1.5 py-0.5 text-[12px] tabular-nums text-foreground hover:bg-secondary disabled:opacity-45'
 
   return (
     <Card>
-      <CardHeader>
-        <CardTitle>Transcript</CardTitle>
+      <CardHeader className="py-2">
+        <CardTitle>Transcript proofing</CardTitle>
         <div className="flex items-center gap-1.5">
-          {segments.length > 0 && (
+          {segments.length > 0 && hasTimes && (
             <button
               onClick={() => setFollow(f => !f)}
               aria-pressed={follow}
-              title="Auto-scroll to the line playing now"
-              className={cn(
-                'flex items-center gap-1 px-1.5 py-0.5 rounded text-[12px] tabular-nums transition-colors',
-                follow
-                  ? 'bg-secondary text-foreground ring-1 ring-inset ring-foreground'
-                  : 'text-[hsl(var(--sub))] hover:text-foreground',
-              )}
+              title="Keep the line playing now in view"
+              className={pill(follow)}
             >
-              <Locate size={11} /> Follow
+              <Locate size={11} /> Follow audio
             </button>
           )}
-          <Button size="sm" variant="ghost" onClick={importFile} title="Import SRT, VTT, or TXT">
-            <Upload size={12} /> Import
+          <Button size="sm" variant="ghost" onClick={importFile} title="Open an SRT, WebVTT or timestamped text file">
+            <Upload size={12} /> {segments.length > 0 ? 'Open another' : 'Open transcript'}
           </Button>
           {segments.length > 0 && (
             <>
-              <button
-                onClick={copyAll}
-                title="Copy transcript to clipboard"
-                className="flex items-center gap-1 px-1.5 py-1 rounded type-small text-[hsl(var(--sub))] hover:text-foreground transition-colors"
-              >
-                {copied ? (
-                  <>
-                    <Check size={12} /> Copied
-                  </>
-                ) : (
-                  <>
-                    <Copy size={12} /> Copy
-                  </>
-                )}
-              </button>
-              <span role="status" aria-live="polite" className="sr-only">
-                {copied ? 'Transcript copied to clipboard.' : ''}
-              </span>
-              <div className="relative">
-                <Button size="sm" variant="ghost" onClick={() => setShowExport(s => !s)} title="Export transcript">
-                  <Download size={12} /> Export
-                </Button>
-                {showExport && (
-                  <div className="absolute right-0 top-full mt-1 z-10 bg-popover border border-foreground py-1 min-w-[110px]">
-                    <button
-                      onClick={() => exportFile('txt')}
-                      className="block w-full text-left px-3 py-1.5 type-small text-foreground hover:bg-secondary"
-                    >
-                      Plain text (.txt)
-                    </button>
-                    <button
-                      onClick={() => exportFile('srt')}
-                      disabled={!srtReady}
-                      className="block w-full text-left px-3 py-1.5 type-small text-foreground hover:bg-secondary disabled:opacity-40 disabled:cursor-not-allowed"
-                      title={srtReady ? '' : 'Stamp every transcript line with a time before exporting SRT'}
-                    >
-                      Subtitles (.srt)
-                    </button>
-                    {!srtReady && (
-                      <p className="max-w-40 px-3 py-1 type-small leading-snug text-[hsl(var(--sub))]">
-                        Stamp every line before SRT export.
-                      </p>
-                    )}
-                  </div>
-                )}
-              </div>
+              <Button size="sm" variant="ghost" onClick={copyText} title="Copy the transcript text to the clipboard">
+                {copied ? <Check size={12} /> : <Copy size={12} />} {copied ? 'Copied' : 'Copy text'}
+              </Button>
               <Button
                 size="sm"
                 variant="ghost"
                 className="hover:text-destructive"
                 onClick={() => setConfirmDelete(true)}
-                aria-label="Delete transcript for this track"
-                title="Delete the saved transcript for this track"
+                aria-label="Remove this transcript from DepoAudio"
+                title="Remove this transcript from DepoAudio"
               >
                 <Trash2 size={12} />
               </Button>
@@ -346,19 +365,34 @@ export default function Transcript({ trackPath, currentTime, playing, onSeek, on
         </div>
       </CardHeader>
 
+      <span role="status" aria-live="polite" className="sr-only">
+        {copied ? 'Transcript text copied to clipboard.' : message}
+      </span>
+
       <ConfirmDialog
         open={confirmDelete}
         onOpenChange={setConfirmDelete}
-        title="Delete transcript"
-        description="This removes the transcript DepoAudio saved for this track, on this computer. It cannot be undone. The recording and any exported SRT or TXT files are not affected; export first if you want a copy."
-        confirmLabel="Delete transcript"
+        title="Remove this transcript from DepoAudio"
+        description="This removes the copy of the transcript DepoAudio keeps for this track, with its flags and sync settings, on this computer. It cannot be undone. The transcript file you opened and the recording are not affected. Export your flags first if you want them."
+        confirmLabel="Remove transcript"
+        initialFocus="cancel"
         onConfirm={deleteTranscript}
+      />
+
+      <ConfirmDialog
+        open={pendingImport != null}
+        onOpenChange={openState => !openState && setPendingImport(null)}
+        title="Replace the transcript for this track"
+        description={`DepoAudio keeps ${segments.length} ${segments.length === 1 ? 'line' : 'lines'}${flags.length ? ` and ${flags.length} ${flags.length === 1 ? 'flag' : 'flags'}` : ''} for this track. Opening ${pendingImport?.name ?? 'the new file'} replaces them, and resets the sync settings. Copy the text or export the flags first if you need them.`}
+        confirmLabel="Replace"
+        initialFocus="cancel"
+        onConfirm={() => pendingImport && applyImport(pendingImport)}
       />
 
       {storageError && !onStorageError && (
         <p
           role="alert"
-          className="mx-4 mt-3 rounded-md border border-warning/40 bg-warning/10 px-3 py-2 type-small text-foreground"
+          className="mx-3 mt-2 rounded-md border border-warning/40 bg-warning/10 px-3 py-1.5 type-small text-foreground"
         >
           {storageError}
         </p>
@@ -367,140 +401,238 @@ export default function Transcript({ trackPath, currentTime, playing, onSeek, on
       {operationError && (
         <p
           role="alert"
-          className="mx-4 mt-3 rounded-md border border-destructive/30 border-l-[3px] border-l-destructive px-3 py-2 type-small text-destructive"
+          className="mx-3 mt-2 rounded-md border border-destructive/30 border-l-[3px] border-l-destructive px-3 py-1.5 type-small text-destructive"
         >
           {operationError}
         </p>
       )}
 
       {segments.length === 0 ? (
-        <div className="px-4 py-4 flex flex-col gap-3">
-          <p className="text-[12px] text-[hsl(var(--sub))]">
-            Import a transcript (SRT, VTT, or TXT) to proof against the audio, paste text below, or start typing a new
-            one.
+        <div className="px-4 py-3">
+          <p className="text-[13px] font-medium text-foreground">Proof a transcript against this recording</p>
+          <p className="mt-1 type-small leading-relaxed text-[hsl(var(--sub))]">
+            Open an SRT, WebVTT or text file with time stamps (for example an ASCII export from your CAT software). The
+            line being spoken is highlighted as the audio plays, and you can flag lines to check. DepoAudio does not
+            change the transcript; make corrections in your CAT software.
           </p>
-          <textarea
-            aria-label="Transcript text to paste"
-            className="w-full h-24 bg-secondary/40 border border-border rounded-md p-2.5 text-[12px] text-foreground resize-y focus:border-ring"
-            placeholder="Paste transcript text here…"
-            value={paste}
-            onChange={e => setPaste(e.target.value)}
-          />
-          <div className="flex gap-2">
-            <Button size="sm" variant="primary" onClick={usePaste} disabled={!paste.trim()}>
-              Use pasted text
-            </Button>
-            <Button size="sm" variant="outline" onClick={() => addLine()}>
-              <Plus size={12} /> Start typing
-            </Button>
-          </div>
         </div>
       ) : (
         <div className="flex flex-col">
-          <div className="max-h-[420px] overflow-y-auto px-2 py-1.5">
+          {/* Detection + sync */}
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 border-b border-border/60 px-3 py-1 text-[12px] text-[hsl(var(--text2))]">
+            <span className="min-w-0">
+              {detection
+                ? `${detection.name}: ${describeDetection(detection)}`
+                : `Saved transcript: ${describeDetection({
+                    format: 'text',
+                    timedCount: segments.filter(s => s.start != null).length,
+                    untimedCount: segments.filter(s => s.start == null).length,
+                    timeKind: sync.timeKind,
+                  })}`}
+            </span>
+            {hasTimes && (
+              <span className="inline-flex items-center gap-1" role="group" aria-label="What the times mean">
+                <span>Times are</span>
+                <button
+                  className={pill(sync.timeKind === 'elapsed')}
+                  aria-pressed={sync.timeKind === 'elapsed'}
+                  onClick={() => setSync({ timeKind: 'elapsed' })}
+                >
+                  time into recording
+                </button>
+                <button
+                  className={pill(sync.timeKind === 'time-of-day')}
+                  aria-pressed={sync.timeKind === 'time-of-day'}
+                  onClick={() => setSync({ timeKind: 'time-of-day' })}
+                >
+                  time of day
+                </button>
+              </span>
+            )}
+          </div>
+
+          {sync.timeKind === 'time-of-day' && hasTimes && (
+            <form
+              onSubmit={saveStart}
+              className="flex flex-wrap items-center gap-x-2 gap-y-1 border-b border-border/60 px-3 py-1 text-[12px] text-[hsl(var(--text2))]"
+            >
+              <label htmlFor={startId}>Recording started at</label>
+              {sync.recordingStart != null && !startDraft && (
+                <span className="tabular-nums font-medium text-foreground">{fmtClock(sync.recordingStart)}</span>
+              )}
+              <input
+                id={startId}
+                className="h-6 w-28 rounded border border-border bg-transparent px-1.5 tabular-nums text-foreground placeholder:text-[hsl(var(--sub))]"
+                placeholder={sync.recordingStart != null ? 'change' : 'HH:MM:SS'}
+                value={startDraft}
+                onChange={e => setStartDraft(e.target.value)}
+                title="The time on the recording's clock when it started. It is used to match time-of-day stamps to the audio."
+                aria-describedby={`${startId}-help`}
+                aria-invalid={startError ? true : undefined}
+              />
+              <button type="submit" className={smallButton} disabled={!startDraft.trim()}>
+                Save
+              </button>
+              {needsStart && segments.find(s => s.start != null) && (
+                <button
+                  type="button"
+                  className={smallButton}
+                  onClick={() => setSync({ recordingStart: segments.find(s => s.start != null).start })}
+                >
+                  Use first line&apos;s time ({fmtClock(segments.find(s => s.start != null).start)})
+                </button>
+              )}
+              <span id={`${startId}-help`} className={startError ? 'text-destructive' : ''}>
+                {startError ||
+                  (needsStart ? 'DepoAudio does not know when this recording started.' : 'Entered by you.')}
+              </span>
+            </form>
+          )}
+
+          {timedCount > 0 && (
+            <div
+              className="flex flex-wrap items-center gap-x-2 gap-y-1 border-b border-border/60 px-3 py-1 text-[12px] text-[hsl(var(--text2))]"
+              role="group"
+              aria-label="Sync"
+            >
+              <span className="tabular-nums font-medium text-foreground" title={shiftTitle}>
+                {shiftLabel}
+              </span>
+              <button className={smallButton} onClick={() => nudge(-0.5)} aria-label="Move lines 0.5 seconds earlier">
+                −0.5 s
+              </button>
+              <button className={smallButton} onClick={() => nudge(0.5)} aria-label="Move lines 0.5 seconds later">
+                +0.5 s
+              </button>
+              <button
+                className={smallButton}
+                onClick={setLineToNow}
+                title={`Make line ${safeFocus + 1} play from the current audio position`}
+              >
+                Set this line to now
+              </button>
+              {sync.shift !== 0 && (
+                <button className={smallButton} onClick={() => setSync({ shift: 0 })}>
+                  Clear shift
+                </button>
+              )}
+            </div>
+          )}
+
+          {/* Lines (read-only) */}
+          <div
+            ref={listRef}
+            role="listbox"
+            aria-label="Transcript lines. Enter plays from a line, F flags it."
+            className="max-h-[124px] overflow-y-auto px-1.5 py-1"
+          >
             {segments.map((s, index) => {
-              const active = s.id === activeId
+              const active = index === activeIndex
+              const at = positions[index]?.own
               return (
                 <div
                   key={s.id}
                   ref={el => {
-                    rowRefs.current[s.id] = el
+                    rowRefs.current[index] = el
                   }}
+                  role="option"
+                  aria-selected={index === safeFocus}
+                  aria-current={active ? 'true' : undefined}
+                  tabIndex={index === safeFocus ? 0 : -1}
+                  onClick={() => playLine(index)}
+                  onFocus={() => setFocusIndex(index)}
+                  onKeyDown={e => onRowKey(e, index)}
+                  title={at == null ? undefined : `Plays from ${fmtElapsed(at)} in the audio`}
                   className={cn(
-                    'group flex items-start gap-2 px-2 py-1.5 rounded-md transition-colors',
+                    'group flex cursor-pointer items-start gap-2 rounded px-1.5 py-0.5 text-[12px] leading-snug focus-visible:outline focus-visible:outline-2 focus-visible:outline-foreground aria-selected:ring-1 aria-selected:ring-inset aria-selected:ring-[hsl(var(--sub))]',
                     active
                       ? 'bg-secondary border-l-2 border-l-foreground'
                       : 'border-l-2 border-l-transparent hover:bg-secondary/40',
                   )}
                 >
-                  {/* Time / stamp */}
-                  <div className="shrink-0 w-14 pt-0.5 flex items-center gap-0.5">
-                    {s.start != null ? (
-                      <button
-                        onClick={() => onSeek(s.start)}
-                        title="Jump to this point"
-                        className="tabular-nums text-[12px] text-foreground hover:underline rounded"
-                      >
-                        {fmtTime(s.start)}
-                      </button>
-                    ) : (
-                      <button
-                        onClick={() => update(s.id, { start: currentTime })}
-                        title="Stamp the current audio position onto this line"
-                        className="text-[hsl(var(--sub))] hover:text-foreground transition-colors"
-                      >
-                        <Crosshair size={12} />
-                      </button>
+                  <span className="w-16 shrink-0 tabular-nums text-[hsl(var(--text2))]">
+                    {s.start == null ? '' : sync.timeKind === 'time-of-day' ? fmtClock(s.start) : fmtElapsed(s.start)}
+                  </span>
+                  {s.speaker && <span className="shrink-0 font-medium text-[hsl(var(--text2))]">{s.speaker}:</span>}
+                  <span className="min-w-0 flex-1 whitespace-pre-wrap break-words text-foreground">{s.text}</span>
+                  <button
+                    tabIndex={-1}
+                    onClick={e => {
+                      e.stopPropagation()
+                      flagLine(index)
+                    }}
+                    aria-label={s.flag ? `Remove flag from line ${index + 1}` : `Flag line ${index + 1} for review`}
+                    title={s.flag ? 'Remove flag (F)' : 'Flag for review (F)'}
+                    className={cn(
+                      'shrink-0 rounded transition-opacity',
+                      s.flag
+                        ? 'text-foreground'
+                        : 'text-[hsl(var(--sub))] opacity-0 group-hover:opacity-100 group-focus:opacity-100 hover:text-foreground',
                     )}
-                  </div>
-
-                  {/* Speaker (optional) */}
-                  <input
-                    aria-label={`Speaker or role for transcript line ${index + 1}`}
-                    className="shrink-0 w-16 bg-transparent border-none p-0 pt-0.5 text-[12px] tabular-nums text-[hsl(var(--text2))] focus:text-foreground placeholder:text-[hsl(var(--sub))]"
-                    value={s.speaker}
-                    placeholder="speaker"
-                    onChange={e => update(s.id, { speaker: e.target.value })}
-                  />
-
-                  {/* Text */}
-                  <textarea
-                    aria-label={`Transcript text for line ${index + 1}`}
-                    rows={1}
-                    className="flex-1 min-w-0 bg-transparent border-none p-0 text-[12px] leading-snug text-foreground resize-none overflow-hidden"
-                    value={s.text}
-                    placeholder="…"
-                    ref={el => {
-                      if (el) {
-                        el.style.height = 'auto'
-                        el.style.height = el.scrollHeight + 'px'
-                      }
-                    }}
-                    onChange={e => {
-                      e.target.style.height = 'auto'
-                      e.target.style.height = e.target.scrollHeight + 'px'
-                      update(s.id, { text: e.target.value })
-                    }}
-                    onKeyDown={e => {
-                      // Enter (no shift) starts a new line stamped at the current
-                      // position — the from-scratch capture loop. Shift+Enter
-                      // inserts a newline within the line.
-                      if (e.key === 'Enter' && !e.shiftKey) {
-                        e.preventDefault()
-                        addLine(s.id)
-                      }
-                    }}
-                  />
-
-                  {/* Re-stamp + delete (on hover) */}
-                  <div className="shrink-0 flex items-center gap-1 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-opacity pt-0.5">
-                    <button
-                      onClick={() => update(s.id, { start: currentTime })}
-                      aria-label="Set this line's time to the current position"
-                      title="Set this line's time to the current position"
-                      className="rounded text-[hsl(var(--sub))] hover:text-foreground transition-colors"
-                    >
-                      <Crosshair size={11} />
-                    </button>
-                    <button
-                      onClick={() => remove(s.id)}
-                      aria-label="Delete line"
-                      className="rounded text-[hsl(var(--sub))] hover:text-destructive transition-colors"
-                    >
-                      <X size={11} />
-                    </button>
-                  </div>
+                  >
+                    <Flag size={11} fill={s.flag ? 'currentColor' : 'none'} />
+                  </button>
                 </div>
               )
             })}
           </div>
-          <div className="px-3 py-2 border-t border-border/60">
-            <Button size="sm" variant="ghost" onClick={() => addLine()}>
-              <Plus size={12} /> Add line{' '}
-              {Number.isFinite(currentTime) && currentTime >= 0 && (
-                <span className="tabular-nums text-[12px] text-[hsl(var(--sub))] ml-1">@ {fmtTime(currentTime)}</span>
+
+          {/* Flags */}
+          <div className="border-t border-border/60 px-3 py-1">
+            <div className="flex items-center justify-between gap-2">
+              <h4 className="text-[12px] font-medium text-[hsl(var(--text2))]">
+                Flags for review{flags.length ? ` (${flags.length})` : ''}
+              </h4>
+              {flags.length > 0 && (
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  className="h-6"
+                  onClick={exportFlags}
+                  title="Save flags as CSV or text"
+                >
+                  <Download size={12} /> Export flags
+                </Button>
               )}
-            </Button>
+            </div>
+            {flags.length === 0 ? (
+              <p className="type-small text-[hsl(var(--sub))]">
+                Press <kbd className="tabular-nums">F</kbd> on a line, or its flag button, to mark it for review. Flags
+                never change the transcript.
+              </p>
+            ) : (
+              <ul className="mt-0.5 flex max-h-[44px] flex-col gap-0.5 overflow-y-auto">
+                {flags.map(f => (
+                  <li key={f.id} className="group flex items-center gap-2 text-[12px]">
+                    <button
+                      className="w-14 shrink-0 text-left tabular-nums text-[hsl(var(--text2))] hover:text-foreground"
+                      onClick={() => playLine(f.line - 1)}
+                      title={`Play from line ${f.line}`}
+                    >
+                      {f.audioTime == null ? `line ${f.line}` : fmtElapsed(f.audioTime)}
+                    </button>
+                    <span className="w-2/5 min-w-0 shrink truncate text-foreground" title={f.excerpt}>
+                      {f.excerpt}
+                    </span>
+                    <input
+                      className="min-w-0 flex-1 border-none bg-transparent p-0 text-[12px] text-foreground placeholder:text-[hsl(var(--sub))]"
+                      aria-label={`Note for flag on line ${f.line}`}
+                      placeholder="Add a note…"
+                      maxLength={MAX_FLAG_NOTE_CHARS}
+                      value={f.note}
+                      onChange={e => commit({ segments: setFlagNote(segments, f.id, e.target.value) })}
+                    />
+                    <button
+                      className="shrink-0 rounded text-[hsl(var(--sub))] opacity-0 transition-opacity hover:text-destructive group-hover:opacity-100 group-focus-within:opacity-100"
+                      aria-label={`Remove flag from line ${f.line}`}
+                      onClick={() => flagLine(f.line - 1)}
+                    >
+                      <X size={10} />
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
           </div>
         </div>
       )}
