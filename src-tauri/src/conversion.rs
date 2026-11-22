@@ -1595,11 +1595,15 @@ mod tests {
     /// tell which source channel ended up in which output.
     const SYNTHETIC_CHANNEL_VOLUMES: [f64; 4] = [0.5, 0.25, 0.125, 0.0625];
     const SYNTHETIC_SECONDS: f64 = 2.0;
-    /// Samples per frame for the synthetic sine sources. FFmpeg's default is
-    /// 1024, which does not divide 2 s at 48 kHz, and FFmpeg 8's join filter
-    /// drops the final partial frame (768 samples), so the fixture would come
-    /// out short of 2 s. 960 (20 ms) divides it exactly on every FFmpeg version.
-    const SYNTHETIC_FRAME: u32 = 960;
+    /// Samples per frame for the synthetic sine sources: 20 ms at
+    /// `sample_rate`. FFmpeg's default is 1024, which does not divide 2 s at
+    /// 48 or 16 kHz, and FFmpeg 8's join filter drops the final partial frame
+    /// (768 samples at 48 kHz), so the fixture would come out short of 2 s.
+    /// 20 ms divides every synthetic length exactly on every FFmpeg version.
+    const fn synthetic_frame(sample_rate: u32) -> u32 {
+        sample_rate / 50
+    }
+    const SYNTHETIC_FRAME: u32 = synthetic_frame(48_000);
 
     /// Made-up bytes that are not a Direct Audio header (nor an Ogg page).
     fn synthetic_vendor_prefix() -> Vec<u8> {
@@ -1623,15 +1627,20 @@ mod tests {
     }
 
     /// Four mono tones joined into one 4-channel quad stream, at the levels in
-    /// `SYNTHETIC_CHANNEL_VOLUMES`, written with `encoder` to `path`.
-    fn synthetic_four_channel(path: &Path, encoder: &[&str]) {
+    /// `SYNTHETIC_CHANNEL_VOLUMES`, written with `encoder` to `path`. The tones
+    /// are generated at `sample_rate`, so an encoder at that rate gets exactly
+    /// `SYNTHETIC_SECONDS` of samples with no resampler in between.
+    fn synthetic_four_channel(path: &Path, sample_rate: u32, encoder: &[&str]) {
         let mut args: Vec<String> = Vec::new();
         for frequency in [220, 330, 440, 550] {
             args.extend([
                 "-f".into(),
                 "lavfi".into(),
                 "-i".into(),
-                format!("sine=frequency={frequency}:duration={SYNTHETIC_SECONDS}:sample_rate=48000:samples_per_frame={SYNTHETIC_FRAME}"),
+                format!(
+                    "sine=frequency={frequency}:duration={SYNTHETIC_SECONDS}:sample_rate={sample_rate}:samples_per_frame={}",
+                    synthetic_frame(sample_rate)
+                ),
             ]);
         }
         let levels: Vec<String> = SYNTHETIC_CHANNEL_VOLUMES
@@ -1651,9 +1660,15 @@ mod tests {
 
     /// A synthetic 4-channel Ogg Opus stream in the SGMCA layout: mapping
     /// family 255, one uncoupled mono stream per channel, 16 kHz input tag.
+    /// The tones are made at 16 kHz in 20 ms source frames, so libopus gets
+    /// exactly 100 whole 20 ms frames with no resampler in between. Made at
+    /// 48 kHz in 1024-sample frames, FFmpeg 8 cut them to 95,232 samples in
+    /// the join filter and then to 95,040 (99 Opus frames, 1.98 s) at the
+    /// encoder; FFmpeg 6.1 kept all 96,000.
     fn synthetic_direct_audio(path: &Path) {
         synthetic_four_channel(
             path,
+            16_000,
             &[
                 "-c:a",
                 "libopus",
@@ -3244,10 +3259,10 @@ mod tests {
     // ── SGMCA layout, writer and slicing (FFmpeg on PATH) ───────────────────
 
     /// The granule-based duration must match what libopus actually decodes,
-    /// sample for sample, and stay within one 20 ms frame of the source.
-    /// FFmpeg versions differ in how many trailing samples they keep when
-    /// they resample to 16 kHz (FFmpeg 8 drops 768 samples at 48 kHz from a
-    /// 2 s tone; 6.1 keeps them all), so an exact 2 s check would test FFmpeg.
+    /// sample for sample, and equal the source exactly: every fixture feeds
+    /// its encoder whole 20 ms frames at the encoder's own rate, so no FFmpeg
+    /// version has a partial frame to pad or drop, and a reader that loses
+    /// or invents audio fails here.
     fn assert_sgmca_duration(path: &Path, info: &crate::sgmca::SgmcaInfo) {
         let channels = usize::from(info.head.channels);
         let decoded = decode_f32(path, channels);
@@ -3257,7 +3272,7 @@ mod tests {
             decoded.iter().map(Vec::len).collect::<Vec<_>>(),
             info.samples
         );
-        assert!((info.duration_seconds - SYNTHETIC_SECONDS).abs() <= 0.02, "{info:?}");
+        assert_eq!(info.samples, (SYNTHETIC_SECONDS * 48_000.0) as u64, "{info:?}");
     }
 
     #[test]
@@ -3297,7 +3312,7 @@ mod tests {
         }
         let dir = ConversionTestDir::new();
         let wav = dir.0.join("synthetic_session.wav");
-        synthetic_four_channel(&wav, &["-c:a", "pcm_s16le", "-f", "wav"]);
+        synthetic_four_channel(&wav, 48_000, &["-c:a", "pcm_s16le", "-f", "wav"]);
         let out = dir.0.join("out");
         fs::create_dir(&out).unwrap();
 
@@ -3430,13 +3445,18 @@ mod tests {
     /// OpusHead mapping family byte is changed to 1 with the same uncoupled
     /// layout, which is what the notes say CATalyst's import writes; FFmpeg's
     /// encoder would couple streams in family 1.
+    /// Made at 16 kHz, the encoder's rate, so every session (1.0, 1.5 and
+    /// 0.8 s) is a whole number of 20 ms frames whatever the FFmpeg version.
     fn tone_session(dir: &Path, frequency: u32, seconds: f64, family_one: bool) -> Vec<u8> {
         let ogg = dir.join(format!("tone_{frequency}.ogg"));
         run_ffmpeg(&[
             "-f".into(),
             "lavfi".into(),
             "-i".into(),
-            format!("sine=frequency={frequency}:duration={seconds}:sample_rate=48000"),
+            format!(
+                "sine=frequency={frequency}:duration={seconds}:sample_rate=16000:samples_per_frame={}",
+                synthetic_frame(16_000)
+            ),
             "-af".into(),
             "pan=4c|c0=c0|c1=c0|c2=c0|c3=c0".into(),
             "-c:a".into(),
@@ -3538,7 +3558,7 @@ mod tests {
             [255, 1, 255]
         );
         for (segment, (_, seconds)) in info.segments.iter().zip(SESSION_TONES) {
-            assert!((segment.duration_seconds - seconds).abs() <= 0.02, "{segment:?}");
+            assert_eq!(segment.samples, (seconds * 48_000.0) as u64, "{segment:?}");
         }
         let out = dir.0.join("out");
         fs::create_dir(&out).unwrap();
@@ -3697,6 +3717,7 @@ mod tests {
         let reference = (10 * 3600 + 15 * 60 + 30) * 48_000 + 12_000;
         synthetic_four_channel(
             &wav,
+            48_000,
             &[
                 "-c:a",
                 "pcm_s16le",
