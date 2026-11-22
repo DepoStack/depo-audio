@@ -10,10 +10,10 @@ on:
       windows_runner:
         description: 'Where to build the Windows installer'
         required: true
-        default: jarvis
+        default: self-hosted
         type: choice
         options:
-          - jarvis
+          - self-hosted
           - github-hosted
 
 # One release run per tag at a time: overlapping runs for the same tag can
@@ -256,10 +256,10 @@ jobs:
             args: '--target universal-apple-darwin'
             rust-targets: 'aarch64-apple-darwin,x86_64-apple-darwin'
           # `platform` stays the label the steps below test against; `runner`
-          # picks the machine. The self-hosted Jarvis runner is the default
+          # picks the machine. A self-hosted Windows runner is the default
           # for Windows; choose github-hosted when dispatching to fall back.
           - platform: windows-latest
-            runner: ${{ inputs.windows_runner == 'github-hosted' && '"windows-latest"' || '["self-hosted","Windows","X64","jarvis"]' }}
+            runner: ${{ inputs.windows_runner == 'github-hosted' && '"windows-latest"' || '["self-hosted","Windows","X64"]' }}
             args: ''
             rust-targets: 'x86_64-pc-windows-msvc'
 
