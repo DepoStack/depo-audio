@@ -1,11 +1,11 @@
 use std::collections::HashSet;
 use std::path::{Component, Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use tauri::AppHandle;
-use uuid::Uuid;
 
-use crate::ffmpeg::{probe_duration, sidecar_output_opt};
+use crate::ffmpeg::{probe_duration_cancellable, sidecar_output_cancellable};
 use crate::helpers::ffmpeg_bin_name;
 use crate::safety::TempFile;
 
@@ -24,6 +24,40 @@ const SYNC_SEARCH_SECS: usize = 60;
 const SYNC_DECODE_SECS: u32 = 75;
 const MERGE_DECODE_TIMEOUT_SECS: u64 = 20 * 60;
 const MERGE_ENCODE_TIMEOUT_SECS: u64 = 20 * 60;
+
+/// Returned when a merge or sync detection stops because it was cancelled.
+pub(crate) const MERGE_CANCELLED_MESSAGE: &str = "Merge cancelled";
+
+/// Cancel flag for one merge or sync detection. Clones share the flag: the
+/// command that starts a merge keeps one, and a cancel command sets it. Every
+/// step checks it, the source copies stop between 64 KiB chunks, and a
+/// running FFmpeg or ffprobe is killed within about a second.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct MergeCancel(Arc<AtomicBool>);
+
+impl MergeCancel {
+    pub(crate) fn cancel(&self) {
+        self.0.store(true, Ordering::Relaxed);
+    }
+
+    pub(crate) fn is_cancelled(&self) -> bool {
+        self.0.load(Ordering::Relaxed)
+    }
+
+    fn check(&self) -> Result<(), String> {
+        if self.is_cancelled() {
+            Err(MERGE_CANCELLED_MESSAGE.into())
+        } else {
+            Ok(())
+        }
+    }
+
+    /// The predicate the FFmpeg runners and the feed preparation take.
+    fn predicate(&self) -> Arc<dyn Fn() -> bool + Send + Sync> {
+        let flag = self.0.clone();
+        Arc::new(move || flag.load(Ordering::Relaxed))
+    }
+}
 
 // ── Multi-source audio merge ────────────────────────────────────────────────
 //
@@ -146,8 +180,11 @@ fn validate_merge_job(job: &MergeJob) -> Result<ValidatedMergeJob, String> {
 /// Strip an SGMCA vendor prefix once and keep the temporary Ogg feed alive for
 /// the whole merge. Reusing it avoids copying a potentially large recording
 /// for duration probing, sync detection, and final decoding independently.
-async fn prepare_merge_source(path: PathBuf) -> Result<(PathBuf, Option<TempFile>), String> {
-    crate::helpers::prepare_audio_feed_cancellable(path, Arc::new(|| false)).await
+async fn prepare_merge_source(path: PathBuf, cancel: &MergeCancel) -> Result<(PathBuf, Option<TempFile>), String> {
+    cancel.check()?;
+    let prepared = crate::helpers::prepare_audio_feed_cancellable(path, cancel.predicate()).await;
+    cancel.check()?;
+    prepared
 }
 
 /// Result of analyzing sync between two audio files.
@@ -179,22 +216,32 @@ pub struct MergeResult {
 
 /// Detect the timing offset between two audio files using cross-correlation.
 /// Returns the offset in seconds that aligns source_b to source_a.
-pub(crate) async fn detect_sync(app: &AppHandle, source_a: &str, source_b: &str) -> Result<SyncResult, String> {
+pub(crate) async fn detect_sync(
+    app: &AppHandle,
+    source_a: &str,
+    source_b: &str,
+    cancel: &MergeCancel,
+) -> Result<SyncResult, String> {
     let (source_a, _) = validate_source(source_a)?;
     let (source_b, _) = validate_source(source_b)?;
     if source_a == source_b {
         return Err("Choose two different source files for sync detection".into());
     }
-    let (source_a, _guard_a) = prepare_merge_source(source_a).await?;
-    let (source_b, _guard_b) = prepare_merge_source(source_b).await?;
-    detect_sync_paths(app, &source_a, &source_b).await
+    let (source_a, _guard_a) = prepare_merge_source(source_a, cancel).await?;
+    let (source_b, _guard_b) = prepare_merge_source(source_b, cancel).await?;
+    detect_sync_paths(app, &source_a, &source_b, cancel).await
 }
 
-async fn detect_sync_paths(app: &AppHandle, source_a: &Path, source_b: &Path) -> Result<SyncResult, String> {
+async fn detect_sync_paths(
+    app: &AppHandle,
+    source_a: &Path,
+    source_b: &Path,
+    cancel: &MergeCancel,
+) -> Result<SyncResult, String> {
     // A short, low-rate decode contains enough speech for sync detection while
     // bounding temporary disk use and correlation work.
-    let tmp_a = decode_to_mono(app, source_a, SYNC_SAMPLE_RATE, SYNC_DECODE_SECS).await?;
-    let tmp_b = decode_to_mono(app, source_b, SYNC_SAMPLE_RATE, SYNC_DECODE_SECS).await?;
+    let tmp_a = decode_to_mono(app, source_a, SYNC_SAMPLE_RATE, SYNC_DECODE_SECS, cancel).await?;
+    let tmp_b = decode_to_mono(app, source_b, SYNC_SAMPLE_RATE, SYNC_DECODE_SECS, cancel).await?;
     let max_sync_samples = SYNC_SAMPLE_RATE as usize * SYNC_DECODE_SECS as usize + 1;
     let samples_a = read_wav_samples(&tmp_a, max_sync_samples)?;
     let samples_b = read_wav_samples(&tmp_b, max_sync_samples)?;
@@ -333,12 +380,12 @@ fn cross_correlate_step(segment_a: &[f32], samples_b: &[f32], offset: i64, len: 
 // ── Merge execution ─────────────────────────────────────────────────────────
 
 /// Merge multiple audio files into one synchronized output.
-pub(crate) async fn merge_audio(app: &AppHandle, job: &MergeJob) -> Result<MergeResult, String> {
+pub(crate) async fn merge_audio(app: &AppHandle, job: &MergeJob, cancel: &MergeCancel) -> Result<MergeResult, String> {
     let mut job = validate_merge_job(job)?;
     let mut prepared_sources = Vec::with_capacity(job.sources.len());
     let mut source_guards = Vec::new();
     for source in &job.sources {
-        let (prepared, guard) = prepare_merge_source(source.clone()).await?;
+        let (prepared, guard) = prepare_merge_source(source.clone(), cancel).await?;
         prepared_sources.push(prepared);
         if let Some(guard) = guard {
             source_guards.push(guard);
@@ -352,8 +399,9 @@ pub(crate) async fn merge_audio(app: &AppHandle, job: &MergeJob) -> Result<Merge
     // temp directory or exhaust memory before the decoded-size limit is seen.
     let mut estimated_samples = 0f64;
     for source in &job.sources {
-        let duration = probe_duration(app, source)
-            .await
+        let duration = probe_duration_cancellable(app, source, Some(&|| cancel.is_cancelled())).await;
+        cancel.check()?;
+        let duration = duration
             .filter(|duration| duration.is_finite() && *duration > 0.0)
             .ok_or_else(|| "Cannot determine merge source duration".to_string())?;
         if duration > MAX_MERGE_DURATION_SECS as f64 {
@@ -371,7 +419,7 @@ pub(crate) async fn merge_audio(app: &AppHandle, job: &MergeJob) -> Result<Merge
     // Step 1: Detect sync offsets relative to the first source
     let mut offsets = vec![0.0f64]; // First source is reference (offset = 0)
     for i in 1..job.sources.len() {
-        let sync = detect_sync_paths(app, &job.sources[0], &job.sources[i]).await?;
+        let sync = detect_sync_paths(app, &job.sources[0], &job.sources[i], cancel).await?;
         if !sync.is_same_event {
             return Err(format!(
                 "Source {} could not be confidently matched to the reference recording",
@@ -384,7 +432,7 @@ pub(crate) async fn merge_audio(app: &AppHandle, job: &MergeJob) -> Result<Merge
     // Step 2: Decode all sources to 48kHz mono
     let mut decoded_files = Vec::new();
     for src in &job.sources {
-        let tmp = decode_to_mono(app, src, 48_000, MAX_MERGE_DURATION_SECS + 1).await?;
+        let tmp = decode_to_mono(app, src, 48_000, MAX_MERGE_DURATION_SECS + 1, cancel).await?;
         decoded_files.push(tmp);
     }
 
@@ -408,6 +456,7 @@ pub(crate) async fn merge_audio(app: &AppHandle, job: &MergeJob) -> Result<Merge
     .await
     .map_err(|e| format!("Decoded audio read task failed: {e}"))??;
     drop(decoded_files);
+    cancel.check()?;
 
     // Step 4: Align to common timeline
     let sample_rate = 48_000usize;
@@ -437,11 +486,8 @@ pub(crate) async fn merge_audio(app: &AppHandle, job: &MergeJob) -> Result<Merge
 
     // Step 5: Build and write the intermediate on a blocking worker. The
     // merged Vec is dropped there before encoding starts.
-    let tmp_wav_path = std::env::temp_dir().join(format!(
-        "depoaudio_merged_{}.wav",
-        Uuid::new_v4().to_string().replace('-', "")
-    ));
-    let tmp_wav = TempFile::new(tmp_wav_path.clone());
+    let tmp_wav = crate::workdir::new_temp_path("depoaudio_merged_", "wav")?;
+    let tmp_wav_path = tmp_wav.path.clone();
     let strategy = job.strategy.clone();
     let duration = tauri::async_runtime::spawn_blocking(move || -> Result<f64, String> {
         let merged = match strategy.as_str() {
@@ -454,6 +500,7 @@ pub(crate) async fn merge_audio(app: &AppHandle, job: &MergeJob) -> Result<Merge
     })
     .await
     .map_err(|e| format!("Merge processing task failed: {e}"))??;
+    cancel.check()?;
 
     // Step 6: Reserve the destination atomically, then encode with a bounded
     // child-process runner. No concurrent merge can claim or delete this path.
@@ -473,9 +520,17 @@ pub(crate) async fn merge_audio(app: &AppHandle, job: &MergeJob) -> Result<Merge
     ];
     args.extend(out_codec);
     args.extend(["-y".into(), out_path.to_string_lossy().to_string()]);
-    let output = sidecar_output_opt(app, ffmpeg_bin_name(), args, MERGE_ENCODE_TIMEOUT_SECS)
-        .await
-        .ok_or_else(|| "Merged output encoder timed out or could not start".to_string())?;
+    let output = sidecar_output_cancellable(
+        app,
+        ffmpeg_bin_name(),
+        args,
+        MERGE_ENCODE_TIMEOUT_SECS,
+        Some(&|| cancel.is_cancelled()),
+    )
+    .await;
+    // A cancelled encode leaves the reserved output to be removed on drop.
+    cancel.check()?;
+    let output = output.ok_or_else(|| "Merged output encoder timed out or could not start".to_string())?;
     if !output.success {
         return Err("Failed to encode merged output".into());
     }
@@ -625,12 +680,15 @@ fn best_quality_strategy(sources: &[Vec<f32>], offsets: &[i64], total_samples: u
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
-async fn decode_to_mono(app: &AppHandle, path: &Path, rate: u32, max_secs: u32) -> Result<TempFile, String> {
-    let tmp_path = std::env::temp_dir().join(format!(
-        "depoaudio_merge_{}.wav",
-        Uuid::new_v4().to_string().replace('-', "")
-    ));
-    let tmp = TempFile::new(tmp_path);
+async fn decode_to_mono(
+    app: &AppHandle,
+    path: &Path,
+    rate: u32,
+    max_secs: u32,
+    cancel: &MergeCancel,
+) -> Result<TempFile, String> {
+    cancel.check()?;
+    let tmp = crate::workdir::new_temp_path("depoaudio_merge_", "wav")?;
 
     let mut args: Vec<String> = vec![
         "-nostdin".into(),
@@ -664,9 +722,16 @@ async fn decode_to_mono(app: &AppHandle, path: &Path, rate: u32, max_secs: u32) 
         tmp.to_string_lossy().to_string(),
     ]);
 
-    let output = sidecar_output_opt(app, ffmpeg_bin_name(), args, MERGE_DECODE_TIMEOUT_SECS)
-        .await
-        .ok_or_else(|| "Merge decoder timed out or could not start".to_string())?;
+    let output = sidecar_output_cancellable(
+        app,
+        ffmpeg_bin_name(),
+        args,
+        MERGE_DECODE_TIMEOUT_SECS,
+        Some(&|| cancel.is_cancelled()),
+    )
+    .await;
+    cancel.check()?;
+    let output = output.ok_or_else(|| "Merge decoder timed out or could not start".to_string())?;
     if !output.success {
         return Err("Failed to decode audio for merge".into());
     }
@@ -736,6 +801,7 @@ fn reserve_output(out_dir: &Path, name: &str, ext: &str) -> Result<ReservedOutpu
 #[cfg(test)]
 mod tests {
     use super::*;
+    use uuid::Uuid;
 
     fn test_dir(label: &str) -> PathBuf {
         std::env::temp_dir().join(format!("depoaudio_merge_{label}_{}", Uuid::new_v4().simple()))
@@ -813,6 +879,71 @@ mod tests {
         }
         assert!(!reserved_path.exists());
         assert_eq!(std::fs::read(existing).unwrap(), b"keep me");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn the_cancel_flag_is_shared_and_stops_source_preparation() {
+        let cancel = MergeCancel::default();
+        let held_by_command = cancel.clone();
+        assert!(!cancel.is_cancelled());
+        assert!(cancel.check().is_ok());
+        assert!(!(cancel.predicate())());
+
+        // A prefixed SGMCA needs a temporary copy; with the flag set before
+        // the merge reaches it, no copy is made and the merge stops.
+        let dir = test_dir("cancel");
+        std::fs::create_dir_all(&dir).unwrap();
+        let source = dir.join("prefixed.sgmca");
+        let mut bytes = b"vendor-prefix".to_vec();
+        bytes.extend_from_slice(&crate::sgmca::fixtures::synthetic(5, 312, 0, |_| 30));
+        std::fs::write(&source, &bytes).unwrap();
+
+        let prepared = tauri::async_runtime::block_on(prepare_merge_source(source.clone(), &cancel)).unwrap();
+        assert!(prepared.1.is_some(), "uncancelled: the copy is made");
+        let copy = prepared.0.clone();
+        drop(prepared);
+        assert!(!copy.exists(), "the copy goes with its guard");
+
+        held_by_command.cancel();
+        assert!(cancel.is_cancelled());
+        assert!((cancel.predicate())());
+        let error = tauri::async_runtime::block_on(prepare_merge_source(source.clone(), &cancel)).unwrap_err();
+        assert_eq!(error, MERGE_CANCELLED_MESSAGE);
+        assert_eq!(std::fs::read(&source).unwrap(), bytes, "the source is only read");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_cancel_during_the_copy_removes_the_partial_copy() {
+        let cancel = MergeCancel::default();
+        let dir = test_dir("cancel_copy");
+        std::fs::create_dir_all(&dir).unwrap();
+        let source = dir.join("large.sgmca");
+        let mut bytes = b"vendor-prefix".to_vec();
+        bytes.extend_from_slice(&crate::sgmca::fixtures::synthetic(5, 312, 0, |_| 30));
+        bytes.resize(4 * 1024 * 1024, 7);
+        std::fs::write(&source, &bytes).unwrap();
+        // The copy runs on a blocking worker; set the flag from its predicate
+        // after a few chunks so the cancel lands mid-copy.
+        let checks = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counter = checks.clone();
+        let flag = cancel.clone();
+        let predicate = Arc::new(move || {
+            if counter.fetch_add(1, Ordering::Relaxed) >= 6 {
+                flag.cancel();
+            }
+            flag.is_cancelled()
+        });
+        let (path, guard) = crate::helpers::prepare_audio_feed_with_cancel(&source, Some(predicate.as_ref()))
+            .map(|(path, guard)| (Some(path), guard))
+            .unwrap_or((None, None));
+        assert!(path.is_none() && guard.is_none(), "the copy was cancelled");
+        assert!(cancel.is_cancelled());
+        assert!(
+            crate::workdir::tests::thread_run_files().is_empty(),
+            "the partial copy is removed"
+        );
         let _ = std::fs::remove_dir_all(dir);
     }
 }

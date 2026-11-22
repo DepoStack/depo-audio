@@ -209,10 +209,6 @@ pub(crate) async fn ensure_ftr_decoder(app: &AppHandle) -> Result<(), String> {
 
 // Note: ffprobe auto-detects codecs and does not accept ffmpeg input options
 // like -acodec, so the probe helpers take no input codec arguments.
-pub(crate) async fn probe_duration(app: &AppHandle, feed: &Path) -> Option<f64> {
-    probe_duration_cancellable(app, feed, None).await
-}
-
 pub(crate) async fn probe_duration_cancellable(
     app: &AppHandle,
     feed: &Path,

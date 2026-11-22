@@ -76,6 +76,15 @@ describe('FORMAT_ROWS intake rows', () => {
     }
   })
 
+  it('keeps DigitalCAT .dm experimental and says it was tested with synthetic files only', () => {
+    expect(FORMAT_ROWS.find(r => r.ext === '.dm')).toMatchObject({
+      vendor: 'Stenovations · DigitalCAT / SoundSync',
+      status: 'experimental',
+      group: 'court',
+      note: 'Reads the audio inside; tested with synthetic files only',
+    })
+  })
+
   it('keeps every closed format in the export-first group', () => {
     const closed = FORMAT_ROWS.filter(r => r.status === 'unsupported')
     expect(closed.map(r => r.ext)).toEqual(['.aes', '.dcr', '.ds2', '.arf  .wrf', '.msv  .dvf'])

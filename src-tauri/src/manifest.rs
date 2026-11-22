@@ -163,6 +163,10 @@ pub struct AudioStreamsInfo {
     pub converted_index: u32,
     pub streams: Vec<AudioStreamSummary>,
     pub duration_secs: Option<f64>,
+    /// For a DigitalCAT `.dm`: blocks skipped and whether the stamps run
+    /// backwards, read from the file's own header and block headers.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dm: Option<crate::dm::DmQueueInfo>,
 }
 
 fn bounded_tag(tags: &serde_json::Value, key: &str) -> Option<String> {
@@ -236,6 +240,7 @@ pub(crate) fn parse_audio_streams(probe: &serde_json::Value) -> AudioStreamsInfo
         converted_index: crate::helpers::SOURCE_AUDIO_STREAM,
         streams,
         duration_secs,
+        dm: None,
     }
 }
 
@@ -318,6 +323,10 @@ pub(crate) struct FileRecord {
     pub file_name: String,
     pub sha256: String,
     pub size_bytes: u64,
+    /// For a DigitalCAT `.dm` source: its blocks, the blocks skipped and where
+    /// the time stamps jump. Absent for every other source.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dm_timeline: Option<crate::dm::DmTimeline>,
 }
 
 #[derive(Debug, Serialize, Clone, PartialEq)]
@@ -615,6 +624,7 @@ pub(crate) mod tests {
                 file_name: "synthetic_session.wav".into(),
                 sha256: "a".repeat(64),
                 size_bytes: 1024,
+                dm_timeline: None,
             },
             probed,
             labels,
@@ -1177,6 +1187,122 @@ pub(crate) mod tests {
         record["processing"].as_object_mut().unwrap().remove("mapArgs");
         let errors = schema_errors_for_value(&record);
         assert!(errors.is_empty(), "{errors:#?}");
+    }
+
+    #[test]
+    fn a_dm_timeline_matches_the_schema_and_is_absent_for_other_sources() {
+        let plain = serde_json::to_value(sample_input(&ProbedSource::default(), &[], false)).unwrap();
+        assert!(plain["source"].get("dmTimeline").is_none());
+
+        use crate::dm::tests::{dm_bytes, gsm_format};
+        let block = vec![1u8; 520];
+        let short = vec![2u8; 100];
+        let bytes = dm_bytes(
+            &gsm_format(),
+            520,
+            &[
+                (1_763_800_000, &block),
+                (0, &block),
+                (1_763_800_060, &block),
+                (1_763_799_000, &short),
+            ],
+        );
+        let dm = crate::dm::parse_dm_reader(std::io::Cursor::new(&bytes), bytes.len() as u64, &|| false).unwrap();
+        let mut manifest = sample_input(&ProbedSource::default(), &[], false);
+        manifest.source.dm_timeline = Some(crate::dm::build_timeline(&dm));
+        let record = serde_json::to_value(&manifest).unwrap();
+        assert!(
+            schema_errors_for_value(&record).is_empty(),
+            "{:#?}",
+            schema_errors_for_value(&record)
+        );
+        let timeline = &record["source"]["dmTimeline"];
+        assert_eq!(timeline["formatTag"], 49);
+        assert_eq!(timeline["codecName"], "gsm_ms");
+        assert_eq!(timeline["blocksTotal"], 4);
+        assert_eq!(timeline["blocksErased"], 1);
+        assert_eq!(timeline["shortFinalBlock"], true);
+        assert_eq!(timeline["lastBlockBytesDropped"], 35);
+        assert_eq!(timeline["stampsMonotonic"], false);
+        assert_eq!(timeline["bytesAfterShortBlock"], 0);
+        assert_eq!(timeline["truncatedTailBytes"], 0);
+        assert!(timeline.get("markerFile").is_none(), "no .bmf, no markerFile");
+        assert_eq!(timeline["segments"].as_array().unwrap().len(), 3);
+        assert_eq!(timeline["segments"][1]["startSample"], 8 * 320);
+        assert_eq!(timeline["segments"][2]["firstStampUtc"], "2025-11-22T08:10:00Z");
+
+        // Older records without the optional fields still validate; unknown
+        // fields and malformed stamps do not.
+        let mut older = record.clone();
+        for field in [
+            "lastBlockBytesDropped",
+            "segmentsOmitted",
+            "warnings",
+            "bytesAfterShortBlock",
+            "truncatedTailBytes",
+        ] {
+            older["source"]["dmTimeline"].as_object_mut().unwrap().remove(field);
+        }
+        assert!(schema_errors_for_value(&older).is_empty());
+        let mut drift = record.clone();
+        drift["source"]["dmTimeline"]["guessedSpeaker"] = "Witness".into();
+        drift["source"]["dmTimeline"]["segments"][0]["firstStampUtc"] = "yesterday".into();
+        let errors = schema_errors_for_value(&drift);
+        assert!(
+            errors.iter().any(|error| error.contains("guessedSpeaker")),
+            "{errors:#?}"
+        );
+        assert!(
+            errors.iter().any(|error| error.contains("firstStampUtc")),
+            "{errors:#?}"
+        );
+
+        // A damaged file read up to its short block, as SoundSync's player
+        // reads it; what follows is reported, not read.
+        let damaged =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../scripts/fixtures/dm/ima-adpcm-damaged.dm");
+        let dm = crate::dm::parse_dm(&damaged, &|| false).unwrap();
+        let mut manifest = sample_input(&ProbedSource::default(), &[], false);
+        manifest.source.dm_timeline = Some(crate::dm::build_timeline(&dm));
+        let record = serde_json::to_value(&manifest).unwrap();
+        assert!(
+            schema_errors_for_value(&record).is_empty(),
+            "{:#?}",
+            schema_errors_for_value(&record)
+        );
+        let timeline = &record["source"]["dmTimeline"];
+        assert_eq!(timeline["bytesAfterShortBlock"], 2 * 2056 + 108);
+        assert_eq!(timeline["truncatedTailBytes"], 0);
+        assert_eq!(timeline["shortFinalBlock"], true);
+        assert_eq!(timeline["lastBlockBytesDropped"], 10);
+        assert_eq!(timeline["warnings"].as_array().unwrap().len(), 2);
+
+        // The owner's sample with its .bmf: marker counts, never marker text.
+        let sample = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../scripts/fixtures/dm/vendor-notes-samples/tone_gsm.dm");
+        let dm = crate::dm::parse_dm(&sample, &|| false).unwrap();
+        let mut timeline = crate::dm::build_timeline(&dm);
+        timeline.marker_file = crate::bmf::summary_beside(&sample, &dm);
+        let mut manifest = sample_input(&ProbedSource::default(), &[], false);
+        manifest.source.dm_timeline = Some(timeline);
+        let record = serde_json::to_value(&manifest).unwrap();
+        assert!(
+            schema_errors_for_value(&record).is_empty(),
+            "{:#?}",
+            schema_errors_for_value(&record)
+        );
+        let markers = &record["source"]["dmTimeline"]["markerFile"];
+        assert_eq!(markers["status"], "read");
+        assert_eq!(markers["entries"], 2);
+        assert_eq!(markers["entriesWithText"], 2);
+        let text = record.to_string();
+        assert!(!text.contains("Objection") && !text.contains("\"Start\""), "{text}");
+        let mut drift = record.clone();
+        drift["source"]["dmTimeline"]["markerFile"]["text"] = "Objection".into();
+        assert!(
+            !schema_errors_for_value(&drift).is_empty(),
+            "the schema has no place for marker text"
+        );
     }
 
     #[test]

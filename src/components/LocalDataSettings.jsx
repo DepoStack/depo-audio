@@ -348,8 +348,8 @@ export default function LocalDataSettings({
         <CardContent className="p-4 flex items-center justify-between gap-3 type-small">
           <span className="min-w-0 text-[hsl(var(--sub))]">
             Removes the case library, settings, transcripts, bookmarks and the other files listed above from this
-            computer. Recordings, converted files, export records and backups are not deleted. Export a backup first if
-            you may need this later.
+            computer, and temporary audio copies left by an earlier run. Recordings, converted files, export records and
+            backups are not deleted. Export a backup first if you may need this later.
             {conversionActive && (
               <span className="mt-1 block text-foreground">
                 Clear all is not available while files are converting. Wait for them to finish or cancel them.
@@ -381,7 +381,7 @@ export default function LocalDataSettings({
         open={confirmClear}
         onOpenChange={setConfirmClear}
         title="Clear all DepoAudio data?"
-        description={`This deletes the case library, settings, ${plural(web.transcripts, 'transcript')} and ${plural(web.bookmarks, 'bookmark')} from this computer. It cannot be undone. Recordings, converted files, export records and backups are not deleted. DepoAudio then reloads as on first launch.`}
+        description={`This deletes the case library, settings, ${plural(web.transcripts, 'transcript')} and ${plural(web.bookmarks, 'bookmark')} from this computer, along with temporary audio copies left by an earlier run. It cannot be undone. Recordings, converted files, export records and backups are not deleted. DepoAudio then reloads as on first launch.`}
         confirmLabel="Clear all data"
         onConfirm={clearAll}
       />
