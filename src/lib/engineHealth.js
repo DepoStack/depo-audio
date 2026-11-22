@@ -20,7 +20,7 @@ export function engineProblem(health, checkError) {
       id: 'ffmpeg-missing',
       title: 'FFmpeg is missing or did not start.',
       action:
-        'Conversion and playback of most recordings will fail. Reinstall DepoAudio to restore the bundled FFmpeg, then re-check.',
+        'Conversion and playback of most recordings may fail. Reinstall DepoAudio to restore the bundled FFmpeg, then re-check.',
     }
   }
   if (health.ffprobe === false) {
@@ -36,7 +36,7 @@ export function engineProblem(health, checkError) {
       id: 'ftr-decoder-missing',
       title: 'The FTR decoder check failed.',
       action:
-        'For The Record (.ftr / .trm) recordings will not convert or play; other formats are unaffected. Reinstall DepoAudio, then re-check.',
+        'For The Record (.ftr / .trm) recordings may not convert or play; other formats should not be affected. Reinstall DepoAudio, then re-check.',
     }
   }
   return null

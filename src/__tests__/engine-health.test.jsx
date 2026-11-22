@@ -110,7 +110,7 @@ describe('audio engine status in the window', () => {
     render(<App />)
 
     const alert = await screen.findByTestId('engine-health-banner')
-    expect(alert).toHaveAttribute('role', 'alert')
+    expect(within(alert).getByTestId('engine-health-message')).toHaveAttribute('role', 'alert')
     expect(alert).toHaveTextContent('FFmpeg is missing or did not start.')
     expect(alert).toHaveTextContent(/Reinstall DepoAudio/)
     expect(within(document.querySelector('.app-sidebar')).queryByText(/FFmpeg/i)).not.toBeInTheDocument()
@@ -124,6 +124,12 @@ describe('audio engine status in the window', () => {
     fireEvent.click(screen.getByRole('tab', { name: 'Library' }))
     await screen.findByText('Library workspace')
     expect(banner()).not.toBeInTheDocument()
+
+    // Back on Convert the warning is shown again, but not read out again
+    fireEvent.mouseDown(screen.getByRole('tab', { name: 'Convert' }))
+    fireEvent.click(screen.getByRole('tab', { name: 'Convert' }))
+    await screen.findByText('Convert workspace')
+    expect(within(banner()).getByTestId('engine-health-message')).not.toHaveAttribute('role')
   })
 
   it('warns when the health check itself fails, with the error behind a disclosure', async () => {
@@ -141,7 +147,7 @@ describe('audio engine status in the window', () => {
     render(<App />)
     const alert = await screen.findByTestId('engine-health-banner')
     expect(alert).toHaveTextContent('The FTR decoder check failed.')
-    expect(alert).toHaveTextContent(/other formats are unaffected/)
+    expect(alert).toHaveTextContent(/other formats should not be affected/)
   })
 
   it('can be dismissed, comes back on a failed re-check, and clears once fixed', async () => {
@@ -160,10 +166,16 @@ describe('audio engine status in the window', () => {
     await waitFor(() => expect(invoke.mock.calls.filter(([c]) => c === 'health_check')).toHaveLength(2))
     fireEvent.keyDown(document.activeElement, { key: 'Escape' })
     await waitFor(() => expect(banner()).toBeInTheDocument())
+    // A warning that comes back after dismissal is announced again
+    expect(within(banner()).getByTestId('engine-health-message')).toHaveAttribute('role', 'alert')
 
     health = HEALTHY
-    fireEvent.click(within(banner()).getByRole('button', { name: 'Re-check' }))
+    const recheck = within(banner()).getByRole('button', { name: 'Re-check' })
+    recheck.focus()
+    fireEvent.click(recheck)
     await waitFor(() => expect(banner()).not.toBeInTheDocument())
+    // Focus is not dropped to <body> when the banner closes
+    await waitFor(() => expect(document.activeElement).toBe(document.querySelector('main')))
   })
 
   it('opens Settings on About from the warning', async () => {

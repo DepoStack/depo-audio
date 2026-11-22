@@ -90,6 +90,10 @@ export default function App() {
   const [healthError, setHealthError] = useState('')
   const [healthChecking, setHealthChecking] = useState(true)
   const [engineWarningDismissed, setEngineWarningDismissed] = useState(false)
+  // Problem id already read out by screen readers, so tab switches and
+  // re-checks do not announce the same warning again. Cleared on dismiss and
+  // on a passing check, so a warning that comes back is announced once more.
+  const [announcedEngineIssue, setAnnouncedEngineIssue] = useState(null)
   const checkHealth = useCallback(
     () =>
       invoke('health_check')
@@ -99,6 +103,7 @@ export default function App() {
           setHealthError('')
           // A re-check that still fails brings the warning back
           if (engineProblem(value, '')) setEngineWarningDismissed(false)
+          else setAnnouncedEngineIssue(null)
         })
         .catch(error => {
           setHealthError(`Audio engine health could not be checked: ${String(error)}`)
@@ -368,11 +373,17 @@ export default function App() {
 
           {(tab === 'convert' || tab === 'player') && !engineWarningDismissed && (
             <EngineHealthBanner
+              key={engineIssue?.id || 'none'}
               problem={engineIssue}
               rechecking={healthChecking}
               onRecheck={runHealthCheck}
               onOpenDetails={() => openSettings('about')}
-              onDismiss={() => setEngineWarningDismissed(true)}
+              announce={announcedEngineIssue !== engineIssue?.id}
+              onAnnounced={setAnnouncedEngineIssue}
+              onDismiss={() => {
+                setEngineWarningDismissed(true)
+                setAnnouncedEngineIssue(null)
+              }}
             />
           )}
 
