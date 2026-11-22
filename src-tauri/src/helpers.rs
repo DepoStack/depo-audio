@@ -409,6 +409,20 @@ fn strip_sgmca_header_with_cancel(
     if is_cancelled() {
         return Err(AUDIO_PREPARATION_CANCELLED_MESSAGE.into());
     }
+    // FFmpeg plays a file with several sessions (one Ogg stream each) as one
+    // stream with the gaps between them closed, which moves every later
+    // session to the wrong time. Such a file is refused, by name of each
+    // session, until sessions can be handled one at a time.
+    crate::sgmca::ensure_single_session(&mut file, offset, cancelled).map_err(|error| {
+        if is_cancelled() {
+            AUDIO_PREPARATION_CANCELLED_MESSAGE.to_string()
+        } else {
+            error
+        }
+    })?;
+    if is_cancelled() {
+        return Err(AUDIO_PREPARATION_CANCELLED_MESSAGE.into());
+    }
     if offset == 0 {
         return Ok((src.to_path_buf(), None));
     }
@@ -851,6 +865,26 @@ mod tests {
         assert_eq!(fs::read(&prepared).unwrap(), stream);
         drop(guard);
         assert!(!prepared.exists(), "the copy goes with its guard");
+    }
+
+    #[test]
+    fn a_multi_session_sgmca_is_refused_with_or_without_a_header() {
+        let dir = ReservationTestDir::new();
+        let one = crate::sgmca::fixtures::synthetic(50, 312, 0, |_| 30);
+        let segmented = crate::sgmca::fixtures::segmented(&[
+            ("2026-11-22T10:15:30-0500", &one),
+            ("2026-11-22T10:20:00-0500", &one),
+        ]);
+        let mut chained = one.clone();
+        chained.extend_from_slice(&one);
+        for (name, bytes) in [("segmented.sgmca", segmented), ("chained.sgmca", chained)] {
+            let source = dir.path().join(name);
+            fs::write(&source, bytes).unwrap();
+            let error = prepare_audio_feed_with_cancel(&source, None).unwrap_err();
+            assert!(error.contains("2 recording sessions"), "{name}: {error}");
+        }
+        let entries: Vec<_> = fs::read_dir(dir.path()).unwrap().collect();
+        assert_eq!(entries.len(), 2, "no temporary copy is left beside the sources");
     }
 
     #[test]

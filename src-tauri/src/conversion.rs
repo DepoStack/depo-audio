@@ -91,9 +91,24 @@ fn track_planned(cleanup: &mut OutputCleanup, planned: &[PlannedOutput]) {
 /// 16 kHz is clear well below this.
 const SGMCA_KBPS_PER_CHANNEL: u32 = 32;
 
+/// Peak guard for Mix to Stereo with normalize off. FFmpeg's alimiter looks
+/// 5 ms ahead and, by default (`latency=0`), outputs that lookahead as a
+/// delay: the output keeps the source's length, so the audio starts about
+/// 5 ms late and the last 5 ms of the source are cut. `latency=1` removes the
+/// delay so the output lines up sample for sample with the source. The option
+/// is in every bundled FFmpeg (5.1 or newer); an FFmpeg without it fails the
+/// conversion instead of shifting the audio.
+const STEREO_PEAK_LIMITER: &str = "alimiter=limit=0.97:level=false:latency=1";
+
 /// Stereo downmix: a unity-gain SUM of all channels on both L and R.
 /// `vols` are per-channel volumes already multiplied by 1/num_ch; missing
 /// entries fall back to an equal-weight mix.
+///
+/// `aformat=sample_fmts=fltp` first: on 16-bit input FFmpeg's pan mixes in
+/// 16-bit integers, and a weighted sum past full scale (a channel turned up,
+/// or auto-level gains, on overlapping loud speech) wraps around to the
+/// opposite polarity instead of reaching the limiter. In float the sum keeps
+/// its value until the limiter or loudnorm brings it back under full scale.
 fn stereo_pan_filter(num_ch: u32, vols: &[f64]) -> String {
     let weight = 1.0 / num_ch as f64;
     let scale = num_ch as f64; // compensate for per-channel weight
@@ -104,7 +119,10 @@ fn stereo_pan_filter(num_ch: u32, vols: &[f64]) -> String {
         })
         .collect();
     let mix = weights.join("+");
-    format!("pan=stereo|c0={}|c1={},volume={:.1}", mix, mix, scale)
+    format!(
+        "aformat=sample_fmts=fltp,pan=stereo|c0={}|c1={},volume={:.1}",
+        mix, mix, scale
+    )
 }
 
 /// Per-channel output labels for split mode: the user's label, sanitized for
@@ -201,6 +219,39 @@ fn validate_conversion_channels(channels: u32) -> Result<u32, String> {
         0 => Err("The recording reports zero audio channels and cannot be converted.".into()),
         count => Err(format!(
             "The recording reports {count} audio channels; DepoAudio supports at most {MAX_CONVERSION_CHANNELS}. The file header may be corrupt or use an unsupported layout."
+        )),
+    }
+}
+
+/// Output formats whose Keep Original conversion is refused for a source with
+/// more than two channels. FFmpeg's MP3 encoder holds at most two, so the
+/// channels are folded into stereo; AAC (M4A) and Opus treat a channel the
+/// layout marks LFE (the fourth of a 3.1 WAV, the fourth of 5.1) as a
+/// low-pass effects channel, which removes speech from it; Opus also has no
+/// mapping for several common layouts. Keep Original promises every channel
+/// unchanged, so these are refused before any output is written.
+const KEEP_STEREO_ONLY_FORMATS: [&str; 3] = ["mp3", "m4a", "opus"];
+
+fn keep_needs_channel_count(job: &ConvertJob) -> bool {
+    job.mode == "keep" && KEEP_STEREO_ONLY_FORMATS.contains(&job.format.as_str())
+}
+
+fn validate_keep_channels(format: &str, channels: Option<u32>) -> Result<(), String> {
+    if !KEEP_STEREO_ONLY_FORMATS.contains(&format) {
+        return Ok(());
+    }
+    let name = match format {
+        "mp3" => "MP3",
+        "m4a" => "M4A",
+        _ => "Opus",
+    };
+    match channels {
+        Some(1 | 2) => Ok(()),
+        Some(count) => Err(format!(
+            "Keep Original cannot write this {count}-channel recording as {name} without losing channels: {name} here keeps at most 2 channels unchanged, and FFmpeg would fold or filter the rest. Nothing was converted. Choose WAV, FLAC or SGMCA to keep every channel, or Split Channels or Mix to Stereo."
+        )),
+        None => Err(format!(
+            "Keep Original to {name} needs the recording's channel count, and it could not be read, so nothing was converted. Choose WAV, FLAC or SGMCA, or Split Channels or Mix to Stereo."
         )),
     }
 }
@@ -318,6 +369,8 @@ struct ConversionProbes {
     channel_gains: Option<Vec<f64>>,
     /// Shared processing filters (de-clip, HPF, loudnorm, fade, trim).
     proc: Vec<String>,
+    /// Where the fade-out in `proc` was placed, for the export record.
+    fade_out: Option<manifest::FadeOutRecord>,
     /// Channel count, rate and start time for the export record.
     probed: manifest::ProbedSource,
     /// Duration of the converted stream, for the WAV size estimate that
@@ -339,6 +392,7 @@ struct ConversionPlan {
     /// channel's filter branch (`-map [opN]`) for Split.
     map_args: Vec<Vec<String>>,
     start_shifted: bool,
+    fade_out: Option<manifest::FadeOutRecord>,
 }
 
 /// Pure core of a conversion once the input has been probed: reserve every
@@ -450,7 +504,7 @@ fn plan_conversion(
             // 20*log10(N) dB. loudnorm true-peak-limits when normalize is on;
             // otherwise cap peaks ourselves so the encode doesn't hard-clip.
             if !job.normalize {
-                all.push("alimiter=limit=0.97:level=false".into());
+                all.push(STEREO_PEAK_LIMITER.into());
             }
             planned = reserve_output_paths([(out_dir.join(format!("{}{}", base, ext)), None, None)])?;
             track_planned(cleanup, &planned);
@@ -466,6 +520,7 @@ fn plan_conversion(
         }
 
         "keep" => {
+            validate_keep_channels(&job.format, probes.channels)?;
             planned = reserve_output_paths([(out_dir.join(format!("{}_orig{}", base, ext)), None, None)])?;
             track_planned(cleanup, &planned);
             let dst = planned[0].path.clone();
@@ -530,6 +585,7 @@ fn plan_conversion(
         encoder_args,
         map_args,
         start_shifted,
+        fade_out: probes.fade_out.clone(),
     })
 }
 
@@ -574,6 +630,7 @@ fn output_facts<'a>(
         filter_chain: plan.filter_chain.clone(),
         encoder_args: plan.encoder_args.clone(),
         map_args: plan.map_args[index].clone(),
+        fade_out: plan.fade_out.clone(),
         source_channel_index: plan.planned[index].channel_index,
         label: plan.planned[index].label.clone(),
         wav_header,
@@ -685,26 +742,30 @@ async fn do_convert_inner(
     // Stereo injects per-channel gains in its pan filter and Split injects
     // them after isolating each channel. Keep Original rejects auto-leveling
     // before work starts because one shared gain would not balance channels.
-    let proc = build_proc_filters_with_gain(app, job, effective_feed, None, Some(&is_cancelled)).await;
+    let built = build_proc_filters_with_gain(app, job, effective_feed, None, total_secs, Some(&is_cancelled)).await;
     cancel.check()?;
+    let (proc, fade_out) = built?;
 
     let probed = probe_manifest_source_cancellable(app, effective_feed, Some(&is_cancelled)).await;
     cancel.check()?;
 
     // Mix to Stereo and Split need the channel count; Keep Original does not,
-    // except for an SGMCA output, whose bitrate is set per channel.
-    let channels = if matches!(job.mode.as_str(), "stereo" | "split") || job.format == "sgmca" {
-        let channels = probe_channels_cancellable(app, effective_feed, Some(&is_cancelled)).await;
-        cancel.check()?;
-        channels
-    } else {
-        None
-    };
+    // except for an SGMCA output, whose bitrate is set per channel, and a
+    // lossy format that cannot keep more than two channels.
+    let channels =
+        if matches!(job.mode.as_str(), "stereo" | "split") || job.format == "sgmca" || keep_needs_channel_count(job) {
+            let channels = probe_channels_cancellable(app, effective_feed, Some(&is_cancelled)).await;
+            cancel.check()?;
+            channels
+        } else {
+            None
+        };
 
     let probes = ConversionProbes {
         channels,
         channel_gains,
         proc,
+        fade_out,
         probed,
         duration_secs: total_secs,
     };
@@ -797,7 +858,7 @@ mod tests {
         let vols = vec![0.25, 0.25, 0.25, 0.25];
         assert_eq!(
             stereo_pan_filter(4, &vols),
-            "pan=stereo|c0=0.2500*c0+0.2500*c1+0.2500*c2+0.2500*c3|c1=0.2500*c0+0.2500*c1+0.2500*c2+0.2500*c3,volume=4.0"
+            "aformat=sample_fmts=fltp,pan=stereo|c0=0.2500*c0+0.2500*c1+0.2500*c2+0.2500*c3|c1=0.2500*c0+0.2500*c1+0.2500*c2+0.2500*c3,volume=4.0"
         );
     }
 
@@ -805,7 +866,7 @@ mod tests {
     fn stereo_pan_missing_vols_fall_back_to_equal_weight() {
         assert_eq!(
             stereo_pan_filter(2, &[]),
-            "pan=stereo|c0=0.5000*c0+0.5000*c1|c1=0.5000*c0+0.5000*c1,volume=2.0"
+            "aformat=sample_fmts=fltp,pan=stereo|c0=0.5000*c0+0.5000*c1|c1=0.5000*c0+0.5000*c1,volume=2.0"
         );
     }
 
@@ -814,7 +875,7 @@ mod tests {
         // Auto-level: gains 2.0 and 0.5 pre-multiplied by the 1/2 weight
         assert_eq!(
             stereo_pan_filter(2, &[1.0, 0.25]),
-            "pan=stereo|c0=1.0000*c0+0.2500*c1|c1=1.0000*c0+0.2500*c1,volume=2.0"
+            "aformat=sample_fmts=fltp,pan=stereo|c0=1.0000*c0+0.2500*c1|c1=1.0000*c0+0.2500*c1,volume=2.0"
         );
     }
 
@@ -955,6 +1016,29 @@ mod tests {
         job.mode = "stereo".into();
         job.format = "exe".into();
         assert!(validate_convert_request(&job).unwrap_err().contains("format"));
+    }
+
+    #[test]
+    fn keep_original_to_a_lossy_format_needs_a_mono_or_stereo_source() {
+        for format in ["mp3", "m4a", "opus"] {
+            assert!(validate_keep_channels(format, Some(1)).is_ok());
+            assert!(validate_keep_channels(format, Some(2)).is_ok());
+            let error = validate_keep_channels(format, Some(4)).unwrap_err();
+            assert!(error.contains("4-channel"), "{error}");
+            assert!(validate_keep_channels(format, None)
+                .unwrap_err()
+                .contains("channel count"));
+            let mut job = valid_job();
+            job.mode = "keep".into();
+            job.format = format.into();
+            assert!(keep_needs_channel_count(&job));
+            job.mode = "split".into();
+            assert!(!keep_needs_channel_count(&job));
+        }
+        for format in ["wav", "flac", "sgmca"] {
+            assert!(validate_keep_channels(format, Some(16)).is_ok());
+            assert!(validate_keep_channels(format, None).is_ok());
+        }
     }
 
     #[test]
@@ -1201,6 +1285,27 @@ mod tests {
             .collect()
     }
 
+    /// Interleaved 32-bit float PCM at 48 kHz from FFmpeg's default decoder.
+    fn decode_f32_default(path: &Path, channels: usize) -> Vec<Vec<f32>> {
+        let output = std::process::Command::new("ffmpeg")
+            .args(["-nostdin", "-hide_banner", "-loglevel", "error", "-i"])
+            .arg(path)
+            .args(["-map", "0:a:0", "-f", "f32le", "-ar", "48000", "-"])
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+        let samples: Vec<f32> = output
+            .stdout
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|bytes| f32::from_le_bytes(*bytes))
+            .collect();
+        (0..channels)
+            .map(|channel| samples.iter().skip(channel).step_by(channels).copied().collect())
+            .collect()
+    }
+
     fn court_job(src: &Path, out_dir: &Path, mode: &str, format: &str) -> ConvertJob {
         let mut job = valid_job();
         job.src_path = src.to_string_lossy().to_string();
@@ -1293,11 +1398,29 @@ mod tests {
         // WAV size estimate); build_proc_filters_with_gain uses it only to
         // place the fade-out.
         let total_secs = crate::ffmpeg::parse_duration_probe(&probe(crate::ffmpeg::duration_probe_args(&feed)));
-        let duration = if job.fade { total_secs } else { None };
+        // As build_proc_filters_with_gain: with Fade on, the decoded length
+        // (the app's own measuring pass) places the fade-out.
+        let fade_out = if job.fade {
+            let measured = std::process::Command::new("ffmpeg")
+                .args(crate::ffmpeg::decoded_length_args(&feed))
+                .output()
+                .unwrap();
+            let decoded = measured
+                .status
+                .success()
+                .then(|| crate::ffmpeg::parse_decoded_seconds(&measured.stderr))
+                .flatten()
+                .ok_or(crate::ffmpeg::FADE_LENGTH_UNKNOWN_MESSAGE)?;
+            Some(crate::ffmpeg::fade_out_placement(job, decoded, total_secs))
+        } else {
+            None
+        };
+        let decoded = fade_out.as_ref().map(|fade| fade.decoded_source_seconds);
         let probes = ConversionProbes {
             channels: crate::ffmpeg::parse_channel_probe(&probe(crate::ffmpeg::channel_probe_args(&feed))),
             channel_gains,
-            proc: crate::ffmpeg::proc_filters(job, None, duration),
+            proc: crate::ffmpeg::proc_filters(job, None, decoded),
+            fade_out,
             probed: serde_json::from_slice::<serde_json::Value>(&probe(crate::ffmpeg::manifest_probe_args(&feed)))
                 .map(|value| manifest::parse_probe(&value))
                 .unwrap_or_default(),
@@ -2102,6 +2225,7 @@ mod tests {
             channels: Some(2),
             channel_gains: None,
             proc: Vec::new(),
+            fade_out: None,
             probed: manifest::ProbedSource::default(),
             duration_secs: None,
         };
@@ -2154,6 +2278,7 @@ mod tests {
                 channels,
                 channel_gains: None,
                 proc: Vec::new(),
+                fade_out: None,
                 probed: manifest::ProbedSource {
                     channels,
                     ..manifest::ProbedSource::default()
@@ -2201,6 +2326,7 @@ mod tests {
             channels: None,
             channel_gains: None,
             proc: Vec::new(),
+            fade_out: None,
             probed: manifest::ProbedSource::default(),
             duration_secs: None,
         };
@@ -2282,11 +2408,201 @@ mod tests {
             "afade=t=out:st=2.000:d=2,afade=t=in:d=2"
         );
         assert_eq!(record["processing"]["mapArgs"], serde_json::json!(["-map", "0:a:0"]));
+        assert_eq!(record["processing"]["fadeOut"]["startSeconds"], 2.0);
+        assert_eq!(record["processing"]["fadeOut"]["decodedSourceSeconds"], 4.0);
+        assert_eq!(record["processing"]["fadeOut"]["statedSourceSeconds"], 4.0);
         // The last 0.3 s is near the end of the fade-out, so it is much quieter
         // than the tone just before the fade-out starts.
         let middle = max_volume_db_between(Path::new(&output.path), 1.9, 2.0);
         let tail = max_volume_db_between(Path::new(&output.path), 3.7, 4.0);
         assert!(tail < middle - 10.0, "middle {middle} dB, tail {tail} dB");
+    }
+
+    /// FFmpeg-backed: a chained Ogg Opus file (a 3 s link, then a 2 s link)
+    /// states only its last link's length, 2 s, but decodes to 5 s. The
+    /// fade-out is placed from the decoded 5 s, so the first link plays at
+    /// full level and only the last 0.5 s fades. Placed from the stated
+    /// length it started at 1.5 s and silenced everything after 2 s. The
+    /// record names both lengths.
+    #[test]
+    fn fade_out_is_placed_on_the_decoded_end_when_the_stated_length_is_short() {
+        if !court_fixture_tools_available() {
+            return;
+        }
+        let dir = ConversionTestDir::new();
+        let mut chained = Vec::new();
+        for (index, (frequency, seconds)) in [(440, 3), (660, 2)].into_iter().enumerate() {
+            let link = dir.0.join(format!("link_{index}.opus"));
+            run_ffmpeg(&[
+                "-f".into(),
+                "lavfi".into(),
+                "-i".into(),
+                format!("sine=frequency={frequency}:duration={seconds}:sample_rate=48000"),
+                "-c:a".into(),
+                "libopus".into(),
+                "-b:a".into(),
+                "64k".into(),
+                "-y".into(),
+                link.to_string_lossy().to_string(),
+            ]);
+            chained.extend(fs::read(&link).unwrap());
+            fs::remove_file(&link).unwrap();
+        }
+        let source = dir.0.join("synthetic_chained.opus");
+        fs::write(&source, chained).unwrap();
+        let stated = ffprobe_json(&source, &["-show_format"]);
+        let stated: f64 = stated["format"]["duration"].as_str().unwrap().parse().unwrap();
+        assert!(
+            stated < 2.1,
+            "fixture: FFmpeg states {stated} s, not the 5 s it decodes"
+        );
+
+        for (mode, format) in [("keep", "wav"), ("stereo", "flac"), ("split", "sgmca")] {
+            let out = dir.0.join(format!("out_{mode}"));
+            fs::create_dir(&out).unwrap();
+            let mut job = court_job(&source, &out, mode, format);
+            job.fade = true;
+            job.fade_dur = 0.5;
+            job.labels.truncate(1);
+            job.chan_vols = vec![1.0];
+            let conversion = convert_with_system_ffmpeg(&job, None).unwrap();
+            let output = &conversion.files[0];
+            // A mono source, so not `checked_export_record` (4 channels).
+            let record: serde_json::Value =
+                serde_json::from_slice(&fs::read(manifest::manifest_path_for(Path::new(&output.path))).unwrap())
+                    .unwrap();
+            let errors = manifest::tests::schema_errors_for_value(&record);
+            assert!(errors.is_empty(), "{mode} {format}: {errors:#?}");
+            let fade = &record["processing"]["fadeOut"];
+            assert_eq!(fade["decodedSourceSeconds"], 5.0, "{mode} {format}: {fade}");
+            assert_eq!(fade["startSeconds"], 4.5, "{mode} {format}");
+            assert_eq!(fade["durationSeconds"], 0.5, "{mode} {format}");
+            assert!(fade["statedSourceSeconds"].as_f64().unwrap() < 2.1, "{fade}");
+            assert!(
+                record["processing"]["filterChain"]
+                    .as_str()
+                    .unwrap()
+                    .contains("afade=t=out:st=4.500:d=0.5"),
+                "{mode} {format}: {}",
+                record["processing"]["filterChain"]
+            );
+            let path = Path::new(&output.path);
+            // Both links are there at the tone's level (lavfi's sine peaks
+            // at -18 dBFS); only the end fades.
+            for (start, end) in [(1.0, 1.5), (2.5, 3.0), (3.5, 4.4)] {
+                let level = max_volume_db_between(path, start, end);
+                assert!(level > -21.0, "{mode} {format}: {start}-{end} s at {level} dB");
+            }
+            let tail = max_volume_db_between(path, 4.9, 5.0);
+            let before = max_volume_db_between(path, 4.0, 4.4);
+            assert!(
+                tail < before - 10.0,
+                "{mode} {format}: tail {tail} dB, before {before} dB"
+            );
+        }
+    }
+
+    /// FFmpeg-backed: an SGMCA file with two recording sessions (each its own
+    /// Ogg stream, with a segment header in front) is refused before any
+    /// output is written, by its sessions' starts and lengths. Converted as
+    /// one stream, the second session would start right where the first ends.
+    #[test]
+    fn a_two_session_sgmca_is_refused_before_any_output() {
+        if !court_fixture_tools_available() {
+            return;
+        }
+        let dir = ConversionTestDir::new();
+        let ogg = dir.0.join("synthetic_stream.ogg");
+        synthetic_direct_audio(&ogg);
+        let stream = fs::read(&ogg).unwrap();
+        fs::remove_file(&ogg).unwrap();
+        let bytes = crate::sgmca::fixtures::segmented(&[
+            ("2026-11-22T10:15:30-0500", &stream),
+            ("2026-11-22T10:20:00-0500", &stream),
+        ]);
+        let source = dir.0.join("synthetic_two_sessions.sgmca");
+        fs::write(&source, bytes).unwrap();
+        let out = dir.0.join("out");
+        fs::create_dir(&out).unwrap();
+        for (mode, format) in [("keep", "wav"), ("stereo", "sgmca"), ("split", "flac")] {
+            let mut job = court_job(&source, &out, mode, format);
+            job.fade = true;
+            let error = convert_with_system_ffmpeg(&job, None).err().expect("refused");
+            assert!(error.contains("2 recording sessions"), "{error}");
+            assert!(error.contains("2026-11-22T10:20:00-0500"), "{error}");
+            assert_eq!(fs::read_dir(&out).unwrap().count(), 0, "no output or record is left");
+        }
+    }
+
+    /// FFmpeg-backed: Keep Original refuses MP3, M4A and Opus for a
+    /// 4-channel source before writing anything, because each would fold or
+    /// filter channels (MP3 into stereo; AAC and Opus code the fourth channel
+    /// of hound's default 3.1 layout as a low-pass LFE). WAV, FLAC and SGMCA
+    /// keep every channel at its level.
+    #[test]
+    fn keep_original_refuses_lossy_formats_that_would_lose_channels() {
+        if !court_fixture_tools_available() {
+            return;
+        }
+        let dir = ConversionTestDir::new();
+        let source = dir.0.join("synthetic_four_channel.wav");
+        // One 1 kHz tone per channel, each in its own second; hound marks
+        // four channels as 3.1, as the finding's source was.
+        let spec = hound::WavSpec {
+            channels: 4,
+            sample_rate: 48_000,
+            bits_per_sample: 16,
+            sample_format: hound::SampleFormat::Int,
+        };
+        let mut writer = hound::WavWriter::create(&source, spec).unwrap();
+        for n in 0..4 * 48_000_usize {
+            let value = (0.35 * (2.0 * std::f64::consts::PI * 1000.0 * n as f64 / 48_000.0).sin() * 32767.0) as i16;
+            for channel in 0..4 {
+                writer
+                    .write_sample(if n / 48_000 == channel { value } else { 0 })
+                    .unwrap();
+            }
+        }
+        writer.finalize().unwrap();
+        let layout = ffprobe_json(&source, &["-show_streams"]);
+        assert_eq!(layout["streams"][0]["channel_layout"], "3.1", "fixture layout");
+
+        for format in ["mp3", "m4a", "opus"] {
+            let out = dir.0.join(format!("out_{format}"));
+            fs::create_dir(&out).unwrap();
+            let job = court_job(&source, &out, "keep", format);
+            let error = convert_with_system_ffmpeg(&job, None).err().expect("refused");
+            assert!(error.contains("4-channel"), "{format}: {error}");
+            assert!(error.contains("WAV, FLAC or SGMCA"), "{format}: {error}");
+            assert_eq!(fs::read_dir(&out).unwrap().count(), 0, "{format}: nothing written");
+        }
+        for format in ["wav", "flac", "sgmca"] {
+            let out = dir.0.join(format!("out_{format}"));
+            fs::create_dir(&out).unwrap();
+            let job = court_job(&source, &out, "keep", format);
+            let conversion = convert_with_system_ffmpeg(&job, None).unwrap();
+            let path = Path::new(&conversion.files[0].path);
+            let record = checked_export_record(&conversion.files[0], &source);
+            assert_eq!(record["channel"]["output"], "all-channels");
+            // Every output channel carries its own second's tone at the
+            // source level (-9 dBFS) and nothing in the other seconds.
+            let decoded = if format == "sgmca" {
+                decode_f32(path, 4)
+            } else {
+                decode_f32_default(path, 4)
+            };
+            for (channel, samples) in decoded.iter().enumerate() {
+                for second in 0..4 {
+                    let window = &samples[second * 48_000 + 4_800..second * 48_000 + 43_200];
+                    let peak = window.iter().fold(0.0_f32, |peak, value| peak.max(value.abs()));
+                    if second == channel {
+                        assert!((0.3..0.4).contains(&peak), "{format} channel {channel}: peak {peak}");
+                    } else {
+                        assert!(peak < 0.01, "{format} channel {channel} second {second}: {peak}");
+                    }
+                }
+            }
+        }
     }
 
     /// FFmpeg-backed: a file whose audio streams differ in channel count is
@@ -2613,5 +2929,535 @@ mod tests {
         }
         // And the slice is a valid Direct Audio file in its own right.
         assert!(crate::sgmca::verify_written(&cut, None).is_ok());
+    }
+
+    // ── Sample alignment guard ───────────────────────────────────────────────
+    //
+    // Legal audio must line up with its source sample for sample. Every mode,
+    // processing option, format and sample rate the Convert tab offers is run
+    // through the conversion plan on a synthetic click-and-tone fixture, and
+    // each output channel must (a) have the source's length at the output
+    // rate, shortened only by leading-silence trim, and only by silence, and
+    // (b) have its clicks at the source's positions (cross-correlation lag 0).
+    // A filter with latency, such as alimiter without `latency=1` (5 ms late,
+    // last 5 ms cut), fails (b); padding or a cut fails (a).
+    mod alignment {
+        use super::*;
+        use std::sync::atomic::AtomicUsize;
+        use std::sync::Mutex;
+
+        const RATE: usize = 48_000;
+        const LEN: usize = 3 * RATE;
+        const CHANNELS: usize = 4;
+        /// Exact digital silence before the tone, for Trim silence to remove.
+        const LEAD_SILENCE: usize = RATE / 2;
+        /// Clicks on every channel: two mid-recording, one 300 samples before
+        /// the end, inside the span a 5 ms delay would cut.
+        const CLICKS: [usize; 3] = [60_017, 100_005, LEN - 300];
+        /// BWF start written into the fixture, so the record's start can be
+        /// checked: 10 s after midnight.
+        const TIME_REFERENCE: u64 = 10 * RATE as u64;
+
+        fn fixture_sample(n: usize, channel: usize) -> f64 {
+            if CLICKS.contains(&n) {
+                0.9
+            } else if n < LEAD_SILENCE {
+                0.0
+            } else {
+                // The tone drops 20 dB within 50 ms of each click, so after
+                // loudnorm, lossy coding and resampling the click is still
+                // by far the strongest thing near it; it stays above the
+                // -50 dBFS trim threshold.
+                let near_click = CLICKS.iter().any(|&click| n.abs_diff(click) <= RATE / 20);
+                let level = if near_click { 0.005 } else { 0.05 };
+                let frequency = 300.0 + 110.0 * channel as f64;
+                level * (2.0 * std::f64::consts::PI * frequency * (n - LEAD_SILENCE) as f64 / RATE as f64).sin()
+            }
+        }
+
+        /// The fixture: 3 s of 4-channel 48 kHz 16-bit WAV with a bext start,
+        /// in hound's default 3.1 layout, as a court WAV may well be.
+        fn write_fixture(dir: &Path) -> PathBuf {
+            let raw = dir.join("alignment_raw.wav");
+            let spec = hound::WavSpec {
+                channels: CHANNELS as u16,
+                sample_rate: RATE as u32,
+                bits_per_sample: 16,
+                sample_format: hound::SampleFormat::Int,
+            };
+            let mut writer = hound::WavWriter::create(&raw, spec).unwrap();
+            for n in 0..LEN {
+                for channel in 0..CHANNELS {
+                    writer
+                        .write_sample((fixture_sample(n, channel) * 32767.0).round() as i16)
+                        .unwrap();
+                }
+            }
+            writer.finalize().unwrap();
+            let fixture = dir.join("alignment_fixture.wav");
+            // The layout is kept as hound wrote it (3.1): Keep Original must
+            // refuse the formats that would code the fourth channel as LFE.
+            run_ffmpeg(&[
+                "-i".into(),
+                raw.to_string_lossy().to_string(),
+                "-c:a".into(),
+                "pcm_s16le".into(),
+                "-write_bext".into(),
+                "1".into(),
+                "-metadata".into(),
+                format!("time_reference={TIME_REFERENCE}"),
+                "-y".into(),
+                fixture.to_string_lossy().to_string(),
+            ]);
+            fs::remove_file(&raw).unwrap();
+            fixture
+        }
+
+        /// Every channel of `path` as 32-bit float at `rate`. Opus outputs
+        /// always decode at 48 kHz.
+        fn decode(path: &Path, rate: usize, channels: usize, opus: bool) -> Vec<Vec<f32>> {
+            let mut command = std::process::Command::new("ffmpeg");
+            command.args(["-nostdin", "-hide_banner", "-loglevel", "error"]);
+            if opus {
+                command.args(["-c:a", "libopus"]);
+            }
+            let output = command
+                .arg("-i")
+                .arg(path)
+                .args(["-map", "0:a:0", "-f", "f32le", "-ar", &rate.to_string(), "-"])
+                .output()
+                .unwrap();
+            assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+            let samples: Vec<f32> = output
+                .stdout
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .map(|bytes| f32::from_le_bytes(*bytes))
+                .collect();
+            (0..channels)
+                .map(|channel| samples.iter().skip(channel).step_by(channels).copied().collect())
+                .collect()
+        }
+
+        /// The stream's own length in samples, as the container states it.
+        fn stated_samples(path: &Path) -> Option<i64> {
+            let probe = ffprobe_json(path, &["-show_streams", "-select_streams", "a:0"]);
+            probe["streams"][0]["duration_ts"].as_i64()
+        }
+
+        /// Cross-correlation lag (in samples) of `output` against
+        /// `reference`, searched within `max_lag` of `offset`, over the
+        /// neighbourhood of each click. 0 means the clicks line up.
+        fn click_lag(reference: &[f32], output: &[f32], centers: &[usize], offset: i64, max_lag: i64) -> i64 {
+            const HALF_WINDOW: i64 = 64;
+            let mut best = (0_i64, f64::MIN);
+            for lag in -max_lag..=max_lag {
+                let mut sum = 0.0_f64;
+                for &center in centers {
+                    for n in center as i64 - HALF_WINDOW..=center as i64 + HALF_WINDOW {
+                        let m = n + offset + lag;
+                        if n < 0 || m < 0 || n as usize >= reference.len() || m as usize >= output.len() {
+                            continue;
+                        }
+                        sum += f64::from(reference[n as usize]) * f64::from(output[m as usize]);
+                    }
+                }
+                if sum > best.1 {
+                    best = (lag, sum);
+                }
+            }
+            best.0
+        }
+
+        #[derive(Clone, Copy, Debug)]
+        struct Options {
+            normalize: bool,
+            trim: bool,
+            fade: bool,
+            hpf: bool,
+            declip: bool,
+            auto_level: bool,
+        }
+
+        impl Options {
+            fn from_bits(bits: u32) -> Self {
+                Self {
+                    normalize: bits & 1 != 0,
+                    trim: bits & 2 != 0,
+                    fade: bits & 4 != 0,
+                    hpf: bits & 8 != 0,
+                    declip: bits & 16 != 0,
+                    auto_level: bits & 32 != 0,
+                }
+            }
+        }
+
+        #[derive(Clone, Debug)]
+        struct Case {
+            mode: &'static str,
+            format: &'static str,
+            rate: usize,
+            mp3_bitrate: u32,
+            options: Options,
+        }
+
+        /// Every mode × every processing combination at WAV 48 kHz, then every
+        /// format × offered rate (Opus 48 kHz and SGMCA 16 kHz are fixed) ×
+        /// mode with all processing off and all on, and each MP3 bitrate.
+        fn cases() -> Vec<Case> {
+            let modes = ["keep", "stereo", "split"];
+            let mut cases = Vec::new();
+            for mode in modes {
+                for bits in 0..64 {
+                    let options = Options::from_bits(bits);
+                    // Keep Original rejects auto-level (validate_convert_request).
+                    if mode == "keep" && options.auto_level {
+                        continue;
+                    }
+                    cases.push(Case {
+                        mode,
+                        format: "wav",
+                        rate: 48_000,
+                        mp3_bitrate: 192,
+                        options,
+                    });
+                }
+            }
+            let formats: [(&str, &[usize]); 6] = [
+                ("wav", &[22_050, 44_100]),
+                ("flac", &[22_050, 44_100, 48_000]),
+                ("mp3", &[22_050, 44_100, 48_000]),
+                ("m4a", &[22_050, 44_100, 48_000]),
+                ("opus", &[48_000]),
+                ("sgmca", &[16_000]),
+            ];
+            for (format, rates) in formats {
+                for &rate in rates {
+                    for mode in modes {
+                        for all in [false, true] {
+                            let mut options = Options::from_bits(if all { 63 } else { 0 });
+                            options.auto_level &= mode != "keep";
+                            cases.push(Case {
+                                mode,
+                                format,
+                                rate,
+                                mp3_bitrate: 192,
+                                options,
+                            });
+                        }
+                    }
+                }
+            }
+            for mp3_bitrate in [128, 320] {
+                for mode in modes {
+                    cases.push(Case {
+                        mode,
+                        format: "mp3",
+                        rate: 44_100,
+                        mp3_bitrate,
+                        options: Options::from_bits(0),
+                    });
+                }
+            }
+            cases
+        }
+
+        /// Converts `case` and returns every alignment problem found.
+        fn check_case(case: &Case, fixture: &Path, root: &Path, index: usize) -> Vec<String> {
+            let out = root.join(format!("case_{index}"));
+            fs::create_dir(&out).unwrap();
+            let mut job = court_job(fixture, &out, case.mode, case.format);
+            job.rate = case.rate.to_string();
+            job.mp3_bitrate = case.mp3_bitrate;
+            job.normalize = case.options.normalize;
+            job.trim = case.options.trim;
+            job.fade = case.options.fade;
+            job.hpf = case.options.hpf;
+            job.declip = case.options.declip;
+            job.auto_level = case.options.auto_level;
+            let gains = case.options.auto_level.then(|| vec![1.0, 2.0, 0.5, 1.25]);
+            let result = convert_with_system_ffmpeg(&job, gains);
+            // MP3 folds four channels into two, and AAC and Opus code the
+            // fourth channel of this 3.1 source as a low-pass LFE, so Keep
+            // Original refuses them before writing anything.
+            if case.mode == "keep" && matches!(case.format, "mp3" | "m4a" | "opus") {
+                let written = fs::read_dir(&out).unwrap().count();
+                return match result {
+                    Err(error) if error.contains("4-channel") && written == 0 => Vec::new(),
+                    Err(error) => vec![format!("{case:?}: refused with {error:?}, {written} files left")],
+                    Ok(_) => vec![format!(
+                        "{case:?}: 4-channel {} now converts; check it here",
+                        case.format
+                    )],
+                };
+            }
+            let conversion = match result {
+                Ok(conversion) => conversion,
+                Err(error) => return vec![format!("{case:?}: conversion failed: {error}")],
+            };
+
+            let opus = matches!(case.format, "opus" | "sgmca");
+            let decode_rate = if opus { RATE } else { case.rate };
+            let scale = |n: usize| ((n as u64 * decode_rate as u64 + RATE as u64 / 2) / RATE as u64) as usize;
+            let full_len = scale(LEN);
+            let reference = decode(fixture, decode_rate, CHANNELS, false).swap_remove(0);
+            let centers: Vec<usize> = CLICKS.iter().map(|&n| scale(n)).collect();
+            let trimmed = case.options.trim && case.mode != "split";
+            let expected_channels = match case.mode {
+                "keep" => CHANNELS,
+                "stereo" => 2,
+                _ => 1,
+            };
+            let expected_outputs = if case.mode == "split" { CHANNELS } else { 1 };
+            let mut problems = Vec::new();
+            if conversion.files.len() != expected_outputs {
+                problems.push(format!("{case:?}: {} outputs", conversion.files.len()));
+            }
+
+            for file in &conversion.files {
+                let path = Path::new(&file.path);
+                let probe = ffprobe_json(path, &["-show_streams", "-select_streams", "a:0"]);
+                if probe["streams"][0]["channels"] != expected_channels as u64 {
+                    problems.push(format!(
+                        "{case:?} {}: {} channels, expected {expected_channels}",
+                        file.name, probe["streams"][0]["channels"]
+                    ));
+                    continue;
+                }
+                let mut channels = decode(path, decode_rate, expected_channels, opus);
+                // The fixture carries a bext start, which `checked_export_record`
+                // (written for start-less fixtures) refuses; only the start
+                // is read here.
+                let record: serde_json::Value =
+                    serde_json::from_slice(&fs::read(manifest::manifest_path_for(path)).unwrap()).unwrap();
+                let output_rate = match case.format {
+                    "opus" => 48_000,
+                    "sgmca" => 16_000,
+                    _ => case.rate,
+                };
+
+                // AAC codes 1024-sample frames; the M4A edit list states the
+                // exact length and FFmpeg decodes the last frame's padding
+                // after it. Every other format decodes to its exact length.
+                if case.format == "m4a" {
+                    let Some(stated) = stated_samples(path) else {
+                        problems.push(format!("{case:?} {}: no stated M4A length", file.name));
+                        continue;
+                    };
+                    let decoded = channels[0].len() as i64;
+                    if !(stated..stated + 2048).contains(&decoded) {
+                        problems.push(format!(
+                            "{case:?} {}: decoded {decoded} samples, M4A states {stated}",
+                            file.name
+                        ));
+                    }
+                    for channel in &mut channels {
+                        channel.truncate(stated.max(0) as usize);
+                    }
+                }
+
+                let out_len = channels[0].len();
+                let removed = full_len as i64 - out_len as i64;
+                if trimmed {
+                    // Trim may remove the leading digital silence (plus the
+                    // tone's first two samples, which are below -50 dBFS),
+                    // never padding and never sound after it.
+                    let limit = scale(LEAD_SILENCE + 2) as i64 + 1;
+                    if !(1..=limit).contains(&removed) {
+                        problems.push(format!(
+                            "{case:?} {}: trim removed {removed} samples (allowed 1..={limit})",
+                            file.name
+                        ));
+                    }
+                    let note = record["startTime"]["note"].as_str().unwrap_or("");
+                    if !record["startTime"]["outputTimeReferenceSamples"].is_null()
+                        || !note.contains("Leading-silence trim")
+                    {
+                        problems.push(format!("{case:?} {}: record does not say the start moved", file.name));
+                    }
+                } else {
+                    if removed != 0 {
+                        problems.push(format!(
+                            "{case:?} {}: {out_len} samples at {decode_rate} Hz, source has {full_len}",
+                            file.name
+                        ));
+                    }
+                    let expected = TIME_REFERENCE * output_rate as u64 / RATE as u64;
+                    if record["startTime"]["outputTimeReferenceSamples"] != expected {
+                        problems.push(format!(
+                            "{case:?} {}: record start {} (expected {expected})",
+                            file.name, record["startTime"]["outputTimeReferenceSamples"]
+                        ));
+                    }
+                }
+
+                // Trim at a rate other than 48 kHz (loudnorm works at 192 kHz,
+                // the encoder resamples) can end between output samples.
+                let tolerance = if trimmed && (case.options.normalize || decode_rate != RATE) {
+                    1
+                } else {
+                    0
+                };
+                for (channel_index, channel) in channels.iter().enumerate() {
+                    // A fade-out covers the last click.
+                    let clicks = if case.options.fade { &centers[..2] } else { &centers[..] };
+                    let lag = click_lag(&reference, channel, clicks, -removed, (decode_rate / 40) as i64);
+                    if lag.abs() > tolerance {
+                        problems.push(format!(
+                            "{case:?} {} channel {channel_index}: clicks are {lag} samples off the source",
+                            file.name
+                        ));
+                    }
+                    // The click 300 samples before the end is the loudest
+                    // sample of the last 1000 unless a fade-out covers it.
+                    if !case.options.fade && channel.len() > scale(1000) {
+                        let tail_start = channel.len() - scale(1000);
+                        let (peak, _) = channel[tail_start..]
+                            .iter()
+                            .enumerate()
+                            .fold(
+                                (0, 0.0_f32),
+                                |best, (i, v)| if v.abs() > best.1 { (i, v.abs()) } else { best },
+                            );
+                        let expected = centers[2] as i64 - removed - tail_start as i64;
+                        if (peak as i64 - expected).abs() > tolerance + 1 {
+                            problems.push(format!(
+                                "{case:?} {} channel {channel_index}: last click at {peak}, expected {expected} (of the last {} samples)",
+                                file.name,
+                                scale(1000)
+                            ));
+                        }
+                    }
+                }
+            }
+            problems
+        }
+
+        #[test]
+        fn every_mode_option_format_and_rate_lines_up_sample_for_sample() {
+            if !court_fixture_tools_available() {
+                return;
+            }
+            let dir = ConversionTestDir::new();
+            let fixture = write_fixture(&dir.0);
+            let cases = cases();
+            let next = AtomicUsize::new(0);
+            let problems = Mutex::new(Vec::new());
+            let workers = std::thread::available_parallelism().map_or(2, |n| n.get().min(8));
+            std::thread::scope(|scope| {
+                for _ in 0..workers {
+                    scope.spawn(|| loop {
+                        let index = next.fetch_add(1, Ordering::Relaxed);
+                        let Some(case) = cases.get(index) else { break };
+                        let found = check_case(case, &fixture, &dir.0, index);
+                        let _ = fs::remove_dir_all(dir.0.join(format!("case_{index}")));
+                        if !found.is_empty() {
+                            problems.lock().unwrap().push(found.join("\n"));
+                        }
+                    });
+                }
+            });
+            let problems = problems.into_inner().unwrap();
+            assert!(
+                problems.is_empty(),
+                "{} of {} conversions are misaligned:\n{}",
+                problems.len(),
+                cases.len(),
+                problems.join("\n")
+            );
+        }
+
+        /// A DigitalCAT `.dm` reaches FFmpeg as a temporary WAV in the work
+        /// folder, so its conversions get the same alignment checks: a mono
+        /// 48 kHz PCM `.dm` holding channel 0 of the fixture converts in every
+        /// mode, plain, trimmed, faded and with everything but auto-level on,
+        /// with its clicks on the source's samples and its length kept unless
+        /// trim removed the leading silence.
+        #[test]
+        fn a_dm_source_lines_up_sample_for_sample() {
+            if !court_fixture_tools_available() {
+                return;
+            }
+            let dir = ConversionTestDir::new();
+            let format = crate::dm::tests::pcm_format(RATE as u32);
+            // The block rule for 16-bit mono at 48 kHz: 12000 frames.
+            let block_bytes = 24_000;
+            let pcm: Vec<u8> = (0..LEN)
+                .flat_map(|n| ((fixture_sample(n, 0) * 32767.0).round() as i16).to_le_bytes())
+                .collect();
+            let t0: u32 = 1_763_800_000;
+            let layout: Vec<(u32, &[u8])> = pcm.chunks(block_bytes).map(|block| (t0, block)).collect();
+            let dm = dir.0.join("alignment_session.dm");
+            fs::write(&dm, crate::dm::tests::dm_bytes(&format, block_bytes as u32, &layout)).unwrap();
+            let reference: Vec<f32> = (0..LEN)
+                .map(|n| ((fixture_sample(n, 0) * 32767.0).round() / 32768.0) as f32)
+                .collect();
+
+            let mut problems = Vec::new();
+            let mut index = 0;
+            for mode in ["keep", "stereo", "split"] {
+                for format in ["wav", "mp3"] {
+                    for bits in [0, 2, 4, 31] {
+                        let options = Options::from_bits(bits);
+                        let out = dir.0.join(format!("dm_case_{index}"));
+                        index += 1;
+                        fs::create_dir(&out).unwrap();
+                        let mut job = court_job(&dm, &out, mode, format);
+                        job.labels = vec!["Room".into()];
+                        job.chan_vols = vec![1.0];
+                        job.rate = RATE.to_string();
+                        job.normalize = options.normalize;
+                        job.trim = options.trim;
+                        job.fade = options.fade;
+                        job.hpf = options.hpf;
+                        job.declip = options.declip;
+                        let case = format!("dm {mode} {format} {options:?}");
+                        let conversion = match convert_with_system_ffmpeg(&job, None) {
+                            Ok(conversion) => conversion,
+                            Err(error) => {
+                                problems.push(format!("{case}: conversion failed: {error}"));
+                                continue;
+                            }
+                        };
+                        if conversion.feed == dm || conversion.feed.exists() {
+                            problems.push(format!("{case}: the feed was not a removed temporary WAV"));
+                        }
+                        let expected_channels = if mode == "stereo" { 2 } else { 1 };
+                        for file in &conversion.files {
+                            let channels = decode(Path::new(&file.path), RATE, expected_channels, false);
+                            let out_len = channels[0].len();
+                            let removed = LEN as i64 - out_len as i64;
+                            let trimmed = options.trim && mode != "split";
+                            if trimmed {
+                                let limit = (LEAD_SILENCE + 2) as i64 + 1;
+                                if !(1..=limit).contains(&removed) {
+                                    problems.push(format!("{case}: trim removed {removed} samples"));
+                                }
+                            } else if removed != 0 {
+                                problems.push(format!("{case}: {out_len} samples, the .dm holds {LEN}"));
+                            }
+                            let tolerance = i64::from(trimmed && options.normalize);
+                            let clicks = if options.fade { &CLICKS[..2] } else { &CLICKS[..] };
+                            for (channel_index, channel) in channels.iter().enumerate() {
+                                let lag = click_lag(&reference, channel, clicks, -removed, (RATE / 40) as i64);
+                                if lag.abs() > tolerance {
+                                    problems.push(format!(
+                                        "{case} channel {channel_index}: clicks are {lag} samples off the .dm"
+                                    ));
+                                }
+                            }
+                        }
+                        let _ = fs::remove_dir_all(&out);
+                    }
+                }
+            }
+            assert!(problems.is_empty(), "{}", problems.join("\n"));
+        }
+
+        #[test]
+        fn the_stereo_peak_limiter_compensates_its_lookahead() {
+            assert!(STEREO_PEAK_LIMITER.split(':').any(|option| option == "latency=1"));
+        }
     }
 }

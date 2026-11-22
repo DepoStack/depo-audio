@@ -108,7 +108,19 @@
         "filterOption": { "enum": ["-af", "-filter_complex", null], "description": "The FFmpeg option that carried filterChain, or null when no filter ran." },
         "filterChain": { "type": ["string", "null"], "description": "The exact FFmpeg filter string used. In split mode it is the whole graph; channel.sourceChannelIndex names this file's branch." },
         "encoderArgs": { "type": "array", "items": { "type": "string" }, "description": "The exact FFmpeg encoder and metadata arguments for this output, without file paths. Stream selection is in mapArgs." },
-        "mapArgs": { "type": "array", "items": { "type": "string" }, "description": "The exact FFmpeg -map arguments for this output: -map 0:a:0 (the converted source stream) for stereo and keep, -map [opN] (this channel's branch of filterChain) for split. The command is: ffmpeg -i <source> [filterOption filterChain] mapArgs encoderArgs <output>. Written by versions after 1.1.0." }
+        "mapArgs": { "type": "array", "items": { "type": "string" }, "description": "The exact FFmpeg -map arguments for this output: -map 0:a:0 (the converted source stream) for stereo and keep, -map [opN] (this channel's branch of filterChain) for split. The command is: ffmpeg -i <source> [filterOption filterChain] mapArgs encoderArgs <output>. Written by versions after 1.1.0." },
+        "fadeOut": {
+          "type": ["object", "null"],
+          "additionalProperties": false,
+          "required": ["startSeconds", "durationSeconds", "decodedSourceSeconds", "statedSourceSeconds"],
+          "description": "Where the fade-out (afade=t=out in filterChain) was placed, or null when there is none. It is placed from decodedSourceSeconds, the converted stream's length as FFmpeg decodes it, not from statedSourceSeconds, the length the source's headers state, which can be shorter (a chained Ogg file, a VBR MP3). Written by versions after 1.1.0.",
+          "properties": {
+            "startSeconds": { "type": "number", "minimum": 0 },
+            "durationSeconds": { "type": "number", "minimum": 0 },
+            "decodedSourceSeconds": { "type": "number", "minimum": 0 },
+            "statedSourceSeconds": { "type": ["number", "null"], "minimum": 0 }
+          }
+        }
       }
     },
     "channel": {

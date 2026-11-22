@@ -13,6 +13,14 @@ export const FORMATS_OUT = [
   { id: 'sgmca', label: 'SGMCA', desc: 'Case CATalyst Direct Audio — Opus, one stream per channel, 16 kHz' },
 ]
 
+// Keep Original to these formats is refused for a source with more than two
+// channels: MP3 folds them into stereo, and AAC and Opus code a channel the
+// layout calls LFE as a low-pass effects channel (conversion.rs).
+export const KEEP_STEREO_ONLY_FORMATS = ['mp3', 'm4a', 'opus']
+
+export const KEEP_STEREO_ONLY_NOTE =
+  'Keep Original to this format works only for mono and stereo recordings. A recording with more channels is not converted, because this format would fold channels together or filter one as a bass channel. To keep every channel, choose WAV, FLAC or SGMCA, or use Split Channels.'
+
 // Output formats whose sample rate is fixed by the format itself.
 export const FIXED_OUTPUT_RATES = { opus: '48000', sgmca: '16000' }
 
