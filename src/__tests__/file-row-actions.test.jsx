@@ -304,6 +304,49 @@ describe('Compare with original', () => {
   })
 })
 
+describe('DCR queue notices', () => {
+  afterEach(cleanup)
+
+  it('shows two identical remote-participant notices without a duplicate-key warning', () => {
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const change = { atSeconds: 754, kind: 'joined', channelMask: 4, channelsAfter: 3 }
+    const streams = {
+      convertedIndex: 0,
+      streams: [{ channels: 4, sampleRate: 8000 }],
+      durationSecs: 3600,
+      dcr: {
+        codec: 'PCM 16-bit',
+        channelNames: ['Judge', 'Witness', 'Ch 3', 'Ch 4'],
+        conferenceChanges: [change, change],
+        conferenceChangeCount: 2,
+        videoFrames: 0,
+        attachments: 0,
+        trailingBytesDropped: 0,
+        problem: null,
+      },
+    }
+    render(
+      <FileRow
+        file={{
+          path: '/case/hearing.dcr',
+          name: 'hearing.dcr',
+          fmt: { status: 'experimental', name: 'Liberty / BIS Digital DCR' },
+        }}
+        streams={streams}
+        job={{ status: 'pending' }}
+        onRemove={vi.fn()}
+        converting={false}
+        onOpenInPlayer={vi.fn()}
+      />,
+    )
+    expect(
+      screen.getAllByText('A remote participant joined at 00:12:34 (3 channels recorded from then on).'),
+    ).toHaveLength(2)
+    expect(errors.mock.calls.some(call => String(call[0]).includes('same key'))).toBe(false)
+    errors.mockRestore()
+  })
+})
+
 describe('Queued DigitalCAT .dm rows', () => {
   afterEach(cleanup)
 
