@@ -1595,6 +1595,11 @@ mod tests {
     /// tell which source channel ended up in which output.
     const SYNTHETIC_CHANNEL_VOLUMES: [f64; 4] = [0.5, 0.25, 0.125, 0.0625];
     const SYNTHETIC_SECONDS: f64 = 2.0;
+    /// Samples per frame for the synthetic sine sources. FFmpeg's default is
+    /// 1024, which does not divide 2 s at 48 kHz, and FFmpeg 8's join filter
+    /// drops the final partial frame (768 samples), so the fixture would come
+    /// out short of 2 s. 960 (20 ms) divides it exactly on every FFmpeg version.
+    const SYNTHETIC_FRAME: u32 = 960;
 
     /// Made-up bytes that are not a Direct Audio header (nor an Ogg page).
     fn synthetic_vendor_prefix() -> Vec<u8> {
@@ -1626,7 +1631,7 @@ mod tests {
                 "-f".into(),
                 "lavfi".into(),
                 "-i".into(),
-                format!("sine=frequency={frequency}:duration={SYNTHETIC_SECONDS}:sample_rate=48000"),
+                format!("sine=frequency={frequency}:duration={SYNTHETIC_SECONDS}:sample_rate=48000:samples_per_frame={SYNTHETIC_FRAME}"),
             ]);
         }
         let levels: Vec<String> = SYNTHETIC_CHANNEL_VOLUMES
@@ -2629,7 +2634,7 @@ mod tests {
                 "-f".into(),
                 "lavfi".into(),
                 "-i".into(),
-                format!("sine=frequency={frequency}:duration={SYNTHETIC_SECONDS}:sample_rate=48000"),
+                format!("sine=frequency={frequency}:duration={SYNTHETIC_SECONDS}:sample_rate=48000:samples_per_frame={SYNTHETIC_FRAME}"),
             ]);
         }
         let graph = "[0:a]volume=0.5[floor];[1:a]volume=0.0625[q0];[2:a]volume=0.0625[q1];\
