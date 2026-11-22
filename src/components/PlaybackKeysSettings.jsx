@@ -12,6 +12,7 @@ import {
   backAmount,
   formatPlaybackKey,
   playbackKeyNote,
+  registrationErrorText,
 } from '../lib/playbackKeys'
 import { backstepLabel, loadBackstep } from '../lib/player'
 
@@ -37,7 +38,7 @@ function rowStatus({ accelerator, enabled, suspended, registration }) {
   if (suspended) return { text: 'Paused while you assign a key', tone: 'sub' }
   if (!registration) return { text: 'Registering…', tone: 'sub' }
   if (registration.state === 'registered') return { text: 'Registered', tone: 'ok' }
-  return { text: `Couldn’t register: ${registration.error}`, tone: 'error' }
+  return { text: registrationErrorText(registration.error), tone: 'error', detail: registration.error }
 }
 
 function KeyRow({ action, accelerator, enabled, keys, onRecord, onClear, recording, onRecorded, onCancel }) {
@@ -105,6 +106,12 @@ function KeyRow({ action, accelerator, enabled, keys, onRecord, onClear, recordi
             {status.text}
           </span>
         </div>
+        {status.detail && (
+          <details className="type-small text-[hsl(var(--sub))]">
+            <summary className="cursor-pointer">System message</summary>
+            <span className="break-words">{status.detail}</span>
+          </details>
+        )}
         {note && <span className="type-small text-[hsl(var(--text2))]">{note}</span>}
         {error && (
           <span role="alert" className="type-small text-destructive">
@@ -119,7 +126,11 @@ function KeyRow({ action, accelerator, enabled, keys, onRecord, onClear, recordi
           className={recording ? 'ring-1 ring-inset ring-foreground text-foreground' : undefined}
           aria-describedby={statusId}
           aria-label={
-            recording ? `Press a key for ${action.label}. Escape cancels.` : `Assign a key to ${action.label}`
+            recording
+              ? `Press a key for ${action.label}. Escape cancels.`
+              : accelerator
+                ? `Change the key for ${action.label}`
+                : `Assign a key to ${action.label}`
           }
           onClick={() => {
             setError('')
@@ -240,10 +251,11 @@ export default function PlaybackKeysSettings({ prefs, keys }) {
         </CardHeader>
         <CardContent className="p-4 flex flex-col gap-2">
           <p className="type-small text-[hsl(var(--sub))]">
-            Choose a function key (F1–F24), or a key together with Ctrl or Cmd. Letters, numbers, Space and Escape on
-            their own are refused because they type or cancel in every app. The suggested F13–F15 avoid the keys Express
-            Scribe and Case CATalyst use by default; they are on full-size keyboards, and pedals in keyboard mode can
-            send them.
+            Choose a function key (F1–F24), or a letter or number together with Ctrl or Cmd. Keys that type, edit or
+            move the cursor are refused: letters, numbers, Space and Escape on their own, Ctrl+Alt (AltGr on Windows),
+            Ctrl or Cmd with arrows, Backspace, Delete, Home, End, Tab, Space or Enter, and copy, paste, undo, redo and
+            save. The suggested F13–F15 avoid the keys Express Scribe and Case CATalyst use by default. They are on
+            full-size keyboards, and your pedal’s setup tool may be able to send them if it offers F13–F15.
           </p>
           <ul className="flex flex-col">
             {PLAYBACK_KEY_ACTIONS.map(action => (
@@ -305,12 +317,17 @@ export default function PlaybackKeysSettings({ prefs, keys }) {
         <CardContent className="p-4 flex flex-col gap-2 type-small text-[hsl(var(--text2))]">
           <p>
             A pedal in keyboard mode acts like a keyboard and sends the keys you set in its own setup tool, such as the
-            OM System (Olympus) Foot Switch Configuration Tool. Set each pedal to send the key assigned here, and turn
-            on Hold to play for the classic press-and-hold pedal.
+            OM System (Olympus) Foot Switch Configuration Tool. If the tool offers the key assigned here, set the pedal
+            to send it. This has not yet been tried with a real pedal.
           </p>
           <p>
-            Infinity IN-USB pedals are not keyboards. They need a helper app, such as NCH Pedable, to turn each pedal
-            into a key. DepoAudio does not read pedals directly yet.
+            Infinity IN-USB pedals are not keyboards. They need a helper app to turn each pedal into a key. DepoAudio
+            does not read pedals directly yet.
+          </p>
+          <p>
+            Hold to play pauses when the key is let go, so it needs the pedal or helper app to send a key release when
+            you lift your foot. Some helper apps are reported not to. If the Player keeps playing after you lift the
+            pedal, use Press to play or pause instead.
           </p>
           <p>
             On macOS, DepoAudio asks the system hot-key service for these keys, which does not need Accessibility

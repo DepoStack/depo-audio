@@ -22,8 +22,9 @@ const ACTION_IDS = new Set(PLAYBACK_KEY_ACTIONS.map(action => action.id))
 
 // Suggested, never registered on their own: "Use suggested keys" copies them
 // into the person's assignments, and nothing is registered until the setting
-// is on. F13–F15 are on full-size keyboards, and pedal configuration tools for
-// keyboard-mode pedals can send them. They avoid the F-keys that Express Scribe
+// is on. F13–F15 are on full-size keyboards, and some pedal setup tools for
+// keyboard-mode pedals may be able to send them (not checked with a real
+// pedal). They avoid the F-keys that Express Scribe
 // (F4, F7–F10) and Case CATalyst audio (Shift+F9, Ctrl+F9) use by default.
 export const SUGGESTED_PLAYBACK_KEYS = { back: 'F13', playPause: 'F14', forward: 'F15' }
 
@@ -70,7 +71,59 @@ const NAMED_KEYS = new Set([
 const REFUSED_KEYS = new Set(['CapsLock', 'NumLock', 'ScrollLock', 'PrintScreen'])
 // Ctrl/Cmd with these is copy, paste, cut, undo, redo, select all and save in
 // nearly every program; taking them system-wide would break typing.
+// This applies whatever other modifiers are held: Ctrl+Shift+Z and
+// Cmd+Shift+Z are redo, Ctrl+Shift+V is paste as plain text.
 const EDITING_LETTERS = new Set(['KeyA', 'KeyC', 'KeyS', 'KeyV', 'KeyX', 'KeyY', 'KeyZ'])
+// With Ctrl or Cmd these still edit or move the cursor (Ctrl+Backspace deletes
+// a word, Ctrl+Left moves by word, Ctrl+Home jumps to the start, Ctrl+Enter
+// is a page break in Word, Ctrl+Insert copies), switch input sources or apps
+// (Ctrl/Cmd+Space, Ctrl/Cmd+Tab) or switch tabs (Ctrl+Page Up/Down).
+const EDITING_NAMED_KEYS = new Set([
+  'Space',
+  'Tab',
+  'Enter',
+  'Backspace',
+  'Delete',
+  'Insert',
+  'Home',
+  'End',
+  'PageUp',
+  'PageDown',
+  'ArrowUp',
+  'ArrowDown',
+  'ArrowLeft',
+  'ArrowRight',
+])
+// Cmd+Q quits and Cmd+W closes the window on macOS.
+const WINDOW_LETTERS = new Set(['KeyQ', 'KeyW'])
+// Ctrl or Cmd alone with these is bold, italic, underline, find, print, new,
+// open or close in most word processors and CAT editors. A note, not a refusal.
+const FORMATTING_LETTERS = {
+  KeyB: 'bold',
+  KeyI: 'italic',
+  KeyU: 'underline',
+  KeyF: 'find',
+  KeyP: 'print',
+  KeyN: 'new document',
+  KeyO: 'open',
+  KeyW: 'close',
+}
+// Keys whose character differs by keyboard layout. Windows and Linux register
+// them by the character the layout gives, so the key the person pressed is
+// only kept when it gives the same character as on a US layout.
+const US_PUNCTUATION = {
+  Backquote: '`~',
+  Backslash: '\\|',
+  BracketLeft: '[{',
+  BracketRight: ']}',
+  Comma: ',<',
+  Equal: '=+',
+  Minus: '-_',
+  Period: '.>',
+  Quote: '\'"',
+  Semicolon: ';:',
+  Slash: '/?',
+}
 const MODIFIER_KEYS = new Set(['Shift', 'Control', 'Alt', 'Meta', 'OS', 'AltGraph', 'Hyper', 'Super'])
 
 function isSupportedKeyCode(code) {
@@ -105,14 +158,28 @@ export function playbackKeyProblem(accelerator) {
     return 'That key can’t be used as a playback key. Choose a function key, or a key with Ctrl or Cmd.'
   }
   const { modifiers, key } = parsed
-  if (FUNCTION_KEY.test(key)) return ''
-  const hasCommandModifier = modifiers.includes('Control') || modifiers.includes('Super')
-  if (!hasCommandModifier) {
+  const has = modifier => modifiers.includes(modifier)
+  if (FUNCTION_KEY.test(key)) {
+    if (key === 'F4' && (has('Alt') || has('Control'))) {
+      return 'Alt+F4 and Ctrl+F4 close windows and documents in most apps. Choose another key.'
+    }
+    return ''
+  }
+  if (!has('Control') && !has('Super')) {
     if (key === 'Space') return 'Space types a space in every app, so it needs Ctrl or Cmd with it.'
     return 'This key types or moves the cursor in every app. Add Ctrl or Cmd, or choose a function key.'
   }
-  if (EDITING_LETTERS.has(key) && modifiers.length === 1) {
-    return 'That is copy, paste, undo or save in most programs. Choose another key.'
+  if (has('Control') && has('Alt') && !has('Super')) {
+    return 'On Windows, Ctrl+Alt is the same as AltGr, which types characters such as @ and € on many keyboards. Choose a function key, or Ctrl or Cmd without Alt.'
+  }
+  if (EDITING_NAMED_KEYS.has(key)) {
+    return 'With Ctrl or Cmd, this key still edits text, moves the cursor or switches apps. Choose a function key or a letter.'
+  }
+  if (EDITING_LETTERS.has(key)) {
+    return 'That is copy, paste, undo, redo or save in most programs, with or without Shift. Choose another key.'
+  }
+  if (has('Super') && WINDOW_LETTERS.has(key)) {
+    return 'Cmd+Q quits and Cmd+W closes the window on a Mac. Choose another key.'
   }
   return ''
 }
@@ -125,6 +192,10 @@ export function playbackKeyNote(accelerator) {
   const parsed = parseAccelerator(accelerator)
   if (!parsed) return ''
   const name = [...parsed.modifiers, parsed.key].join('+')
+  const onlyCommand = parsed.modifiers.length === 1 && ['Control', 'Super'].includes(parsed.modifiers[0])
+  if (onlyCommand && FORMATTING_LETTERS[parsed.key]) {
+    return `Most word processors and CAT editors use this key for ${FORMATTING_LETTERS[parsed.key]}. While this is on, it won’t reach them.`
+  }
   if (name === 'Shift+F9' || name === 'Control+F9') return 'Case CATalyst uses this key for its own audio playback.'
   if (['F4', 'F7', 'F8', 'F9', 'F10'].includes(name)) return 'Express Scribe uses this key by default.'
   if (name === 'F1') return 'Most programs open their help with F1.'
@@ -177,9 +248,9 @@ export function formatPlaybackKey(accelerator, { mac = IS_MAC } = {}) {
  * Returns { pending: true } while only modifiers are held, { cancel: true }
  * for a bare Escape, { error } for a key that is refused, or { accelerator }.
  */
-export function acceleratorFromKeyEvent(event) {
+export function acceleratorFromKeyEvent(event, { mac = IS_MAC } = {}) {
   if (MODIFIER_KEYS.has(event.key)) return { pending: true }
-  const code = event.code
+  let code = event.code
   const modifiers = []
   if (event.ctrlKey) modifiers.push('Control')
   if (event.altKey) modifiers.push('Alt')
@@ -190,6 +261,20 @@ export function acceleratorFromKeyEvent(event) {
   }
   if (!code || !isSupportedKeyCode(code) || REFUSED_KEYS.has(code)) {
     return { error: 'That key can’t be used as a playback key. Choose a function key, or a key with Ctrl or Cmd.' }
+  }
+  // macOS registers a key by its position, which is what event.code names.
+  // Windows and Linux register it by what the keyboard layout gives for it,
+  // so on AZERTY the key labelled A must be stored as KeyA, not KeyQ.
+  if (!mac) {
+    const typed = typeof event.key === 'string' && event.key.length === 1 ? event.key : ''
+    if (LETTER.test(code) && /^[a-z]$/i.test(typed)) {
+      code = `Key${typed.toUpperCase()}`
+    } else if (US_PUNCTUATION[code] && typed && !US_PUNCTUATION[code].includes(typed)) {
+      return {
+        error:
+          'On your keyboard layout this punctuation key may not register as the key you pressed. Choose a letter, number or function key.',
+      }
+    }
   }
   const accelerator = [...modifiers, code].join('+')
   const problem = playbackKeyProblem(accelerator)
@@ -226,6 +311,17 @@ export function normalizePlaybackKeys(raw) {
     bindings[id] = [...parsed.modifiers, parsed.key].join('+')
   }
   return { enabled: source.enabled === true, holdToPlay: source.holdToPlay === true, bindings }
+}
+
+/**
+ * Plain words for a registration error from the plugin. The plugin's own text
+ * (e.g. "HotKey already registered: HotKey { mods: … }") is kept as detail.
+ */
+export function registrationErrorText(error) {
+  const raw = String(error ?? '')
+  if (/already registered/i.test(raw)) return 'Another app is already using this key. Choose another key.'
+  if (/os error|unable to register/i.test(raw)) return 'The system refused this key. Choose another key.'
+  return 'The system couldn’t register this key. Choose another key.'
 }
 
 export function backAmount(backstep) {
@@ -302,6 +398,11 @@ export function createPlaybackKeyDispatcher({ onStatus = () => {}, now = () => D
 
   return {
     handle,
+    // Forget held keys. Called before keys are released and registered again,
+    // because a release that arrives after that is never delivered.
+    reset() {
+      pressedAt.clear()
+    },
     setTarget(next) {
       target = next || null
     },

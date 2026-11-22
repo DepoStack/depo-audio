@@ -11,10 +11,14 @@ import { createPlaybackKeyDispatcher, normalizePlaybackKeys, PLAYBACK_KEY_ACTION
 //   the recorder can see the press, then registered again.
 // - Turning the setting off, closing the window (unmount) and quitting the app
 //   (Rust, RunEvent::Exit) release every key.
-// - Keys stay registered while a DepoAudio text field has focus. Every key the
-//   recorder accepts is a function key or uses Ctrl/Cmd, so none of them types
-//   a character, and releasing and re-taking keys on every focus change would
-//   let another app take a key in between.
+// - Keys stay registered while a DepoAudio text field has focus, because
+//   releasing and re-taking keys on every focus change would let another app
+//   take a key in between. The recorder refuses keys that type or edit in
+//   common cases (bare letters, Ctrl+Alt, which is AltGr on Windows, and
+//   Ctrl/Cmd with editing and cursor keys); an assigned key does not reach any
+//   app, DepoAudio's text fields included, while the setting is on.
+// - Every sync first forgets held keys, because a release that arrives after
+//   unregisterAll() is never delivered.
 //
 // Each sync starts with unregisterAll(), so a page reload (which keeps the
 // Rust-side registrations) never leaves a stale key behind.
@@ -40,6 +44,7 @@ export default function usePlaybackKeys(rawSettings, { registerKey = register, r
     const active = wanted.enabled && !suspended
     let cancelled = false
     queueRef.current = queueRef.current.then(async () => {
+      dispatcher.reset()
       try {
         await releaseAll()
       } catch (error) {

@@ -50,22 +50,116 @@ describe('key recorder validation', () => {
   })
 
   it('accepts a key with Ctrl or Cmd, in the plugin modifier order', () => {
-    expect(acceleratorFromKeyEvent(key('KeyP', 'p', { ctrlKey: true, altKey: true }))).toEqual({
-      accelerator: 'Control+Alt+KeyP',
+    expect(acceleratorFromKeyEvent(key('KeyK', 'K', { ctrlKey: true, shiftKey: true }))).toEqual({
+      accelerator: 'Control+Shift+KeyK',
     })
-    expect(acceleratorFromKeyEvent(key('ArrowLeft', 'ArrowLeft', { metaKey: true, shiftKey: true }))).toEqual({
-      accelerator: 'Shift+Super+ArrowLeft',
+    expect(acceleratorFromKeyEvent(key('KeyP', 'π', { metaKey: true, altKey: true }), { mac: true })).toEqual({
+      accelerator: 'Alt+Super+KeyP',
+    })
+    expect(acceleratorFromKeyEvent(key('Digit7', '7', { ctrlKey: true }))).toEqual({ accelerator: 'Control+Digit7' })
+  })
+
+  it('refuses copy, paste, undo, redo and save, whatever other modifiers are held', () => {
+    for (const code of ['KeyC', 'KeyV', 'KeyX', 'KeyZ', 'KeyY', 'KeyA', 'KeyS']) {
+      const letter = code.slice(3).toLowerCase()
+      expect(acceleratorFromKeyEvent(key(code, letter, { ctrlKey: true })).error).toMatch(/copy, paste/)
+      expect(acceleratorFromKeyEvent(key(code, letter, { ctrlKey: true, shiftKey: true })).error).toMatch(/copy, paste/)
+      expect(acceleratorFromKeyEvent(key(code, letter, { metaKey: true, shiftKey: true })).error).toMatch(/copy, paste/)
+    }
+    expect(playbackKeyProblem('Control+Shift+KeyZ')).toBeTruthy()
+    expect(playbackKeyProblem('Shift+Super+KeyZ')).toBeTruthy()
+    expect(playbackKeyProblem('Control+Shift+KeyV')).toBeTruthy()
+  })
+
+  it('refuses Ctrl+Alt without Cmd/Win, which is AltGr on Windows and types characters', () => {
+    for (const accelerator of [
+      'Control+Alt+KeyQ',
+      'Control+Alt+KeyE',
+      'Control+Alt+Digit7',
+      'Control+Alt+KeyA',
+      'Control+Alt+Shift+KeyP',
+      'Control+Alt+Period',
+    ]) {
+      expect(playbackKeyProblem(accelerator)).toMatch(/AltGr/)
+    }
+    expect(acceleratorFromKeyEvent(key('KeyP', 'p', { ctrlKey: true, altKey: true })).error).toMatch(/AltGr/)
+    expect(playbackKeyProblem('Control+Alt+F13')).toBe('')
+  })
+
+  it('refuses editing, cursor, Space and Tab keys with Ctrl or Cmd', () => {
+    for (const named of [
+      'Backspace',
+      'Delete',
+      'Insert',
+      'ArrowLeft',
+      'ArrowRight',
+      'ArrowUp',
+      'ArrowDown',
+      'Home',
+      'End',
+      'PageUp',
+      'PageDown',
+      'Enter',
+      'Tab',
+      'Space',
+    ]) {
+      expect(playbackKeyProblem(`Control+${named}`)).toMatch(/edits text/)
+      expect(playbackKeyProblem(`Super+${named}`)).toMatch(/edits text/)
+      expect(playbackKeyProblem(`Control+Shift+${named}`)).toMatch(/edits text/)
+    }
+    expect(acceleratorFromKeyEvent(key('ArrowLeft', 'ArrowLeft', { ctrlKey: true })).error).toMatch(/edits text/)
+  })
+
+  it('refuses window-closing and quitting keys', () => {
+    expect(playbackKeyProblem('Alt+F4')).toMatch(/close/)
+    expect(playbackKeyProblem('Control+F4')).toMatch(/close/)
+    expect(playbackKeyProblem('Control+Shift+F4')).toMatch(/close/)
+    expect(playbackKeyProblem('F4')).toBe('')
+    expect(playbackKeyProblem('Super+KeyQ')).toMatch(/quits/)
+    expect(playbackKeyProblem('Super+KeyW')).toMatch(/quits/)
+    expect(playbackKeyProblem('Shift+Super+KeyQ')).toMatch(/quits/)
+  })
+
+  it('notes formatting and document keys without refusing them', () => {
+    for (const letter of ['B', 'I', 'U', 'F', 'P', 'N', 'O']) {
+      expect(playbackKeyProblem(`Control+Key${letter}`)).toBe('')
+      expect(playbackKeyNote(`Control+Key${letter}`)).toMatch(/word processors and CAT editors/)
+      expect(playbackKeyNote(`Super+Key${letter}`)).toMatch(/word processors and CAT editors/)
+    }
+    expect(playbackKeyNote('Control+KeyW')).toMatch(/close/)
+    expect(playbackKeyNote('Control+Shift+KeyB')).toBe('')
+    expect(playbackKeyNote('Control+KeyK')).toBe('')
+  })
+
+  it('stores letters by the layout letter on Windows and Linux, and by position on macOS', () => {
+    // AZERTY: the key labelled A is in the QWERTY Q position
+    expect(acceleratorFromKeyEvent(key('KeyQ', 'a', { ctrlKey: true }), { mac: false })).toEqual({
+      error: expect.stringMatching(/copy, paste/),
+    })
+    expect(acceleratorFromKeyEvent(key('KeyW', 'z', { ctrlKey: true, shiftKey: true }), { mac: false }).error).toMatch(
+      /copy, paste/,
+    )
+    expect(acceleratorFromKeyEvent(key('KeyA', 'q', { ctrlKey: true }), { mac: false })).toEqual({
+      accelerator: 'Control+KeyQ',
+    })
+    expect(acceleratorFromKeyEvent(key('KeyM', 'q', { metaKey: true }), { mac: true })).toEqual({
+      accelerator: 'Super+KeyM',
+    })
+    // A non-Latin layout keeps the position, which matches the Latin key code
+    expect(acceleratorFromKeyEvent(key('KeyK', 'л', { ctrlKey: true }), { mac: false })).toEqual({
+      accelerator: 'Control+KeyK',
     })
   })
 
-  it('refuses copy, paste, undo and save, but allows them with a second modifier', () => {
-    for (const code of ['KeyC', 'KeyV', 'KeyX', 'KeyZ', 'KeyY', 'KeyA', 'KeyS']) {
-      expect(acceleratorFromKeyEvent(key(code, code.slice(3).toLowerCase(), { ctrlKey: true })).error).toMatch(
-        /copy, paste/,
-      )
-    }
-    expect(acceleratorFromKeyEvent(key('KeyC', 'c', { ctrlKey: true, altKey: true }))).toEqual({
-      accelerator: 'Control+Alt+KeyC',
+  it('refuses punctuation that gives a different character on this layout on Windows and Linux', () => {
+    expect(acceleratorFromKeyEvent(key('Comma', ',', { ctrlKey: true }), { mac: false })).toEqual({
+      accelerator: 'Control+Comma',
+    })
+    expect(acceleratorFromKeyEvent(key('Semicolon', 'm', { ctrlKey: true }), { mac: false }).error).toMatch(
+      /keyboard layout/,
+    )
+    expect(acceleratorFromKeyEvent(key('Semicolon', 'm', { ctrlKey: true }), { mac: true })).toEqual({
+      accelerator: 'Control+Semicolon',
     })
   })
 
@@ -76,9 +170,9 @@ describe('key recorder validation', () => {
   })
 
   it('finds a key already assigned to another action, whatever the modifier order', () => {
-    const bindings = { back: 'F13', playPause: 'Control+Alt+KeyP' }
+    const bindings = { back: 'F13', playPause: 'Control+Shift+KeyK' }
     expect(actionUsingKey(bindings, 'F13', 'forward')).toBe('back')
-    expect(actionUsingKey(bindings, 'Alt+Control+KeyP', 'forward')).toBe('playPause')
+    expect(actionUsingKey(bindings, 'Shift+Control+KeyK', 'forward')).toBe('playPause')
     expect(actionUsingKey(bindings, 'F13', 'back')).toBeNull()
   })
 
@@ -97,7 +191,7 @@ describe('key recorder validation', () => {
   })
 
   it('formats keys for each platform', () => {
-    expect(formatPlaybackKey('Control+Alt+KeyP', { mac: false })).toBe('Ctrl+Alt+P')
+    expect(formatPlaybackKey('Control+Shift+KeyP', { mac: false })).toBe('Ctrl+Shift+P')
     expect(formatPlaybackKey('Alt+Super+Digit2', { mac: true })).toBe('Option+Cmd+2')
     expect(formatPlaybackKey('Control+Numpad4', { mac: false })).toBe('Ctrl+Num 4')
     expect(formatPlaybackKey('F14')).toBe('F14')
@@ -120,15 +214,29 @@ describe('stored settings', () => {
         playPause: 'Space',
         forward: 'F15',
         slower: 'F15',
-        faster: 'Alt+Control+Period',
+        faster: 'Shift+Control+Period',
         launch: 'F1',
       },
     })
     expect(result).toEqual({
       enabled: true,
       holdToPlay: true,
-      bindings: { forward: 'F15', faster: 'Control+Alt+Period' },
+      bindings: { forward: 'F15', faster: 'Control+Shift+Period' },
     })
+  })
+
+  it('drops keys a hand-edited file could use to take typing keys', () => {
+    const result = normalizePlaybackKeys({
+      enabled: true,
+      bindings: {
+        back: 'Control+ArrowLeft',
+        playPause: 'Control+Alt+KeyQ',
+        forward: 'Control+Shift+KeyZ',
+        slower: 'Alt+F4',
+        faster: 'Super+Space',
+      },
+    })
+    expect(result.bindings).toEqual({})
   })
 })
 
@@ -222,6 +330,18 @@ describe('action mapping', () => {
     dispatcher.handle('forward', 'Pressed')
     clock += 10_001
     dispatcher.handle('forward', 'Pressed')
+    expect(player.seekBy).toHaveBeenCalledTimes(2)
+  })
+
+  it('forgets held keys on reset, so a release lost during a re-sync does not block the next press', () => {
+    let clock = 0
+    const player = fakePlayer()
+    const dispatcher = createPlaybackKeyDispatcher({ now: () => clock })
+    dispatcher.setTarget(player)
+    dispatcher.handle('back', 'Pressed')
+    dispatcher.reset()
+    clock += 500
+    dispatcher.handle('back', 'Pressed')
     expect(player.seekBy).toHaveBeenCalledTimes(2)
   })
 

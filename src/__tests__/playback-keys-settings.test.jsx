@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { register, unregisterAll } from '@tauri-apps/plugin-global-shortcut'
 import usePlaybackKeys from '../hooks/usePlaybackKeys'
 import PlaybackKeysSettings from '../components/PlaybackKeysSettings'
-import { normalizePlaybackKeys } from '../lib/playbackKeys'
+import { normalizePlaybackKeys, registrationErrorText } from '../lib/playbackKeys'
 
 vi.mock('@tauri-apps/plugin-global-shortcut', () => ({ register: vi.fn(), unregisterAll: vi.fn() }))
 
@@ -41,6 +41,24 @@ describe('usePlaybackKeys registration', () => {
     renderHook(() => usePlaybackKeys(settings))
     await waitFor(() => expect(register).toHaveBeenCalledTimes(1))
     expect(register.mock.calls[0][0]).toBe('F15')
+  })
+
+  it('forgets a held key when keys are released, so the next press after a re-sync works', async () => {
+    const settings = { enabled: true, bindings: { forward: 'F15' } }
+    const { result } = renderHook(() => usePlaybackKeys(settings))
+    await waitFor(() => expect(register).toHaveBeenCalledTimes(1))
+    const seekBy = vi.fn()
+    act(() =>
+      result.current.setTarget({ hasTrack: true, isPlaying: () => false, seekBy, play() {}, pause() {}, toggle() {} }),
+    )
+    // Pressed, then the recorder suspends keys; the Released is never delivered
+    act(() => result.current.dispatch('forward', 'Pressed'))
+    act(() => result.current.setSuspended(true))
+    await waitFor(() => expect(unregisterAll).toHaveBeenCalledTimes(2))
+    act(() => result.current.setSuspended(false))
+    await waitFor(() => expect(register).toHaveBeenCalledTimes(2))
+    act(() => result.current.dispatch('forward', 'Pressed'))
+    expect(seekBy).toHaveBeenCalledTimes(2)
   })
 
   it('releases every key when turned off, while recording, and on unmount', async () => {
@@ -146,29 +164,52 @@ describe('Playback keys settings section', () => {
     expect(screen.getByRole('alert')).toHaveTextContent(/already assigned to Back/)
 
     fireEvent.keyDown(listening, { key: 'p', code: 'KeyP', ctrlKey: true, altKey: true })
-    await waitFor(() => expect(register.mock.calls.map(([accelerator]) => accelerator)).toContain('Control+Alt+KeyP'))
+    expect(screen.getByRole('alert')).toHaveTextContent(/AltGr/)
+    fireEvent.keyDown(listening, { key: 'ArrowLeft', code: 'ArrowLeft', ctrlKey: true })
+    expect(screen.getByRole('alert')).toHaveTextContent(/edits text/)
+    fireEvent.keyDown(listening, { key: 'K', code: 'KeyK', ctrlKey: true, shiftKey: true })
+    await waitFor(() => expect(register.mock.calls.map(([accelerator]) => accelerator)).toContain('Control+Shift+KeyK'))
     expect(screen.queryByRole('alert')).not.toBeInTheDocument()
   })
 
   it('cancels recording with Escape and keeps the previous key', async () => {
     render(<Harness initial={{ enabled: false, bindings: { playPause: 'F14' } }} />)
-    fireEvent.click(screen.getByRole('button', { name: 'Assign a key to Play/Pause' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Change the key for Play/Pause' }))
     fireEvent.keyDown(screen.getByRole('button', { name: /Press a key for Play\/Pause/ }), {
       key: 'Escape',
       code: 'Escape',
     })
-    expect(screen.getByRole('button', { name: 'Assign a key to Play/Pause' })).toHaveTextContent('Change')
+    // The accessible name starts with the visible word (WCAG 2.5.3 Label in Name)
+    const change = screen.getByRole('button', { name: 'Change the key for Play/Pause' })
+    expect(change).toHaveTextContent('Change')
+    expect(change.getAttribute('aria-label')).toMatch(/^Change/)
     expect(screen.getByText('F14')).toBeInTheDocument()
   })
 
   it('shows a key the system refused next to that key', async () => {
-    register.mockImplementation(accelerator =>
-      accelerator === 'F15' ? Promise.reject('HotKey already registered: F15') : Promise.resolve(),
-    )
+    const raw = 'HotKey already registered: HotKey { mods: Modifiers(0x0), key: F15, id: 2785 }'
+    register.mockImplementation(accelerator => (accelerator === 'F15' ? Promise.reject(raw) : Promise.resolve()))
     render(<Harness initial={{ enabled: true, bindings: { back: 'F13', forward: 'F15' } }} />)
-    expect(await screen.findByText(/Couldn’t register: HotKey already registered: F15/)).toBeInTheDocument()
+    expect(await screen.findByText('Another app is already using this key. Choose another key.')).toBeInTheDocument()
+    // The plugin's own text is kept, but only behind "System message"
+    expect(screen.getByText('System message')).toBeInTheDocument()
+    expect(screen.getByText(raw).closest('details')).not.toBeNull()
     expect(screen.getByText('Registered')).toBeInTheDocument()
     expect(screen.getByText(/1 of 2 keys could not be registered/)).toBeInTheDocument()
+  })
+
+  it('maps plugin errors to plain words', () => {
+    expect(registrationErrorText('Unable to register hotkey: Access is denied. (os error 1409)')).toBe(
+      'The system refused this key. Choose another key.',
+    )
+    expect(registrationErrorText('something else')).toBe('The system couldn’t register this key. Choose another key.')
+  })
+
+  it('does not claim pedals can send F13–F15 and warns that Hold to play needs key releases', () => {
+    render(<Harness />)
+    expect(screen.getByText(/may be able to send them if it offers F13–F15/)).toBeInTheDocument()
+    expect(screen.getByText(/needs the pedal or helper app to send a key release/)).toBeInTheDocument()
+    expect(screen.queryByText(/Pedable/)).not.toBeInTheDocument()
   })
 
   it('explains hold to play with the Player Backstep', () => {
