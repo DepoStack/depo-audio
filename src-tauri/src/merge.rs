@@ -177,13 +177,18 @@ fn validate_merge_job(job: &MergeJob) -> Result<ValidatedMergeJob, String> {
     })
 }
 
-/// Strip an SGMCA vendor prefix once and keep the temporary Ogg feed alive for
-/// the whole merge. Reusing it avoids copying a potentially large recording
-/// for duration probing, sync detection, and final decoding independently.
+/// Strip an SGMCA vendor prefix (or read a `.dm` or `.dcr`, or split an FTR
+/// recording's channels) once and keep the temporary feed alive for the
+/// whole merge. Reusing it avoids copying a potentially large recording for
+/// duration probing, sync detection, and final decoding independently.
 async fn prepare_merge_source(app: &AppHandle, path: PathBuf, cancel: &MergeCancel) -> Result<AudioFeed, String> {
     cancel.check()?;
     let options = crate::ffmpeg::feed_options(app, &path).await;
-    prepare_merge_feed(path, options, cancel).await
+    let feed = prepare_merge_feed(path, options, cancel).await?;
+    // A DCR whose channels FFmpeg still has to join.
+    let finished = crate::helpers::finish_prepared_feed(app, feed, &|| cancel.is_cancelled()).await;
+    cancel.check()?;
+    finished
 }
 
 async fn prepare_merge_feed(
@@ -698,7 +703,7 @@ async fn decode_to_mono(
     match decode_feed_to_mono(app, feed, rate, max_secs, cancel).await {
         Err(error) if feed.used_native_ftr() && !cancel.is_cancelled() => {
             let source = feed.path().to_path_buf();
-            *feed = crate::helpers::prepare_audio_feed_after_native_failure(source, cancel.predicate())
+            *feed = crate::helpers::prepare_audio_feed_after_native_failure(app, source, cancel.predicate())
                 .await
                 .map_err(|split| {
                     if cancel.is_cancelled() {

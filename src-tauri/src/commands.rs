@@ -95,8 +95,10 @@ pub async fn detect_format(path: String) -> Option<FormatInfo> {
 /// notice, the FTR notices and the WAV size estimate. Read-only: one ffprobe
 /// of the original file, or one read of an FTR recording. Returns None when the file is not probed here: a rejected format, or
 /// an SGMCA, whose Ogg stream sits behind a vendor prefix and is only read
-/// from a temporary copy at conversion time. A `.dm` is answered from its own
-/// header and block headers (no FFmpeg), with what was recorded over.
+/// from a temporary copy at conversion time. A Liberty / BIS DCR is read by
+/// DepoAudio's own reader instead of ffprobe (`crate::dcr::queue_streams_info`).
+/// A `.dm` is answered from its own header and block headers (no FFmpeg),
+/// with what was recorded over.
 #[tauri::command]
 pub async fn probe_audio_streams_cmd(
     app: AppHandle,
@@ -139,6 +141,13 @@ pub async fn probe_audio_streams_cmd(
                 Err(_) if options.native_ftr => Ok(crate::ffmpeg::probe_audio_streams(&app, source).await),
                 Err(_) => Ok(None),
             }
+        }
+        Some(format) if format.handler == "dcr" => {
+            let source = source.to_path_buf();
+            tauri::async_runtime::spawn_blocking(move || crate::dcr::queue_streams_info(&source))
+                .await
+                .map(Some)
+                .map_err(|error| format!("Could not inspect the recording: {error}"))
         }
         // FFmpeg cannot read a .dm; its own header answers instead.
         Some(format) if format.key == "digitalcat" => {

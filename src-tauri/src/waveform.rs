@@ -307,7 +307,7 @@ fn validate_request_id(request_id: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn samples_to_peaks(bytes: &[u8], bucket_limit: usize) -> Result<Vec<WaveformPeak>, String> {
+pub(crate) fn samples_to_peaks(bytes: &[u8], bucket_limit: usize) -> Result<Vec<WaveformPeak>, String> {
     if bytes.is_empty() || !bytes.len().is_multiple_of(std::mem::size_of::<f32>()) {
         return Err("Waveform decoder returned invalid PCM data".into());
     }
@@ -338,6 +338,38 @@ fn samples_to_peaks(bytes: &[u8], bucket_limit: usize) -> Result<Vec<WaveformPea
     }
 
     Ok(peaks)
+}
+
+/// FFmpeg arguments that decode the prepared feed's converted stream (the
+/// file's `0:a:0`, or an FTR recording's channel files joined in order) to
+/// mono 32-bit float PCM on stdout for the peak overview, so the waveform
+/// shows the audio the probes describe and the conversion encodes.
+pub(crate) fn decode_args(feed: &crate::helpers::AudioFeed) -> Vec<String> {
+    let mut args: Vec<String> = vec![
+        "-nostdin".into(),
+        "-hide_banner".into(),
+        "-loglevel".into(),
+        "error".into(),
+        "-protocol_whitelist".into(),
+        "file,pipe".into(),
+    ];
+    args.extend(feed.input_args(&[]));
+    args.extend(feed.source_output_args(None));
+    args.extend([
+        "-vn".into(),
+        "-sn".into(),
+        "-dn".into(),
+        "-ac".into(),
+        "1".into(),
+        "-ar".into(),
+        WAVEFORM_SAMPLE_RATE.to_string(),
+        "-t".into(),
+        MAX_WAVEFORM_SECONDS.to_string(),
+        "-f".into(),
+        "f32le".into(),
+        "pipe:1".into(),
+    ]);
+    args
 }
 
 async fn decode_waveform(app: &AppHandle, key: &FileKey, cancelled: Arc<AtomicBool>) -> WaveformResult {
@@ -391,7 +423,7 @@ async fn decode_waveform(app: &AppHandle, key: &FileKey, cancelled: Arc<AtomicBo
     // instead, as conversion and Scan do.
     if output.is_err() && feed.used_native_ftr() {
         drop(feed);
-        let split = crate::helpers::prepare_audio_feed_after_native_failure(source, preparation_cancelled).await;
+        let split = crate::helpers::prepare_audio_feed_after_native_failure(app, source, preparation_cancelled).await;
         if is_cancelled() {
             return Err(WAVEFORM_CANCELLED_MESSAGE.into());
         }
@@ -427,33 +459,7 @@ async fn run_waveform_decoder(
     feed: &crate::helpers::AudioFeed,
     is_cancelled: &(dyn Fn() -> bool + Sync),
 ) -> Result<Vec<u8>, String> {
-    let mut args = vec![
-        "-nostdin".into(),
-        "-hide_banner".into(),
-        "-loglevel".into(),
-        "error".into(),
-        "-protocol_whitelist".into(),
-        "file,pipe".into(),
-    ];
-    args.extend(feed.input_args(&[]));
-    // The converted stream (`-map 0:a:0`, or an FTR recording's channel files
-    // joined in order), so the waveform shows the audio the probes describe
-    // and the conversion encodes.
-    args.extend(feed.source_output_args(None));
-    args.extend([
-        "-vn".into(),
-        "-sn".into(),
-        "-dn".into(),
-        "-ac".into(),
-        "1".into(),
-        "-ar".into(),
-        WAVEFORM_SAMPLE_RATE.to_string(),
-        "-t".into(),
-        MAX_WAVEFORM_SECONDS.to_string(),
-        "-f".into(),
-        "f32le".into(),
-        "pipe:1".into(),
-    ]);
+    let args = decode_args(feed);
 
     let output = sidecar_output_cancellable(app, ffmpeg_bin_name(), args, 120, Some(is_cancelled))
         .await

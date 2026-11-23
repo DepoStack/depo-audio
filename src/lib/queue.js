@@ -218,3 +218,62 @@ export function trmSessionNotices(files, audioStreams) {
   }
   return notices
 }
+
+// HH:MM:SS for a queue notice.
+function clockTime(seconds) {
+  const total = Math.max(0, Math.floor(Number(seconds) || 0))
+  const pad = value => String(value).padStart(2, '0')
+  return `${pad(Math.floor(total / 3600))}:${pad(Math.floor((total % 3600) / 60))}:${pad(total % 60)}`
+}
+
+// Shown in full up to this many remote-participant changes; the rest are counted.
+const DCR_CHANGES_LISTED = 3
+
+// Plain notices for a queued Liberty / BIS Digital DCR, from the `dcr`
+// summary in probe_audio_streams_cmd's answer (DepoAudio's own reader, not
+// ffprobe). A recording that cannot be converted gets only the reason.
+// Nothing here comes from the recording's case or docket fields.
+export function dcrQueueNotices(info) {
+  const dcr = info?.dcr
+  if (!dcr || typeof dcr !== 'object') return []
+  if (dcr.problem) return [String(dcr.problem)]
+  const notices = []
+  const names = Array.isArray(dcr.channelNames) ? dcr.channelNames.filter(name => typeof name === 'string') : []
+  if (names.length > 0) {
+    notices.push(
+      `Channels read from the recording: ${names.join(', ')}. Split outputs and export records use these names instead of the channel labels below.`,
+    )
+  }
+  const changes = Array.isArray(dcr.conferenceChanges) ? dcr.conferenceChanges : []
+  for (const change of changes.slice(0, DCR_CHANGES_LISTED)) {
+    const kind = change?.kind === 'joined' || change?.kind === 'left' ? change.kind : 'joined or left'
+    const after = Number.isInteger(change?.channelsAfter)
+      ? ` (${change.channelsAfter} ${change.channelsAfter === 1 ? 'channel' : 'channels'} recorded from then on)`
+      : ''
+    notices.push(`A remote participant ${kind} at ${clockTime(change?.atSeconds)}${after}.`)
+  }
+  const total = Number.isInteger(dcr.conferenceChangeCount) ? dcr.conferenceChangeCount : changes.length
+  const unlisted = total - Math.min(changes.length, DCR_CHANGES_LISTED)
+  if (unlisted > 0) {
+    notices.push(
+      `${unlisted} more remote-participant ${unlisted === 1 ? 'change follows' : 'changes follow'}; the export record lists them.`,
+    )
+  }
+  const dropped = Number.isInteger(dcr.trailingBytesDropped) ? dcr.trailingBytesDropped : 0
+  if (dropped > 0) {
+    notices.push(
+      `The last ${dropped} ${dropped === 1 ? 'byte' : 'bytes'} of audio are too few for one sample of every channel and are left out; the export record says so.`,
+    )
+  }
+  if (dcr.videoFrames > 0 || dcr.attachments > 0) {
+    notices.push('This recording also holds video frames or attachments; only the audio is converted.')
+  }
+  // Redactions, password-protected sections, checksums and the like, worded
+  // by the reader (never from the recording's notes).
+  if (Array.isArray(dcr.notices)) {
+    for (const notice of dcr.notices) {
+      if (typeof notice === 'string' && notice) notices.push(notice)
+    }
+  }
+  return notices
+}

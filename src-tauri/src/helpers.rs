@@ -30,9 +30,10 @@ fn date_regex() -> &'static Regex {
 //   https://help.webex.com/en-us/article/WBX000026388/WRF2WMV-converter
 // - .msv/.dvf: Sony Digital Voice Editor; Sony ended its downloads on
 //   2017-03-31. https://sony.jp/products/overseas/contents/support/info/info_dve3_20170403.html
-// - .dcr: a closed court-recorder format with no public documentation; the
-//   recorder software is named only as an example.
+// - .dcr without the Liberty / BIS Digital signature: not a layout DepoAudio
+//   reads; the recorder software is named only as an example.
 const DCR_NOTE: &str = "DCR recordings use a closed format. Export to WAV from the software that recorded it (for example Liberty Court Recorder or BIS Digital), then add the WAV.";
+const DCR_READER_NOTE: &str = "Applies marked redactions; password-protected parts are silent; tested with synthetic files only. The layout comes from interoperability notes and has not been checked against a real recording.";
 const DCR_IMAGE_NOTE: &str = "This .dcr starts like a camera raw image (TIFF), not like court audio. Check that you picked the right file. If it is a court recording, export it to WAV from the software that recorded it.";
 const DS2_NOTE: &str = "DS2 (DSS Pro) dictation files cannot be opened here. Export to WAV with OM System / Olympus dictation software (for example ODMS), then add the WAV. An encrypted DS2 also needs its password in that software.";
 const WEBEX_NOTE: &str = "Webex network recordings (.arf, .wrf) cannot be opened here. Convert an .arf to MP4 with the Webex Recording Converter, or a .wrf to WMV with the Webex WRF2WMV Converter (both Windows only), then add the converted file.";
@@ -84,10 +85,13 @@ pub(crate) fn get_formats() -> Vec<FormatInfo> {
         FormatInfo { key: "aes".into(), name: "Eclipse AudioSync".into(), vendor: "Eclipse CAT".into(),
             status: "unsupported".into(), handler: "rejected".into(), channels: None,
             note: Some("AES-128 encrypted. Open in Eclipse → File → Export Audio → WAV first.".into()) },
-        // Liberty Court Recorder and BIS Digital both write .dcr, and their
-        // files do not open in each other's software, so the guidance names
-        // neither as the only source.
-        FormatInfo { key: "dcr".into(), name: "Digital Court Recording (DCR)".into(), vendor: "Liberty / BIS Digital".into(),
+        // A .dcr with the HGCRLCRS signature (crate::dcr) is demuxed into a
+        // temporary WAV feed. Experimental: synthetic files only.
+        FormatInfo { key: "dcr".into(), name: "Liberty / BIS Digital DCR".into(), vendor: "Liberty / BIS Digital".into(),
+            status: "experimental".into(), handler: "dcr".into(), channels: Some("1–16".into()),
+            note: Some(DCR_READER_NOTE.into()) },
+        // Any other .dcr: neutral export guidance.
+        FormatInfo { key: "dcr-unknown".into(), name: "Digital Court Recording (DCR)".into(), vendor: "Unknown recorder".into(),
             status: "unsupported".into(), handler: "rejected".into(), channels: None,
             note: Some(DCR_NOTE.into()) },
         // A Kodak camera raw image shares the .dcr extension (TIFF-based).
@@ -183,10 +187,13 @@ pub(crate) fn detect_format_by_extension(path: &str) -> Option<FormatInfo> {
     fmts.into_iter().find(|f| f.key == key)
 }
 
-/// The format of a file: the extension decides, then two cheap content
-/// checks. A `.dcr` that starts like a TIFF is a camera raw image, and a
+/// The format of a file: the extension decides, then cheap content
+/// checks. A `.dcr` is a Liberty / BIS Digital recording when it starts with
+/// their signature, a camera raw image when it starts like a TIFF, and an
+/// unknown recording otherwise (an unreadable one keeps the reader); a `.dm`
+/// that does not start with the `.dm` audio header is named as such; and a
 /// readable `.ts` with no transport-stream sync pattern (most often a
-/// TypeScript source file) is left unrecognised. Both checks read only a
+/// TypeScript source file) is left unrecognised. The checks read only a
 /// regular file; a FIFO, device or unreadable path keeps the extension's
 /// answer, so detection never waits on a pipe. Blocking file I/O: async
 /// callers use `detect_format_blocking`.
@@ -198,7 +205,14 @@ pub(crate) fn detect_format_for_path(path: &str) -> Option<FormatInfo> {
         .map(|e| e.to_lowercase())
         .unwrap_or_default();
     match ext.as_str() {
-        "dcr" if looks_like_tiff(Path::new(path)) => get_formats().into_iter().find(|f| f.key == "dcr-image"),
+        "dcr" => {
+            let key = match dcr_content(Path::new(path)) {
+                DcrContent::Liberty | DcrContent::Unreadable => return Some(format),
+                DcrContent::Tiff => "dcr-image",
+                DcrContent::Other => "dcr-unknown",
+            };
+            get_formats().into_iter().find(|f| f.key == key)
+        }
         "dm" if !could_be_dm(Path::new(path)) => get_formats().into_iter().find(|f| f.key == "digitalcat-unrecognized"),
         // .ts is also a TypeScript source extension.
         "ts" if !could_be_transport_stream(Path::new(path)) => None,
@@ -237,16 +251,27 @@ fn leading_bytes<const N: usize>(path: &Path) -> Option<(Box<[u8; N]>, usize)> {
     Some((buffer, filled))
 }
 
-/// True when the file starts with a TIFF header (`II*\0` or `MM\0*`), which is
-/// what a Kodak DCR camera raw image is. Liberty and BIS do not publish their
-/// DCR layout, so this is not checked against a real court DCR file; a court
-/// DCR that did start with these bytes would get the camera-image note, which
-/// still says how to export a court recording.
-fn looks_like_tiff(path: &Path) -> bool {
-    matches!(
-        leading_bytes::<4>(path),
-        Some((bytes, 4)) if *bytes == *b"II*\0" || *bytes == *b"MM\0*"
-    )
+/// What a `.dcr` file starts with.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DcrContent {
+    /// The `HGCRLCRS` signature (crate::dcr).
+    Liberty,
+    /// A TIFF header (`II*\0` or `MM\0*`): a Kodak DCR camera raw image.
+    Tiff,
+    Other,
+    /// Not a regular file, or not readable: the extension decides.
+    Unreadable,
+}
+
+fn dcr_content(path: &Path) -> DcrContent {
+    match leading_bytes::<8>(path) {
+        None => DcrContent::Unreadable,
+        Some((bytes, 8)) if &*bytes == crate::dcr::DCR_MAGIC => DcrContent::Liberty,
+        Some((bytes, filled)) if filled >= 4 && (bytes[..4] == *b"II*\0" || bytes[..4] == *b"MM\0*") => {
+            DcrContent::Tiff
+        }
+        Some(_) => DcrContent::Other,
+    }
 }
 
 /// True unless the file is readable and does not start with the `.dm` audio
@@ -472,7 +497,7 @@ const MERGED_SOURCE_LABEL: &str = "[da_src]";
 const MERGED_OUTPUT_LABEL: &str = "[da_out]";
 
 /// The audio FFmpeg reads for one selected file: usually the file itself; an
-/// SGMCA's Ogg stream in a temporary copy; a `.dm`'s audio read into a
+/// SGMCA's Ogg stream in a temporary copy; a `.dm`'s or a Liberty / BIS DCR's audio read into a
 /// temporary WAV; or, for an FTR recording that
 /// FFmpeg's native decoder cannot take as it is, one temporary mono ADTS file
 /// per channel, joined back in channel order with `amerge`. Temporary files
@@ -492,6 +517,12 @@ pub(crate) struct AudioFeed {
     trm_inspection_error: Option<String>,
     /// For a `.dm`: its blocks and time stamps, for the export record.
     dm_timeline: Option<crate::dm::DmTimeline>,
+    /// What the DCR reader found, for a Liberty / BIS Digital `.dcr`.
+    dcr: Option<crate::dcr::DcrInfo>,
+    /// For a DCR whose codec FFmpeg decodes one channel per stream: the
+    /// FFmpeg run that joins the channels into `inputs[0]`
+    /// (`finish_prepared_feed`).
+    merge: Option<crate::dcr::MergeStep>,
     _guards: Vec<crate::safety::TempFile>,
     /// The folder holding the channel files; dropped after them.
     _channel_dir: Option<crate::workdir::TempDir>,
@@ -515,6 +546,8 @@ impl AudioFeed {
             channels_per_input: 1,
             trm_inspection_error: None,
             dm_timeline: None,
+            dcr: None,
+            merge: None,
             _guards: Vec::new(),
             _channel_dir: None,
         }
@@ -533,6 +566,17 @@ impl AudioFeed {
     /// For a `.dm`: its blocks and time stamps, for the export record.
     pub(crate) fn dm_timeline(&self) -> Option<&crate::dm::DmTimeline> {
         self.dm_timeline.as_ref()
+    }
+
+    /// For a Liberty / BIS Digital `.dcr`: what the reader found.
+    pub(crate) fn dcr(&self) -> Option<&crate::dcr::DcrInfo> {
+        self.dcr.as_ref()
+    }
+
+    /// The DCR channel merge still to run before the feed can be read, if
+    /// any, taken out of the feed ([`finish_prepared_feed`] runs it).
+    pub(crate) fn take_merge(&mut self) -> Option<crate::dcr::MergeStep> {
+        self.merge.take()
     }
 
     /// Why DepoAudio could not read this FTR recording itself, when it was
@@ -696,6 +740,8 @@ fn native_as_is(src: &Path, reason: String) -> AudioFeed {
         channels_per_input: 1,
         trm_inspection_error: Some(reason),
         dm_timeline: None,
+        dcr: None,
+        merge: None,
         _guards: Vec::new(),
         _channel_dir: None,
     }
@@ -740,6 +786,8 @@ fn prepare_trm_feed(
             channels_per_input: 1,
             trm_inspection_error: None,
             dm_timeline: None,
+            dcr: None,
+            merge: None,
             _guards: Vec::new(),
             _channel_dir: None,
         }),
@@ -761,6 +809,8 @@ fn prepare_trm_feed(
                 channels_per_input,
                 trm_inspection_error: None,
                 dm_timeline: None,
+                dcr: None,
+                merge: None,
                 _guards: guards,
                 _channel_dir: Some(channel_dir),
             })
@@ -799,12 +849,18 @@ fn demux_dm_with_cancel(
     Ok((guard, timeline))
 }
 
-fn has_extension(src: &Path, wanted: &str) -> bool {
+pub(crate) fn has_extension(src: &Path, wanted: &str) -> bool {
     src.extension()
         .and_then(|extension| extension.to_str())
         .is_some_and(|extension| extension.eq_ignore_ascii_case(wanted))
 }
 
+/// Prepare the selected file for FFmpeg: an SGMCA loses its vendor prefix,
+/// a `.dm` has its audio read into a WAV, a Liberty / BIS DCR is demuxed
+/// into a WAV, and an FTR recording is read as it is by FFmpeg's native
+/// decoder or split into one temporary file per stream; every probe, scan,
+/// waveform and conversion reads the result. Any other file is used as it
+/// is. A DCR may still need its channel merge (`finish_prepared_feed`).
 pub(crate) fn prepare_audio_feed_with_cancel(
     src: &Path,
     options: FeedOptions,
@@ -812,6 +868,25 @@ pub(crate) fn prepare_audio_feed_with_cancel(
 ) -> Result<AudioFeed, String> {
     if cancelled.is_some_and(|check| check()) {
         return Err(AUDIO_PREPARATION_CANCELLED_MESSAGE.into());
+    }
+    if has_extension(src, "dcr") {
+        return match dcr_content(src) {
+            DcrContent::Liberty | DcrContent::Unreadable => {
+                let never = || false;
+                let check: &dyn Fn() -> bool = match cancelled {
+                    Some(check) => check,
+                    None => &never,
+                };
+                let feed = crate::dcr::prepare_feed(src, check)?;
+                let mut prepared = AudioFeed::plain(feed.path);
+                prepared._guards.push(feed.guard);
+                prepared.merge = feed.merge;
+                prepared.dcr = Some(feed.info);
+                Ok(prepared)
+            }
+            DcrContent::Tiff => Err(DCR_IMAGE_NOTE.into()),
+            DcrContent::Other => Err(DCR_NOTE.into()),
+        };
     }
     if is_trm_path(src) {
         return prepare_trm_feed(src, options, cancelled);
@@ -833,10 +908,79 @@ pub(crate) fn prepare_audio_feed_with_cancel(
     Ok(prepared)
 }
 
-/// Prepare a feed without blocking the async command executor. The
-/// cancellation predicate is checked between every 64 KiB read or copied and
-/// owns no borrowed command state, so scan/conversion/waveform callers can
-/// reuse it. For an FTR recording this asks the bundled FFmpeg (once per
+/// How long the FFmpeg run that joins a DCR's channels may take.
+const DCR_MERGE_TIMEOUT_SECS: u64 = 4 * 60 * 60;
+
+/// Run a prepared feed's remaining FFmpeg step, if any, with the bundled
+/// sidecar. The DCR's one-channel temporary WAVs are removed afterwards
+/// either way; on failure the partial feed is removed too.
+pub(crate) async fn finish_prepared_feed(
+    app: &tauri::AppHandle,
+    mut prepared: AudioFeed,
+    cancelled: &(dyn Fn() -> bool + Sync),
+) -> Result<AudioFeed, String> {
+    let Some(merge) = prepared.take_merge() else {
+        return Ok(prepared);
+    };
+    let crate::dcr::MergeStep { inputs, args } = merge;
+    let output = crate::ffmpeg::sidecar_output_cancellable(
+        app,
+        ffmpeg_bin_name(),
+        args,
+        DCR_MERGE_TIMEOUT_SECS,
+        Some(cancelled),
+    )
+    .await;
+    drop(inputs);
+    if cancelled() {
+        return Err(AUDIO_PREPARATION_CANCELLED_MESSAGE.into());
+    }
+    let codec = prepared.dcr.as_ref().map(|info| info.codec.clone()).unwrap_or_default();
+    match output {
+        Some(output) if output.success && prepared.path().is_file() => {
+            crate::dcr::clear_channel_mask(prepared.path())?;
+            Ok(prepared)
+        }
+        Some(output) => Err(dcr_merge_error(&codec, &output.stderr)),
+        None => Err(dcr_merge_error(&codec, b"")),
+    }
+}
+
+/// The error for a failed DCR channel merge, with FFmpeg's last message.
+/// The merge names temporary files in DepoAudio's work folder, under the
+/// user's profile (which holds the account name), so a message that mentions a path keeps
+/// only its last part after `: ` when that part has no path in it (for
+/// example "No space left on device"), and is left out otherwise.
+pub(crate) fn dcr_merge_error(codec: &str, stderr: &[u8]) -> String {
+    let log = String::from_utf8_lossy(stderr);
+    let last = log
+        .lines()
+        .rev()
+        .find(|line| !line.trim().is_empty())
+        .unwrap_or("")
+        .trim();
+    let has_path = |text: &str| text.contains(['/', '\\']) || text.contains("depoaudio_");
+    let shown = if has_path(last) {
+        last.rsplit(": ")
+            .next()
+            .filter(|tail| *tail != last && !has_path(tail))
+            .unwrap_or("")
+    } else {
+        last
+    };
+    let shown: String = shown.trim().chars().take(300).collect();
+    let mut message = format!("FFmpeg could not decode this recording's {codec} audio.");
+    if !shown.is_empty() {
+        message.push_str(&format!(" FFmpeg said: {shown}"));
+    }
+    message
+}
+
+/// Prepare a feed without blocking the async command executor, and run any
+/// remaining FFmpeg step (a DCR's channel merge). The cancellation predicate
+/// is checked between every 64 KiB read or copied (65,536 atoms for a DCR)
+/// and owns no borrowed command state, so scan/conversion/waveform callers
+/// can reuse it. For an FTR recording this asks the bundled FFmpeg (once per
 /// process) whether it has the native `ftr` decoder.
 pub(crate) async fn prepare_audio_feed_cancellable(
     app: &tauri::AppHandle,
@@ -844,10 +988,14 @@ pub(crate) async fn prepare_audio_feed_cancellable(
     cancelled: Arc<dyn Fn() -> bool + Send + Sync>,
 ) -> Result<AudioFeed, String> {
     let options = crate::ffmpeg::feed_options(app, &src).await;
-    prepare_audio_feed_with_options(src, options, cancelled).await
+    let prepared = prepare_audio_feed_with_options(src, options, cancelled.clone()).await?;
+    finish_prepared_feed(app, prepared, cancelled.as_ref()).await
 }
 
-/// [`prepare_audio_feed_cancellable`] with the feed options already known.
+/// The blocking part of [`prepare_audio_feed_cancellable`], with the feed
+/// options already known, on a blocking thread. A DCR's channel merge is not
+/// run here: callers that can get one pass the feed to
+/// [`finish_prepared_feed`].
 pub(crate) async fn prepare_audio_feed_with_options(
     src: PathBuf,
     options: FeedOptions,
@@ -864,6 +1012,7 @@ pub(crate) async fn prepare_audio_feed_with_options(
 /// failed: always the split-channel route, with "native-decode-failed" among
 /// the reasons the export record gives.
 pub(crate) async fn prepare_audio_feed_after_native_failure(
+    app: &tauri::AppHandle,
     src: PathBuf,
     cancelled: Arc<dyn Fn() -> bool + Send + Sync>,
 ) -> Result<AudioFeed, String> {
@@ -871,7 +1020,8 @@ pub(crate) async fn prepare_audio_feed_after_native_failure(
         native_ftr: true,
         native_failed: true,
     };
-    prepare_audio_feed_with_options(src, options, cancelled).await
+    let prepared = prepare_audio_feed_with_options(src, options, cancelled.clone()).await?;
+    finish_prepared_feed(app, prepared, cancelled.as_ref()).await
 }
 
 // ── Output format helpers ─────────────────────────────────────────────────────
@@ -1068,6 +1218,7 @@ pub(crate) fn basename(path: &str) -> String {
 mod tests {
     use super::*;
     use std::collections::HashSet;
+
     use std::sync::{Arc, Barrier};
     use std::thread;
 
@@ -1162,6 +1313,8 @@ mod tests {
             channels_per_input: 1,
             trm_inspection_error: None,
             dm_timeline: None,
+            dcr: None,
+            merge: None,
             _guards: Vec::new(),
             _channel_dir: None,
         };
@@ -1227,6 +1380,8 @@ mod tests {
             trm: None,
             trm_inspection_error: None,
             dm_timeline: None,
+            dcr: None,
+            merge: None,
             _guards: Vec::new(),
             _channel_dir: None,
         };
@@ -1624,9 +1779,41 @@ mod tests {
     }
 
     #[test]
-    fn dcr_guidance_names_both_recorders_without_assuming_one() {
-        let dcr = detect_format_for_path("hearing.dcr").unwrap();
-        assert_eq!(dcr.key, "dcr");
+    fn dcr_merge_errors_never_show_a_temporary_path() {
+        let windows = b"[out#0/wav @ 0x1] Error closing file C:/Users/Jane Roe/AppData/Local/Temp/depoaudio_ab12.wav: No space left on device\n";
+        let message = dcr_merge_error("IMA ADPCM", windows);
+        assert_eq!(
+            message,
+            "FFmpeg could not decode this recording's IMA ADPCM audio. FFmpeg said: No space left on device"
+        );
+        let backslashes = br"C:\Users\Jane Roe\AppData\Local\Temp\depoaudio_ab12.wav: Invalid data found";
+        assert!(!dcr_merge_error("GSM 6.10", backslashes).contains("Jane"));
+        // A path with no plain reason after it is left out entirely.
+        let message = dcr_merge_error("MP3", b"/home/jane/tmp/depoaudio_1.wav");
+        assert_eq!(message, "FFmpeg could not decode this recording's MP3 audio.");
+        let message = dcr_merge_error("MP3", b"\n[mp3float @ 0x2] Header missing\n\n");
+        assert!(
+            message.ends_with("FFmpeg said: [mp3float @ 0x2] Header missing"),
+            "{message}"
+        );
+    }
+
+    #[test]
+    fn dcr_routes_by_content_to_the_reader_or_neutral_guidance() {
+        let dir = ReservationTestDir::new();
+        let liberty = dir.path().join("hearing.dcr");
+        fs::write(&liberty, b"HGCRLCRS\x15\0\0\0\0\0\0\0rest").unwrap();
+        let reader = detect_format_for_path(&liberty.to_string_lossy()).unwrap();
+        assert_eq!(reader.key, "dcr");
+        assert_eq!(reader.handler, "dcr");
+        assert_eq!(reader.status, "experimental");
+        assert_eq!(reader.vendor, "Liberty / BIS Digital");
+        assert!(reader.note.unwrap().contains("synthetic files only"));
+
+        let other = dir.path().join("other.dcr");
+        fs::write(&other, b"\x00\x01court-audio").unwrap();
+        let dcr = detect_format_for_path(&other.to_string_lossy()).unwrap();
+        assert_eq!(dcr.key, "dcr-unknown");
         assert_eq!(dcr.handler, "rejected");
         let note = dcr.note.unwrap();
         assert!(note.contains("software that recorded it"), "{note}");
@@ -1655,8 +1842,8 @@ mod tests {
                 .contains("starts like a camera raw image (TIFF), not like court audio"));
         }
 
-        // A court-recorder DCR (not TIFF), a short file and an empty file keep
-        // the court guidance.
+        // A DCR without either signature, a short file and an empty file get
+        // the neutral export guidance.
         for (name, bytes) in [
             ("court.dcr", &b"\x00\x01court-audio"[..]),
             ("short.dcr", &b"II"[..]),
@@ -1666,7 +1853,7 @@ mod tests {
             fs::write(&path, bytes).unwrap();
             assert_eq!(
                 detect_format_for_path(&path.to_string_lossy()).unwrap().key,
-                "dcr",
+                "dcr-unknown",
                 "{name}"
             );
         }

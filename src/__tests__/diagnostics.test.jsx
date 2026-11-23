@@ -142,7 +142,7 @@ describe('Settings', () => {
       />,
     )
 
-    fireEvent.click(screen.getByRole('button', { name: 'Updates' }))
+    fireEvent.click(screen.getByRole('button', { name: 'About' }))
     expect(screen.getByText(`Version ${packageJson.version}`)).toBeVisible()
     fireEvent.click(screen.getByRole('button', { name: 'Copy diagnostics' }))
     expect(await screen.findByText('Diagnostics copied. Nothing was sent.')).toBeVisible()

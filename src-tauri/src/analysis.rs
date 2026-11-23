@@ -174,6 +174,26 @@ pub(crate) async fn sidecar_with_heartbeat(
     }
 }
 
+/// `prepare_audio_feed_cancellable` with a progress heartbeat. Preparing a
+/// `.dcr` reads the whole recording, writes a decoded copy and may run an
+/// FFmpeg merge, which on a long recording can outlast the frontend's stall
+/// watchdog; the heartbeat says the scan is alive while that runs.
+async fn prepare_with_heartbeat(
+    app: &AppHandle,
+    source: &Path,
+    cancelled: Arc<dyn Fn() -> bool + Send + Sync>,
+    ctx: Option<&ScanCtx>,
+) -> Result<AudioFeed, String> {
+    let prepare = crate::helpers::prepare_audio_feed_cancellable(app, source.to_path_buf(), cancelled);
+    tokio::pin!(prepare);
+    loop {
+        match tokio::time::timeout(std::time::Duration::from_secs(HEARTBEAT_SECS), &mut prepare).await {
+            Ok(prepared) => return prepared,
+            Err(_) => emit(ctx, "prepare", 0.01),
+        }
+    }
+}
+
 /// Run full audio analysis on a file.
 pub(crate) async fn analyze_audio(
     app: &AppHandle,
@@ -187,8 +207,7 @@ pub(crate) async fn analyze_audio(
         Arc::new(move || preparation_context.as_ref().is_some_and(ScanCtx::cancelled));
     // An FTR recording is read through here and either decoded by FFmpeg's
     // native decoder or split into per-channel files first (crate::trm).
-    let prepared =
-        crate::helpers::prepare_audio_feed_cancellable(app, source.to_path_buf(), preparation_cancelled.clone()).await;
+    let prepared = prepare_with_heartbeat(app, source, preparation_cancelled.clone(), ctx).await;
     check(ctx)?;
     let mut prepared_feed = prepared?;
     let feed = &prepared_feed;
@@ -221,9 +240,12 @@ pub(crate) async fn analyze_audio(
     check(ctx)?;
     let (per_channel_lufs, per_channel_peak, loudness_failures) = match loudness {
         Err(error) if feed.used_native_ftr() => {
-            let retry =
-                crate::helpers::prepare_audio_feed_after_native_failure(source.to_path_buf(), preparation_cancelled)
-                    .await;
+            let retry = crate::helpers::prepare_audio_feed_after_native_failure(
+                app,
+                source.to_path_buf(),
+                preparation_cancelled,
+            )
+            .await;
             check(ctx)?;
             prepared_feed =
                 retry.map_err(|retry_error| format!("{error}; splitting its channels also failed: {retry_error}"))?;
@@ -398,7 +420,7 @@ async fn analyze_loudness_and_peaks(
 /// with `pan=mono`, then `ebur128`. Using pan=mono instead of channelsplit
 /// avoids hardcoding a channel layout.
 #[cfg(test)]
-fn loudness_pass_args(feed: &str, channel: Option<u32>, secs: &str) -> Vec<String> {
+pub(crate) fn loudness_pass_args(feed: &str, channel: Option<u32>, secs: &str) -> Vec<String> {
     let mut args: Vec<String> = vec!["-t".into(), secs.into(), "-i".into(), feed.into()];
     args.extend(loudness_pass_tail(channel, crate::helpers::source_audio_map_args()));
     args

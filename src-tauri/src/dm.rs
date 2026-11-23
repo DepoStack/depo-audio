@@ -779,6 +779,7 @@ pub(crate) fn streams_info(path: &Path) -> Option<crate::manifest::AudioStreamsI
         duration_secs,
         trm: None,
         trm_refusal: None,
+        dcr: None,
         dm: Some(queue_info(&dm)),
     })
 }

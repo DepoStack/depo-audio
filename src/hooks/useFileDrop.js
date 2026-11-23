@@ -228,6 +228,7 @@ export default function useFileDrop(dropOverrideRef, queueLocked = false) {
               'tll',
               'bwf',
               'dm',
+              'dcr',
             ],
           },
           {

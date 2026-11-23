@@ -214,6 +214,11 @@ pub struct AudioStreamsInfo {
     /// would): why, for the queue notice.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub trm_refusal: Option<String>,
+    /// For a Liberty / BIS Digital `.dcr`: the reader's summary (codec,
+    /// channel names, remote-participant changes, or why it cannot be
+    /// converted). Absent for every other file.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dcr: Option<crate::dcr::DcrQueueInfo>,
     /// For a DigitalCAT `.dm`: blocks skipped and whether the stamps run
     /// backwards, read from the file's own header and block headers.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -228,6 +233,7 @@ pub(crate) fn trm_refused_streams(reason: String) -> AudioStreamsInfo {
         duration_secs: None,
         trm: None,
         trm_refusal: Some(reason),
+        dcr: None,
         dm: None,
     }
 }
@@ -248,6 +254,7 @@ pub(crate) fn trm_audio_streams(route: crate::trm::TrmRoute) -> AudioStreamsInfo
         duration_secs: route.info.duration_secs,
         trm: Some(route),
         trm_refusal: None,
+        dcr: None,
         dm: None,
     }
 }
@@ -325,6 +332,7 @@ pub(crate) fn parse_audio_streams(probe: &serde_json::Value) -> AudioStreamsInfo
         duration_secs,
         trm: None,
         trm_refusal: None,
+        dcr: None,
         dm: None,
     }
 }
@@ -416,6 +424,11 @@ pub(crate) struct FileRecord {
     /// `ftr` decoder then read the file as it is, without DepoAudio's checks.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub trm_inspection_error: Option<String>,
+    /// For a Liberty / BIS Digital `.dcr` source: what the reader found
+    /// (format facts and channel names only; never case, docket or password
+    /// fields). Absent for every other source.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dcr: Option<crate::dcr::DcrSourceRecord>,
     /// For a DigitalCAT `.dm` source: its blocks, the blocks skipped and where
     /// the time stamps jump. Absent for every other source.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -785,6 +798,7 @@ pub(crate) mod tests {
                 size_bytes: 1024,
                 trm: None,
                 trm_inspection_error: None,
+                dcr: None,
                 dm_timeline: None,
             },
             probed,
