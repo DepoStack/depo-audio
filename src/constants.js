@@ -100,9 +100,16 @@ export const FORMAT_ROWS = [
     note: 'Reads the audio inside; tested with synthetic files only',
     group: 'court',
   },
+  {
+    ext: '.dcr',
+    vendor: 'Liberty / BIS Digital',
+    ch: '1–16 ch',
+    status: 'experimental',
+    group: 'court',
+    note: 'Applies marked redactions; password-protected parts are silent; tested with synthetic files only',
+  },
   // Closed formats — recognized, never decoded; export to WAV in the recording software first
   { ext: '.aes', vendor: 'Eclipse CAT · AudioSync', ch: '—', status: 'unsupported', group: 'export' },
-  { ext: '.dcr', vendor: 'Liberty Court Recorder · BIS Digital', ch: '—', status: 'unsupported', group: 'export' },
   { ext: '.ds2', vendor: 'OM System / Olympus · DSS Pro dictation', ch: '—', status: 'unsupported', group: 'export' },
   { ext: '.arf  .wrf', vendor: 'Cisco Webex · network recordings', ch: '—', status: 'unsupported', group: 'export' },
   { ext: '.msv  .dvf', vendor: 'Sony · IC recorder', ch: '—', status: 'unsupported', group: 'export' },

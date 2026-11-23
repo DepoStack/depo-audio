@@ -104,11 +104,11 @@ Scanning is a bounded, cancellable local analysis pass. FFmpeg performs the sele
 | **FTR / TRM**                                | For The Record             | 🧪 Experimental                    |
 | **BWF**                                      | CourtSmart · Various       | ✅ Supported                       |
 | **DigitalCAT / SoundSync (.dm)**             | Stenovations               | 🧪 Experimental                    |
+| **DCR**                                      | Liberty / BIS Digital      | 🧪 Experimental                    |
 | **WAV, MP3, FLAC, M4A, OGG, Opus, WMA, AIF** | Standard                   | ✅ Supported                       |
 | **Video (MP4, MOV, MKV, AVI, WebM)**         | — audio track extracted    | ✅ Supported                       |
 | **Video (MPG, VOB, TS, MTS, M2TS, WMV, ASF)** | — audio track extracted   | ✅ Supported                       |
 | **AES (Eclipse AudioSync)**                  | Eclipse CAT                | 🔒 Encrypted — export to WAV first |
-| **DCR**                                      | Liberty · BIS Digital      | Closed — export to WAV first       |
 | **DS2 (DSS Pro)**                            | OM System / Olympus        | Closed — export to WAV first       |
 | **ARF / WRF**                                | Cisco Webex                | Closed — convert first             |
 | **MSV / DVF**                                | Sony IC recorder           | Closed — export to WAV first       |
@@ -124,6 +124,20 @@ headers with each session's start time. That layout comes from
 owner-supplied interoperability notes and has not yet been confirmed
 against a file CATalyst wrote, nor has CATalyst been shown to open a file
 DepoAudio wrote. See [`docs/SGMCA.md`](docs/SGMCA.md).
+
+DCR support reads Liberty / BIS Digital recordings and has been tested with
+synthetic files only, including two synthetic tones the owner made with a
+rebuild tool. The layout it reads comes from owner-supplied interoperability
+notes and has not been confirmed against a recording made by the vendor's
+software (see `docs/DCR.md`). Redactions marked in the recording are applied:
+skipped segments are left out and blacked-out ones are silent.
+Password-protected sections are silent in the output, with a warning before
+export. The recording's checksums are checked and the result is shown.
+Speex audio, other unknown codecs and recordings whose layout DepoAudio cannot
+follow are refused with a message; export those to WAV in the software that
+recorded them. A `.dcr` without the Liberty / BIS Digital signature gets
+export guidance, and a camera raw image named `.dcr` is called out as an
+image.
 
 DigitalCAT / SoundSync `.dm` files: DepoAudio reads the audio inside into a
 temporary WAV for FFmpeg, skips blocks that were recorded over, keeps the

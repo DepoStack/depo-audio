@@ -13,7 +13,7 @@ import {
   compareTarget,
   isPlayerPlayable,
 } from '../../lib/player'
-import { audioTrackNotice, dmNotice, recordingSessionNotice } from '../../lib/queue'
+import { audioTrackNotice, dcrQueueNotices, dmNotice, recordingSessionNotice } from '../../lib/queue'
 
 export default function FileRow({ file, streams, job, onRemove, converting, onOpenInPlayer }) {
   const [expanded, setExpanded] = useState(false)
@@ -25,6 +25,7 @@ export default function FileRow({ file, streams, job, onRemove, converting, onOp
   const isRej = file.fmt?.status === 'unsupported'
   const trackNotice = isRej ? '' : audioTrackNotice(streams)
   const sessionNotice = isRej ? '' : recordingSessionNotice(streams)
+  const dcrNotices = isRej ? [] : dcrQueueNotices(streams)
   const dmRowNotice = isRej ? '' : dmNotice(streams)
 
   return (
@@ -64,6 +65,13 @@ export default function FileRow({ file, streams, job, onRemove, converting, onOp
           <span className="type-small text-[hsl(var(--sub))] truncate block">{file.path}</span>
           {trackNotice && <span className="type-small text-[hsl(var(--text2))] block mt-0.5">{trackNotice}</span>}
           {sessionNotice && <span className="type-small text-[hsl(var(--text2))] block mt-0.5">{sessionNotice}</span>}
+          {dcrNotices.map((notice, index) => (
+            // Two changes in the same second give the same text, so the
+            // position (the list is rebuilt whole) is the key.
+            <span key={index} className="type-small text-[hsl(var(--text2))] block mt-0.5">
+              {notice}
+            </span>
+          ))}
           {dmRowNotice && <span className="type-small text-[hsl(var(--text2))] block mt-0.5">{dmRowNotice}</span>}
         </div>
         <div className="flex items-center gap-2 shrink-0">

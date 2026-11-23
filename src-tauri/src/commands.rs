@@ -96,8 +96,9 @@ pub async fn detect_format(path: String) -> Option<FormatInfo> {
 /// ffprobe of the original file, or for an SGMCA a walk of its own headers
 /// and pages (ffprobe cannot read the Direct Audio layout). A `.dm` is
 /// answered from its own header and block headers (no FFmpeg), with what was
-/// recorded over. Returns None for a rejected format, or an SGMCA that cannot
-/// be read (conversion then gives the reason).
+/// recorded over, and a Liberty / BIS DCR by DepoAudio's own reader
+/// (`crate::dcr::queue_streams_info`). Returns None for a rejected format, or
+/// an SGMCA that cannot be read (conversion then gives the reason).
 #[tauri::command]
 pub async fn probe_audio_streams_cmd(
     app: AppHandle,
@@ -114,6 +115,13 @@ pub async fn probe_audio_streams_cmd(
             Ok(info.ok().map(|info| crate::manifest::sgmca_audio_streams(&info)))
         }
         Some(format) if format.handler == "rejected" => Ok(None),
+        Some(format) if format.handler == "dcr" => {
+            let source = source.to_path_buf();
+            tauri::async_runtime::spawn_blocking(move || crate::dcr::queue_streams_info(&source))
+                .await
+                .map(Some)
+                .map_err(|error| format!("Could not inspect the recording: {error}"))
+        }
         // FFmpeg cannot read a .dm; its own header answers instead.
         Some(format) if format.key == "digitalcat" => {
             let source = source.to_path_buf();

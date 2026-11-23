@@ -177,13 +177,31 @@ fn validate_merge_job(job: &MergeJob) -> Result<ValidatedMergeJob, String> {
     })
 }
 
-/// Read an SGMCA's layout (or a `.dm`'s blocks) once and keep its temporary
-/// feed alive for the whole merge. Reusing it avoids reading every page of a
-/// potentially large recording again for duration probing, sync detection,
-/// and decoding for the merge.
-async fn prepare_merge_source(path: PathBuf, cancel: &MergeCancel) -> Result<(PathBuf, Option<TempFile>), String> {
+/// Read an SGMCA's layout (or a `.dm`'s blocks, or a `.dcr`) once and keep
+/// its temporary feed alive for the whole merge. Reusing it avoids reading
+/// every page of a potentially large recording again for duration probing,
+/// sync detection, and decoding for the merge.
+async fn prepare_merge_source(
+    app: &AppHandle,
+    path: PathBuf,
+    cancel: &MergeCancel,
+) -> Result<(PathBuf, Option<TempFile>), String> {
+    let predicate = cancel.predicate();
+    cancel_checked(
+        cancel,
+        crate::helpers::prepare_audio_feed_cancellable(app, path, predicate),
+    )
+    .await
+}
+
+/// Run a source preparation only if the merge is not cancelled, and report
+/// a cancel that lands while it runs as the merge's cancel.
+async fn cancel_checked(
+    cancel: &MergeCancel,
+    preparation: impl std::future::Future<Output = Result<(PathBuf, Option<TempFile>), String>>,
+) -> Result<(PathBuf, Option<TempFile>), String> {
     cancel.check()?;
-    let prepared = crate::helpers::prepare_audio_feed_cancellable(path, cancel.predicate()).await;
+    let prepared = preparation.await;
     cancel.check()?;
     prepared
 }
@@ -228,8 +246,8 @@ pub(crate) async fn detect_sync(
     if source_a == source_b {
         return Err("Choose two different source files for sync detection".into());
     }
-    let (source_a, _guard_a) = prepare_merge_source(source_a, cancel).await?;
-    let (source_b, _guard_b) = prepare_merge_source(source_b, cancel).await?;
+    let (source_a, _guard_a) = prepare_merge_source(app, source_a, cancel).await?;
+    let (source_b, _guard_b) = prepare_merge_source(app, source_b, cancel).await?;
     detect_sync_paths(app, &source_a, &source_b, cancel).await
 }
 
@@ -386,7 +404,7 @@ pub(crate) async fn merge_audio(app: &AppHandle, job: &MergeJob, cancel: &MergeC
     let mut prepared_sources = Vec::with_capacity(job.sources.len());
     let mut source_guards = Vec::new();
     for source in &job.sources {
-        let (prepared, guard) = prepare_merge_source(source.clone(), cancel).await?;
+        let (prepared, guard) = prepare_merge_source(app, source.clone(), cancel).await?;
         prepared_sources.push(prepared);
         if let Some(guard) = guard {
             source_guards.push(guard);
@@ -900,7 +918,12 @@ mod tests {
         let bytes = crate::sgmca::fixtures::synthetic_direct(5, 312, 0, |_| 30);
         std::fs::write(&source, &bytes).unwrap();
 
-        let prepared = tauri::async_runtime::block_on(prepare_merge_source(source.clone(), &cancel)).unwrap();
+        // As prepare_merge_source, without an app handle (no DCR merge here).
+        let prepare = |source: PathBuf| {
+            let predicate = cancel.predicate();
+            async move { crate::helpers::prepare_audio_feed_with_cancel(&source, Some(predicate.as_ref())) }
+        };
+        let prepared = tauri::async_runtime::block_on(cancel_checked(&cancel, prepare(source.clone()))).unwrap();
         assert!(prepared.1.is_some(), "uncancelled: the script is written");
         let script = prepared.0.clone();
         assert!(script.starts_with(crate::workdir::tests::test_root()));
@@ -910,7 +933,7 @@ mod tests {
         held_by_command.cancel();
         assert!(cancel.is_cancelled());
         assert!((cancel.predicate())());
-        let error = tauri::async_runtime::block_on(prepare_merge_source(source.clone(), &cancel)).unwrap_err();
+        let error = tauri::async_runtime::block_on(cancel_checked(&cancel, prepare(source.clone()))).unwrap_err();
         assert_eq!(error, MERGE_CANCELLED_MESSAGE);
         assert_eq!(std::fs::read(&source).unwrap(), bytes, "the source is only read");
         let _ = std::fs::remove_dir_all(dir);

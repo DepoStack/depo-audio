@@ -210,6 +210,11 @@ pub struct AudioStreamsInfo {
     /// For an SGMCA file: a last session shorter than its header says.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cut_short_session: Option<u32>,
+    /// For a Liberty / BIS Digital `.dcr`: the reader's summary (codec,
+    /// channel names, remote-participant changes, or why it cannot be
+    /// converted). Absent for every other file.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dcr: Option<crate::dcr::DcrQueueInfo>,
     /// For a DigitalCAT `.dm`: blocks skipped and whether the stamps run
     /// backwards, read from the file's own header and block headers.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -235,6 +240,7 @@ pub(crate) fn sgmca_audio_streams(info: &crate::sgmca::SgmcaInfo) -> AudioStream
         unread_bytes: Some(info.unread_bytes),
         omitted_sessions: Some(info.omitted_segments.clone()),
         cut_short_session: info.cut_short_segment,
+        dcr: None,
         dm: None,
     }
 }
@@ -315,6 +321,7 @@ pub(crate) fn parse_audio_streams(probe: &serde_json::Value) -> AudioStreamsInfo
         unread_bytes: None,
         omitted_sessions: None,
         cut_short_session: None,
+        dcr: None,
         dm: None,
     }
 }
@@ -401,6 +408,11 @@ pub(crate) struct FileRecord {
     /// For an SGMCA source: its layout and recording sessions.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sgmca: Option<SgmcaSourceRecord>,
+    /// For a Liberty / BIS Digital `.dcr` source: what the reader found
+    /// (format facts and channel names only; never case, docket or password
+    /// fields). Absent for every other source.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dcr: Option<crate::dcr::DcrSourceRecord>,
     /// For a DigitalCAT `.dm` source: its blocks, the blocks skipped and where
     /// the time stamps jump. Absent for every other source.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -836,6 +848,7 @@ pub(crate) mod tests {
                 sha256: "a".repeat(64),
                 size_bytes: 1024,
                 sgmca: None,
+                dcr: None,
                 dm_timeline: None,
             },
             probed,

@@ -22,12 +22,14 @@ export const AUDIO_EXTS = [
   'ftr',
   'bwf',
   'dm',
+  'dcr',
 ]
 // These containers need native preprocessing before a browser media element
 // can decode them. An SGMCA holds Direct Audio headers and one Ogg stream per
 // recording session; a DigitalCAT .dm keeps its audio in time-stamped blocks
-// that DepoAudio reads out during conversion.
-export const CONVERSION_REQUIRED_EXTS = new Set(['sgmca', 'trm', 'ftr', 'dm'])
+// that DepoAudio reads out during conversion; a Liberty / BIS DCR keeps its
+// channels in its own block layout.
+export const CONVERSION_REQUIRED_EXTS = new Set(['sgmca', 'trm', 'ftr', 'dm', 'dcr'])
 export const SPEED_STEPS = [0.5, 0.75, 1, 1.25, 1.5, 2]
 
 // Parse the persisted playback speed; anything off the menu falls back to 1×

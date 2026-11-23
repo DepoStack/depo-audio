@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   audioTrackNotice,
   catJobPaths,
+  dcrQueueNotices,
   dmNotice,
   mergeQueuedFiles,
   partitionQueuePaths,
@@ -162,6 +163,89 @@ describe('recordingSessionNotice', () => {
     expect(recordingSessionNotice({ convertedIndex: 0, streams: [] })).toBe('')
     expect(recordingSessionNotice(null)).toBe('')
     expect(recordingSessionNotice(undefined)).toBe('')
+  })
+})
+
+describe('dcrQueueNotices', () => {
+  const dcr = extra => ({
+    convertedIndex: 0,
+    streams: [{ channels: 3, sampleRate: 8000 }],
+    durationSecs: 3600,
+    dcr: {
+      codec: 'PCM 16-bit',
+      channelNames: ['Judge', 'Witness', 'Ch 3'],
+      conferenceChanges: [],
+      conferenceChangeCount: 0,
+      videoFrames: 0,
+      attachments: 0,
+      problem: null,
+      ...extra,
+    },
+  })
+
+  it('says nothing for files the DCR reader did not read', () => {
+    expect(dcrQueueNotices(null)).toEqual([])
+    expect(dcrQueueNotices({ streams: [] })).toEqual([])
+  })
+
+  it('names the channels read from the recording', () => {
+    expect(dcrQueueNotices(dcr())).toEqual([
+      'Channels read from the recording: Judge, Witness, Ch 3. Split outputs and export records use these names instead of the channel labels below.',
+    ])
+  })
+
+  it('lists each remote-participant change with the channel count after it, and counts the rest', () => {
+    const change = (atSeconds, kind = 'joined', channelsAfter = 3) => ({
+      atSeconds,
+      kind,
+      channelMask: 4,
+      channelsAfter,
+    })
+    const notices = dcrQueueNotices(
+      dcr({
+        conferenceChanges: [change(754), change(3600, 'left', 1), change(3725.5, 'other', null), change(4000)],
+        conferenceChangeCount: 5,
+        videoFrames: 2,
+      }),
+    )
+    expect(notices.slice(1, 4)).toEqual([
+      'A remote participant joined at 00:12:34 (3 channels recorded from then on).',
+      'A remote participant left at 01:00:00 (1 channel recorded from then on).',
+      'A remote participant joined or left at 01:02:05.',
+    ])
+    expect(notices[4]).toBe('2 more remote-participant changes follow; the export record lists them.')
+    expect(notices[5]).toBe('This recording also holds video frames or attachments; only the audio is converted.')
+    expect(notices.join(' ')).not.toContain('guess')
+  })
+
+  it("shows the reader's redaction, protection and checksum notices after the others", () => {
+    const notices = dcrQueueNotices(
+      dcr({
+        notices: [
+          '2 redacted segments: 1 left out, 1 silenced, as marked in the recording.',
+          'This recording has password-protected sections; they are silent in the output.',
+          42,
+          '',
+        ],
+      }),
+    )
+    expect(notices.slice(1)).toEqual([
+      '2 redacted segments: 1 left out, 1 silenced, as marked in the recording.',
+      'This recording has password-protected sections; they are silent in the output.',
+    ])
+  })
+
+  it('says when bytes at the end of the audio are left out', () => {
+    expect(dcrQueueNotices(dcr({ trailingBytesDropped: 2 }))[1]).toBe(
+      'The last 2 bytes of audio are too few for one sample of every channel and are left out; the export record says so.',
+    )
+    expect(dcrQueueNotices(dcr({ trailingBytesDropped: 0 }))).toHaveLength(1)
+  })
+
+  it('shows only the reason when the recording cannot be converted', () => {
+    const problem =
+      "A redaction in this recording has no position, so DepoAudio can't tell which audio it covers. Export it to WAV in the software that recorded it (for example Liberty Court Recorder or BIS Digital), then add the WAV."
+    expect(dcrQueueNotices(dcr({ problem }))).toEqual([problem])
   })
 })
 
