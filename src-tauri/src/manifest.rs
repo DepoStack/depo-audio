@@ -77,6 +77,9 @@ pub(crate) struct ProbedSource {
     /// Channels of the converted stream (`SOURCE_AUDIO_STREAM`).
     pub channels: Option<u32>,
     pub timing: Option<SourceTiming>,
+    /// Sample rate of the converted stream as ffprobe reports it, which is
+    /// the rate leading-silence trim counts samples at.
+    pub sample_rate: Option<u32>,
     /// How many audio streams the input has; None when the probe failed.
     pub audio_stream_count: Option<u32>,
 }
@@ -134,6 +137,7 @@ pub(crate) fn parse_probe(probe: &serde_json::Value) -> ProbedSource {
     ProbedSource {
         channels,
         timing,
+        sample_rate,
         audio_stream_count: audio_stream_count(probe),
     }
 }
@@ -254,11 +258,14 @@ pub(crate) fn rescale_time_reference(timing: SourceTiming, output_rate: u32) -> 
     u64::try_from(scaled).unwrap_or(u64::MAX)
 }
 
-/// Leading-silence trim (`silenceremove`) moves the output's first sample
-/// later by an amount FFmpeg does not report, so the source start no longer
-/// describes the output. Every other filter keeps the timeline.
-pub(crate) fn filters_shift_start(filters: &[String]) -> bool {
-    filters.iter().any(|filter| filter.contains("silenceremove"))
+/// The source start moved later by `trimmed_samples` (counted at the
+/// source rate, as leading-silence trim counts them): the start of the
+/// output's first sample. Saturates rather than wrap.
+pub(crate) fn shifted_timing(timing: SourceTiming, trimmed_samples: u64) -> SourceTiming {
+    SourceTiming {
+        time_reference_samples: timing.time_reference_samples.saturating_add(trimmed_samples),
+        sample_rate: timing.sample_rate,
+    }
 }
 
 /// The sample rate the encoder writes, read from the exact `-ar` argument.
@@ -270,27 +277,33 @@ pub(crate) fn output_sample_rate(encoder_args: &[String]) -> Option<u32> {
 }
 
 /// FFmpeg arguments that carry the start into a WAV output's own bext chunk
-/// (`-write_bext 1` plus the rescaled `time_reference`). Empty when the output
-/// is not WAV, the start is unknown, or a filter moved the start.
+/// (`-write_bext 1` plus the rescaled `time_reference`). `trimmed_samples` is
+/// what leading-silence trim removed (0 without trim), counted at the source
+/// rate: the output's first sample is that much later than the source's, so
+/// its start is the source start plus that amount. Empty when the output is
+/// not WAV or the start is unknown.
 pub(crate) fn bext_args(
     format: &str,
     timing: Option<SourceTiming>,
     output_rate: Option<u32>,
-    shifted: bool,
+    trimmed_samples: u64,
 ) -> Vec<String> {
-    match (format, timing, output_rate, shifted) {
-        ("wav", Some(timing), Some(rate), false) => vec![
+    match (format, timing, output_rate) {
+        ("wav", Some(timing), Some(rate)) => vec![
             "-write_bext".into(),
             "1".into(),
             "-metadata".into(),
-            format!("time_reference={}", rescale_time_reference(timing, rate)),
+            format!(
+                "time_reference={}",
+                rescale_time_reference(shifted_timing(timing, trimmed_samples), rate)
+            ),
         ],
         _ => Vec::new(),
     }
 }
 
-/// The start-time arguments for one output. A WAV output with a known,
-/// unshifted start gets its own bext chunk (`bext_args`). Every other output
+/// The start-time arguments for one output. A WAV output with a known start
+/// gets its own bext chunk (`bext_args`). Every other output
 /// gets `-metadata time_reference=`, which deletes the tag: FFmpeg would
 /// otherwise copy the source's `time_reference` into FLAC, MP3 and Opus
 /// outputs unrescaled, and the output would contradict its export record.
@@ -298,9 +311,9 @@ pub(crate) fn start_time_metadata_args(
     format: &str,
     timing: Option<SourceTiming>,
     output_rate: Option<u32>,
-    shifted: bool,
+    trimmed_samples: u64,
 ) -> Vec<String> {
-    let bext = bext_args(format, timing, output_rate, shifted);
+    let bext = bext_args(format, timing, output_rate, trimmed_samples);
     if bext.is_empty() {
         vec!["-metadata".into(), "time_reference=".into()]
     } else {
@@ -355,13 +368,42 @@ pub(crate) struct ProcessingRecord {
     pub map_args: Vec<String>,
     /// Present when Fade placed a fade-out; null otherwise.
     pub fade_out: Option<FadeOutRecord>,
+    /// Present when Trim silence ran for this output (never in Split
+    /// Channels), with `samples` 0 when nothing was below the threshold at
+    /// the start; null otherwise.
+    pub leading_trim: Option<LeadingTrimRecord>,
+}
+
+/// How much leading-silence trim removed, measured before the conversion.
+/// The conversion removes exactly `samples` samples from the start with
+/// `atrim=start_sample=<samples>`, so the output's first sample is source
+/// sample `samples`.
+#[derive(Debug, Serialize, Clone, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct LeadingTrimRecord {
+    /// Samples removed from the start of every channel, at `sampleRate`.
+    pub samples: u64,
+    /// `samples` over `sampleRate`.
+    pub seconds: f64,
+    /// The converted stream's sample rate, which `samples` counts at.
+    pub sample_rate: u32,
+    /// The silence threshold the detection used, in dBFS: the output starts
+    /// at the first sample above it on any channel.
+    pub threshold_db: f64,
+    /// The converted stream's decoded length in samples, from the same pass.
+    pub decoded_source_samples: u64,
+    /// The exact FFmpeg filter that measured `samples`: a sample count, the
+    /// trim detection and a second sample count, on the decoded stream.
+    pub measured_with: String,
 }
 
 /// Where a fade-out was placed, and the lengths it was placed from.
 #[derive(Debug, Serialize, Clone, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct FadeOutRecord {
-    /// The `st` of the `afade=t=out` filter, in seconds.
+    /// The `st` of the `afade=t=out` filter, in seconds on the output's
+    /// timeline: after Trim silence, the decoded length less what trim
+    /// removed, less the fade length.
     pub start_seconds: f64,
     pub duration_seconds: f64,
     /// The converted stream's length as FFmpeg decodes it, which places the
@@ -437,6 +479,8 @@ pub(crate) struct OutputFacts<'a> {
     pub label: Option<String>,
     /// From `wav_header_kind`, for WAV outputs only.
     pub wav_header: Option<&'static str>,
+    /// What leading-silence trim removed from this output, if anything.
+    pub leading_trim: Option<LeadingTrimRecord>,
 }
 
 /// The header a finished WAV output was written with, from its first four
@@ -461,7 +505,7 @@ fn bounded_label(label: &str) -> String {
 pub(crate) fn start_time_record(
     timing: Option<SourceTiming>,
     output_rate: Option<u32>,
-    shifted: bool,
+    leading_trim: Option<&LeadingTrimRecord>,
     format: &str,
 ) -> StartTimeRecord {
     let Some(timing) = timing else {
@@ -477,17 +521,14 @@ pub(crate) fn start_time_record(
         };
     };
     let seconds = timing.time_reference_samples as f64 / f64::from(timing.sample_rate);
-    let output_reference = match (output_rate, shifted) {
-        (Some(rate), false) => Some(rescale_time_reference(timing, rate)),
-        _ => None,
-    };
-    let written = !bext_args(format, Some(timing), output_rate, shifted).is_empty();
-    let note = if shifted {
-        "Leading-silence trim removed audio from the start, so the output starts later than the source by an unrecorded amount. The output carries no start time; the source start is kept here for reference only."
-    } else if written {
-        "The output WAV carries the same start in its own bext chunk, rescaled to the output sample rate."
-    } else {
-        "The output starts at the source start. This format has no bext chunk, and DepoAudio removes the copied time_reference tag from it, so the start is recorded here only."
+    let trimmed = leading_trim.map_or(0, |trim| trim.samples);
+    let output_reference = output_rate.map(|rate| rescale_time_reference(shifted_timing(timing, trimmed), rate));
+    let written = !bext_args(format, Some(timing), output_rate, trimmed).is_empty();
+    let note = match (trimmed > 0, written) {
+        (true, true) => "Leading-silence trim removed processing.leadingTrim.samples samples from the start, so the output starts that much later than the source. The output WAV carries the source start plus that amount in its own bext chunk, rescaled to the output sample rate.",
+        (true, false) => "Leading-silence trim removed processing.leadingTrim.samples samples from the start, so the output starts that much later than the source; outputTimeReferenceSamples is the source start plus that amount at the output rate. This format has no bext chunk, and DepoAudio removes the copied time_reference tag from it, so the start is recorded here only.",
+        (false, true) => "The output WAV carries the same start in its own bext chunk, rescaled to the output sample rate.",
+        (false, false) => "The output starts at the source start. This format has no bext chunk, and DepoAudio removes the copied time_reference tag from it, so the start is recorded here only.",
     };
     StartTimeRecord {
         known: true,
@@ -507,7 +548,6 @@ pub(crate) struct ManifestInput<'a> {
     pub source: FileRecord,
     pub probed: &'a ProbedSource,
     pub labels: &'a [String],
-    pub shifted: bool,
 }
 
 pub(crate) fn build_manifest(input: &ManifestInput<'_>, facts: OutputFacts<'_>) -> ExportManifest {
@@ -554,6 +594,7 @@ pub(crate) fn build_manifest(input: &ManifestInput<'_>, facts: OutputFacts<'_>) 
             encoder_args: facts.encoder_args,
             map_args: facts.map_args,
             fade_out: facts.fade_out,
+            leading_trim: facts.leading_trim.clone(),
         },
         channel: ChannelRecord {
             output: output_kind,
@@ -569,7 +610,12 @@ pub(crate) fn build_manifest(input: &ManifestInput<'_>, facts: OutputFacts<'_>) 
             index: crate::helpers::SOURCE_AUDIO_STREAM,
             source_audio_stream_count: input.probed.audio_stream_count,
         },
-        start_time: start_time_record(input.probed.timing, sample_rate, input.shifted, facts.format),
+        start_time: start_time_record(
+            input.probed.timing,
+            sample_rate,
+            facts.leading_trim.as_ref(),
+            facts.format,
+        ),
     }
 }
 
@@ -635,7 +681,19 @@ pub(crate) mod tests {
         })
     }
 
-    fn sample_input(probed: &ProbedSource, labels: &[String], shifted: bool) -> ExportManifest {
+    /// One second of leading silence at 44.1 kHz, as a measured trim.
+    fn sample_trim() -> LeadingTrimRecord {
+        LeadingTrimRecord {
+            samples: 44_100,
+            seconds: 1.0,
+            sample_rate: 44_100,
+            threshold_db: -50.0,
+            decoded_source_samples: 441_000,
+            measured_with: crate::ffmpeg::leading_trim_measure_filter(-50.0),
+        }
+    }
+
+    fn sample_input(probed: &ProbedSource, labels: &[String], trimmed: bool) -> ExportManifest {
         let input = ManifestInput {
             app_version: "1.0.3".into(),
             created_at: "2026-11-13T09:00:00Z".into(),
@@ -647,7 +705,6 @@ pub(crate) mod tests {
             },
             probed,
             labels,
-            shifted,
         };
         build_manifest(
             &input,
@@ -667,6 +724,7 @@ pub(crate) mod tests {
                 source_channel_index: Some(1),
                 label: Some("Witness".into()),
                 wav_header: Some("riff"),
+                leading_trim: trimmed.then(sample_trim),
             },
         )
     }
@@ -757,29 +815,32 @@ pub(crate) mod tests {
         });
         let clear = vec!["-metadata".to_string(), "time_reference=".to_string()];
         assert_eq!(
-            start_time_metadata_args("wav", timing, Some(16_000), false),
-            bext_args("wav", timing, Some(16_000), false)
+            start_time_metadata_args("wav", timing, Some(16_000), 0),
+            bext_args("wav", timing, Some(16_000), 0)
         );
         for format in ["flac", "mp3", "opus", "m4a"] {
             assert_eq!(
-                start_time_metadata_args(format, timing, Some(48_000), false),
+                start_time_metadata_args(format, timing, Some(48_000), 0),
                 clear,
                 "{format}"
             );
             assert_eq!(
-                start_time_metadata_args(format, timing, Some(48_000), true),
+                start_time_metadata_args(format, timing, Some(48_000), 4_800),
                 clear,
                 "{format}"
             );
             assert_eq!(
-                start_time_metadata_args(format, None, Some(48_000), false),
+                start_time_metadata_args(format, None, Some(48_000), 0),
                 clear,
                 "{format}"
             );
         }
-        assert_eq!(start_time_metadata_args("wav", timing, Some(48_000), true), clear);
-        assert_eq!(start_time_metadata_args("wav", None, Some(48_000), false), clear);
-        assert_eq!(start_time_metadata_args("wav", timing, None, false), clear);
+        assert_eq!(
+            start_time_metadata_args("wav", timing, Some(48_000), 4_800),
+            bext_args("wav", timing, Some(48_000), 4_800)
+        );
+        assert_eq!(start_time_metadata_args("wav", None, Some(48_000), 0), clear);
+        assert_eq!(start_time_metadata_args("wav", timing, None, 0), clear);
     }
 
     #[test]
@@ -805,31 +866,36 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn bext_is_written_only_for_wav_with_a_known_unshifted_start() {
+    fn bext_is_written_for_wav_with_a_known_start_moved_by_the_trim() {
         let timing = Some(SourceTiming {
             time_reference_samples: 48_000,
             sample_rate: 48_000,
         });
         assert_eq!(
-            bext_args("wav", timing, Some(16_000), false),
+            bext_args("wav", timing, Some(16_000), 0),
             vec!["-write_bext", "1", "-metadata", "time_reference=16000"]
         );
-        assert!(bext_args("wav", timing, Some(16_000), true).is_empty());
-        assert!(bext_args("wav", None, Some(16_000), false).is_empty());
-        assert!(bext_args("flac", timing, Some(16_000), false).is_empty());
-        assert!(bext_args("wav", timing, None, false).is_empty());
+        // 0.1 s trimmed at 48 kHz: the output starts 1.1 s after midnight.
+        assert_eq!(
+            bext_args("wav", timing, Some(16_000), 4_800),
+            vec!["-write_bext", "1", "-metadata", "time_reference=17600"]
+        );
+        assert_eq!(
+            bext_args("wav", timing, Some(48_000), 4_800),
+            vec!["-write_bext", "1", "-metadata", "time_reference=52800"]
+        );
+        assert!(bext_args("wav", None, Some(16_000), 0).is_empty());
+        assert!(bext_args("flac", timing, Some(16_000), 0).is_empty());
+        assert!(bext_args("wav", timing, None, 0).is_empty());
     }
 
     #[test]
-    fn only_silence_removal_shifts_the_start() {
-        assert!(!filters_shift_start(&[
-            "highpass=f=80".into(),
-            "loudnorm=I=-16:TP=-1.5:LRA=11".into(),
-            "afade=t=in:d=0.5".into()
-        ]));
-        assert!(filters_shift_start(&[
-            "silenceremove=start_periods=1:start_threshold=-50dB:start_mode=any:detection=peak:window=0".into()
-        ]));
+    fn a_trimmed_start_saturates_instead_of_wrapping() {
+        let timing = SourceTiming {
+            time_reference_samples: u64::MAX - 1,
+            sample_rate: 48_000,
+        };
+        assert_eq!(shifted_timing(timing, 10).time_reference_samples, u64::MAX);
     }
 
     #[test]
@@ -860,10 +926,20 @@ pub(crate) mod tests {
         assert_eq!(manifest.start_time.output_time_reference_samples, Some(172_800_000));
         assert!(manifest.start_time.written_to_output);
 
+        // One second trimmed at 44.1 kHz: the output starts at 01:00:01,
+        // 172,848,000 samples at 48 kHz, and its record says how much moved.
         let trimmed = sample_input(&probed, &labels, true);
         assert!(trimmed.start_time.known);
-        assert_eq!(trimmed.start_time.output_time_reference_samples, None);
-        assert!(!trimmed.start_time.written_to_output);
+        assert_eq!(trimmed.start_time.source_time_reference_samples, Some(158_760_000));
+        assert_eq!(trimmed.start_time.output_time_reference_samples, Some(172_848_000));
+        assert!(trimmed.start_time.written_to_output);
+        assert!(trimmed.start_time.note.contains("processing.leadingTrim.samples"));
+        assert_eq!(trimmed.processing.leading_trim, Some(sample_trim()));
+        let value = serde_json::to_value(&trimmed).unwrap();
+        assert_eq!(value["processing"]["leadingTrim"]["samples"], 44_100);
+        assert_eq!(value["processing"]["leadingTrim"]["seconds"], 1.0);
+        assert_eq!(value["processing"]["leadingTrim"]["sampleRate"], 44_100);
+        assert!(serde_json::to_value(&manifest).unwrap()["processing"]["leadingTrim"].is_null());
 
         let unknown = sample_input(&ProbedSource::default(), &labels, false);
         assert!(!unknown.start_time.known);
@@ -1486,35 +1562,25 @@ pub(crate) mod tests {
         );
         assert_eq!(time_reference_tags(&probe_json(&copied)), vec!["158760000".to_string()]);
 
-        let trim_filter = "silenceremove=start_periods=1:start_threshold=-50dB:start_mode=any:detection=peak:window=0";
-        let cases: [(&str, Option<&str>); 7] = [
-            ("flac", None),
-            ("mp3", None),
-            ("opus", None),
-            ("flac", Some(trim_filter)),
-            ("mp3", Some(trim_filter)),
-            ("opus", Some(trim_filter)),
-            ("wav", Some(trim_filter)),
-        ];
-        for (index, (format, filter)) in cases.into_iter().enumerate() {
-            let filters: Vec<String> = filter.iter().map(|f| f.to_string()).collect();
-            let shifted = filters_shift_start(&filters);
-            let mut encoder = crate::helpers::output_args(format, "48000", 192);
-            let rate = output_sample_rate(&encoder);
-            encoder.extend(start_time_metadata_args(format, probed.timing, rate, shifted));
-            let output = dir
-                .0
-                .join(format!("synthetic_out_{index}{}", crate::helpers::output_ext(format)));
-            encode(&source, filter, &encoder, &output);
-            let probe = probe_json(&output);
-            assert_eq!(
-                time_reference_tags(&probe),
-                Vec::<String>::new(),
-                "{format} filter={filter:?}"
-            );
-            assert_eq!(parse_probe(&probe).timing, None, "{format} filter={filter:?}");
-            let record = start_time_record(probed.timing, rate, shifted, format);
-            assert!(!record.written_to_output, "{format} filter={filter:?}");
+        for (index, format) in ["flac", "mp3", "opus"].into_iter().enumerate() {
+            for trimmed in [0, 4_410] {
+                let mut encoder = crate::helpers::output_args(format, "48000", 192);
+                let rate = output_sample_rate(&encoder);
+                encoder.extend(start_time_metadata_args(format, probed.timing, rate, trimmed));
+                let filter = (trimmed > 0).then(|| crate::ffmpeg::leading_trim_filters(trimmed).join(","));
+                let output = dir.0.join(format!(
+                    "synthetic_out_{index}_{trimmed}{}",
+                    crate::helpers::output_ext(format)
+                ));
+                encode(&source, filter.as_deref(), &encoder, &output);
+                let probe = probe_json(&output);
+                assert_eq!(
+                    time_reference_tags(&probe),
+                    Vec::<String>::new(),
+                    "{format} trimmed={trimmed}"
+                );
+                assert_eq!(parse_probe(&probe).timing, None, "{format} trimmed={trimmed}");
+            }
         }
     }
 
@@ -1539,7 +1605,7 @@ pub(crate) mod tests {
         let mut encoder = crate::helpers::output_args("wav", "48000", 192);
         assert!(!encoder.iter().any(|arg| arg == "-rf64"));
         let rate = output_sample_rate(&encoder);
-        encoder.extend(start_time_metadata_args("wav", probed.timing, rate, false));
+        encoder.extend(start_time_metadata_args("wav", probed.timing, rate, 0));
         let output = dir.0.join("synthetic_bext_out.wav");
         encode(&source, None, &encoder, &output);
         let carried = parse_probe(&probe_json(&output));
@@ -1550,6 +1616,21 @@ pub(crate) mod tests {
                 sample_rate: 48_000
             })
         );
+        // After 0.1 s of leading-silence trim (4,410 samples at 44.1 kHz) the
+        // output starts at 01:00:00.1: 172,804,800 samples at 48 kHz.
+        let mut trimmed_encoder = crate::helpers::output_args("wav", "48000", 192);
+        trimmed_encoder.extend(start_time_metadata_args("wav", probed.timing, rate, 4_410));
+        let trimmed_output = dir.0.join("synthetic_bext_trimmed.wav");
+        let trim = crate::ffmpeg::leading_trim_filters(4_410).join(",");
+        encode(&source, Some(&trim), &trimmed_encoder, &trimmed_output);
+        assert_eq!(
+            parse_probe(&probe_json(&trimmed_output)).timing,
+            Some(SourceTiming {
+                time_reference_samples: 172_804_800,
+                sample_rate: 48_000
+            })
+        );
+
         // Without an RF64 option the file is plain RIFF with no JUNK chunk.
         assert_eq!(wav_header_kind(&output), Ok("riff"));
         assert!(!fs::read(&output).unwrap()[..64].windows(4).any(|w| w == b"JUNK"));

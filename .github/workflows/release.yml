@@ -434,6 +434,19 @@ jobs:
               -c:a ftr -t 1 -i "$fixture_path" -map 0:a:0 \
               -af 'silenceremove=start_periods=1:start_threshold=-50dB:start_mode=any:detection=peak:window=0,alimiter=limit=0.97:level=false:latency=1' \
               -f null - || { echo "ERROR: $arch lacks the alignment-safe filter options"; exit 1; }
+            # Trim silence counts what it removes with this measuring pass
+            # (both counts must be reported) and removes exactly that many
+            # samples with these filters, or every trimmed conversion stops.
+            trim_log=$("$ffmpeg" -hide_banner -nostats -v info -xerror \
+              -c:a ftr -t 1 -i "$fixture_path" -map 0:a:0 -vn -sn \
+              -af 'astats@total=metadata=0:reset=0:measure_perchannel=none:measure_overall=Number_of_samples,silenceremove=start_periods=1:start_threshold=-50dB:start_mode=any:detection=peak:window=0,astats@kept=metadata=0:reset=0:measure_perchannel=none:measure_overall=Number_of_samples' \
+              -f null - 2>&1) || { echo "ERROR: $arch cannot run the trim measuring pass"; exit 1; }
+            grep -Eq '^\[astats@total @ [^]]+\] Number of samples: [1-9]' <<<"$trim_log" \
+              || { echo "ERROR: $arch cannot count samples for Trim silence"; exit 1; }
+            "$ffmpeg" -hide_banner -v error -xerror \
+              -c:a ftr -t 1 -i "$fixture_path" -map 0:a:0 \
+              -af 'asetpts=N/SR/TB,atrim=start_sample=1,asetpts=PTS-STARTPTS' \
+              -f null - || { echo "ERROR: $arch cannot remove a counted leading trim"; exit 1; }
             # Fade places its fade-out from this decoded-length pass; it must
             # report a sample count, or every faded conversion stops.
             length_log=$("$ffmpeg" -hide_banner -nostats -v info -xerror \
@@ -481,6 +494,19 @@ jobs:
             -af 'silenceremove=start_periods=1:start_threshold=-50dB:start_mode=any:detection=peak:window=0,alimiter=limit=0.97:level=false:latency=1' `
             -f null NUL
           if ($LASTEXITCODE -ne 0) { throw "Bundled FFmpeg lacks the alignment-safe filter options" }
+          # Trim silence counts what it removes with this measuring pass
+          # (both counts must be reported) and removes exactly that many
+          # samples with these filters, or every trimmed conversion stops.
+          $trimLog = & $ffmpeg -hide_banner -nostats -v info -xerror -c:a ftr -t 1 -i $fixturePath -map 0:a:0 -vn -sn `
+            -af 'astats@total=metadata=0:reset=0:measure_perchannel=none:measure_overall=Number_of_samples,silenceremove=start_periods=1:start_threshold=-50dB:start_mode=any:detection=peak:window=0,astats@kept=metadata=0:reset=0:measure_perchannel=none:measure_overall=Number_of_samples' `
+            -f null NUL 2>&1 | Out-String
+          if ($LASTEXITCODE -ne 0 -or $trimLog -notmatch '\[astats@total @ [^]]+\] Number of samples: [1-9]') {
+            throw "Bundled FFmpeg cannot count samples for Trim silence"
+          }
+          & $ffmpeg -hide_banner -v error -xerror -c:a ftr -t 1 -i $fixturePath -map 0:a:0 `
+            -af 'asetpts=N/SR/TB,atrim=start_sample=1,asetpts=PTS-STARTPTS' `
+            -f null NUL
+          if ($LASTEXITCODE -ne 0) { throw "Bundled FFmpeg cannot remove a counted leading trim" }
           # Fade places its fade-out from this decoded-length pass; it must
           # report a sample count, or every faded conversion stops.
           $lengthLog = & $ffmpeg -hide_banner -nostats -v info -xerror -c:a ftr -t 1 -i $fixturePath -map 0:a:0 -vn -sn `

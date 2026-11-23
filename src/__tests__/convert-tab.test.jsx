@@ -367,12 +367,15 @@ describe('ConvertTab preset picker', () => {
     // are read once, as the description.
     const catalyst = screen.getByRole('button', { name: 'For CATalyst audio sync (WAV)' })
     expect(catalyst).toHaveAccessibleDescription(
-      'Stenograph lists WAV for audio association and says to convert MP3 to WAV for CATalyst 21 or older. Not tested in CAT software',
+      'Stenograph lists WAV for audio association and says to convert MP3 to WAV for CATalyst 21 or older. Keeps your sample rate setting. No processing Not tested in CAT software',
     )
     expect(screen.getByRole('button', { name: 'Smallest file (Opus)' })).toHaveAccessibleDescription(
-      /Opus plays only in CATalyst 20 or newer.*Not tested in CAT software$/,
+      /Opus plays only in CATalyst 20 or newer.*Opus is always 48 kHz\. No processing Not tested in CAT software$/,
     )
-    expect(picker.textContent.match(/Not tested in CAT software/g)).toHaveLength(7)
+    expect(picker.textContent.match(/Not tested in CAT software/g)).toHaveLength(6)
+    expect(screen.getAllByTestId('preset-processing').map(line => line.textContent)).toEqual(
+      Array(6).fill('No processing'),
+    )
   })
 
   it('links the Stenograph articles the format notes come from', async () => {
@@ -396,16 +399,23 @@ describe('ConvertTab preset picker', () => {
     render(<ConvertTab {...props()} />)
 
     expect(screen.getByTestId('preset-status')).toHaveTextContent(
-      'No preset chosen. The current settings are the same as “For other or older CAT software (WAV)”.',
+      'No preset chosen. The current settings are the same as “For CATalyst audio sync (WAV)” and “For other or older CAT software (WAV)”.',
     )
     expect(screen.getByTestId('preset-status')).not.toHaveTextContent('Using:')
     expect(screen.getByTestId('preset-picker').querySelectorAll('[aria-pressed="true"]')).toHaveLength(0)
 
     fireEvent.click(screen.getByRole('button', { name: 'For other or older CAT software (WAV)' }))
-    expect(screen.getByTestId('preset-status')).toHaveTextContent('Using: For other or older CAT software (WAV)')
+    expect(screen.getByTestId('preset-status')).toHaveTextContent(
+      'Using: For other or older CAT software (WAV). No processing.',
+    )
     expect(screen.getByRole('button', { name: 'For other or older CAT software (WAV)' })).toHaveAttribute(
       'aria-pressed',
       'true',
+    )
+    // The other WAV destination shares the format but was not chosen.
+    expect(screen.getByRole('button', { name: 'For CATalyst audio sync (WAV)' })).toHaveAttribute(
+      'aria-pressed',
+      'false',
     )
   })
 
@@ -418,11 +428,60 @@ describe('ConvertTab preset picker', () => {
     fireEvent.click(screen.getByRole('button', { name: /Send to scopist/ }))
     expect(prefs.setFormatOut).toHaveBeenCalledWith('mp3')
     expect(prefs.setMp3Bitrate).toHaveBeenCalledWith(192)
-    expect(prefs.setTrim).toHaveBeenCalledWith(false)
-    expect(prefs.setFadeDur).not.toHaveBeenCalled()
+    expect(prefs.setMode).toHaveBeenCalledWith('stereo')
+    // A preset never touches processing or the sample rate.
+    for (const setter of [
+      'setRate',
+      'setNormalize',
+      'setTrim',
+      'setFade',
+      'setFadeDur',
+      'setHpf',
+      'setAutoLevel',
+      'setDeclip',
+    ]) {
+      expect(prefs[setter], setter).not.toHaveBeenCalled()
+    }
   })
 
-  it('shows Custom and the closest new preset for saved Quick Share settings, without changing them', () => {
+  it('keeps the processing a person turned on when they choose a preset, and lists it on every card', () => {
+    const prefs = { ...preferences(), normalize: true, hpf: true }
+    preferencesContext.current = prefs
+    render(<ConvertTab {...props()} />)
+
+    expect(screen.getAllByTestId('preset-processing').map(line => line.textContent)).toEqual(
+      Array(6).fill('Plus what you turned on: High-Pass Filter, Normalize Volume'),
+    )
+    expect(screen.getByTestId('preset-status')).toHaveTextContent(
+      'Custom: the format of “For CATalyst audio sync (WAV)” and “For other or older CAT software (WAV)”. Plus what you turned on: High-Pass Filter, Normalize Volume.',
+    )
+    fireEvent.click(screen.getByRole('button', { name: 'For CATalyst audio sync (WAV)' }))
+    expect(screen.getByTestId('preset-status')).toHaveTextContent(
+      'Using: For CATalyst audio sync (WAV). Plus what you turned on: High-Pass Filter, Normalize Volume.',
+    )
+    expect(prefs.setNormalize).not.toHaveBeenCalled()
+    expect(prefs.setHpf).not.toHaveBeenCalled()
+  })
+
+  it('shows every processing option off by default, each with what it changes', () => {
+    preferencesContext.current = preferences()
+    render(<ConvertTab {...props()} />)
+
+    for (const [name, reason] of [
+      [/Balance Microphone Levels/, /changes each channel’s level/],
+      [/Fix Clipped Audio/, /changes the waveform at those peaks/],
+      [/High-Pass Filter/, /removes all sound below the cutoff/],
+      [/Normalize Volume/, /Makes quiet recordings louder; changes levels/],
+      [/Trim Leading Silence/, /the export record says by how many samples/],
+      [/Fade In \/ Out/, /makes the first and last moments quieter/],
+    ]) {
+      const toggle = screen.getByRole('switch', { name })
+      expect(toggle).not.toBeChecked()
+      expect(toggle).toHaveAccessibleDescription(reason)
+    }
+  })
+
+  it('shows Custom for saved Quick Share settings and keeps their processing, without changing them', () => {
     const prefs = {
       ...preferences(),
       formatOut: 'opus',
@@ -436,13 +495,13 @@ describe('ConvertTab preset picker', () => {
     render(<ConvertTab {...props()} />)
 
     expect(screen.getByTestId('preset-status')).toHaveTextContent(
-      'Custom: the earlier “Quick Share” preset. Closest new preset: Smallest file (Opus)',
+      'Custom: the format of “Smallest file (Opus)”. Plus what you turned on: High-Pass Filter, Normalize Volume, Trim Leading Silence, Fade In / Out. These are the settings of the earlier “Quick Share” preset; its processing stays on until you turn it off.',
     )
     expect(screen.getByTestId('preset-picker').querySelectorAll('[aria-pressed="true"]')).toHaveLength(0)
     expect(screen.getByTestId('opus-catalyst-note')).toHaveTextContent(
       'Stenograph says Opus plays only in CATalyst 20 or newer',
     )
-    for (const setter of ['setFormatOut', 'setTrim', 'setFade', 'setFadeDur', 'setMode', 'setNormalize']) {
+    for (const setter of ['setFormatOut', 'setTrim', 'setFade', 'setFadeDur', 'setMode', 'setNormalize', 'setHpf']) {
       expect(prefs[setter]).not.toHaveBeenCalled()
     }
   })
@@ -471,20 +530,31 @@ describe('ConvertTab preset picker', () => {
     }
   })
 
-  it('marks a chosen preset as in use while the settings still match it', () => {
-    preferencesContext.current = { ...preferences(), normalize: true, hpf: true, autoLevel: true }
+  it('marks a chosen preset as in use while the settings still have its format', () => {
+    preferencesContext.current = preferences()
     const view = render(<ConvertTab {...props()} />)
 
     expect(screen.getByRole('button', { name: /For CATalyst audio sync/ })).toHaveAttribute('aria-pressed', 'false')
     fireEvent.click(screen.getByRole('button', { name: /For CATalyst audio sync/ }))
     expect(screen.getByRole('button', { name: /For CATalyst audio sync/ })).toHaveAttribute('aria-pressed', 'true')
-    expect(screen.getByTestId('preset-status')).toHaveTextContent('Using: For CATalyst audio sync (WAV)')
+    expect(screen.getByTestId('preset-status')).toHaveTextContent(
+      'Using: For CATalyst audio sync (WAV). No processing.',
+    )
     expect(screen.queryByTestId('opus-catalyst-note')).not.toBeInTheDocument()
 
-    // Changing a setting by hand ends the match, so the preset is no longer in use.
+    // Turning processing on keeps the preset and says what is on.
     preferencesContext.current = { ...preferencesContext.current, trim: true }
     view.rerender(<ConvertTab {...props()} />)
-    expect(screen.getByTestId('preset-status')).toHaveTextContent('Custom settings')
+    expect(screen.getByTestId('preset-status')).toHaveTextContent(
+      'Using: For CATalyst audio sync (WAV). Plus what you turned on: Trim Leading Silence.',
+    )
+
+    // Changing the format by hand ends the match, so the preset is no longer in use.
+    preferencesContext.current = { ...preferencesContext.current, formatOut: 'm4a' }
+    view.rerender(<ConvertTab {...props()} />)
+    expect(screen.getByTestId('preset-status')).toHaveTextContent(
+      'Custom settings. Plus what you turned on: Trim Leading Silence.',
+    )
     expect(screen.getByTestId('preset-picker').querySelectorAll('[aria-pressed="true"]')).toHaveLength(0)
   })
 })

@@ -367,10 +367,12 @@ struct ConversionProbes {
     channels: Option<u32>,
     /// Per-channel auto-level gains, when auto-level analysis ran.
     channel_gains: Option<Vec<f64>>,
-    /// Shared processing filters (de-clip, HPF, loudnorm, fade, trim).
+    /// Shared processing filters (trim, de-clip, HPF, loudnorm, fade).
     proc: Vec<String>,
     /// Where the fade-out in `proc` was placed, for the export record.
     fade_out: Option<manifest::FadeOutRecord>,
+    /// What the trim in `proc` removes, for the export record and the start.
+    leading_trim: Option<manifest::LeadingTrimRecord>,
     /// Channel count, rate and start time for the export record.
     probed: manifest::ProbedSource,
     /// Duration of the converted stream, for the WAV size estimate that
@@ -391,8 +393,8 @@ struct ConversionPlan {
     /// stream (`-map 0:a:0`) for Mix to Stereo and Keep Original, the
     /// channel's filter branch (`-map [opN]`) for Split.
     map_args: Vec<Vec<String>>,
-    start_shifted: bool,
     fade_out: Option<manifest::FadeOutRecord>,
+    leading_trim: Option<manifest::LeadingTrimRecord>,
 }
 
 /// Pure core of a conversion once the input has been probed: reserve every
@@ -439,11 +441,12 @@ fn plan_conversion(
     }
 
     // Start time (DA-08): read the source's BWF bext TimeReference and carry
-    // it into WAV outputs, rescaled to the output rate, unless leading-silence
-    // trim moved the first sample. Every other output has the copied
-    // `time_reference` tag removed, so only the export record holds the start.
+    // it into WAV outputs, rescaled to the output rate and moved later by
+    // exactly what leading-silence trim removed. Every other output has the
+    // copied `time_reference` tag removed, so only the export record holds
+    // the start.
     let proc = probes.proc.clone();
-    let start_shifted = manifest::filters_shift_start(&proc);
+    let trimmed_samples = probes.leading_trim.as_ref().map_or(0, |trim| trim.samples);
     let output_rate = manifest::output_sample_rate(&out_codec);
     let mut encoder_args = out_codec;
     if job.format == "sgmca" {
@@ -461,7 +464,7 @@ fn plan_conversion(
         &job.format,
         probes.probed.timing,
         output_rate,
-        start_shifted,
+        trimmed_samples,
     ));
 
     let mut ffmpeg_args = safe_ffmpeg_input_prelude();
@@ -584,8 +587,8 @@ fn plan_conversion(
         filter_chain,
         encoder_args,
         map_args,
-        start_shifted,
         fade_out: probes.fade_out.clone(),
+        leading_trim: probes.leading_trim.clone(),
     })
 }
 
@@ -634,6 +637,7 @@ fn output_facts<'a>(
         source_channel_index: plan.planned[index].channel_index,
         label: plan.planned[index].label.clone(),
         wav_header,
+        leading_trim: plan.leading_trim.clone(),
     }
 }
 
@@ -739,15 +743,25 @@ async fn do_convert_inner(
     let total_secs = probe_duration_cancellable(app, effective_feed, Some(&is_cancelled)).await;
     cancel.check()?;
 
+    let probed = probe_manifest_source_cancellable(app, effective_feed, Some(&is_cancelled)).await;
+    cancel.check()?;
+
     // Stereo injects per-channel gains in its pan filter and Split injects
     // them after isolating each channel. Keep Original rejects auto-leveling
     // before work starts because one shared gain would not balance channels.
-    let built = build_proc_filters_with_gain(app, job, effective_feed, None, total_secs, Some(&is_cancelled)).await;
+    // Trim silence counts at the converted stream's rate from the probe.
+    let built = build_proc_filters_with_gain(
+        app,
+        job,
+        effective_feed,
+        None,
+        total_secs,
+        probed.sample_rate,
+        Some(&is_cancelled),
+    )
+    .await;
     cancel.check()?;
-    let (proc, fade_out) = built?;
-
-    let probed = probe_manifest_source_cancellable(app, effective_feed, Some(&is_cancelled)).await;
-    cancel.check()?;
+    let built = built?;
 
     // Mix to Stereo and Split need the channel count; Keep Original does not,
     // except for an SGMCA output, whose bitrate is set per channel, and a
@@ -764,8 +778,9 @@ async fn do_convert_inner(
     let probes = ConversionProbes {
         channels,
         channel_gains,
-        proc,
-        fade_out,
+        proc: built.filters,
+        fade_out: built.fade_out,
+        leading_trim: built.leading_trim,
         probed,
         duration_secs: total_secs,
     };
@@ -797,7 +812,6 @@ async fn do_convert_inner(
             source,
             probed: &probed,
             labels: &record_job.labels,
-            shifted: plan.start_shifted,
         };
         finish_outputs(&record_job, &plan, &input, output_cleanup, &record_cancel)
     })
@@ -1398,8 +1412,30 @@ mod tests {
         // WAV size estimate); build_proc_filters_with_gain uses it only to
         // place the fade-out.
         let total_secs = crate::ffmpeg::parse_duration_probe(&probe(crate::ffmpeg::duration_probe_args(&feed)));
-        // As build_proc_filters_with_gain: with Fade on, the decoded length
-        // (the app's own measuring pass) places the fade-out.
+        let probed = serde_json::from_slice::<serde_json::Value>(&probe(crate::ffmpeg::manifest_probe_args(&feed)))
+            .map(|value| manifest::parse_probe(&value))
+            .unwrap_or_default();
+        // As build_proc_filters_with_gain: with Trim silence on, the app's own
+        // measuring pass counts what trim removes, at the probed rate.
+        let leading_trim = if crate::ffmpeg::trim_applies(job) {
+            let measured = std::process::Command::new("ffmpeg")
+                .args(crate::ffmpeg::leading_trim_measure_args(&feed, job.silence_thresh))
+                .output()
+                .unwrap();
+            let counts = measured
+                .status
+                .success()
+                .then(|| crate::ffmpeg::parse_leading_trim_counts(&measured.stderr))
+                .flatten()
+                .ok_or(crate::ffmpeg::TRIM_UNMEASURED_MESSAGE)?;
+            let rate = probed.sample_rate.ok_or(crate::ffmpeg::TRIM_UNMEASURED_MESSAGE)?;
+            Some(crate::ffmpeg::leading_trim_record(job, counts, rate)?)
+        } else {
+            None
+        };
+        let trimmed = leading_trim.as_ref().map_or(0.0, |trim| trim.seconds);
+        // With Fade on, the decoded length (the app's own measuring pass)
+        // places the fade-out.
         let fade_out = if job.fade {
             let measured = std::process::Command::new("ffmpeg")
                 .args(crate::ffmpeg::decoded_length_args(&feed))
@@ -1411,19 +1447,18 @@ mod tests {
                 .then(|| crate::ffmpeg::parse_decoded_seconds(&measured.stderr))
                 .flatten()
                 .ok_or(crate::ffmpeg::FADE_LENGTH_UNKNOWN_MESSAGE)?;
-            Some(crate::ffmpeg::fade_out_placement(job, decoded, total_secs))
+            Some(crate::ffmpeg::fade_out_placement(job, decoded, trimmed, total_secs))
         } else {
             None
         };
-        let decoded = fade_out.as_ref().map(|fade| fade.decoded_source_seconds);
+        let built = crate::ffmpeg::proc_plan(job, None, fade_out, leading_trim);
         let probes = ConversionProbes {
             channels: crate::ffmpeg::parse_channel_probe(&probe(crate::ffmpeg::channel_probe_args(&feed))),
             channel_gains,
-            proc: crate::ffmpeg::proc_filters(job, None, decoded),
-            fade_out,
-            probed: serde_json::from_slice::<serde_json::Value>(&probe(crate::ffmpeg::manifest_probe_args(&feed)))
-                .map(|value| manifest::parse_probe(&value))
-                .unwrap_or_default(),
+            proc: built.filters,
+            fade_out: built.fade_out,
+            leading_trim: built.leading_trim,
+            probed,
             duration_secs: total_secs,
         };
 
@@ -1442,7 +1477,6 @@ mod tests {
             source,
             probed: &probes.probed,
             labels: &job.labels,
-            shifted: plan.start_shifted,
         };
         let cancel = ConversionCancel::new(Arc::new(AtomicU64::new(1)), 1);
         let files = finish_outputs(job, &plan, &input, output_cleanup, &cancel)?;
@@ -2226,6 +2260,7 @@ mod tests {
             channel_gains: None,
             proc: Vec::new(),
             fade_out: None,
+            leading_trim: None,
             probed: manifest::ProbedSource::default(),
             duration_secs: None,
         };
@@ -2279,6 +2314,7 @@ mod tests {
                 channel_gains: None,
                 proc: Vec::new(),
                 fade_out: None,
+                leading_trim: None,
                 probed: manifest::ProbedSource {
                     channels,
                     ..manifest::ProbedSource::default()
@@ -2327,6 +2363,7 @@ mod tests {
             channel_gains: None,
             proc: Vec::new(),
             fade_out: None,
+            leading_trim: None,
             probed: manifest::ProbedSource::default(),
             duration_secs: None,
         };
@@ -2346,7 +2383,6 @@ mod tests {
             },
             probed: &probes.probed,
             labels: &job.labels,
-            shifted: false,
         };
         let cancel = ConversionCancel::new(Arc::new(AtomicU64::new(1)), 1);
         let error = finish_outputs(&job, &plan, &input, cleanup, &cancel).unwrap_err();
@@ -2975,6 +3011,21 @@ mod tests {
             }
         }
 
+        /// The sample the output must start at after Trim silence, found
+        /// here without FFmpeg: the first sample of the 16-bit fixture above
+        /// -50 dBFS on any of `channels`.
+        fn first_sample_above_threshold(channels: &[usize]) -> usize {
+            let threshold = 10f64.powf(-50.0 / 20.0);
+            (0..LEN)
+                .find(|&n| {
+                    channels.iter().any(|&channel| {
+                        let quantized = (fixture_sample(n, channel) * 32767.0).round() / 32768.0;
+                        quantized.abs() > threshold
+                    })
+                })
+                .unwrap()
+        }
+
         /// The fixture: 3 s of 4-channel 48 kHz 16-bit WAV with a bext start,
         /// in hound's default 3.1 layout, as a court WAV may well be.
         fn write_fixture(dir: &Path) -> PathBuf {
@@ -3259,22 +3310,37 @@ mod tests {
 
                 let out_len = channels[0].len();
                 let removed = full_len as i64 - out_len as i64;
+                // What the record says trim removed, at the source's 48 kHz.
+                let recorded_trim = record["processing"]["leadingTrim"]["samples"].as_u64();
+                let trim = recorded_trim.unwrap_or(0) as usize;
                 if trimmed {
-                    // Trim may remove the leading digital silence (plus the
-                    // tone's first two samples, which are below -50 dBFS),
-                    // never padding and never sound after it.
-                    let limit = scale(LEAD_SILENCE + 2) as i64 + 1;
-                    if !(1..=limit).contains(&removed) {
+                    // Trim removes exactly the leading samples at or below
+                    // -50 dBFS on every channel (the digital silence plus the
+                    // tone's first samples), and the record says how many.
+                    let expected = first_sample_above_threshold(&[0, 1, 2, 3]);
+                    if recorded_trim != Some(expected as u64)
+                        || record["processing"]["leadingTrim"]["sampleRate"] != RATE as u64
+                    {
                         problems.push(format!(
-                            "{case:?} {}: trim removed {removed} samples (allowed 1..={limit})",
-                            file.name
+                            "{case:?} {}: record says trim removed {} at {}, expected {expected} at {RATE}",
+                            file.name,
+                            record["processing"]["leadingTrim"]["samples"],
+                            record["processing"]["leadingTrim"]["sampleRate"]
                         ));
                     }
-                    let note = record["startTime"]["note"].as_str().unwrap_or("");
-                    if !record["startTime"]["outputTimeReferenceSamples"].is_null()
-                        || !note.contains("Leading-silence trim")
-                    {
-                        problems.push(format!("{case:?} {}: record does not say the start moved", file.name));
+                    // At 48 kHz the output is shorter by exactly that. After
+                    // resampling, and in AAC's stated length, it is shorter by
+                    // that many source samples' worth, to the nearest sample.
+                    let allowed = if output_rate == RATE && case.format != "m4a" {
+                        0
+                    } else {
+                        1
+                    };
+                    if (removed - scale(trim) as i64).abs() > allowed {
+                        problems.push(format!(
+                            "{case:?} {}: output is {removed} samples shorter, the record says {trim} at {RATE} Hz",
+                            file.name
+                        ));
                     }
                 } else {
                     if removed != 0 {
@@ -3283,26 +3349,45 @@ mod tests {
                             file.name
                         ));
                     }
-                    let expected = TIME_REFERENCE * output_rate as u64 / RATE as u64;
-                    if record["startTime"]["outputTimeReferenceSamples"] != expected {
+                    if !record["processing"]["leadingTrim"].is_null() {
+                        problems.push(format!("{case:?} {}: a trim is recorded with trim off", file.name));
+                    }
+                }
+                // The output's start is the source start plus the trim, at the
+                // output rate, and a WAV carries it in its own bext chunk.
+                let start = ((TIME_REFERENCE + trim as u64) * output_rate as u64 + RATE as u64 / 2) / RATE as u64;
+                if record["startTime"]["outputTimeReferenceSamples"] != start {
+                    problems.push(format!(
+                        "{case:?} {}: record start {} (expected {start})",
+                        file.name, record["startTime"]["outputTimeReferenceSamples"]
+                    ));
+                }
+                if case.format == "wav" {
+                    let carried = manifest::parse_probe(&ffprobe_json(path, &["-show_format", "-show_streams"]))
+                        .timing
+                        .map(|timing| timing.time_reference_samples);
+                    if carried != Some(start) || record["startTime"]["writtenToOutput"] != true {
                         problems.push(format!(
-                            "{case:?} {}: record start {} (expected {expected})",
-                            file.name, record["startTime"]["outputTimeReferenceSamples"]
+                            "{case:?} {}: the WAV carries start {carried:?} (expected {start})",
+                            file.name
                         ));
                     }
                 }
 
-                // Trim at a rate other than 48 kHz (loudnorm works at 192 kHz,
-                // the encoder resamples) can end between output samples.
-                let tolerance = if trimmed && (case.options.normalize || decode_rate != RATE) {
-                    1
-                } else {
-                    0
-                };
+                // After resampling, a trim of whole 48 kHz samples can end
+                // between output samples.
+                let tolerance = if trimmed && decode_rate != RATE { 1 } else { 0 };
                 for (channel_index, channel) in channels.iter().enumerate() {
-                    // A fade-out covers the last click.
+                    // A fade-out covers the last click. Each output click,
+                    // moved by the recorded trim, is on its source sample.
                     let clicks = if case.options.fade { &centers[..2] } else { &centers[..] };
-                    let lag = click_lag(&reference, channel, clicks, -removed, (decode_rate / 40) as i64);
+                    let lag = click_lag(
+                        &reference,
+                        channel,
+                        clicks,
+                        -(scale(trim) as i64),
+                        (decode_rate / 40) as i64,
+                    );
                     if lag.abs() > tolerance {
                         problems.push(format!(
                             "{case:?} {} channel {channel_index}: clicks are {lag} samples off the source",
@@ -3429,19 +3514,26 @@ mod tests {
                             let out_len = channels[0].len();
                             let removed = LEN as i64 - out_len as i64;
                             let trimmed = options.trim && mode != "split";
-                            if trimmed {
-                                let limit = (LEAD_SILENCE + 2) as i64 + 1;
-                                if !(1..=limit).contains(&removed) {
-                                    problems.push(format!("{case}: trim removed {removed} samples"));
-                                }
-                            } else if removed != 0 {
-                                problems.push(format!("{case}: {out_len} samples, the .dm holds {LEN}"));
+                            let record: serde_json::Value = serde_json::from_slice(
+                                &fs::read(manifest::manifest_path_for(Path::new(&file.path))).unwrap(),
+                            )
+                            .unwrap();
+                            let recorded = record["processing"]["leadingTrim"]["samples"].as_u64().unwrap_or(0);
+                            let expected = if trimmed {
+                                first_sample_above_threshold(&[0]) as i64
+                            } else {
+                                0
+                            };
+                            if removed != expected || recorded as i64 != expected {
+                                problems.push(format!(
+                                    "{case}: {removed} samples removed, {recorded} recorded, expected {expected}"
+                                ));
                             }
-                            let tolerance = i64::from(trimmed && options.normalize);
                             let clicks = if options.fade { &CLICKS[..2] } else { &CLICKS[..] };
                             for (channel_index, channel) in channels.iter().enumerate() {
-                                let lag = click_lag(&reference, channel, clicks, -removed, (RATE / 40) as i64);
-                                if lag.abs() > tolerance {
+                                let lag =
+                                    click_lag(&reference, channel, clicks, -(recorded as i64), (RATE / 40) as i64);
+                                if lag != 0 {
                                     problems.push(format!(
                                         "{case} channel {channel_index}: clicks are {lag} samples off the .dm"
                                     ));
@@ -3453,6 +3545,101 @@ mod tests {
                 }
             }
             assert!(problems.is_empty(), "{}", problems.join("\n"));
+        }
+
+        /// The plain statement of what Trim silence promises: in Keep
+        /// Original and Mix to Stereo WAV, each click's output position plus
+        /// the recorded trim is its source position, and the output's bext
+        /// start is the source start plus the recorded trim.
+        #[test]
+        fn trimmed_clicks_plus_the_recorded_trim_are_the_source_positions() {
+            if !court_fixture_tools_available() {
+                return;
+            }
+            let dir = ConversionTestDir::new();
+            let fixture = write_fixture(&dir.0);
+            let expected_trim = first_sample_above_threshold(&[0, 1, 2, 3]);
+            assert!(expected_trim > LEAD_SILENCE && expected_trim < CLICKS[0]);
+            for (index, mode) in ["keep", "stereo"].into_iter().enumerate() {
+                let out = dir.0.join(format!("trim_{index}"));
+                fs::create_dir(&out).unwrap();
+                let mut job = court_job(&fixture, &out, mode, "wav");
+                job.rate = RATE.to_string();
+                job.trim = true;
+                let conversion = convert_with_system_ffmpeg(&job, None).unwrap();
+                let path = Path::new(&conversion.files[0].path);
+                let record: serde_json::Value =
+                    serde_json::from_slice(&fs::read(manifest::manifest_path_for(path)).unwrap()).unwrap();
+                let trim = &record["processing"]["leadingTrim"];
+                assert_eq!(trim["samples"], expected_trim as u64, "{mode}");
+                assert_eq!(trim["sampleRate"], RATE as u64, "{mode}");
+                assert_eq!(trim["seconds"], expected_trim as f64 / RATE as f64, "{mode}");
+                assert_eq!(trim["decodedSourceSamples"], LEN as u64, "{mode}");
+                let channels = decode(path, RATE, if mode == "keep" { CHANNELS } else { 2 }, false);
+                assert_eq!(channels[0].len(), LEN - expected_trim, "{mode}");
+                for channel in &channels {
+                    for &click in &CLICKS {
+                        // The click is the loudest sample within 50 ms of it.
+                        let at = click - expected_trim;
+                        let peak = (at - RATE / 20..(at + RATE / 20).min(channel.len()))
+                            .max_by(|&a, &b| channel[a].abs().total_cmp(&channel[b].abs()))
+                            .unwrap();
+                        assert_eq!(peak + expected_trim, click, "{mode}");
+                    }
+                }
+                let start = TIME_REFERENCE + expected_trim as u64;
+                assert_eq!(record["startTime"]["outputTimeReferenceSamples"], start, "{mode}");
+                assert_eq!(
+                    record["startTime"]["sourceTimeReferenceSamples"], TIME_REFERENCE,
+                    "{mode}"
+                );
+                let carried = manifest::parse_probe(&ffprobe_json(path, &["-show_format", "-show_streams"])).timing;
+                assert_eq!(
+                    carried.map(|timing| timing.time_reference_samples),
+                    Some(start),
+                    "{mode}"
+                );
+                // The trim is the first thing in the chain, by sample count.
+                let chain = record["processing"]["filterChain"].as_str().unwrap();
+                assert!(
+                    chain.contains(&format!(
+                        "asetpts=N/SR/TB,atrim=start_sample={expected_trim},asetpts=PTS-STARTPTS"
+                    )),
+                    "{chain}"
+                );
+                assert!(!chain.contains("silenceremove"), "{chain}");
+            }
+        }
+
+        /// Trim silence on a recording that is silent from start to end is
+        /// refused, and nothing is written.
+        #[test]
+        fn an_all_silent_recording_is_not_trimmed_to_nothing() {
+            if !court_fixture_tools_available() {
+                return;
+            }
+            let dir = ConversionTestDir::new();
+            let silent = dir.0.join("silent.wav");
+            run_ffmpeg(&[
+                "-f".into(),
+                "lavfi".into(),
+                "-i".into(),
+                "anullsrc=r=48000:cl=stereo:d=1".into(),
+                "-c:a".into(),
+                "pcm_s16le".into(),
+                "-y".into(),
+                silent.to_string_lossy().to_string(),
+            ]);
+            let out = dir.0.join("out");
+            fs::create_dir(&out).unwrap();
+            let mut job = court_job(&silent, &out, "stereo", "wav");
+            job.trim = true;
+            let error = convert_with_system_ffmpeg(&job, None).err().unwrap();
+            assert!(
+                error.contains("every sample of this recording is below the silence threshold"),
+                "{error}"
+            );
+            assert_eq!(fs::read_dir(&out).unwrap().count(), 0);
         }
 
         #[test]

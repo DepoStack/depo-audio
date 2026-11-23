@@ -17,8 +17,9 @@ import {
   NOT_TESTED_NOTE,
   OPUS_CATALYST_NOTE,
   STENOGRAPH_SOURCES,
+  PROCESSING_OPTIONS,
   describeSettings,
-  resolvePresetSettings,
+  processingSummary,
 } from '../../presets'
 import { usePreferencesContext } from '../../hooks/PreferencesContext'
 import { Check, Loader2, Play } from 'lucide-react'
@@ -51,20 +52,8 @@ const SCAN_PHASES = {
   done: 'Finishing up',
 }
 
-// eslint-disable-next-line react-refresh/only-export-components -- pure UI-state helper is regression-tested directly
-export function countHiddenProcessingOptions({
-  hasAnalysis,
-  showAllProcessing,
-  showAutoLevel,
-  showDeclip,
-  showHpf,
-  showNormalize,
-  showTrim,
-  showFade,
-}) {
-  if (!hasAnalysis || showAllProcessing) return 0
-  return [showAutoLevel, showDeclip, showHpf, showNormalize, showTrim, showFade].filter(visible => !visible).length
-}
+// Each processing option's name and one-line reason, by id.
+const PROCESSING = Object.fromEntries(PROCESSING_OPTIONS.map(option => [option.id, option]))
 
 export default function ConvertTab({
   // Files
@@ -141,12 +130,33 @@ export default function ConvertTab({
     declip,
   })
   // The preset the person chose in this session. A preset is "in use" only
-  // when they chose it and the settings still match it; settings that merely
-  // happen to match one (the defaults match "For other or older CAT
-  // software") are described as a match, not as a choice.
+  // when they chose it and the settings still have its format; settings that
+  // merely happen to match one (the defaults match "For CATalyst audio sync"
+  // and "For other or older CAT software") are described as a match, not as
+  // a choice. Processing is never part of a preset: the status and every
+  // card say what processing the person has turned on.
   const [chosenPresetId, setChosenPresetId] = useState(null)
-  const presetInUse =
-    presetState.kind === 'preset' && presetState.preset.id === chosenPresetId ? presetState.preset : null
+  const presetInUse = presetState.matches.find(p => p.id === chosenPresetId) || null
+  const processingLine = processingSummary({
+    mode,
+    normalize,
+    trim,
+    fade,
+    hpf,
+    autoLevel,
+    declip,
+  })
+  const quoted = presets => presets.map(p => `\u201c${p.name}\u201d`).join(' and ')
+  const legacyNote = presetState.legacy
+    ? ` These are the settings of the earlier \u201c${presetState.legacy.name}\u201d preset; its processing stays on until you turn it off.`
+    : ''
+  const presetStatus = presetInUse
+    ? `Using: ${presetInUse.name}. ${processingLine}.`
+    : presetState.kind === 'preset'
+      ? `No preset chosen. The current settings are the same as ${quoted(presetState.matches)}.`
+      : presetState.matches.length > 0
+        ? `Custom: the format of ${quoted(presetState.matches)}. ${processingLine}.${legacyNote}`
+        : `Custom settings. ${processingLine}.${legacyNote}`
   const [sourceLinkError, setSourceLinkError] = useState('')
   const openSource = async source => {
     setSourceLinkError('')
@@ -156,21 +166,13 @@ export default function ConvertTab({
       setSourceLinkError(`Couldn't open Stenograph's \u201c${source.title}\u201d article: ${String(error)}`)
     }
   }
+  // A preset sets only the channel mode, the format and the MP3 bitrate. It
+  // never touches processing or the sample rate.
   const applyPreset = preset => {
     setChosenPresetId(preset.id)
-    const s = resolvePresetSettings(preset.settings)
+    const s = preset.settings
     handleModeChange(s.mode)
     setFormatOut(s.format)
-    setRate(s.rate)
-    setNormalize(s.normalize)
-    setTrim(s.trim)
-    setFade(s.fade)
-    // The fade length only matters with fades on; leave the person's own
-    // value alone otherwise.
-    if (s.fade) setFadeDur(s.fadeDur)
-    setHpf(s.hpf)
-    setAutoLevel(s.autoLevel)
-    setDeclip(s.declip)
     if (s.format === 'mp3') setMp3Bitrate(s.mp3Bitrate ?? 192)
   }
   const [analysis, setAnalysis] = useState(null)
@@ -178,7 +180,6 @@ export default function ConvertTab({
   const [scanProgress, setScanProgress] = useState({ current: 0, total: 0, fileName: '', phase: '', filePct: 0 })
   const [scanError, setScanError] = useState(null)
   const [scanCancelling, setScanCancelling] = useState(false)
-  const [showAllProcessing, setShowAllProcessing] = useState(false)
 
   // Guards for long-running scans: scanIdRef invalidates a superseded scan
   // (cancel, re-click, unmount), filesRef detects the queue changing mid-scan
@@ -228,7 +229,6 @@ export default function ConvertTab({
     setPrevFiles(files)
     setAnalysis(null)
     setScanError(null)
-    setShowAllProcessing(false)
   }
 
   const cancelScan = async () => {
@@ -628,13 +628,7 @@ export default function ConvertTab({
             <CardHeader>
               <CardTitle>Quick setup</CardTitle>
               <span className="type-small text-[hsl(var(--sub))]" data-testid="preset-status" role="status">
-                {presetInUse
-                  ? `Using: ${presetInUse.name}`
-                  : presetState.kind === 'preset'
-                    ? `No preset chosen. The current settings are the same as \u201c${presetState.preset.name}\u201d.`
-                    : presetState.legacy
-                      ? `Custom: the earlier \u201c${presetState.legacy.name}\u201d preset. Closest new preset: ${presetState.closest?.name}`
-                      : 'Custom settings'}
+                {presetStatus}
               </span>
             </CardHeader>
             <CardContent>
@@ -648,7 +642,7 @@ export default function ConvertTab({
                       title={p.desc}
                       aria-pressed={active}
                       aria-labelledby={`preset-name-${p.id}`}
-                      aria-describedby={`preset-basis-${p.id} preset-tested-${p.id}`}
+                      aria-describedby={`preset-basis-${p.id} preset-processing-${p.id} preset-tested-${p.id}`}
                       className={`relative flex flex-col items-start gap-0.5 px-3 py-2.5 rounded-lg border text-left transition-all cursor-pointer focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring ${
                         active
                           ? 'border-foreground bg-secondary'
@@ -661,6 +655,13 @@ export default function ConvertTab({
                       </span>
                       <span id={`preset-basis-${p.id}`} className="type-small text-[hsl(var(--text2))] leading-snug">
                         {p.basis}
+                      </span>
+                      <span
+                        id={`preset-processing-${p.id}`}
+                        data-testid="preset-processing"
+                        className="type-small text-[hsl(var(--text2))]"
+                      >
+                        {processingLine}
                       </span>
                       <span id={`preset-tested-${p.id}`} className="type-small text-[hsl(var(--sub))]">
                         {NOT_TESTED_NOTE}
@@ -689,7 +690,8 @@ export default function ConvertTab({
                     </button>
                   </span>
                 ))}
-                . Choosing a preset changes the settings below; you can still change any of them.
+                . A preset sets only the mode, format and MP3 bitrate. It does not turn processing on or off or change
+                the sample rate.
               </p>
               {sourceLinkError && (
                 <p
@@ -978,160 +980,104 @@ export default function ConvertTab({
                 </div>
               )}
 
-              {/* ── Recommended (shown after scan, or all if no scan) ── */}
-              {(() => {
-                const hasAnalysis = !!analysis
-                // After scan: only show toggles that are recommended or already enabled
-                const showAutoLevel =
-                  mode === 'keep' || !hasAnalysis || analysis.needsLeveling || autoLevelEffective || showAllProcessing
-                const showDeclip = !hasAnalysis || analysis.hasClipping || declip || showAllProcessing
-                const showHpf = !hasAnalysis || hpf || showAllProcessing
-                const showNormalize = !hasAnalysis || normalize || showAllProcessing
-                const showTrim = !hasAnalysis || trim || showAllProcessing
-                const showFade = !hasAnalysis || fade || showAllProcessing
+              {/* ── Every processing option, always shown and off until the
+                  person turns it on. A scan only marks what it recommends. ── */}
+              <div className="px-4 py-1.5 bg-secondary/50">
+                <span className="type-label text-[hsl(var(--sub))]">Signal repair</span>
+              </div>
 
-                const hiddenCount = countHiddenProcessingOptions({
-                  hasAnalysis,
-                  showAllProcessing,
-                  showAutoLevel,
-                  showDeclip,
-                  showHpf,
-                  showNormalize,
-                  showTrim,
-                  showFade,
-                })
+              <ProcessingToggle
+                smart
+                name={PROCESSING.autoLevel.name}
+                desc={
+                  mode === 'keep'
+                    ? 'Unavailable while preserving the original channel layout'
+                    : PROCESSING.autoLevel.reason
+                }
+                checked={autoLevelEffective}
+                disabled={mode === 'keep'}
+                onChange={setAutoLevel}
+                detected={
+                  analysis?.needsLeveling
+                    ? `${analysis.recommendations?.find(r => r.includes('spread'))?.match(/[\d.]+/)?.[0] || ''}dB imbalance found`
+                    : null
+                }
+              />
 
-                return (
-                  <>
-                    {(showAutoLevel || showDeclip) && (
-                      <div className="px-4 py-1.5 bg-secondary/50">
-                        <span className="type-label text-[hsl(var(--sub))]">
-                          {hasAnalysis && !showAllProcessing ? 'Recommended' : 'Signal repair'}
-                        </span>
-                      </div>
-                    )}
+              <ProcessingToggle
+                smart
+                name={PROCESSING.declip.name}
+                desc={PROCESSING.declip.reason}
+                checked={declip}
+                onChange={setDeclip}
+                detected={analysis?.hasClipping ? 'Clipping found' : null}
+              />
 
-                    {showAutoLevel && (
-                      <ProcessingToggle
-                        smart
-                        name="Balance Microphone Levels"
-                        desc={
-                          mode === 'keep'
-                            ? 'Unavailable while preserving the original channel layout'
-                            : 'Evens out channel levels so quiet microphones are easier to hear'
-                        }
-                        checked={autoLevelEffective}
-                        disabled={mode === 'keep'}
-                        onChange={setAutoLevel}
-                        detected={
-                          analysis?.needsLeveling
-                            ? `${analysis.recommendations?.find(r => r.includes('spread'))?.match(/[\d.]+/)?.[0] || ''}dB imbalance found`
-                            : null
-                        }
+              <div className="px-4 py-1.5 bg-secondary/50">
+                <span className="type-label text-[hsl(var(--sub))]">Fine-tune</span>
+              </div>
+
+              <ProcessingToggle
+                name={PROCESSING.hpf.name}
+                desc={PROCESSING.hpf.reason}
+                checked={hpf}
+                onChange={setHpf}
+              />
+
+              <ProcessingToggle
+                name={PROCESSING.normalize.name}
+                desc={PROCESSING.normalize.reason}
+                checked={normalize}
+                onChange={setNormalize}
+              />
+
+              <ProcessingToggle
+                name={PROCESSING.trim.name}
+                desc={
+                  mode === 'split'
+                    ? 'Skipped in Split Channels mode to preserve cross-channel alignment'
+                    : PROCESSING.trim.reason
+                }
+                checked={trim}
+                onChange={setTrim}
+              />
+
+              <ProcessingToggle
+                name={PROCESSING.fade.name}
+                desc={PROCESSING.fade.reason}
+                checked={fade}
+                onChange={setFade}
+                extra={
+                  fade && (
+                    <span className="inline-flex items-center gap-1 mt-0.5" onClick={e => e.preventDefault()}>
+                      <span className="text-[hsl(var(--sub))]">—</span>
+                      <input
+                        type="number"
+                        className="w-[42px] bg-secondary border border-border rounded px-1 py-px tabular-nums text-[12px] text-foreground text-center focus:border-ring outline-hidden"
+                        min="0.1"
+                        max="5"
+                        step="0.1"
+                        value={fadeDur}
+                        onChange={e => setFadeDur(Math.max(0.1, parseFloat(e.target.value) || 0.5))}
                       />
-                    )}
-
-                    {showDeclip && (
-                      <ProcessingToggle
-                        smart
-                        name="Fix Clipped Audio"
-                        desc="Repairs distorted peaks from recordings that were too loud"
-                        checked={declip}
-                        onChange={setDeclip}
-                        detected={analysis?.hasClipping ? 'Clipping found' : null}
-                      />
-                    )}
-
-                    {/* ── Fine-tune ── */}
-                    {(showHpf || showNormalize || showTrim || showFade) && (
-                      <div className="px-4 py-1.5 bg-secondary/50">
-                        <span className="type-label text-[hsl(var(--sub))]">Fine-tune</span>
-                      </div>
-                    )}
-
-                    {showHpf && (
-                      <ProcessingToggle
-                        name="High-Pass Filter"
-                        desc="80 Hz cutoff — removes low rumble and handling noise"
-                        checked={hpf}
-                        onChange={setHpf}
-                      />
-                    )}
-
-                    {showNormalize && (
-                      <ProcessingToggle
-                        name="Normalize Volume"
-                        desc="Targets –16 LUFS / –1.5 TP for consistent output level"
-                        checked={normalize}
-                        onChange={setNormalize}
-                      />
-                    )}
-
-                    {showTrim && (
-                      <ProcessingToggle
-                        name="Trim Leading Silence"
-                        desc={
-                          mode === 'split'
-                            ? 'Skipped in Split Channels mode to preserve cross-channel alignment'
-                            : 'Remove leading dead air only (below –50 dB); interior pauses and the ending are preserved'
-                        }
-                        checked={trim}
-                        onChange={setTrim}
-                      />
-                    )}
-
-                    {showFade && (
-                      <ProcessingToggle
-                        name="Fade In / Out"
-                        desc="Smooth start and end"
-                        checked={fade}
-                        onChange={setFade}
-                        extra={
-                          fade && (
-                            <span className="inline-flex items-center gap-1 mt-0.5" onClick={e => e.preventDefault()}>
-                              <span className="text-[hsl(var(--sub))]">—</span>
-                              <input
-                                type="number"
-                                className="w-[42px] bg-secondary border border-border rounded px-1 py-px tabular-nums text-[12px] text-foreground text-center focus:border-ring outline-hidden"
-                                min="0.1"
-                                max="5"
-                                step="0.1"
-                                value={fadeDur}
-                                onChange={e => setFadeDur(Math.max(0.1, parseFloat(e.target.value) || 0.5))}
-                              />
-                              <span className="type-small text-[hsl(var(--sub))]">s</span>
-                            </span>
-                          )
-                        }
-                      />
-                    )}
-
-                    {/* Show more / less toggle */}
-                    {hasAnalysis && hiddenCount > 0 && !showAllProcessing && (
-                      <button
-                        className="px-4 py-2 type-small text-foreground hover:text-foreground transition-colors cursor-pointer text-left"
-                        onClick={() => setShowAllProcessing(true)}
-                      >
-                        Show {hiddenCount} more option{hiddenCount !== 1 ? 's' : ''}...
-                      </button>
-                    )}
-                    {hasAnalysis && showAllProcessing && (
-                      <button
-                        className="px-4 py-2 type-small text-[hsl(var(--sub))] hover:text-foreground transition-colors cursor-pointer text-left"
-                        onClick={() => setShowAllProcessing(false)}
-                      >
-                        Show less
-                      </button>
-                    )}
-                  </>
-                )
-              })()}
+                      <span className="type-small text-[hsl(var(--sub))]">s</span>
+                    </span>
+                  )
+                }
+              />
 
               {/* Processing chain preview */}
               <div className="flex items-center gap-2 px-4 py-2.5 border-t border-border/60 bg-secondary/30">
                 <span className="type-label text-[hsl(var(--sub))] shrink-0">Chain</span>
                 {anyProcessing ? (
                   <div className="flex items-center gap-1 flex-wrap">
+                    {/* Leading trim runs first, at the recording's own rate. */}
+                    {trimEffective && (
+                      <>
+                        <Badge variant="default">Leading trim</Badge>
+                        <span className="type-small text-[hsl(var(--sub))]">→</span>
+                      </>
+                    )}
                     {declip && (
                       <>
                         <Badge variant="info">De-clip</Badge>
@@ -1153,12 +1099,6 @@ export default function ConvertTab({
                     {normalize && (
                       <>
                         <Badge variant="default">Normalize</Badge>
-                        <span className="type-small text-[hsl(var(--sub))]">→</span>
-                      </>
-                    )}
-                    {trimEffective && (
-                      <>
-                        <Badge variant="default">Leading trim</Badge>
                         <span className="type-small text-[hsl(var(--sub))]">→</span>
                       </>
                     )}
