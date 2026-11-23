@@ -227,6 +227,7 @@ export default function useFileDrop(dropOverrideRef, queueLocked = false) {
               'ftr',
               'bwf',
               'dm',
+              'dcr',
             ],
           },
           {
