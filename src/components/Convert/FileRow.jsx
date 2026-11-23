@@ -63,19 +63,15 @@ export default function FileRow({ file, streams, sessionNotice = '', job, onRemo
             )}
           </div>
           <span className="type-small text-[hsl(var(--sub))] truncate block">{file.path}</span>
-          {trackNotice && <span className="type-small text-[hsl(var(--text2))] block mt-0.5">{trackNotice}</span>}
-          {recordingNotice && (
-            <span className="type-small text-[hsl(var(--text2))] block mt-0.5">{recordingNotice}</span>
-          )}
-          {sessionNotice && <span className="type-small text-[hsl(var(--text2))] block mt-0.5">{sessionNotice}</span>}
-          {dcrNotices.map((notice, index) => (
-            // Two changes in the same second give the same text, so the
-            // position (the list is rebuilt whole) is the key.
-            <span key={index} className="type-small text-[hsl(var(--text2))] block mt-0.5">
-              {notice}
-            </span>
-          ))}
-          {dmRowNotice && <span className="type-small text-[hsl(var(--text2))] block mt-0.5">{dmRowNotice}</span>}
+          {[trackNotice, recordingNotice, sessionNotice, ...dcrNotices, dmRowNotice]
+            .filter(Boolean)
+            .map((notice, index) => (
+              // Two DCR changes in the same second give the same text, so the
+              // position (the list is rebuilt whole) is the key.
+              <span key={index} className="type-small text-[hsl(var(--text2))] block mt-0.5">
+                {notice}
+              </span>
+            ))}
         </div>
         <div className="flex items-center gap-2 shrink-0">
           <StatusChip status={status} />

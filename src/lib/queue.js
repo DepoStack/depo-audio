@@ -118,10 +118,10 @@ export const TRM_OPEN_ENDED_NOTICE =
   "This recording's header says it was never closed (or is still recording); DepoAudio read the audio written so far."
 export const TRM_SIGNED_NOTICE =
   'This recording carries a signature: signed (not verified). DepoAudio does not check signatures.'
-export const TRM_START_BOUNDARY_MISSING =
-  'The earliest queued file of this recording has no start-boundary mark, so FTR would accept earlier files before it; if there are any, add them too.'
-export const TRM_END_BOUNDARY_MISSING =
-  'The latest queued file of this recording has no end-boundary mark, so FTR would accept later files after it; if there are any, add them too.'
+const boundaryMissing = (file, mark, files, side) =>
+  `The ${file} queued file of this recording has no ${mark}-boundary mark, so FTR would accept ${files} files ${side} it; if there are any, add them too.`
+export const TRM_START_BOUNDARY_MISSING = boundaryMissing('earliest', 'start', 'earlier', 'before')
+export const TRM_END_BOUNDARY_MISSING = boundaryMissing('latest', 'end', 'later', 'after')
 
 const TRM_PLAIN_CODECS = { mp2: 'MPEG audio layer 2', mp3: 'MP3', wma: 'Windows Media Audio' }
 
@@ -133,7 +133,7 @@ const TRM_PLAIN_CODECS = { mp2: 'MPEG audio layer 2', mp3: 'MP3', wma: 'Windows 
 export function trmSilenceFilledNotice(gaps) {
   const count = Number(gaps)
   if (!Number.isInteger(count) || count < 1) return ''
-  return `${count} damaged ${count === 1 ? 'section was' : 'sections were'} filled to keep the timing, with audio frames that add no new sound (the sound just before each fades out across it); see the export record.`
+  return `${count} damaged ${count === 1 ? 'section was' : 'sections were'} filled to keep the timing, adding no new sound (the sound just before each fades out across it); see the export record.`
 }
 
 // A file whose frames mark only the first stream (`streamMarking`
@@ -141,7 +141,7 @@ export function trmSilenceFilledNotice(gaps) {
 // or repeated frame cannot be seen there. Said only when DepoAudio's own
 // split is the route.
 export const TRM_UNMARKED_SPLIT_NOTICE =
-  "This recording marks only its first stream's frames, so DepoAudio splits it by taking frames in turn: if a frame is missing or repeated, every later frame goes to the wrong channel and DepoAudio cannot tell. See the export record."
+  "Only this recording's first stream marks its frames, so a missing or repeated frame would put every later frame in the wrong channel, unseen. See the export record."
 
 export function trmRecordingNotice(info) {
   if (info?.trmRefusal) return String(info.trmRefusal)
@@ -170,26 +170,18 @@ function trmSessionGroups(files) {
   const places = new Map()
   for (const file of files || []) {
     const key = ftrSessionKey(file?.path)
-    if (!key) continue
-    if (!places.has(key)) places.set(key, [])
-    places.get(key).push(file.path)
+    if (key) places.set(key, [...(places.get(key) || []), file.path])
   }
   const groups = []
   for (const paths of places.values()) {
-    const dates = [...new Set(paths.map(ftrRecordingDate))].sort()
-    const runOf = new Map()
-    let run = -1
-    dates.forEach((date, index) => {
-      if (index === 0 || dateMs(date) - dateMs(dates[index - 1]) !== DAY_MS) run += 1
-      runOf.set(date, run)
-    })
-    const runs = []
-    for (const path of paths) {
-      const index = runOf.get(ftrRecordingDate(path))
-      if (!runs[index]) runs[index] = []
-      runs[index].push(path)
+    let last
+    for (const path of paths.sort((x, y) => ftrRecordingDate(x).localeCompare(ftrRecordingDate(y)))) {
+      const day = dateMs(ftrRecordingDate(path))
+      // A new run when the date is more than a day after the last one.
+      if (!(day - last <= DAY_MS)) groups.push([])
+      groups[groups.length - 1].push(path)
+      last = day
     }
-    groups.push(...runs.filter(Boolean))
   }
   return groups
 }
@@ -208,23 +200,18 @@ export function trmSessionNotices(files, audioStreams) {
   for (const group of trmSessionGroups(files)) {
     const paths = sortRecordingChunks(group)
     const routes = paths.map(path => audioStreams?.[path]?.trm)
-    if (routes.some(route => !route)) continue
-    const recordings = []
-    paths.forEach((path, index) => {
-      const route = routes[index]
-      const previous = recordings[recordings.length - 1]
-      if (!previous || route.startBoundary || previous.closed) recordings.push({ paths: [], routes: [] })
-      const current = recordings[recordings.length - 1]
-      current.paths.push(path)
-      current.routes.push(route)
-      current.closed = Boolean(route.endBoundary)
-    })
-    for (const recording of recordings) {
+    if (!routes.every(Boolean)) continue
+    let first = 0
+    routes.forEach((route, index) => {
+      // A recording ends at an end boundary, or where the next file starts one.
+      const next = routes[index + 1]
+      if (next && !next.startBoundary && !route.endBoundary) return
       const parts = []
-      if (!recording.routes[0].startBoundary) parts.push(TRM_START_BOUNDARY_MISSING)
-      if (!recording.routes[recording.routes.length - 1].endBoundary) parts.push(TRM_END_BOUNDARY_MISSING)
-      if (parts.length > 0) notices[recording.paths[0]] = parts.join(' ')
-    }
+      if (!routes[first].startBoundary) parts.push(TRM_START_BOUNDARY_MISSING)
+      if (!route.endBoundary) parts.push(TRM_END_BOUNDARY_MISSING)
+      if (parts.length > 0) notices[paths[first]] = parts.join(' ')
+      first = index + 1
+    })
   }
   return notices
 }

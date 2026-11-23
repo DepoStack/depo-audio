@@ -188,10 +188,10 @@ describe('FTR recording notices', () => {
 
   it('says how many damaged sections were filled, without calling the fill silence', () => {
     expect(trmRecordingNotice(route(true, true, false, { silenceFilledGaps: 2 }))).toBe(
-      '2 damaged sections were filled to keep the timing, with audio frames that add no new sound (the sound just before each fades out across it); see the export record.',
+      '2 damaged sections were filled to keep the timing, adding no new sound (the sound just before each fades out across it); see the export record.',
     )
     expect(trmRecordingNotice(route(true, true, true, { silenceFilledGaps: 1 }))).toBe(
-      `${TRM_OPEN_ENDED_NOTICE} 1 damaged section was filled to keep the timing, with audio frames that add no new sound (the sound just before each fades out across it); see the export record.`,
+      `${TRM_OPEN_ENDED_NOTICE} 1 damaged section was filled to keep the timing, adding no new sound (the sound just before each fades out across it); see the export record.`,
     )
     expect(trmSilenceFilledNotice(3)).not.toContain('silence')
     expect(trmRecordingNotice(route(true, true, false, { silenceFilledGaps: 0 }))).toBe('')
@@ -203,7 +203,7 @@ describe('FTR recording notices', () => {
     const unmarked = { streamMarking: 'stream-0-only', decodePath: 'deinterleaved' }
     expect(trmRecordingNotice(route(true, true, false, unmarked))).toBe(TRM_UNMARKED_SPLIT_NOTICE)
     expect(TRM_UNMARKED_SPLIT_NOTICE).toBe(
-      "This recording marks only its first stream's frames, so DepoAudio splits it by taking frames in turn: if a frame is missing or repeated, every later frame goes to the wrong channel and DepoAudio cannot tell. See the export record.",
+      "Only this recording's first stream marks its frames, so a missing or repeated frame would put every later frame in the wrong channel, unseen. See the export record.",
     )
     // FFmpeg's native decoder reads such a file chunk by chunk: no warning.
     expect(trmRecordingNotice(route(true, true, false, { ...unmarked, decodePath: 'native-ftr' }))).toBe('')
