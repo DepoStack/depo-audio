@@ -86,6 +86,9 @@ pub(crate) struct ProbedSource {
     pub origination_date: Option<String>,
     /// How many audio streams the input has; None when the probe failed.
     pub audio_stream_count: Option<u32>,
+    /// The sample rate the converted stream states; with the decoded count
+    /// at that rate it gives the exact length an SGMCA output must hold.
+    pub sample_rate: Option<u32>,
 }
 
 /// A bext origination date (`yyyy-mm-dd`; EBU Tech 3285 allows any
@@ -166,6 +169,7 @@ pub(crate) fn parse_probe(probe: &serde_json::Value) -> ProbedSource {
         timing,
         origination_date,
         audio_stream_count: audio_stream_count(probe),
+        sample_rate,
     }
 }
 

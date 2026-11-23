@@ -175,8 +175,21 @@ from the recording." The owner's two sample files convert to exactly 480 000 and
 samples per session in Keep Original, Split Channels and Mix to Stereo with Normalize Volume
 (`vendor_notes_samples_convert_to_sgmca_with_every_sample_in_its_session`), and changing what the
 check expects by one sample, or moving 960 samples between sessions, removes the output
-(`an_sgmca_output_that_does_not_hold_every_source_sample_is_removed`). For other sources the count
-is not known exactly (a resampled WAV, for example), so only the read-back above applies.
+(`an_sgmca_output_that_does_not_hold_every_source_sample_is_removed`).
+
+Every other source is checked the same way. A PCM or float WAV (RIFF or RF64, including the
+temporary WAVs a `.dm` or `.dcr` is read into) states its exact length in its data chunk; any other
+source (FLAC, MP3, a WAV still being recorded, ...) is decoded once before converting and its
+samples counted at its own rate, and if that count fails nothing is converted. The output must
+hold that many samples at 48 kHz; when the source is at another rate and its length there is not
+a whole number of samples, the length rounded down or one more, never fewer. A last Opus frame
+that is only partly audio is kept: libopus pads it and the last page's granule position ends at
+the source's last sample, which FFmpeg 6.1 and 8.0 both write
+(`a_wav_source_keeps_its_partial_last_opus_frame_in_sgmca_and_a_lost_one_fails`, 95 001 samples:
+98 whole 20 ms frames and 921 samples). A stream that ended early fails, for example "It holds
+94080 samples (48 kHz) where the source holds 95001: 921 fewer, so audio would have been dropped
+from the recording." Only after leading-silence trim, whose effect FFmpeg does not report, is the
+count not checked.
 
 A filter that **delays** the audio keeps the count and so needs its own check. FFmpeg's
 `alimiter` without `latency=1` outputs its 5 ms look-ahead as a delay, so every sample is 240

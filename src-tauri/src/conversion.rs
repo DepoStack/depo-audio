@@ -430,6 +430,23 @@ struct ConversionProbes {
     /// The layout of an SGMCA source, read before conversion: its recording
     /// sessions and their start times.
     sgmca_source: Option<crate::sgmca::SgmcaInfo>,
+    /// Samples the converted stream decodes to at its own rate
+    /// (`probed.sample_rate`), counted only when an SGMCA output needs the
+    /// source's exact length and no header states it
+    /// (`needs_source_sample_count`).
+    source_samples: Option<u64>,
+}
+
+/// Why a conversion to SGMCA stops when the source's length is not known.
+const SOURCE_LENGTH_UNKNOWN_MESSAGE: &str = "DepoAudio could not count the samples in this recording, so it cannot check that the SGMCA output keeps every one of them. Nothing was converted.";
+
+/// Whether a conversion to SGMCA must count the source's samples before
+/// it runs: every SGMCA output is checked against the source's exact
+/// length, which an SGMCA source states in its pages and a PCM WAV in its
+/// data chunk; any other source is decoded once and counted. Leading-silence
+/// trim removes an amount FFmpeg does not report, so nothing is counted.
+fn needs_source_sample_count(job: &ConvertJob, feed: &Path, sgmca_source: bool, proc: &[String]) -> bool {
+    job.format == "sgmca" && !sgmca_source && !manifest::filters_shift_start(proc) && pcm_wav_frames(feed).is_none()
 }
 
 /// The exact FFmpeg command for one conversion and the outputs it writes.
@@ -653,6 +670,7 @@ fn plan_conversion(
     let sgmca_output = if job.format == "sgmca" {
         Some(plan_sgmca_output(
             probes.sgmca_source.as_ref(),
+            pcm_wav_frames(feed).or_else(|| probes.source_samples.zip(probes.probed.sample_rate)),
             &probes.probed,
             start_shifted,
             crate::clock::now_utc(),
@@ -688,19 +706,106 @@ struct SgmcaOutputPlan {
     start_offset_ms: Option<f64>,
     segments: Vec<crate::sgmca::PlannedSegment>,
     /// How many 48 kHz samples the written output and each of its segments
-    /// must hold: known exactly for an SGMCA source whose start no filter
-    /// moved. None when nothing exact is known (other sources, or
-    /// leading-silence trim, whose effect FFmpeg does not report).
+    /// must hold, from the source's exact length (see `plan_sgmca_output`).
+    /// None only after leading-silence trim, whose effect FFmpeg does not
+    /// report.
     expected_samples: Option<ExpectedSamples>,
 }
 
-/// The samples an SGMCA output must hold, from the source's own pages.
+/// The samples an SGMCA output must hold: from the source's own pages (an
+/// SGMCA source), the data chunk of a PCM WAV feed, or the samples any other
+/// source decodes to, counted before converting.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct ExpectedSamples {
     total: u64,
     /// One per output segment, in order: the matching source session's
     /// samples (or the whole source when the sessions are joined into one).
     segments: Vec<u64>,
+    /// 1 when the source is resampled to 48 kHz and its length there is not
+    /// a whole number of samples: the output may then hold `total` (the
+    /// length rounded down) or one more, never fewer. 0 means exact.
+    rounding: u64,
+}
+
+/// The exact sample frames and rate of an uncompressed PCM or float WAV
+/// (RIFF or RF64), read from its `fmt ` and `data` chunks, which is exactly
+/// what FFmpeg decodes from it. None for anything else, and for a WAV whose
+/// data length is unknown (0 or 0xFFFFFFFF, as a recorder writes while
+/// still recording), not a whole number of frames, or past the end of the
+/// file (cut short): FFmpeg's decoded length is then not known exactly.
+fn pcm_wav_frames(path: &Path) -> Option<(u64, u32)> {
+    use std::io::Read;
+    const HEADER_LIMIT: u64 = 1 << 20;
+    let mut file = fs::File::open(path).ok()?;
+    let file_len = file.metadata().ok()?.len();
+    let mut header = Vec::new();
+    (&mut file).take(HEADER_LIMIT).read_to_end(&mut header).ok()?;
+    let u16_at = |at: usize| -> Option<u16> { Some(u16::from_le_bytes(header.get(at..at + 2)?.try_into().ok()?)) };
+    let u32_at = |at: usize| -> Option<u32> { Some(u32::from_le_bytes(header.get(at..at + 4)?.try_into().ok()?)) };
+    let u64_at = |at: usize| -> Option<u64> { Some(u64::from_le_bytes(header.get(at..at + 8)?.try_into().ok()?)) };
+    let rf64 = match header.get(0..4)? {
+        b"RIFF" => false,
+        b"RF64" => true,
+        _ => return None,
+    };
+    if header.get(8..12)? != b"WAVE" {
+        return None;
+    }
+    let mut ds64_data: Option<u64> = None;
+    let mut format: Option<(u32, u16)> = None;
+    let mut at = 12usize;
+    loop {
+        let id = header.get(at..at + 4)?;
+        let size = u32_at(at + 4)?;
+        let body = at + 8;
+        match id {
+            b"ds64" if rf64 => ds64_data = Some(u64_at(body + 8)?),
+            b"fmt " => {
+                let mut tag = u16_at(body)?;
+                if tag == 0xFFFE && size >= 40 {
+                    tag = u16_at(body + 24)?;
+                }
+                // 1: integer PCM, 3: IEEE float. Anything else is coded.
+                if !matches!(tag, 1 | 3) {
+                    return None;
+                }
+                let rate = u32_at(body + 4)?;
+                let block_align = u16_at(body + 12)?;
+                if rate == 0 || block_align == 0 {
+                    return None;
+                }
+                format = Some((rate, block_align));
+            }
+            b"data" => {
+                let (rate, block_align) = format?;
+                let data_len = if rf64 && size == u32::MAX {
+                    ds64_data?
+                } else {
+                    u64::from(size)
+                };
+                let block_align = u64::from(block_align);
+                let whole = data_len > 0 && (rf64 || size != u32::MAX) && data_len % block_align == 0;
+                let present = (body as u64).checked_add(data_len)? <= file_len;
+                return (whole && present).then_some((data_len / block_align, rate));
+            }
+            _ => {}
+        }
+        at = body.checked_add(size as usize)?.checked_add(size as usize % 2)?;
+    }
+}
+
+/// The 48 kHz samples an SGMCA output of a source of `frames` samples at
+/// `rate` must hold: its frames, or for another rate the resampled length,
+/// rounded down, with one sample of rounding allowed when it is not whole
+/// (FFmpeg's resampler gives the length rounded either way).
+fn expected_from_source_length(frames: u64, rate: u32) -> ExpectedSamples {
+    let scaled = u128::from(frames) * u128::from(crate::sgmca::OPUS_RATE);
+    let total = u64::try_from(scaled / u128::from(rate)).unwrap_or(u64::MAX);
+    ExpectedSamples {
+        total,
+        segments: vec![total],
+        rounding: u64::from(scaled % u128::from(rate) != 0),
+    }
 }
 
 /// A filter in `chain` that may delay or move the audio without saying so:
@@ -749,7 +854,8 @@ fn check_sgmca_samples(
     let Some(expected) = expected else {
         return Ok(());
     };
-    if written.samples != expected.total {
+    let allowed = expected.total..=expected.total.saturating_add(expected.rounding);
+    if !allowed.contains(&written.samples) {
         let (more, by) = if written.samples > expected.total {
             ("more", written.samples - expected.total)
         } else {
@@ -770,7 +876,7 @@ fn check_sgmca_samples(
         ));
     }
     for (index, (segment, &want)) in written.segments.iter().zip(&expected.segments).enumerate() {
-        if segment.samples != want {
+        if !(want..=want.saturating_add(expected.rounding)).contains(&segment.samples) {
             return Err(format!(
                 "Its segment {} holds {} samples (48 kHz) where the matching source session holds {want}, so audio would have moved from one recording session to another.",
                 index + 1,
@@ -864,6 +970,7 @@ const CONVERSION_TIME_EXPLAINED: &str = "It is not when the recording was made. 
 /// conversion time is used.
 fn plan_sgmca_output(
     source: Option<&crate::sgmca::SgmcaInfo>,
+    source_length: Option<(u64, u32)>,
     probed: &manifest::ProbedSource,
     shifted: bool,
     now: time::OffsetDateTime,
@@ -900,7 +1007,15 @@ fn plan_sgmca_output(
             } else {
                 vec![info.samples]
             },
+            rounding: 0,
         });
+    } else if source.is_none() && !shifted {
+        // Any other source's length is exact too (a PCM WAV's data chunk, or
+        // the samples it decodes to, counted before converting), so an
+        // encoder or muxer that dropped the last partial Opus frame, or
+        // padded the end, fails here on any FFmpeg version.
+        let (frames, rate) = source_length.ok_or(SOURCE_LENGTH_UNKNOWN_MESSAGE)?;
+        plan.expected_samples = Some(expected_from_source_length(frames, rate));
     }
     Ok(plan)
 }
@@ -1217,6 +1332,20 @@ async fn do_convert_inner(
             None
         };
 
+    let source_samples = if needs_source_sample_count(job, effective_feed, sgmca_source.is_some(), &proc) {
+        let counted = crate::ffmpeg::measure_source_samples_cancellable(
+            app,
+            effective_feed,
+            u64::from(job.ffmpeg_timeout),
+            Some(&is_cancelled),
+        )
+        .await;
+        cancel.check()?;
+        Some(counted.ok_or(SOURCE_LENGTH_UNKNOWN_MESSAGE)?)
+    } else {
+        None
+    };
+
     let probes = ConversionProbes {
         channels,
         channel_gains,
@@ -1225,6 +1354,7 @@ async fn do_convert_inner(
         probed,
         duration_secs: total_secs,
         sgmca_source,
+        source_samples,
     };
     let mut output_cleanup = OutputCleanup::default();
     let plan = plan_conversion(job, effective_feed, &probes, &mut output_cleanup)?;
@@ -1620,14 +1750,12 @@ mod tests {
     const SYNTHETIC_CHANNEL_VOLUMES: [f64; 4] = [0.5, 0.25, 0.125, 0.0625];
     const SYNTHETIC_SECONDS: f64 = 2.0;
     /// Samples per frame for the synthetic sine sources: 20 ms at
-    /// `sample_rate`. FFmpeg's default is 1024, which does not divide 2 s at
-    /// 48 or 16 kHz, and FFmpeg 8's join filter drops the final partial frame
-    /// (768 samples at 48 kHz), so the fixture would come out short of 2 s.
-    /// 20 ms divides every synthetic length exactly on every FFmpeg version.
+    /// `sample_rate`, so every synthetic length is a whole number of source
+    /// frames and of Opus frames (FFmpeg's default of 1024 divides neither
+    /// 2 s at 48 kHz nor at 16 kHz).
     const fn synthetic_frame(sample_rate: u32) -> u32 {
         sample_rate / 50
     }
-    const SYNTHETIC_FRAME: u32 = synthetic_frame(48_000);
 
     /// Made-up bytes that are not a Direct Audio header (nor an Ogg page).
     fn synthetic_vendor_prefix() -> Vec<u8> {
@@ -1668,41 +1796,47 @@ mod tests {
     /// `SYNTHETIC_CHANNEL_VOLUMES`, written with `encoder` to `path`. The tones
     /// are generated at `sample_rate`, so an encoder at that rate gets exactly
     /// `SYNTHETIC_SECONDS` of samples with no resampler in between.
+    ///
+    /// The tones are sources inside the one filter graph, not separate
+    /// `-f lavfi` inputs: FFmpeg 7 and later demux each input in its own
+    /// thread, and `join` ends at the first input's end, so with separate
+    /// inputs it sometimes dropped the last frame of the others (FFmpeg
+    /// 8.0.1: 95,040 of 96,000 samples in 2 of 6 runs, so the fixture, not
+    /// the conversion, was short; 6.1 always kept them). Inside one graph
+    /// `join` kept all 96,000 in every run on both versions.
     fn synthetic_four_channel(path: &Path, sample_rate: u32, encoder: &[&str]) {
-        let mut args: Vec<String> = Vec::new();
-        for frequency in [220, 330, 440, 550] {
-            args.extend([
-                "-f".into(),
-                "lavfi".into(),
-                "-i".into(),
-                format!(
-                    "sine=frequency={frequency}:duration={SYNTHETIC_SECONDS}:sample_rate={sample_rate}:samples_per_frame={}",
-                    synthetic_frame(sample_rate)
-                ),
-            ]);
-        }
-        let levels: Vec<String> = SYNTHETIC_CHANNEL_VOLUMES
+        let tones: Vec<String> = [220, 330, 440, 550]
             .iter()
+            .zip(SYNTHETIC_CHANNEL_VOLUMES)
             .enumerate()
-            .map(|(index, volume)| format!("[{index}:a]volume={volume}[v{index}]"))
+            .map(|(index, (frequency, volume))| {
+                format!("{}[v{index}]", synthetic_tone(*frequency, sample_rate, volume))
+            })
             .collect();
         let graph = format!(
             "{};[v0][v1][v2][v3]join=inputs=4:channel_layout=quad[out]",
-            levels.join(";")
+            tones.join(";")
         );
-        args.extend(["-filter_complex".into(), graph, "-map".into(), "[out]".into()]);
+        let mut args: Vec<String> = vec!["-filter_complex".into(), graph, "-map".into(), "[out]".into()];
         args.extend(encoder.iter().map(|arg| arg.to_string()));
         args.extend(["-y".into(), path.to_string_lossy().to_string()]);
         run_ffmpeg(&args);
     }
 
+    /// A `SYNTHETIC_SECONDS` sine tone at `volume`, in 20 ms frames, as a
+    /// filter-graph source (see `synthetic_four_channel` for why it is not a
+    /// separate `-f lavfi` input).
+    fn synthetic_tone(frequency: u32, sample_rate: u32, volume: f64) -> String {
+        format!(
+            "sine=frequency={frequency}:duration={SYNTHETIC_SECONDS}:sample_rate={sample_rate}:samples_per_frame={},volume={volume}",
+            synthetic_frame(sample_rate)
+        )
+    }
+
     /// A synthetic 4-channel Ogg Opus stream in the SGMCA layout: mapping
     /// family 255, one uncoupled mono stream per channel, 16 kHz input tag.
     /// The tones are made at 16 kHz in 20 ms source frames, so libopus gets
-    /// exactly 100 whole 20 ms frames with no resampler in between. Made at
-    /// 48 kHz in 1024-sample frames, FFmpeg 8 cut them to 95,232 samples in
-    /// the join filter and then to 95,040 (99 Opus frames, 1.98 s) at the
-    /// encoder; FFmpeg 6.1 kept all 96,000.
+    /// exactly 100 whole 20 ms frames with no resampler in between.
     fn synthetic_direct_audio(path: &Path) {
         synthetic_four_channel(
             path,
@@ -1935,16 +2069,34 @@ mod tests {
             None
         };
         let decoded = fade_out.as_ref().map(|fade| fade.decoded_source_seconds);
+        let proc = crate::ffmpeg::proc_filters(job, None, decoded);
+        // As do_convert_inner: count the source's samples when an SGMCA
+        // output needs them and no header states them.
+        let source_samples = if needs_source_sample_count(job, &feed, sgmca_source.is_some(), &proc) {
+            let counted = std::process::Command::new("ffmpeg")
+                .args(crate::ffmpeg::source_length_args(&feed))
+                .output()
+                .unwrap();
+            let samples = counted
+                .status
+                .success()
+                .then(|| crate::ffmpeg::parse_decoded_samples(&counted.stderr))
+                .flatten();
+            Some(samples.ok_or(SOURCE_LENGTH_UNKNOWN_MESSAGE)?)
+        } else {
+            None
+        };
         let probes = ConversionProbes {
             channels: crate::ffmpeg::parse_channel_probe(&probe(crate::ffmpeg::channel_probe_args(&feed))),
             channel_gains,
-            proc: crate::ffmpeg::proc_filters(job, None, decoded),
+            proc,
             fade_out,
             probed: serde_json::from_slice::<serde_json::Value>(&probe(crate::ffmpeg::manifest_probe_args(&feed)))
                 .map(|value| manifest::parse_probe(&value))
                 .unwrap_or_default(),
             duration_secs: total_secs,
             sgmca_source,
+            source_samples,
         };
 
         let mut output_cleanup = OutputCleanup::default();
@@ -2686,19 +2838,17 @@ mod tests {
     /// default track is not the first.)
     fn synthetic_two_stream_mkv(dir: &Path) -> PathBuf {
         let path = dir.join("synthetic_two_tracks.mkv");
-        let mut args: Vec<String> = Vec::new();
-        for frequency in [440, 220, 330, 550, 660] {
-            args.extend([
-                "-f".into(),
-                "lavfi".into(),
-                "-i".into(),
-                format!("sine=frequency={frequency}:duration={SYNTHETIC_SECONDS}:sample_rate=48000:samples_per_frame={SYNTHETIC_FRAME}"),
-            ]);
-        }
-        let graph = "[0:a]volume=0.5[floor];[1:a]volume=0.0625[q0];[2:a]volume=0.0625[q1];\
-                     [3:a]volume=0.0625[q2];[4:a]volume=0.0625[q3];\
-                     [q0][q1][q2][q3]join=inputs=4:channel_layout=quad[interp]";
-        args.extend(["-filter_complex".into(), graph.into()]);
+        // The tones are graph sources so `join` keeps every frame (see
+        // `synthetic_four_channel`).
+        let graph = format!(
+            "{}[floor];{}[q0];{}[q1];{}[q2];{}[q3];[q0][q1][q2][q3]join=inputs=4:channel_layout=quad[interp]",
+            synthetic_tone(440, 48_000, 0.5),
+            synthetic_tone(220, 48_000, 0.0625),
+            synthetic_tone(330, 48_000, 0.0625),
+            synthetic_tone(550, 48_000, 0.0625),
+            synthetic_tone(660, 48_000, 0.0625),
+        );
+        let mut args: Vec<String> = vec!["-filter_complex".into(), graph];
         for (label, extra) in [
             (
                 "[floor]",
@@ -2759,6 +2909,7 @@ mod tests {
             probed: manifest::ProbedSource::default(),
             duration_secs: None,
             sgmca_source: None,
+            source_samples: None,
         };
         let feed_arg = feed.to_string_lossy().to_string();
         for mode in ["stereo", "keep"] {
@@ -2816,6 +2967,7 @@ mod tests {
                 },
                 duration_secs,
                 sgmca_source: None,
+                source_samples: None,
             };
             let mut cleanup = OutputCleanup::default();
             plan_conversion(&job, &feed, &probes, &mut cleanup).unwrap()
@@ -2862,6 +3014,7 @@ mod tests {
             probed: manifest::ProbedSource::default(),
             duration_secs: None,
             sgmca_source: None,
+            source_samples: None,
         };
         let mut cleanup = OutputCleanup::default();
         let plan = plan_conversion(&job, &source, &probes, &mut cleanup).unwrap();
@@ -3303,11 +3456,9 @@ mod tests {
     // ── SGMCA layout, writer and slicing (FFmpeg on PATH) ───────────────────
 
     /// The granule-based duration must match what libopus actually decodes,
-    /// sample for sample, and equal the source exactly: every fixture feeds
-    /// its encoder whole 20 ms frames at the encoder's own rate, so no FFmpeg
-    /// version has a partial frame to pad or drop, and a reader that loses
-    /// or invents audio fails here.
-    fn assert_sgmca_duration(path: &Path, info: &crate::sgmca::SgmcaInfo) {
+    /// sample for sample, and equal `expected` exactly, so a reader that
+    /// loses or invents audio fails here.
+    fn assert_sgmca_samples(path: &Path, info: &crate::sgmca::SgmcaInfo, expected: u64) {
         let channels = usize::from(info.head.channels);
         let decoded = decode_f32(path, channels);
         assert!(
@@ -3316,7 +3467,22 @@ mod tests {
             decoded.iter().map(Vec::len).collect::<Vec<_>>(),
             info.samples
         );
-        assert_eq!(info.samples, (SYNTHETIC_SECONDS * 48_000.0) as u64, "{info:?}");
+        assert_eq!(info.samples, expected, "{info:?}");
+    }
+
+    /// `assert_sgmca_samples` for a synthetic fixture: exactly
+    /// `SYNTHETIC_SECONDS` at 48 kHz (every fixture is whole 20 ms frames).
+    fn assert_sgmca_duration(path: &Path, info: &crate::sgmca::SgmcaInfo) {
+        assert_sgmca_samples(path, info, (SYNTHETIC_SECONDS * 48_000.0) as u64);
+    }
+
+    /// An SGMCA output of `source` holds exactly the samples FFmpeg decodes
+    /// from the source at 48 kHz, counted by decoding it, not assumed.
+    fn assert_sgmca_holds_source(path: &Path, info: &crate::sgmca::SgmcaInfo, source: &Path) {
+        let decoded = decode_f32(source, usize::from(info.head.channels));
+        let source_samples = decoded[0].len() as u64;
+        assert!(decoded.iter().all(|channel| channel.len() as u64 == source_samples));
+        assert_sgmca_samples(path, info, source_samples);
     }
 
     #[test]
@@ -3386,6 +3552,8 @@ mod tests {
         assert_eq!(info.head.channels, 4);
         assert_eq!(info.head.mapping, [0, 1, 2, 3]);
         assert_eq!(info.head.input_sample_rate, 48_000);
+        // Every sample of the source, and the source is the whole fixture.
+        assert_sgmca_holds_source(written, &info, &wav);
         assert_sgmca_duration(written, &info);
         assert_audio(written, 4, "48000");
         let record = checked_export_record(file, &wav);
@@ -3786,7 +3954,7 @@ mod tests {
         let start = info.segments[0].start.as_ref().unwrap();
         assert_eq!(start.local.as_deref(), Some("2026-11-22T10:15:30"), "{start:?}");
         assert_eq!(info.segments[0].start_sample, 0);
-        assert_eq!(info.samples, (SYNTHETIC_SECONDS * 48_000.0) as u64);
+        assert_sgmca_holds_source(path, &info, &wav);
         assert_sgmca_duration(path, &info);
         let path_record = manifest::manifest_path_for(path);
         let record: serde_json::Value = serde_json::from_slice(&fs::read(path_record).unwrap()).unwrap();
@@ -3807,8 +3975,31 @@ mod tests {
     fn sgmca_output_start_plans_prefer_the_source_then_bwf_then_the_clock() {
         let now = time::macros::datetime!(2026-11-22 18:00:00 UTC);
         let probed = manifest::ProbedSource::default();
-        let clock = plan_sgmca_output(None, &probed, false, now).unwrap();
+        // A source counted at 32,000 samples at 16 kHz must give 96,000.
+        const LENGTH: Option<(u64, u32)> = Some((32_000, 16_000));
+        let clock = plan_sgmca_output(None, LENGTH, &probed, false, now).unwrap();
         assert_eq!(clock.start_source, "conversion-time");
+        assert_eq!(
+            clock.expected_samples,
+            Some(ExpectedSamples {
+                total: 96_000,
+                segments: vec![96_000],
+                rounding: 0
+            })
+        );
+        // With no length known an SGMCA output cannot be checked, so it is
+        // not made; after leading-silence trim nothing exact is known and
+        // none is asked for.
+        assert_eq!(
+            plan_sgmca_output(None, None, &probed, false, now),
+            Err(SOURCE_LENGTH_UNKNOWN_MESSAGE.to_string())
+        );
+        assert_eq!(
+            plan_sgmca_output(None, None, &probed, true, now)
+                .unwrap()
+                .expected_samples,
+            None
+        );
         assert_eq!(clock.segments.len(), 1);
         assert_eq!(
             clock.segments[0].start_text,
@@ -3822,7 +4013,7 @@ mod tests {
             }),
             ..manifest::ProbedSource::default()
         };
-        let undated = plan_sgmca_output(None, &timed, false, now).unwrap();
+        let undated = plan_sgmca_output(None, LENGTH, &timed, false, now).unwrap();
         assert_eq!(undated.start_source, "conversion-time");
         assert!(undated.note.contains("no usable origination date"));
         let dated = manifest::ProbedSource {
@@ -3832,7 +4023,7 @@ mod tests {
         // 01:00:00.5: the header holds whole seconds, so it names 01:00:00,
         // the second at or before the first sample; every sample is kept
         // and the half second is recorded.
-        let bwf = plan_sgmca_output(None, &dated, false, now).unwrap();
+        let bwf = plan_sgmca_output(None, LENGTH, &dated, false, now).unwrap();
         assert_eq!(bwf.start_source, "bwf-bext");
         assert!(bwf.segments[0].start_text.starts_with("2026-11-22T01:00:00"));
         assert_eq!(bwf.segments.len(), 1);
@@ -3852,7 +4043,7 @@ mod tests {
             }),
             ..dated.clone()
         };
-        let exact = plan_sgmca_output(None, &on_second, false, now).unwrap();
+        let exact = plan_sgmca_output(None, LENGTH, &on_second, false, now).unwrap();
         assert!(exact.segments[0].start_text.starts_with("2026-11-22T01:00:00"));
         assert_eq!(exact.segments[0].start_sample, 0);
         assert_eq!(exact.start_offset_ms, Some(0.0));
@@ -3882,7 +4073,7 @@ mod tests {
         assert_eq!(late.offset_ms, 999.977);
         // Trim moves the start, so even a dated source gets the clock.
         assert_eq!(
-            plan_sgmca_output(None, &dated, true, now).unwrap().start_source,
+            plan_sgmca_output(None, None, &dated, true, now).unwrap().start_source,
             "conversion-time"
         );
     }
@@ -3951,7 +4142,7 @@ mod tests {
         let info = crate::sgmca::inspect(&path, None).unwrap();
         assert_eq!(info.segments.len(), 2);
         let now = time::macros::datetime!(2026-11-22 18:00:00 UTC);
-        let plan = plan_sgmca_output(Some(&info), &manifest::ProbedSource::default(), false, now).unwrap();
+        let plan = plan_sgmca_output(Some(&info), None, &manifest::ProbedSource::default(), false, now).unwrap();
         assert_eq!(plan.start_source, "conversion-time");
         assert_eq!(plan.segments.len(), 1);
         assert_eq!(
@@ -4079,6 +4270,192 @@ mod tests {
         }
     }
 
+    /// A 4-channel PCM WAV of `frames` samples at `rate`, from one filter
+    /// graph (so no FFmpeg version drops a frame making it).
+    fn synthetic_pcm_wav(path: &Path, rate: u32, frames: u64) {
+        synthetic_partial_source(path, rate, frames, &["-c:a", "pcm_s16le", "-f", "wav"]);
+    }
+
+    /// `synthetic_pcm_wav`, written with `encoder`.
+    fn synthetic_partial_source(path: &Path, rate: u32, frames: u64, encoder: &[&str]) {
+        let mut args: Vec<String> = vec![
+            "-filter_complex".into(),
+            format!(
+                "sine=frequency=440:sample_rate={rate},atrim=end_sample={frames},pan=4c|c0=c0|c1=0.5*c0|c2=0.25*c0|c3=0.125*c0[out]"
+            ),
+            "-map".into(),
+            "[out]".into(),
+        ];
+        args.extend(encoder.iter().map(|arg| arg.to_string()));
+        args.extend(["-y".into(), path.to_string_lossy().to_string()]);
+        run_ffmpeg(&args);
+    }
+
+    /// Lower the granule position of the last page of the bare Ogg stream
+    /// at `path` by `by` samples (fixing its CRC): what an encoder or muxer
+    /// that trimmed the end of the audio away would write.
+    fn lower_last_granule(path: &Path, by: u64) {
+        let mut bytes = fs::read(path).unwrap();
+        let mut at = 0;
+        let mut last = None;
+        while at + 27 <= bytes.len() {
+            assert_eq!(&bytes[at..at + 4], b"OggS");
+            let segments = usize::from(bytes[at + 26]);
+            let body: usize = bytes[at + 27..at + 27 + segments]
+                .iter()
+                .map(|&lace| usize::from(lace))
+                .sum();
+            let len = 27 + segments + body;
+            last = Some((at, len));
+            at += len;
+        }
+        let (at, len) = last.unwrap();
+        let granule = u64::from_le_bytes(bytes[at + 6..at + 14].try_into().unwrap()) - by;
+        bytes[at + 6..at + 14].copy_from_slice(&granule.to_le_bytes());
+        bytes[at + 22..at + 26].fill(0);
+        let crc = crate::sgmca::ogg_crc(&bytes[at..at + len]);
+        bytes[at + 22..at + 26].copy_from_slice(&crc.to_le_bytes());
+        fs::write(path, bytes).unwrap();
+    }
+
+    #[test]
+    fn a_wav_source_keeps_its_partial_last_opus_frame_in_sgmca_and_a_lost_one_fails() {
+        if !court_fixture_tools_available() {
+            return;
+        }
+        let dir = ConversionTestDir::new();
+        // 95,001 samples is 98 whole 20 ms frames and 921 samples: the last
+        // Opus frame is mostly real audio and partly padding. 88,201 at
+        // 44.1 kHz is 96,001.09 samples at 48 kHz.
+        for (rate, frames) in [(48_000, 95_001u64), (44_100, 88_201)] {
+            let wav = dir.0.join(format!("synthetic_partial_{rate}.wav"));
+            synthetic_pcm_wav(&wav, rate, frames);
+            assert_eq!(pcm_wav_frames(&wav), Some((frames, rate)));
+            let out = dir.0.join(format!("out_{rate}"));
+            fs::create_dir(&out).unwrap();
+            let conversion = convert_with_system_ffmpeg(&court_job(&wav, &out, "keep", "sgmca"), None).unwrap();
+            let path = Path::new(&conversion.files[0].path);
+            let info = crate::sgmca::verify_written(path, None, None).unwrap();
+            assert_sgmca_holds_source(path, &info, &wav);
+            if rate == 48_000 {
+                assert_eq!(info.samples, frames);
+            }
+        }
+
+        // A FLAC states no exact length in a header DepoAudio reads, so the
+        // source is decoded and counted first, and the output must hold
+        // that count.
+        for (rate, frames) in [(48_000, 95_001u64), (44_100, 88_201)] {
+            let flac = dir.0.join(format!("synthetic_partial_{rate}.flac"));
+            synthetic_partial_source(&flac, rate, frames, &["-c:a", "flac"]);
+            let job = court_job(&flac, &dir.0, "keep", "sgmca");
+            assert!(needs_source_sample_count(&job, &flac, false, &[]));
+            let out = dir.0.join(format!("flac_out_{rate}"));
+            fs::create_dir(&out).unwrap();
+            let conversion = convert_with_system_ffmpeg(&court_job(&flac, &out, "keep", "sgmca"), None).unwrap();
+            let path = Path::new(&conversion.files[0].path);
+            let info = crate::sgmca::verify_written(path, None, None).unwrap();
+            assert_sgmca_holds_source(path, &info, &flac);
+            if rate == 48_000 {
+                assert_eq!(info.samples, frames);
+            }
+        }
+
+        // The same conversion with the end of the audio trimmed away by the
+        // last granule, as if the encoder had dropped the partial frame:
+        // the conversion fails and nothing is left.
+        let wav = dir.0.join("synthetic_partial_48000.wav");
+        let out = dir.0.join("lost");
+        fs::create_dir(&out).unwrap();
+        let error = convert_with_system_ffmpeg_edited(&court_job(&wav, &out, "keep", "sgmca"), None, &|plan| {
+            lower_last_granule(&plan.planned[0].path, 921)
+        })
+        .unwrap_err();
+        assert_eq!(
+            error,
+            "synthetic_partial_48000_orig.sgmca failed the SGMCA format check, so the output was removed: It holds 94080 samples (48 kHz) where the source holds 95001: 921 fewer, so audio would have been dropped from the recording."
+        );
+        assert_eq!(
+            fs::read_dir(&out).unwrap().count(),
+            0,
+            "the output and its record are removed"
+        );
+    }
+
+    /// A RIFF (or RF64) WAV header and data for `pcm_wav_frames`.
+    fn wav_bytes(tag: u16, block_align: u16, data_len: u32, data_present: usize, rf64_data: Option<u64>) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(if rf64_data.is_some() { b"RF64" } else { b"RIFF" });
+        bytes.extend_from_slice(&0u32.to_le_bytes());
+        bytes.extend_from_slice(b"WAVE");
+        if let Some(data) = rf64_data {
+            bytes.extend_from_slice(b"ds64");
+            bytes.extend_from_slice(&28u32.to_le_bytes());
+            bytes.extend_from_slice(&0u64.to_le_bytes());
+            bytes.extend_from_slice(&data.to_le_bytes());
+            bytes.extend_from_slice(&0u64.to_le_bytes());
+            bytes.extend_from_slice(&0u32.to_le_bytes());
+        }
+        // An odd-sized chunk before fmt, with its pad byte.
+        bytes.extend_from_slice(b"JUNK");
+        bytes.extend_from_slice(&3u32.to_le_bytes());
+        bytes.extend_from_slice(&[0; 4]);
+        bytes.extend_from_slice(b"fmt ");
+        bytes.extend_from_slice(&16u32.to_le_bytes());
+        bytes.extend_from_slice(&tag.to_le_bytes());
+        bytes.extend_from_slice(&2u16.to_le_bytes());
+        bytes.extend_from_slice(&44_100u32.to_le_bytes());
+        bytes.extend_from_slice(&(44_100 * u32::from(block_align)).to_le_bytes());
+        bytes.extend_from_slice(&block_align.to_le_bytes());
+        bytes.extend_from_slice(&16u16.to_le_bytes());
+        bytes.extend_from_slice(b"data");
+        bytes.extend_from_slice(&data_len.to_le_bytes());
+        bytes.resize(bytes.len() + data_present, 0);
+        bytes
+    }
+
+    #[test]
+    fn pcm_wav_frames_are_read_only_when_the_data_length_is_exact() {
+        let dir = ConversionTestDir::new();
+        let frames = |bytes: Vec<u8>| {
+            let path = dir.0.join("header.wav");
+            fs::write(&path, bytes).unwrap();
+            pcm_wav_frames(&path)
+        };
+        assert_eq!(frames(wav_bytes(1, 4, 4000, 4000, None)), Some((1000, 44_100)));
+        assert_eq!(frames(wav_bytes(3, 4, 4000, 4001, None)), Some((1000, 44_100)), "float");
+        assert_eq!(
+            frames(wav_bytes(1, 4, u32::MAX, 4000, Some(4000))),
+            Some((1000, 44_100)),
+            "RF64"
+        );
+        assert_eq!(frames(wav_bytes(1, 4, 4000, 3999, None)), None, "cut short");
+        assert_eq!(frames(wav_bytes(1, 4, 0, 4000, None)), None, "still recording");
+        assert_eq!(frames(wav_bytes(1, 4, u32::MAX, 4000, None)), None, "length unknown");
+        assert_eq!(frames(wav_bytes(1, 4, 4002, 4002, None)), None, "a partial frame");
+        assert_eq!(frames(wav_bytes(0x11, 4, 4000, 4000, None)), None, "IMA ADPCM is coded");
+        assert_eq!(frames(b"OggS".to_vec()), None);
+
+        assert_eq!(
+            expected_from_source_length(95_001, 48_000),
+            ExpectedSamples {
+                total: 95_001,
+                segments: vec![95_001],
+                rounding: 0
+            }
+        );
+        // 88,200 at 44.1 kHz is exactly 96,000 at 48 kHz; 88,201 is 96,001.09.
+        assert_eq!(expected_from_source_length(88_200, 44_100).rounding, 0);
+        assert_eq!(
+            expected_from_source_length(88_201, 44_100),
+            ExpectedSamples {
+                total: 96_001,
+                segments: vec![96_001],
+                rounding: 1
+            }
+        );
+    }
+
     #[test]
     fn the_sample_check_refuses_a_delaying_limiter_and_any_count_that_differs() {
         let dir = ConversionTestDir::new();
@@ -4086,6 +4463,7 @@ mod tests {
         let exact = ExpectedSamples {
             total: 720_000,
             segments: vec![480_000, 240_000],
+            rounding: 0,
         };
         assert_eq!(check_sgmca_samples(Some(&exact), None, &written), Ok(()));
         assert_eq!(check_sgmca_samples(None, Some("highpass=f=80"), &written), Ok(()));
@@ -4122,6 +4500,7 @@ mod tests {
         let joined = ExpectedSamples {
             total: 720_000,
             segments: vec![720_000],
+            rounding: 0,
         };
         assert!(check_sgmca_samples(Some(&joined), None, &written)
             .unwrap_err()
@@ -4143,6 +4522,7 @@ mod tests {
             duration_secs: Some(15.0),
             sgmca_source: Some(crate::sgmca::inspect(&sgmca, None).unwrap()),
             fade_out: None,
+            source_samples: None,
         };
         // Every format: the limiter compensates its look-ahead.
         for format in ["sgmca", "wav", "flac", "mp3", "m4a", "opus"] {
@@ -4167,6 +4547,7 @@ mod tests {
                 duration_secs: Some(15.0),
                 sgmca_source: Some(crate::sgmca::inspect(&sgmca, None).unwrap()),
                 fade_out: None,
+                source_samples: None,
             };
             let mut cleanup = OutputCleanup::default();
             let error = plan_conversion(&job, &sgmca, &probes, &mut cleanup).err().unwrap();

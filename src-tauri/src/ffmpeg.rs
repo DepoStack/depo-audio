@@ -361,6 +361,25 @@ pub(crate) const FADE_LENGTH_UNKNOWN_MESSAGE: &str = "Fade is on, but DepoAudio 
 /// which a stated duration may not be: a chained Ogg file states its last
 /// link's length, and a VBR MP3 without an index states an estimate.
 pub(crate) fn decoded_length_args(feed: &Path) -> Vec<String> {
+    sample_count_args(feed, DECODED_LENGTH_FILTER)
+}
+
+/// The source-rate counting pass's filter: `DECODED_LENGTH_FILTER` without
+/// the resampler, so it counts the samples the decoder gives at the
+/// stream's own rate (the same astats filter, so no other filter has to
+/// ship for it).
+pub(crate) const SOURCE_LENGTH_FILTER: &str =
+    "astats=metadata=0:reset=0:measure_perchannel=none:measure_overall=Number_of_samples";
+
+/// FFmpeg arguments that decode the converted stream exactly as a
+/// conversion does and count its samples at the stream's own rate: the
+/// exact source length an SGMCA output is checked against when no header
+/// states it (see `conversion::plan_sgmca_output`).
+pub(crate) fn source_length_args(feed: &Path) -> Vec<String> {
+    sample_count_args(feed, SOURCE_LENGTH_FILTER)
+}
+
+fn sample_count_args(feed: &Path, filter: &str) -> Vec<String> {
     let mut args = crate::helpers::safe_ffmpeg_input_prelude();
     args.extend(["-nostats".into(), "-v".into(), "info".into()]);
     args.extend(crate::helpers::input_codec_args(feed));
@@ -370,7 +389,7 @@ pub(crate) fn decoded_length_args(feed: &Path) -> Vec<String> {
         "-vn".into(),
         "-sn".into(),
         "-af".into(),
-        DECODED_LENGTH_FILTER.into(),
+        filter.into(),
         "-f".into(),
         "null".into(),
         "-".into(),
@@ -381,12 +400,42 @@ pub(crate) fn decoded_length_args(feed: &Path) -> Vec<String> {
 /// Decoded length in seconds from the stderr of `decoded_length_args`: the
 /// last "Number of samples" astats reports, over `DECODED_LENGTH_RATE`.
 pub(crate) fn parse_decoded_seconds(stderr: &[u8]) -> Option<f64> {
+    parse_decoded_samples(stderr).map(|samples| samples as f64 / f64::from(DECODED_LENGTH_RATE))
+}
+
+/// The last "Number of samples" astats reports in `stderr` (of
+/// `decoded_length_args` or `source_length_args`); None when there is none
+/// or it is 0.
+pub(crate) fn parse_decoded_samples(stderr: &[u8]) -> Option<u64> {
     let text = String::from_utf8_lossy(stderr);
     let samples: u64 = text
         .lines()
         .rev()
         .find_map(|line| line.split("Number of samples:").nth(1)?.trim().parse().ok())?;
-    (samples > 0).then(|| samples as f64 / f64::from(DECODED_LENGTH_RATE))
+    (samples > 0).then_some(samples)
+}
+
+/// Samples the converted stream decodes to at its own rate
+/// (`source_length_args`), with the bundled FFmpeg. None when FFmpeg fails
+/// or reports no count.
+pub(crate) async fn measure_source_samples_cancellable(
+    app: &AppHandle,
+    feed: &Path,
+    timeout_secs: u64,
+    cancelled: CancelCheck<'_>,
+) -> Option<u64> {
+    let output = sidecar_output_cancellable(
+        app,
+        ffmpeg_bin_name(),
+        source_length_args(feed),
+        bounded_ffmpeg_timeout(timeout_secs),
+        cancelled,
+    )
+    .await?;
+    if !output.success {
+        return None;
+    }
+    parse_decoded_samples(&output.stderr)
 }
 
 pub(crate) async fn measure_decoded_seconds_cancellable(
