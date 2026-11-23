@@ -163,6 +163,11 @@ pub struct AudioStreamsInfo {
     pub converted_index: u32,
     pub streams: Vec<AudioStreamSummary>,
     pub duration_secs: Option<f64>,
+    /// For a Liberty / BIS Digital `.dcr`: the reader's summary (codec,
+    /// channel names, remote-participant changes, or why it cannot be
+    /// converted). Absent for every other file.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dcr: Option<crate::dcr::DcrQueueInfo>,
     /// For a DigitalCAT `.dm`: blocks skipped and whether the stamps run
     /// backwards, read from the file's own header and block headers.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -240,6 +245,7 @@ pub(crate) fn parse_audio_streams(probe: &serde_json::Value) -> AudioStreamsInfo
         converted_index: crate::helpers::SOURCE_AUDIO_STREAM,
         streams,
         duration_secs,
+        dcr: None,
         dm: None,
     }
 }
@@ -323,6 +329,11 @@ pub(crate) struct FileRecord {
     pub file_name: String,
     pub sha256: String,
     pub size_bytes: u64,
+    /// For a Liberty / BIS Digital `.dcr` source: what the reader found
+    /// (format facts and channel names only; never case, docket or password
+    /// fields). Absent for every other source.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dcr: Option<crate::dcr::DcrSourceRecord>,
     /// For a DigitalCAT `.dm` source: its blocks, the blocks skipped and where
     /// the time stamps jump. Absent for every other source.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -353,6 +364,23 @@ pub(crate) struct ProcessingRecord {
     /// stream) for Mix to Stereo and Keep Original, `-map [opN]` (this
     /// channel's filter branch) for Split.
     pub map_args: Vec<String>,
+    /// Present when Fade placed a fade-out; null otherwise.
+    pub fade_out: Option<FadeOutRecord>,
+}
+
+/// Where a fade-out was placed, and the lengths it was placed from.
+#[derive(Debug, Serialize, Clone, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct FadeOutRecord {
+    /// The `st` of the `afade=t=out` filter, in seconds.
+    pub start_seconds: f64,
+    pub duration_seconds: f64,
+    /// The converted stream's length as FFmpeg decodes it, which places the
+    /// fade-out.
+    pub decoded_source_seconds: f64,
+    /// The length the source's headers state, for comparison; None when
+    /// they state none.
+    pub stated_source_seconds: Option<f64>,
 }
 
 #[derive(Debug, Serialize, Clone, PartialEq)]
@@ -415,6 +443,7 @@ pub(crate) struct OutputFacts<'a> {
     pub encoder_args: Vec<String>,
     /// This output's `-map` arguments.
     pub map_args: Vec<String>,
+    pub fade_out: Option<FadeOutRecord>,
     pub source_channel_index: Option<u32>,
     pub label: Option<String>,
     /// From `wav_header_kind`, for WAV outputs only.
@@ -535,6 +564,7 @@ pub(crate) fn build_manifest(input: &ManifestInput<'_>, facts: OutputFacts<'_>) 
             filter_chain: facts.filter_chain,
             encoder_args: facts.encoder_args,
             map_args: facts.map_args,
+            fade_out: facts.fade_out,
         },
         channel: ChannelRecord {
             output: output_kind,
@@ -624,6 +654,7 @@ pub(crate) mod tests {
                 file_name: "synthetic_session.wav".into(),
                 sha256: "a".repeat(64),
                 size_bytes: 1024,
+                dcr: None,
                 dm_timeline: None,
             },
             probed,
@@ -644,6 +675,7 @@ pub(crate) mod tests {
                 ),
                 encoder_args: vec!["-acodec".into(), "pcm_s16le".into(), "-ar".into(), "48000".into()],
                 map_args: vec!["-map".into(), "[op1]".into()],
+                fade_out: None,
                 source_channel_index: Some(1),
                 label: Some("Witness".into()),
                 wav_header: Some("riff"),
@@ -808,7 +840,7 @@ pub(crate) mod tests {
             "afade=t=in:d=0.5".into()
         ]));
         assert!(filters_shift_start(&[
-            "silenceremove=start_periods=1:start_duration=0.3:start_threshold=-50dB:start_mode=any".into()
+            "silenceremove=start_periods=1:start_threshold=-50dB:start_mode=any:detection=peak:window=0".into()
         ]));
     }
 
@@ -953,9 +985,11 @@ pub(crate) mod tests {
                     }
                 }
                 "required" => {
+                    // As in JSON Schema, `required` constrains objects only,
+                    // so a nullable object may be null.
                     for name in rule.as_array().unwrap() {
                         let name = name.as_str().unwrap();
-                        if value.get(name).is_none() {
+                        if value.is_object() && value.get(name).is_none() {
                             errors.push(format!("{at}: missing required {name}"));
                         }
                     }
@@ -1040,6 +1074,19 @@ pub(crate) mod tests {
         ] {
             let errors = schema_errors(&manifest);
             assert!(errors.is_empty(), "{errors:#?}");
+        }
+        let mut faded = sample_input(&ProbedSource::default(), &[], false);
+        for stated in [Some(5.0065), None] {
+            faded.processing.fade_out = Some(FadeOutRecord {
+                start_seconds: 14.5,
+                duration_seconds: 0.5,
+                decoded_source_seconds: 15.0,
+                stated_source_seconds: stated,
+            });
+            let errors = schema_errors(&faded);
+            assert!(errors.is_empty(), "{errors:#?}");
+            let value = serde_json::to_value(&faded).unwrap();
+            assert_eq!(value["processing"]["fadeOut"]["decodedSourceSeconds"], 15.0);
         }
     }
 
@@ -1451,7 +1498,7 @@ pub(crate) mod tests {
         );
         assert_eq!(time_reference_tags(&probe_json(&copied)), vec!["158760000".to_string()]);
 
-        let trim_filter = "silenceremove=start_periods=1:start_duration=0.3:start_threshold=-50dB:start_mode=any";
+        let trim_filter = "silenceremove=start_periods=1:start_threshold=-50dB:start_mode=any:detection=peak:window=0";
         let cases: [(&str, Option<&str>); 7] = [
             ("flac", None),
             ("mp3", None),

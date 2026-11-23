@@ -15,6 +15,7 @@ import {
   DownloadCloud,
   HardDrive,
   Keyboard,
+  Info,
 } from 'lucide-react'
 import { DEPOAUDIO_RELEASES_URL, DEPOSTACK_URL } from '../constants'
 import { LogoSvg } from './common/Icons'
@@ -28,6 +29,7 @@ import DiagnosticsCopy from './common/DiagnosticsCopy'
 import LocalDataSettings from './LocalDataSettings'
 import PlaybackKeysSettings from './PlaybackKeysSettings'
 import { APP_VERSION, buildDiagnostics } from '../lib/diagnostics'
+import { engineChecks } from '../lib/engineHealth'
 
 // ── Default values ────────────────────────────────────────────────────────────
 
@@ -75,6 +77,7 @@ const NAV = [
   { id: 'keys', label: 'Playback keys', Icon: Keyboard },
   { id: 'data', label: 'Your data', Icon: HardDrive },
   { id: 'updates', label: 'Updates', Icon: DownloadCloud },
+  { id: 'about', label: 'About', Icon: Info },
 ]
 
 // ── Field helpers (token-styled) ───────────────────────────────────────────────
@@ -331,6 +334,10 @@ export default function SettingsPanel({
   prefs,
   updater = {},
   health = null,
+  healthError = '',
+  healthChecking = false,
+  onRecheckHealth,
+  initialSection,
   reloadApp = () => window.location.reload(),
   conversionActive = false,
   playbackKeys = null,
@@ -365,7 +372,13 @@ export default function SettingsPanel({
     defaultOutputMode,
     setDefaultOutputMode,
   } = prefs
-  const [section, setSection] = useState('models')
+  const [section, setSection] = useState(initialSection ?? 'models')
+  // Opening Settings from the engine warning lands on About
+  const [prevOpen, setPrevOpen] = useState(open)
+  if (open !== prevOpen) {
+    setPrevOpen(open)
+    if (open && initialSection) setSection(initialSection)
+  }
   // Each section opens at its top, not at the previous section's scroll
   const contentRef = useRef(null)
   useEffect(() => {
@@ -382,6 +395,19 @@ export default function SettingsPanel({
     }
     onOpenChange(next)
   }
+  // The update state, in one line for About (the sidebar no longer shows it)
+  const updateSummary =
+    updateStatus === 'available'
+      ? `Update available: version ${update?.version}. Install it from Updates.`
+      : updateStatus === 'checking'
+        ? 'Checking for updates…'
+        : updateStatus === 'downloading' || updateStatus === 'ready'
+          ? 'Installing an update…'
+          : updateStatus === 'uptodate'
+            ? 'Up to date.'
+            : updateStatus === 'error' || updateError
+              ? 'The update check was unavailable. Check again from Updates, or download from GitHub Releases.'
+              : 'No newer version found at launch.'
   const updateProgressPercent = Math.min(100, Math.max(0, Math.round((updateProgress || 0) * 100)))
 
   const openExternalUrl = async (url, label) => {
@@ -714,6 +740,57 @@ export default function SettingsPanel({
                     )}
                   </CardContent>
                 </Card>
+              </>
+            )}
+
+            {section === 'about' && (
+              <>
+                <Card>
+                  <CardHeader>
+                    <CardTitle>Audio engine</CardTitle>
+                  </CardHeader>
+                  <CardContent className="p-4 flex flex-col gap-3">
+                    <dl data-testid="engine-checks" className="flex flex-col gap-1.5">
+                      {engineChecks(health, healthError).map(check => (
+                        <div key={check.id} className="flex items-center justify-between gap-3">
+                          <dt className="flex items-center gap-2 text-[12px] font-medium text-foreground">
+                            <span
+                              aria-hidden="true"
+                              className={`w-1.5 h-1.5 rounded-full ${
+                                check.state === 'ok'
+                                  ? 'bg-[hsl(var(--success))]'
+                                  : check.state === 'failed'
+                                    ? 'bg-destructive'
+                                    : 'bg-[hsl(var(--sub))]'
+                              }`}
+                            />
+                            {check.label}
+                          </dt>
+                          <dd className="type-small tabular-nums text-[hsl(var(--text2))]">{check.value}</dd>
+                        </div>
+                      ))}
+                    </dl>
+                    {healthError && (
+                      <p role="alert" className="type-small text-[hsl(var(--text2))] whitespace-pre-wrap break-words">
+                        {healthError}
+                      </p>
+                    )}
+                    <div className="flex items-center justify-between gap-3 border-t border-border pt-3">
+                      <span className="type-small text-[hsl(var(--sub))]">
+                        Checked each time DepoAudio opens. The window shows a warning only when a check fails.
+                      </span>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="shrink-0"
+                        disabled={healthChecking || !onRecheckHealth}
+                        onClick={() => onRecheckHealth?.()}
+                      >
+                        <RefreshCw size={12} aria-hidden="true" /> {healthChecking ? 'Checking…' : 'Re-check'}
+                      </Button>
+                    </div>
+                  </CardContent>
+                </Card>
 
                 <Card>
                   <CardHeader>
@@ -723,6 +800,9 @@ export default function SettingsPanel({
                     <div className="flex flex-col gap-2">
                       <div className="flex flex-col min-w-0">
                         <span className="text-[12px] font-medium text-foreground">Version {APP_VERSION}</span>
+                        <span data-testid="about-update-status" className="type-small text-[hsl(var(--text2))] mt-0.5">
+                          {updateSummary}
+                        </span>
                         <span className="type-small text-[hsl(var(--sub))] mt-0.5">
                           For a support request, copy the diagnostics: app version, operating system, FFmpeg version and
                           error type. No file names or folders, and nothing is sent.

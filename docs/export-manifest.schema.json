@@ -31,6 +31,110 @@
         "fileName": { "type": "string", "description": "File name only, never a folder path." },
         "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$", "description": "SHA-256 of the original file as selected, before any format preparation." },
         "sizeBytes": { "type": "integer", "minimum": 0 },
+        "dcr": {
+          "type": "object",
+          "description": "Present only when the source is a Liberty / BIS Digital .dcr recording read by DepoAudio's experimental reader. Format facts, channel names, counts and times only: case, docket and password fields, bookmark notes, speakers and attachment names from the recording are never written here. The layout DepoAudio reads comes from owner-supplied interoperability notes and has not been checked against a real recording.",
+          "additionalProperties": false,
+          "required": ["version", "codec", "codecTag", "channels", "channelNames", "atoms", "videoFramesSkipped", "attachmentsSkipped", "conferenceChanges", "conferenceChangeCount", "checksum", "bookmarks", "layoutSource"],
+          "properties": {
+            "version": { "type": "integer", "minimum": 0, "description": "Recorder format version, major x 100 + minor." },
+            "codec": { "type": "string", "description": "The audio codec as DepoAudio names it, for example \"PCM 16-bit\" or \"IMA ADPCM\"." },
+            "codecTag": { "type": "integer", "minimum": 0, "maximum": 65535, "description": "The WAVEFORMATEX format tag of one channel." },
+            "channels": { "type": "integer", "minimum": 1, "description": "Channels in the converted audio: every channel active at any point, in ascending channel-bit order." },
+            "channelNames": { "type": "array", "items": { "type": "string" }, "description": "One name per converted channel, in order, as read from the recording; \"Ch N\" where it names none." },
+            "atoms": { "type": "integer", "minimum": 0, "description": "Audio steps in the recording (one block per active channel each), password-protected ones included." },
+            "videoFramesSkipped": { "type": "integer", "minimum": 0 },
+            "attachmentsSkipped": { "type": "integer", "minimum": 0, "description": "Attachments stored in the audio data. None is ever extracted." },
+            "attachmentsEncrypted": { "type": "integer", "minimum": 1, "description": "Present when some attachments are password-protected." },
+            "attachmentsDeleted": { "type": "integer", "minimum": 1, "description": "Present when some attachments are marked deleted." },
+            "conferenceChanges": {
+              "type": "array",
+              "description": "Remote participants joining or leaving (the first 1000). A join adds the bits of the record's channel mask to the recorded channels; a leave removes them.",
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["atPerChannelByte", "atSeconds", "kind", "channelMask", "channelsAfter"],
+                "properties": {
+                  "atPerChannelByte": { "type": "integer", "minimum": 0 },
+                  "atSeconds": { "type": "number", "minimum": 0, "description": "Recording time." },
+                  "kind": { "enum": ["joined", "left"] },
+                  "channelMask": { "type": "integer", "minimum": 1, "maximum": 4294967295, "description": "The channel bits the participant's record adds or removes." },
+                  "channelsAfter": { "type": "integer", "minimum": 0 }
+                }
+              }
+            },
+            "conferenceChangeCount": { "type": "integer", "minimum": 0 },
+            "trailingBytesDropped": { "type": "integer", "minimum": 1, "description": "Present only when the audio ended with fewer bytes than one sample of every channel; those bytes were left out of the conversion." },
+            "sealedSections": { "type": "integer", "minimum": 1, "description": "Present when the recording has password-protected sections. Their audio is never decoded: it is silence of the same length in the output." },
+            "sealedSecs": { "type": "number", "minimum": 0, "description": "Recording time inside password-protected sections, silent in the output." },
+            "passwordSet": { "const": true, "description": "Present when the recording says a password is set." },
+            "protectionChunk": { "const": true, "description": "Present when the recording has a protection section whose layout DepoAudio does not know." },
+            "checksum": { "enum": ["checksums match", "checksums do not match", "no checksums (format version before 21.00)"], "description": "The result of checking the recording's three stored checksums (they cover everything except the audio). A mismatch does not stop the recording from being read." },
+            "bookmarks": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["total", "byType"],
+              "description": "Bookmarks counted by type number (the top four bits of IDMARK; 13 begins a redaction, 14 ends one). Their notes are never written here.",
+              "properties": {
+                "total": { "type": "integer", "minimum": 0 },
+                "byType": { "type": "object", "description": "Type number (as a decimal string) to the number of bookmarks of that type." },
+                "unreadable": { "type": "integer", "minimum": 1, "description": "Bookmarks without a readable IDMARK, skipped." }
+              }
+            },
+            "redactions": {
+              "type": "array",
+              "description": "Redacted segments as applied, in recording time. Each begin is paired with the next unused end at or after it; a begin with no end runs to the end of the recording; overlapping segments are joined and the strictest action wins (skip, then black, then play). Present only when the recording marks redactions.",
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["startSecs", "endSecs", "action", "applied"],
+                "properties": {
+                  "startSecs": { "type": "number", "minimum": 0 },
+                  "endSecs": { "type": "number", "minimum": 0 },
+                  "action": { "enum": ["play", "black", "skip"], "description": "skip: the audio is left out of the output; black: it is silence (a segment marked to distort the video is silenced too); play: it is kept." },
+                  "applied": { "type": "boolean", "description": "False only when the segment covers no audio (it lies past the end of the audio, or has no length)." }
+                }
+              }
+            },
+            "unpairedRedactionEnds": { "type": "integer", "minimum": 1, "description": "Redaction ends with no begin before them, ignored." },
+            "distortAsSilence": { "type": "integer", "minimum": 1, "description": "Redacted segments marked to distort the video, whose audio is silenced." },
+            "timing": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["recordingSecs", "outputSecs", "skippedSecs", "note"],
+              "description": "Present when redactions left audio out, so the output is shorter than the recording.",
+              "properties": {
+                "recordingSecs": { "type": "number", "minimum": 0 },
+                "outputSecs": { "type": "number", "minimum": 0 },
+                "skippedSecs": { "type": "number", "minimum": 0 },
+                "note": { "type": "string" }
+              }
+            },
+            "startTime": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["stored", "source", "basis"],
+              "description": "The session start stored in the recording, when it has one.",
+              "properties": {
+                "stored": { "type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{3}$", "description": "As stored, with no time zone: whether the recorder writes UTC or local time is not known." },
+                "source": { "type": "string" },
+                "basis": { "type": "string" }
+              }
+            },
+            "timeZone": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["localMinusUtcMinutes", "display", "source"],
+              "description": "The recording machine's time-zone offset when it recorded, when the recording stores one.",
+              "properties": {
+                "localMinusUtcMinutes": { "type": "integer", "minimum": -1440, "maximum": 1440 },
+                "display": { "type": "string", "pattern": "^GMT[+-][0-9]+:[0-9]{2}$" },
+                "source": { "type": "string" }
+              }
+            },
+            "layoutSource": { "const": "owner-supplied interoperability notes; not yet confirmed against a recorded file" }
+          }
+        },
         "dmTimeline": {
           "type": "object",
           "description": "Only for a DigitalCAT / SoundSync .dm source, whose audio DepoAudio reads into a temporary WAV before FFmpeg decodes it. Lists the blocks read, the recorded-over blocks that were skipped, what was left out after a short block or an incomplete block, where the block time stamps jump, and counts from a .bmf marker file beside the .dm. Blocks are read in file order up to the first short block or incomplete block, which is where the format notes say SoundSync's player stops. Stamps are whole seconds (UTC), so they place a block to within about a second; the notes say a recording stamps about the end of each block and a WAV import the start, and the file does not say which made it. Positions come from block counts, not stamps. Nothing here is written into the output audio. Written by versions after 1.1.0; absent for every other source.",
@@ -108,7 +212,19 @@
         "filterOption": { "enum": ["-af", "-filter_complex", null], "description": "The FFmpeg option that carried filterChain, or null when no filter ran." },
         "filterChain": { "type": ["string", "null"], "description": "The exact FFmpeg filter string used. In split mode it is the whole graph; channel.sourceChannelIndex names this file's branch." },
         "encoderArgs": { "type": "array", "items": { "type": "string" }, "description": "The exact FFmpeg encoder and metadata arguments for this output, without file paths. Stream selection is in mapArgs." },
-        "mapArgs": { "type": "array", "items": { "type": "string" }, "description": "The exact FFmpeg -map arguments for this output: -map 0:a:0 (the converted source stream) for stereo and keep, -map [opN] (this channel's branch of filterChain) for split. The command is: ffmpeg -i <source> [filterOption filterChain] mapArgs encoderArgs <output>. Written by versions after 1.1.0." }
+        "mapArgs": { "type": "array", "items": { "type": "string" }, "description": "The exact FFmpeg -map arguments for this output: -map 0:a:0 (the converted source stream) for stereo and keep, -map [opN] (this channel's branch of filterChain) for split. The command is: ffmpeg -i <source> [filterOption filterChain] mapArgs encoderArgs <output>. Written by versions after 1.1.0." },
+        "fadeOut": {
+          "type": ["object", "null"],
+          "additionalProperties": false,
+          "required": ["startSeconds", "durationSeconds", "decodedSourceSeconds", "statedSourceSeconds"],
+          "description": "Where the fade-out (afade=t=out in filterChain) was placed, or null when there is none. It is placed from decodedSourceSeconds, the converted stream's length as FFmpeg decodes it, not from statedSourceSeconds, the length the source's headers state, which can be shorter (a chained Ogg file, a VBR MP3). Written by versions after 1.1.0.",
+          "properties": {
+            "startSeconds": { "type": "number", "minimum": 0 },
+            "durationSeconds": { "type": "number", "minimum": 0 },
+            "decodedSourceSeconds": { "type": "number", "minimum": 0 },
+            "statedSourceSeconds": { "type": ["number", "null"], "minimum": 0 }
+          }
+        }
       }
     },
     "channel": {

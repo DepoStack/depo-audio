@@ -335,7 +335,7 @@ describe('Closed-format guidance', () => {
     )
   })
 
-  it('lists the closed formats in their own section without naming one vendor for .dcr', () => {
+  it('lists the closed formats in their own section and .dcr as experimental court audio', () => {
     render(<FormatTable />)
     fireEvent.click(screen.getByRole('button', { name: /Supported formats/ }))
 
@@ -343,7 +343,12 @@ describe('Closed-format guidance', () => {
     for (const ext of ['.aes', '.dcr', '.ds2', '.arf  .wrf', '.msv  .dvf']) {
       expect(screen.getByText(ext, { normalizer: text => text })).toBeVisible()
     }
-    expect(screen.getByText('Liberty Court Recorder · BIS Digital')).toBeVisible()
+    expect(screen.getByText('Liberty / BIS Digital')).toBeVisible()
+    expect(
+      screen.getByText(
+        'Applies marked redactions; password-protected parts are silent; tested with synthetic files only',
+      ),
+    ).toBeVisible()
     expect(screen.queryByText(/High Criteria/)).not.toBeInTheDocument()
   })
 })
@@ -444,6 +449,30 @@ describe('ConvertTab preset picker', () => {
     )
     for (const setter of ['setFormatOut', 'setTrim', 'setFade', 'setFadeDur', 'setMode', 'setNormalize']) {
       expect(prefs[setter]).not.toHaveBeenCalled()
+    }
+  })
+
+  it('says Keep Original to MP3, M4A or Opus keeps only mono and stereo recordings', () => {
+    for (const formatOut of ['mp3', 'm4a', 'opus']) {
+      preferencesContext.current = { ...preferences(), mode: 'keep', formatOut }
+      const view = render(<ConvertTab {...props()} />)
+      expect(screen.getByTestId('keep-stereo-only-note')).toHaveTextContent(
+        'Keep Original to this format works only for mono and stereo recordings',
+      )
+      expect(screen.getByTestId('keep-stereo-only-note')).toHaveTextContent('choose WAV, FLAC or SGMCA')
+      view.unmount()
+    }
+    for (const [mode, formatOut] of [
+      ['keep', 'wav'],
+      ['keep', 'flac'],
+      ['keep', 'sgmca'],
+      ['stereo', 'mp3'],
+      ['split', 'm4a'],
+    ]) {
+      preferencesContext.current = { ...preferences(), mode, formatOut }
+      const view = render(<ConvertTab {...props()} />)
+      expect(screen.queryByTestId('keep-stereo-only-note')).not.toBeInTheDocument()
+      view.unmount()
     }
   })
 

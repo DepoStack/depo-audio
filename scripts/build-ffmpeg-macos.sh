@@ -163,12 +163,19 @@ build_arch() {
       echo "ERROR: $arch FFmpeg lacks decoder $decoder" >&2; exit 1;
     }
   done
+  # pcm_alaw through mp3float and the amerge filter decode Liberty / BIS DCR
+  # audio (crate::dcr): only their presence is checked here.
+  for decoder in pcm_alaw pcm_mulaw pcm_u8 pcm_s24le pcm_s32le adpcm_ima_wav gsm_ms mp3float; do
+    grep -Eq "[[:space:]]${decoder}[[:space:]]" <<<"$decoders" || {
+      echo "ERROR: $arch FFmpeg lacks decoder $decoder (DCR)" >&2; exit 1;
+    }
+  done
   for encoder in libmp3lame libopus aac flac pcm_s16le; do
     grep -Eq "[[:space:]]${encoder}[[:space:]]" <<<"$encoders" || {
       echo "ERROR: $arch FFmpeg lacks encoder $encoder" >&2; exit 1;
     }
   done
-  for filter in adeclip highpass volume loudnorm afade silenceremove alimiter asplit pan aresample ebur128; do
+  for filter in adeclip highpass volume loudnorm afade silenceremove alimiter asplit pan aresample ebur128 amerge aformat astats; do
     grep -Eq "[[:space:]]${filter}[[:space:]]" <<<"$filters" || {
       echo "ERROR: $arch FFmpeg lacks filter $filter" >&2; exit 1;
     }

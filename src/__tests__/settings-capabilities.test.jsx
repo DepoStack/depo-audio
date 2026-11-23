@@ -27,7 +27,7 @@ describe('SettingsPanel release boundaries', () => {
     invoke.mockResolvedValue([])
 
     renderSettings()
-    fireEvent.click(screen.getByRole('button', { name: 'Updates' }))
+    fireEvent.click(screen.getByRole('button', { name: 'About' }))
 
     // The wordmark leads and the endorsement follows in its own smaller run, so match the whole name.
     const name = await screen.findByText(
@@ -99,7 +99,7 @@ describe('SettingsPanel release boundaries', () => {
   it('attributes FFmpeg and opens the matching release-source location', async () => {
     invoke.mockResolvedValue([])
     renderSettings()
-    fireEvent.click(screen.getByRole('button', { name: 'Updates' }))
+    fireEvent.click(screen.getByRole('button', { name: 'About' }))
 
     expect(screen.getByText(/uses FFmpeg under LGPL v2\.1 or later/i)).toBeVisible()
     fireEvent.click(

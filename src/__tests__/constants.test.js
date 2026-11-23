@@ -1,5 +1,14 @@
+import { readFileSync } from 'node:fs'
 import { describe, it, expect } from 'vitest'
-import { MODES, FORMATS_OUT, CH_COLORS, FORMAT_ROWS, STANDARD_EXTS, effectiveOutputRate } from '../constants'
+import {
+  MODES,
+  FORMATS_OUT,
+  CH_COLORS,
+  FORMAT_ROWS,
+  STANDARD_EXTS,
+  KEEP_STEREO_ONLY_FORMATS,
+  effectiveOutputRate,
+} from '../constants'
 
 describe('MODES', () => {
   it('has three modes with required fields', () => {
@@ -87,8 +96,16 @@ describe('FORMAT_ROWS intake rows', () => {
 
   it('keeps every closed format in the export-first group', () => {
     const closed = FORMAT_ROWS.filter(r => r.status === 'unsupported')
-    expect(closed.map(r => r.ext)).toEqual(['.aes', '.dcr', '.ds2', '.arf  .wrf', '.msv  .dvf'])
+    expect(closed.map(r => r.ext)).toEqual(['.aes', '.ds2', '.arf  .wrf', '.msv  .dvf'])
     expect(closed.every(r => r.group === 'export')).toBe(true)
+  })
+
+  it('lists Liberty / BIS Digital .dcr as an experimental court format tested with synthetic files only', () => {
+    const row = FORMAT_ROWS.find(r => r.ext === '.dcr')
+    expect(row).toMatchObject({ vendor: 'Liberty / BIS Digital', status: 'experimental', group: 'court' })
+    expect(row.note).toBe(
+      'Applies marked redactions; password-protected parts are silent; tested with synthetic files only',
+    )
   })
 })
 
@@ -102,5 +119,15 @@ describe('STANDARD_EXTS', () => {
   it('does not include court formats', () => {
     expect(STANDARD_EXTS.has('sgmca')).toBe(false)
     expect(STANDARD_EXTS.has('trm')).toBe(false)
+  })
+})
+
+describe('KEEP_STEREO_ONLY_FORMATS', () => {
+  it('matches the formats the backend refuses for Keep Original above two channels', () => {
+    const rust = readFileSync('src-tauri/src/conversion.rs', 'utf8')
+    const match = rust.match(/const KEEP_STEREO_ONLY_FORMATS: \[&str; \d+\] = \[([^\]]*)\];/)
+    expect(match).not.toBeNull()
+    const backend = match[1].split(',').map(entry => entry.trim().replace(/"/g, ''))
+    expect(KEEP_STEREO_ONLY_FORMATS).toEqual(backend)
   })
 })

@@ -386,6 +386,23 @@ jobs:
             if ($decoders -notmatch "\s$decoder\s") { throw "Bundled FFmpeg lacks decoder $decoder" }
           }
 
+      # Liberty / BIS DCR audio (crate::dcr) needs these decoders and the
+      # amerge filter. The macOS build script gates the same list. Presence
+      # only: no DCR is converted with the bundled FFmpeg here.
+      - name: Check DCR decoders and channel merge (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ffmpeg = 'src-tauri/binaries/ffmpeg-x86_64-pc-windows-msvc.exe'
+          $decoders = (& $ffmpeg -hide_banner -decoders) -join "`n"
+          if ($LASTEXITCODE -ne 0) { throw 'Bundled FFmpeg could not list its decoders' }
+          $filters = (& $ffmpeg -hide_banner -filters) -join "`n"
+          if ($LASTEXITCODE -ne 0) { throw 'Bundled FFmpeg could not list its filters' }
+          foreach ($decoder in @('pcm_alaw', 'pcm_mulaw', 'pcm_u8', 'pcm_s24le', 'pcm_s32le', 'adpcm_ima_wav', 'gsm_ms', 'mp3float')) {
+            if ($decoders -notmatch "\s$decoder\s") { throw "Bundled FFmpeg lacks decoder $decoder (DCR)" }
+          }
+          if ($filters -notmatch '\samerge\s') { throw 'Bundled FFmpeg lacks the amerge filter (DCR)' }
+
       - name: Generate synthetic FTR decode fixture (macOS)
         if: runner.os == 'macOS'
         run: >-
@@ -427,6 +444,21 @@ jobs:
               test -s "$output" || { echo "ERROR: $arch produced no $extension output"; exit 1; }
               rm -f -- "$output"
             done
+            # Trim silence and Mix to Stereo's peak limiter need these exact
+            # options (peak detection with no window, lookahead compensation),
+            # or the audio is cut or shifted. An FFmpeg without them fails here.
+            "$ffmpeg" -hide_banner -v error -xerror \
+              -c:a ftr -t 1 -i "$fixture_path" -map 0:a:0 \
+              -af 'silenceremove=start_periods=1:start_threshold=-50dB:start_mode=any:detection=peak:window=0,alimiter=limit=0.97:level=false:latency=1' \
+              -f null - || { echo "ERROR: $arch lacks the alignment-safe filter options"; exit 1; }
+            # Fade places its fade-out from this decoded-length pass; it must
+            # report a sample count, or every faded conversion stops.
+            length_log=$("$ffmpeg" -hide_banner -nostats -v info -xerror \
+              -c:a ftr -t 1 -i "$fixture_path" -map 0:a:0 -vn -sn \
+              -af 'aresample=48000,astats=metadata=0:reset=0:measure_perchannel=none:measure_overall=Number_of_samples' \
+              -f null - 2>&1) || { echo "ERROR: $arch cannot run the decoded-length pass for Fade"; exit 1; }
+            grep -Eq 'Number of samples: [1-9]' <<<"$length_log" \
+              || { echo "ERROR: $arch cannot measure the decoded length for Fade"; exit 1; }
           done
 
       - name: Smoke-test native FTR decoding and released encoders (Windows)
@@ -458,6 +490,21 @@ jobs:
               throw "Bundled FFmpeg failed $($variant.Extension) encoder smoke test"
             }
             Remove-Item -LiteralPath $output -Force
+          }
+          # Trim silence and Mix to Stereo's peak limiter need these exact
+          # options (peak detection with no window, lookahead compensation),
+          # or the audio is cut or shifted. An FFmpeg without them fails here.
+          & $ffmpeg -hide_banner -v error -xerror -c:a ftr -t 1 -i $fixturePath -map 0:a:0 `
+            -af 'silenceremove=start_periods=1:start_threshold=-50dB:start_mode=any:detection=peak:window=0,alimiter=limit=0.97:level=false:latency=1' `
+            -f null NUL
+          if ($LASTEXITCODE -ne 0) { throw "Bundled FFmpeg lacks the alignment-safe filter options" }
+          # Fade places its fade-out from this decoded-length pass; it must
+          # report a sample count, or every faded conversion stops.
+          $lengthLog = & $ffmpeg -hide_banner -nostats -v info -xerror -c:a ftr -t 1 -i $fixturePath -map 0:a:0 -vn -sn `
+            -af 'aresample=48000,astats=metadata=0:reset=0:measure_perchannel=none:measure_overall=Number_of_samples' `
+            -f null NUL 2>&1 | Out-String
+          if ($LASTEXITCODE -ne 0 -or $lengthLog -notmatch 'Number of samples: [1-9]') {
+            throw "Bundled FFmpeg cannot measure the decoded length for Fade"
           }
 
       - name: Remove synthetic FTR fixture from the release workspace

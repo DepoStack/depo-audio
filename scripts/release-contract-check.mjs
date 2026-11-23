@@ -38,6 +38,8 @@ const javascriptNoticeHtml = read('src-tauri/resources/third-party/javascript/TH
 const ftrSmokeFixture = read('scripts/ftr-smoke-fixture.mjs')
 const containerSmokeFixtures = read('scripts/container-smoke-fixtures.mjs')
 const helpersSource = read('src-tauri/src/helpers.rs')
+const conversionSource = read('src-tauri/src/conversion.rs')
+const ffmpegSource = read('src-tauri/src/ffmpeg.rs')
 const webviewEvidence = read('scripts/windows-webview2-evidence.ps1')
 const macFfmpegBuild = read('scripts/build-ffmpeg-macos.sh')
 const macPackagedSmoke = read('scripts/macos-packaged-smoke.sh')
@@ -912,6 +914,14 @@ expect(
   'macOS and Windows sidecars must have the DigitalCAT .dm decoders, and the release smoke must decode synthetic .dm fixtures and the WAVs dm.rs wrote for the committed ones',
 )
 expect(
+  macFfmpegBuild.includes('pcm_alaw pcm_mulaw pcm_u8 pcm_s24le pcm_s32le adpcm_ima_wav gsm_ms mp3float') &&
+    macFfmpegBuild.includes('ebur128 amerge') &&
+    releaseWorkflow.includes('Check DCR decoders and channel merge (Windows)') &&
+    releaseWorkflow.includes("'adpcm_ima_wav', 'gsm_ms', 'mp3float'") &&
+    releaseWorkflow.includes('Bundled FFmpeg lacks the amerge filter (DCR)'),
+  'both bundled FFmpeg builds must keep the decoders and the amerge filter the DCR reader needs',
+)
+expect(
   releaseWorkflow.includes('scripts/windows-webview2-evidence.ps1') &&
     releaseWorkflow.includes('WEBVIEW2-EVIDENCE-windows.json') &&
     releaseWorkflow.includes('WEBVIEW2-SIGNATURE-windows.txt') &&
@@ -1198,6 +1208,29 @@ if (otherOpenGateBlockers.length > 0) {
 expect(
   changelogGateIsOpen === (!changelogIsDated || otherOpenGateBlockers.length > 0),
   'the changelog blocker may close only after the release heading is dated and every other blocker is closed',
+)
+
+// Both release smoke tests run the app's own trim and stereo limiter strings
+// on the bundled FFmpeg, so an FFmpeg without `detection`/`window` or the
+// limiter's `latency` option cannot ship and cut or shift audio.
+const stereoLimiter = conversionSource.match(/const STEREO_PEAK_LIMITER: &str = "([^"]+)";/)?.[1]
+const trimFilter = ffmpegSource.match(/"(silenceremove=[^"]+)"/)?.[1]?.replace('{}dB', '-50dB')
+expect(
+  stereoLimiter?.includes('latency=1') && trimFilter?.includes('detection=peak:window=0'),
+  'conversion.rs STEREO_PEAK_LIMITER must use latency=1 and ffmpeg.rs trim must use detection=peak:window=0',
+)
+expect(
+  stereoLimiter &&
+    trimFilter &&
+    releaseWorkflow.split(`-af '${trimFilter},${stereoLimiter}'`).length === 3,
+  'release.yml must smoke-test the exact trim and stereo limiter filters on the macOS and Windows FFmpeg',
+)
+// Fade's fade-out is placed from a decoded-length pass; both smoke tests run
+// its exact filter so an FFmpeg without astats cannot ship.
+const decodedLengthFilter = ffmpegSource.match(/const DECODED_LENGTH_FILTER: &str =\s*"([^"]+)";/)?.[1]
+expect(
+  decodedLengthFilter && releaseWorkflow.split(`-af '${decodedLengthFilter}'`).length === 3,
+  'release.yml must smoke-test the exact decoded-length filter (ffmpeg.rs DECODED_LENGTH_FILTER) on the macOS and Windows FFmpeg',
 )
 
 if (failures.length > 0) {
