@@ -686,30 +686,29 @@ pub(crate) fn build_manifest(input: &ManifestInput<'_>, facts: OutputFacts<'_>) 
 }
 
 /// What the export record says when DepoAudio's split of an FTR recording
-/// left audio out mid-recording without filling the gap with silence, so
-/// that everything after it plays earlier than its time from the start.
-/// None when nothing was left out before the last round delivered.
+/// filled missing rounds with silence, or skipped unreadable data whose
+/// length is not known. None when neither happened.
 pub(crate) fn trm_timeline_note(info: &crate::trm::TrmInfo) -> Option<String> {
     let unknown = info.walk_gap_bytes > 0 || info.mid_stream_skipped_bytes > 0;
-    if info.dropped_rounds == 0 && !unknown {
+    if info.silence_filled_gaps == 0 && !unknown {
         return None;
     }
     let mut note = String::new();
-    if info.dropped_rounds > 0 {
-        let period = match info.timeline_shift_secs {
-            Some(secs) => format!(" ({secs:.3} s)"),
-            None => String::new(),
+    if info.silence_filled_gaps > 0 {
+        let length = match info.sample_rate.filter(|rate| *rate > 0) {
+            Some(rate) => format!("{:.3} s in all", info.silence_filled_samples as f64 / f64::from(rate)),
+            None => format!("{} samples in all", info.silence_filled_samples),
         };
         note.push_str(&format!(
-            "DepoAudio dropped {} incomplete round(s) of FTR audio frames mid-recording{period} and did not fill them with silence, so audio after each one plays earlier than its time from the start by at least that much.",
-            info.dropped_rounds
+            "DepoAudio filled {} damaged section(s) of this FTR recording with silence in every channel ({length}), one round of 1024 samples for each round the frames there show to be missing, so audio after them keeps its time from the start as far as the frames show (frames missing in a run as long as a whole round leave no trace, and DepoAudio cannot count them); source.trm.silenceFilled says where.",
+            info.silence_filled_gaps
         ));
     }
     if unknown {
         if !note.is_empty() {
             note.push(' ');
         }
-        note.push_str("Unreadable data was skipped mid-recording; the audio it held is missing and its length is not known, so audio after it plays earlier than its time from the start by an unrecorded amount.");
+        note.push_str("Unreadable data was skipped mid-recording; the audio it held is missing and its length is not known, so audio after it may play earlier than its time from the start by an unrecorded amount (DepoAudio filled only the rounds the frames around it show to be missing).");
     }
     Some(note)
 }
@@ -1305,7 +1304,14 @@ pub(crate) mod tests {
                 incomplete_final_round: true,
                 dropped_frames: 1,
                 dropped_rounds: 1,
-                timeline_shift_secs: Some(0.064),
+                silence_filled: vec![crate::trm::SilenceFill {
+                    at_sample: 3072,
+                    samples: 1024,
+                    channels: 4,
+                    reason: crate::trm::FillReason::UnreadableData,
+                }],
+                silence_filled_gaps: 1,
+                silence_filled_samples: 1024,
                 walk_gaps: 1,
                 walk_gap_bytes: 12,
                 index_mismatch: true,
@@ -1329,20 +1335,22 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn a_split_that_left_audio_out_says_the_timeline_moved() {
+    fn a_split_that_filled_or_skipped_audio_says_so() {
         let mut info = sample_trm_route(None, &[]).info;
         let note = trm_timeline_note(&info).unwrap();
         assert!(
-            note.contains("dropped 1 incomplete round(s)") && note.contains("(0.064 s)"),
+            note.contains("filled 1 damaged section(s)") && note.contains("(0.064 s in all)"),
             "{note}"
         );
+        assert!(note.contains("keeps its time from the start"), "{note}");
         assert!(note.contains("by an unrecorded amount"), "{note}");
         info.walk_gap_bytes = 0;
         info.mid_stream_skipped_bytes = 0;
         let note = trm_timeline_note(&info).unwrap();
         assert!(!note.contains("unrecorded"), "{note}");
-        info.dropped_rounds = 0;
-        info.timeline_shift_secs = None;
+        info.silence_filled.clear();
+        info.silence_filled_gaps = 0;
+        info.silence_filled_samples = 0;
         assert_eq!(trm_timeline_note(&info), None);
         // A missing pad byte (a gap of 0 bytes) loses nothing.
         info.walk_gaps = 2;

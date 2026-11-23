@@ -125,6 +125,15 @@ export const TRM_END_BOUNDARY_MISSING =
 
 const TRM_PLAIN_CODECS = { mp2: 'MPEG audio layer 2', mp3: 'MP3', wma: 'Windows Media Audio' }
 
+// Places where DepoAudio's split put silence in every channel for rounds of
+// frames missing mid-recording (`silenceFilledGaps`), so later audio keeps
+// its time; the export record lists where (`source.trm.silenceFilled`).
+export function trmSilenceFilledNotice(gaps) {
+  const count = Number(gaps)
+  if (!Number.isInteger(count) || count < 1) return ''
+  return `${count} damaged ${count === 1 ? 'section was' : 'sections were'} filled with silence to keep the timing; see the export record.`
+}
+
 export function trmRecordingNotice(info) {
   if (info?.trmRefusal) return String(info.trmRefusal)
   const trm = info?.trm
@@ -134,6 +143,8 @@ export function trmRecordingNotice(info) {
   const plain = TRM_PLAIN_CODECS[trm.audioCodec]
   if (plain) parts.push(`This FTR recording holds ${plain} audio, which FFmpeg reads as ordinary audio.`)
   if (trm.signature) parts.push(TRM_SIGNED_NOTICE)
+  const filled = trmSilenceFilledNotice(trm.silenceFilledGaps)
+  if (filled) parts.push(filled)
   return parts.join(' ')
 }
 

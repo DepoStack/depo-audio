@@ -77,8 +77,24 @@
             "trailingSkippedBytes": { "type": "integer", "minimum": 0, "description": "Non-zero bytes after the last frame delivered that are not a frame. Written by versions after 1.1.0 that check it." },
             "incompleteFinalRound": { "type": "boolean", "description": "The last round was missing channels and was not delivered." },
             "droppedFrames": { "type": "integer", "minimum": 0, "description": "Frames read but not delivered: their round was incomplete, or they were out of channel order." },
-            "droppedRounds": { "type": "integer", "minimum": 0, "description": "Incomplete rounds of frames dropped before the last round delivered. They are not filled with silence, so each moves all later audio one round (1024 samples) earlier than its time from the start; startTime.note says so. Written by versions after 1.1.0 that check it." },
-            "timelineShiftSecs": { "type": ["number", "null"], "minimum": 0, "description": "droppedRounds x 1024 / sampleRate: the least that the audio at the end is earlier than its time from the start. Null when no round was dropped. Written by versions after 1.1.0 that check it." },
+            "droppedRounds": { "type": "integer", "minimum": 0, "description": "Incomplete rounds of frames dropped mid-recording (their frames were not delivered). The rounds the frames show to be missing are filled with silence (silenceFilled). Written by versions after 1.1.0 that check it." },
+            "silenceFilled": {
+              "type": "array",
+              "description": "Where DepoAudio put silence in every channel in place of rounds of frames missing mid-recording, so that later audio keeps its time from the start, in order. When the channel order breaks, the fill is the fewest whole rounds (1024 samples each) that hold the frames seen between two channel-0 frames, less the round delivered: that is right when frames went missing and none were added. Frames missing in a run as long as a whole round (one per stream) leave frames that still look like whole rounds, so such a loss leaves no trace and is not filled; a repeated frame looks like a lost one and is filled. The silence is an AAC frame with an empty spectrum, so the decoder still fades the frame before it out across the stretch, and the frame after it fades in. Nothing is put in after the last round delivered. At most 1000 places are listed; silenceFilledGaps counts them all. Written by versions after 1.1.0 that fill.",
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["atSample", "samples", "channels", "reason"],
+                "properties": {
+                  "atSample": { "type": "integer", "minimum": 0, "description": "Where the silence starts, in samples from the first frame delivered, at sampleRate (silence put in earlier counts)." },
+                  "samples": { "type": "integer", "minimum": 1024, "description": "Samples of silence each channel got: whole rounds of 1024." },
+                  "channels": { "type": "integer", "minimum": 1, "maximum": 16, "description": "Channels that got it: every channel of the recording." },
+                  "reason": { "enum": ["missing-frames", "unreadable-data"], "description": "missing-frames: the channel order broke there, so frames are missing. unreadable-data: unreadable data was skipped there too; how much audio it held is not known, so later audio may still be earlier than its time from the start (startTime.note says so)." }
+                }
+              }
+            },
+            "silenceFilledGaps": { "type": "integer", "minimum": 0, "description": "Places filled with silence, listed in silenceFilled or not. Written by versions after 1.1.0 that fill." },
+            "silenceFilledSamples": { "type": "integer", "minimum": 0, "description": "Samples of silence put in each channel, in all; durationSecs counts them. Written by versions after 1.1.0 that fill." },
             "walkGaps": { "type": "integer", "minimum": 0, "description": "Places where the walk of the movi list met data that is not a chunk (an unreadable chunk header, a zero gap, a chunk size past the end) and looked ahead for the next audio chunk. Written by versions after 1.1.0 that check it." },
             "walkGapBytes": { "type": "integer", "minimum": 0, "description": "Bytes the walk skipped at those places (0 for a chunk written without its pad byte). The audio they held is missing and its length is not known. Written by versions after 1.1.0 that check it." },
             "indexMismatch": { "type": "boolean", "description": "idx1 does not list every audio chunk: movi holds audio chunks after the last one listed, or the number listed is not the header's chunk count (headerChunkCount, ftra.d). The chunks were then found by walking movi when that found more. Written by versions after 1.1.0 that check it." },
@@ -104,12 +120,12 @@
               }
             },
             "videoStreams": { "type": "integer", "minimum": 0, "description": "Video stream headers in the file; video is never converted." },
-            "durationSecs": { "type": ["number", "null"], "minimum": 0, "description": "Frames per channel x 1024 samples / sample rate; null when no frame was found or the file has continuation segments." },
+            "durationSecs": { "type": ["number", "null"], "minimum": 0, "description": "(Frames per channel + rounds filled with silence) x 1024 samples / sample rate; null when no frame was found or the file has continuation segments." },
             "decodePath": { "enum": ["native-ftr", "deinterleaved", "ffmpeg-plain"], "description": "native-ftr: FFmpeg's ftr decoder read the file as it is. deinterleaved: DepoAudio wrote each stream to a temporary ADTS file (mono, or stereo for stereo streams; descrambled, equal frame counts) and FFmpeg joined them in channel order with amerge. ffmpeg-plain: MP2, MP3 or WMA audio, read by FFmpeg as it is with the decoder it picks." },
             "routeReasons": {
               "type": "array",
               "description": "Why the native decoder was not used; empty for native-ftr.",
-              "items": { "enum": ["not-ftr-aac", "frame-channels-differ-from-header", "no-usable-index", "index-misses-audio-chunks", "open-ended", "truncated", "frames-cross-chunks", "chunks-not-on-round-boundaries", "several-rounds-per-chunk", "data-before-channel-0", "channel-order-resynced", "unreadable-data", "zero-padding", "incomplete-rounds", "frame-length-high-bits", "native-decoder-unavailable", "native-decode-failed"] }
+              "items": { "enum": ["not-ftr-aac", "frame-channels-differ-from-header", "silence-filled", "no-usable-index", "index-misses-audio-chunks", "open-ended", "truncated", "frames-cross-chunks", "chunks-not-on-round-boundaries", "several-rounds-per-chunk", "data-before-channel-0", "channel-order-resynced", "unreadable-data", "zero-padding", "incomplete-rounds", "frame-length-high-bits", "native-decoder-unavailable", "native-decode-failed"] }
             },
             "inputOptions": { "type": "array", "items": { "type": "string" }, "description": "The options FFmpeg was given before each -i: [\"-c:a\", \"ftr\"] before the recording itself (native-ftr), [\"-f\", \"aac\"] before each temporary channel file (deinterleaved), or none (ffmpeg-plain). Written by versions after 1.1.0 that record it." },
             "inputCount": { "type": "integer", "minimum": 1, "maximum": 16, "description": "How many -i inputs FFmpeg read: 1 for native-ftr and ffmpeg-plain, or one temporary file per stream for deinterleaved, which filterChain joins in channel order with amerge before anything else. The temporary files are deleted afterwards. Written by versions after 1.1.0 that record it." }

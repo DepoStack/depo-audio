@@ -49,7 +49,10 @@
 //! must open with a stream-0 frame and, once the file has shown that it
 //! marks the other streams, continue with frames that are not. When that
 //! breaks (a lost or extra frame), the partial round is dropped, dealing
-//! restarts at the next stream-0 frame, and the restart is counted.
+//! restarts at the next stream-0 frame, and the restart is counted. The
+//! rounds the frames show to be missing there are put back as silence in
+//! every stream (an AAC frame with an empty spectrum), so that later audio
+//! keeps its time from the start, and each place is recorded.
 //!
 //! Reading streams through the file in fixed-size pieces: memory stays
 //! bounded by one piece, one partial frame and one round of frames, whatever
@@ -218,6 +221,41 @@ pub(crate) enum StartBasis {
     FileName,
 }
 
+/// Why a stretch was filled with silence.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub(crate) enum FillReason {
+    /// The channel order broke: one or more frames of the round(s) are
+    /// missing. The length filled is the fewest whole rounds the frames
+    /// around the gap fit in (assuming frames went missing, none were
+    /// added): a further run of missing frames as long as a whole round
+    /// leaves no trace and is not counted.
+    #[serde(rename = "missing-frames")]
+    MissingFrames,
+    /// As `missing-frames`, but unreadable data was skipped there too (bytes
+    /// that are not a frame, or a damaged stretch of `movi`). How much audio
+    /// that data held is not known: the fill is the least the frames show,
+    /// and later audio may still be earlier than its time from the start.
+    #[serde(rename = "unreadable-data")]
+    UnreadableData,
+}
+
+/// One stretch of silence put in every channel in place of missing rounds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct SilenceFill {
+    /// Where the silence starts, in samples from the first frame delivered,
+    /// at the recording's sample rate (`sampleRate`).
+    pub at_sample: u64,
+    /// How many samples of silence each channel got (whole rounds of 1024).
+    pub samples: u64,
+    /// How many channels got it: every channel of the recording.
+    pub channels: u16,
+    pub reason: FillReason,
+}
+
+/// The most silence fills the export record lists one by one.
+pub(crate) const MAX_LISTED_FILLS: usize = 1000;
+
 /// What one full read of a `.trm` found. Counts are of what was read, not of
 /// what the header claims. Private text (`USER`, `UDAT`) is never held here:
 /// only whether it is present.
@@ -309,13 +347,19 @@ pub(crate) struct TrmInfo {
     /// Frames read but not delivered (incomplete rounds, or frames out of
     /// stream order).
     pub dropped_frames: u64,
-    /// Partial rounds discarded before the last one delivered. They are not
-    /// filled with silence, so each moves all later audio one round (1024
-    /// samples) earlier than its time from the start.
+    /// Partial rounds discarded mid-recording (their frames were not
+    /// delivered). The rounds the frames show to be missing are filled with
+    /// silence (`silence_filled`).
     pub dropped_rounds: u64,
-    /// `dropped_rounds` as seconds at the sample rate: the least that later
-    /// audio is earlier than its time from the start. None without a rate.
-    pub timeline_shift_secs: Option<f64>,
+    /// The places where DepoAudio put silence in every channel in place of
+    /// rounds the frames show to be missing, so that later audio keeps its
+    /// time from the start. At most [`MAX_LISTED_FILLS`] are listed;
+    /// `silence_filled_gaps` counts them all.
+    pub silence_filled: Vec<SilenceFill>,
+    /// Places filled with silence (listed or not).
+    pub silence_filled_gaps: u64,
+    /// Samples of silence put in each channel, in all.
+    pub silence_filled_samples: u64,
     /// Damaged stretches of `movi` (an unreadable chunk header, a zero gap,
     /// a chunk size past the end) that the walk skipped to reach the next
     /// audio chunk, and the bytes skipped. The audio they held is lost and
@@ -345,7 +389,8 @@ pub(crate) struct TrmInfo {
     pub grew_while_read: bool,
     pub ftra: Option<FtraInfo>,
     pub video_streams: u32,
-    /// Delivered frames per stream × 1024 samples ÷ sample rate.
+    /// (Delivered frames per stream + rounds filled with silence) × 1024
+    /// samples ÷ sample rate.
     pub duration_secs: Option<f64>,
     /// The file length this read covered; a later stream split reads no
     /// further. Not part of the export record.
@@ -412,6 +457,9 @@ impl TrmInfo {
         }
         if self.frame_channel_mismatches > 0 {
             reasons.push("frame-channels-differ-from-header");
+        }
+        if self.silence_filled_gaps > 0 {
+            reasons.push("silence-filled");
         }
         reasons
     }
@@ -1033,9 +1081,54 @@ fn adts_channel_config(header: &[u8]) -> u8 {
     ((header[2] & 0x01) << 2) | (header[3] >> 6)
 }
 
+/// The raw data block of an AAC-LC frame with no spectral data: one
+/// single-channel element (global gain 0, one long window, no scale factor
+/// bands, no pulse, TNS or gain control data) then the end element.
+const SILENT_MONO_BLOCK: [u8; 4] = [0x00, 0x00, 0x00, 0x07];
+/// The same for a channel pair element (no common window, both channels
+/// empty), padded to a whole byte.
+const SILENT_STEREO_BLOCK: [u8; 7] = [0x20, 0x00, 0x00, 0x00, 0x00, 0x00, 0x0E];
+
+/// An ADTS frame of 1024 samples of silence per channel, with the profile,
+/// sample rate, channel configuration and private bit of `template` (a
+/// frame of the same stream), no CRC and the 13-bit length set. Its spectrum
+/// is empty, so it adds nothing to what the decoder outputs: the frame
+/// before it still fades out across the filled stretch as the decoder
+/// overlaps frames, and the frame after it fades in, as at any start.
+fn silent_frame(template: &[u8]) -> Vec<u8> {
+    let block: &[u8] = if adts_channel_config(template) == 2 {
+        &SILENT_STEREO_BLOCK
+    } else {
+        &SILENT_MONO_BLOCK
+    };
+    let length = ADTS_HEADER_BYTES + block.len();
+    let mut frame = template[..ADTS_HEADER_BYTES].to_vec();
+    frame[1] |= 0x01;
+    frame[3] = (frame[3] & 0xC0) | ((length >> 11) & 0x03) as u8;
+    frame[4] = ((length >> 3) & 0xFF) as u8;
+    frame[5] = (((length & 0x07) << 5) as u8) | 0x1F;
+    frame[6] = 0xFC;
+    frame.extend_from_slice(block);
+    frame
+}
+
 /// Deals frames from the joined chunk payloads to streams in rounds.
 struct Dealer<'a> {
     channels: usize,
+    /// Microphone channels (`nChannels`), for the fill records.
+    microphones: u16,
+    /// Frames of streams other than 0 seen (delivered or not) since the
+    /// last stream-0 frame that opened a round.
+    others_since_zero: u64,
+    /// The round that frame opened was delivered.
+    zero_round_delivered: bool,
+    /// Unreadable data was skipped since that frame.
+    unreadable_since_zero: bool,
+    /// Rounds of silence owed before the next round delivered, and whether
+    /// unreadable data was skipped where they are missing. Owed rounds are
+    /// put in only when a round follows them, never at the end.
+    pending_fill: u64,
+    pending_fill_unreadable: bool,
     /// The ADTS channel configuration each frame should carry.
     expected_config: u8,
     buffer: Vec<u8>,
@@ -1084,9 +1177,13 @@ struct DealStats {
     padding: u64,
     trailing_skipped: u64,
     dropped: u64,
-    /// Partial rounds discarded before the end: each is at least one
-    /// 1024-sample period missing on every stream.
+    /// Partial rounds discarded mid-recording (their frames not delivered).
     lost_rounds: u64,
+    /// Rounds of silence put in, the places they went and the first
+    /// [`MAX_LISTED_FILLS`] of those places.
+    filled_rounds: u64,
+    fill_gaps: u64,
+    fills: Vec<SilenceFill>,
     /// Gaps in the `movi` walk that were skipped to the next audio chunk.
     walk_gaps: u64,
     walk_gap_bytes: u64,
@@ -1101,6 +1198,12 @@ impl<'a> Dealer<'a> {
         let channels = usize::from(layout.streams);
         Self {
             channels,
+            microphones: layout.channels,
+            others_since_zero: 0,
+            zero_round_delivered: false,
+            unreadable_since_zero: false,
+            pending_fill: 0,
+            pending_fill_unreadable: false,
             expected_config: layout.channels_per_stream as u8,
             buffer: Vec::with_capacity(READ_PIECE_BYTES + 4096),
             synced: false,
@@ -1163,8 +1266,8 @@ impl<'a> Dealer<'a> {
         self.process()
     }
 
-    /// Discard a partial round mid-recording: its period is missing from
-    /// every stream, so later audio moves earlier by one round.
+    /// Discard a partial round mid-recording. Its period is owed as silence
+    /// when the next round opens (see [`Self::owe_missing_rounds`]).
     fn drop_round(&mut self) {
         if !self.round_ends.is_empty() {
             self.stats.lost_rounds += 1;
@@ -1187,6 +1290,9 @@ impl<'a> Dealer<'a> {
     fn gap(&mut self, bytes: u64) {
         self.stats.walk_gaps += 1;
         self.stats.walk_gap_bytes += bytes;
+        if self.synced && bytes > 0 {
+            self.unreadable_since_zero = true;
+        }
         for byte in std::mem::take(&mut self.buffer) {
             self.skip_byte(byte);
         }
@@ -1214,6 +1320,7 @@ impl<'a> Dealer<'a> {
             self.stats.padding += self.pending_skip;
         } else {
             self.stats.mid_stream_skipped += self.pending_skip;
+            self.unreadable_since_zero = true;
         }
         self.pending_skip = 0;
         self.pending_nonzero = false;
@@ -1269,11 +1376,22 @@ impl<'a> Dealer<'a> {
                 } else {
                     // Another channel's frame where channel 0's was due.
                     self.stats.dropped += 1;
+                    self.others_since_zero += 1;
                     index += length;
                     continue;
                 }
             }
             self.settle_pending();
+            if channel_zero && self.round_ends.is_empty() {
+                if self.synced {
+                    self.owe_missing_rounds();
+                }
+                self.others_since_zero = 0;
+                self.zero_round_delivered = false;
+                self.unreadable_since_zero = false;
+            } else if !channel_zero {
+                self.others_since_zero += 1;
+            }
             self.synced = true;
             if !round_start && !channel_zero {
                 self.marks_others = true;
@@ -1310,7 +1428,65 @@ impl<'a> Dealer<'a> {
         Ok(())
     }
 
+    /// A stream-0 frame opens a round: how many rounds lie between it and
+    /// the one before, from the frames seen in between (the fewest whole
+    /// rounds that hold them, as when frames go missing and none are
+    /// added), less the one delivered, are owed as silence. Frames missing
+    /// in a run as long as a whole round (one per stream) leave frames that
+    /// still look like whole rounds, so such a loss cannot be counted.
+    fn owe_missing_rounds(&mut self) {
+        let per_round = (self.channels as u64).saturating_sub(1);
+        let spanned = if per_round == 0 {
+            1
+        } else {
+            self.others_since_zero.div_ceil(per_round).max(1)
+        };
+        let missing = spanned - u64::from(self.zero_round_delivered);
+        if missing > 0 {
+            self.pending_fill += missing;
+            self.pending_fill_unreadable |= self.unreadable_since_zero;
+        }
+    }
+
+    /// Put the owed rounds of silence in every stream, from frames of the
+    /// round about to be delivered, and record where they went.
+    fn emit_fill(&mut self) -> Result<(), String> {
+        let rounds = std::mem::take(&mut self.pending_fill);
+        let unreadable = std::mem::take(&mut self.pending_fill_unreadable);
+        if rounds == 0 {
+            return Ok(());
+        }
+        if let Some(sink) = self.sink.as_mut() {
+            let mut start = 0usize;
+            for (channel, &end) in self.round_ends.iter().enumerate() {
+                let silence = silent_frame(&self.round[start..end]);
+                for _ in 0..rounds {
+                    sink(channel, &silence)?;
+                }
+                start = end;
+            }
+        }
+        let at_sample = (self.stats.rounds + self.stats.filled_rounds) * SAMPLES_PER_FRAME;
+        self.stats.filled_rounds += rounds;
+        self.stats.fill_gaps += 1;
+        if self.stats.fills.len() < MAX_LISTED_FILLS {
+            self.stats.fills.push(SilenceFill {
+                at_sample,
+                samples: rounds * SAMPLES_PER_FRAME,
+                channels: self.microphones,
+                reason: if unreadable {
+                    FillReason::UnreadableData
+                } else {
+                    FillReason::MissingFrames
+                },
+            });
+        }
+        Ok(())
+    }
+
     fn emit_round(&mut self) -> Result<(), String> {
+        self.emit_fill()?;
+        self.zero_round_delivered = true;
         if let Some(sink) = self.sink.as_mut() {
             let mut start = 0usize;
             for (channel, &end) in self.round_ends.iter().enumerate() {
@@ -1728,7 +1904,7 @@ fn build_info(
     let streams = u64::from(layout.streams);
     let duration_secs = sample_rate
         .filter(|rate| *rate > 0 && layout.continuation_segments == 0)
-        .map(|rate| (stats.rounds * SAMPLES_PER_FRAME) as f64 / f64::from(rate));
+        .map(|rate| ((stats.rounds + stats.filled_rounds) * SAMPLES_PER_FRAME) as f64 / f64::from(rate));
     TrmInfo {
         sample_rate,
         packets: stats.packets,
@@ -1746,9 +1922,9 @@ fn build_info(
         incomplete_final_round: stats.incomplete_final_round,
         dropped_frames: stats.dropped,
         dropped_rounds: stats.lost_rounds,
-        timeline_shift_secs: sample_rate
-            .filter(|rate| *rate > 0 && stats.lost_rounds > 0)
-            .map(|rate| (stats.lost_rounds * SAMPLES_PER_FRAME) as f64 / f64::from(rate)),
+        silence_filled_gaps: stats.fill_gaps,
+        silence_filled_samples: stats.filled_rounds * SAMPLES_PER_FRAME,
+        silence_filled: stats.fills,
         walk_gaps: stats.walk_gaps,
         walk_gap_bytes: stats.walk_gap_bytes,
         length_high_bit_frames: stats.high_bits,
@@ -2816,19 +2992,142 @@ pub(crate) mod tests {
         assert_eq!(info.dropped_frames, 2);
         assert_eq!(info.resync_skipped_bytes, 0);
         assert!(info.native_blockers().contains(&"channel-order-resynced"));
-        // The dropped round is not filled with silence: later audio moves
-        // one 64 ms round earlier, and the export record says so.
+        // The dropped round is filled with one round of silence, so later
+        // audio keeps its time, and the export record says where.
         assert_eq!(info.dropped_rounds, 1);
-        assert_eq!(info.timeline_shift_secs, Some(0.064));
+        assert_eq!(
+            info.silence_filled,
+            vec![SilenceFill {
+                at_sample: 3 * 1024,
+                samples: 1024,
+                channels: 3,
+                reason: FillReason::MissingFrames,
+            }]
+        );
+        assert_eq!((info.silence_filled_gaps, info.silence_filled_samples), (1, 1024));
+        assert_eq!(info.duration_secs, Some(8.0 * 1024.0 / 16_000.0));
+        assert!(info.native_blockers().contains(&"silence-filled"));
         let note = crate::manifest::trm_timeline_note(&info).unwrap();
-        assert!(note.contains("dropped 1 incomplete round(s)"), "{note}");
+        assert!(note.contains("filled 1 damaged section(s)"), "{note}");
+        assert!(!note.contains("unrecorded"), "{note}");
 
+        let (written, files) = deinterleave_trm(&path, &dir.0).unwrap();
+        assert_eq!(written.silence_filled, info.silence_filled);
+        for (channel, file) in files.iter().enumerate() {
+            let mut expected = expected_channel(&channels, channel, 8);
+            expected[3] = silent_frame(&expected[4]);
+            assert_eq!(split_adts(&fs::read(file).unwrap()), expected, "channel {channel}");
+        }
+    }
+
+    #[test]
+    fn fills_say_when_unreadable_data_was_skipped_and_none_go_after_the_last_round() {
+        let dir = TrmTestDir::new();
+        let channels = fake_frames(3, 8);
+        // Garbage where round 3's channel-1 frame should be.
+        let packets = single_frame_packets(&channels, |frames| {
+            frames[3 * 3 + 1] = vec![0x11; 30];
+        });
+        let path = write(&dir.0, "garbage.trm", &build_avi(&AviSpec::closed(3), &packets));
+        let info = inspect_trm(&path).unwrap();
+        assert_eq!(info.frames_per_channel, 7);
+        assert_eq!(
+            info.silence_filled,
+            vec![SilenceFill {
+                at_sample: 3 * 1024,
+                samples: 1024,
+                channels: 3,
+                reason: FillReason::UnreadableData,
+            }]
+        );
+        let note = crate::manifest::trm_timeline_note(&info).unwrap();
+        assert!(
+            note.contains("filled 1 damaged section(s)") && note.contains("unrecorded amount"),
+            "{note}"
+        );
         let (_, files) = deinterleave_trm(&path, &dir.0).unwrap();
         for (channel, file) in files.iter().enumerate() {
             let mut expected = expected_channel(&channels, channel, 8);
-            expected.remove(3);
+            expected[3] = silent_frame(&expected[4]);
             assert_eq!(split_adts(&fs::read(file).unwrap()), expected, "channel {channel}");
         }
+        files.iter().for_each(|file| fs::remove_file(file).unwrap());
+
+        // A round broken in the last round's place, and stray frames after
+        // the last round: nothing follows them, so nothing is filled.
+        for (name, edit) in [
+            (
+                "last",
+                Box::new(|frames: &mut Vec<Vec<u8>>| {
+                    frames.remove(7 * 3 + 1);
+                }) as Box<dyn FnOnce(&mut Vec<Vec<u8>>)>,
+            ),
+            (
+                "stray",
+                Box::new(|frames: &mut Vec<Vec<u8>>| {
+                    frames.remove(7 * 3);
+                }),
+            ),
+        ] {
+            let packets = single_frame_packets(&channels, edit);
+            let info = inspect_trm(&write(&dir.0, "end.trm", &build_avi(&AviSpec::closed(3), &packets))).unwrap();
+            assert_eq!(info.frames_per_channel, 7, "{name}");
+            assert_eq!(
+                (info.silence_filled_gaps, info.silence_filled_samples),
+                (0, 0),
+                "{name}"
+            );
+            assert_eq!(info.duration_secs, Some(7.0 * 1024.0 / 16_000.0), "{name}");
+        }
+
+        // Two broken rounds in a row (each missing its channel-2 frame) are
+        // one place of two rounds.
+        let packets = single_frame_packets(&channels, |frames| {
+            frames.remove(3 * 3 + 2);
+            frames.remove(2 * 3 + 2);
+        });
+        let info = inspect_trm(&write(&dir.0, "two.trm", &build_avi(&AviSpec::closed(3), &packets))).unwrap();
+        assert_eq!(info.frames_per_channel, 6);
+        assert_eq!(
+            (
+                info.silence_filled_gaps,
+                info.silence_filled_samples,
+                info.silence_filled[0].at_sample
+            ),
+            (1, 2048, 2 * 1024)
+        );
+        assert_eq!(info.duration_secs, Some(8.0 * 1024.0 / 16_000.0));
+
+        // A round's worth of frames missing in a row (channels 1 and 2 of
+        // round 2 and channel 0 of round 3) leaves frames that still look
+        // like whole rounds: round 2 is delivered with round 3's frames and
+        // nothing can be counted or filled. The record cannot say so; the
+        // documentation does.
+        let packets = single_frame_packets(&channels, |frames| {
+            frames.drain(2 * 3 + 1..3 * 3 + 1);
+        });
+        let info = inspect_trm(&write(&dir.0, "round.trm", &build_avi(&AviSpec::closed(3), &packets))).unwrap();
+        assert_eq!((info.frames_per_channel, info.silence_filled_gaps), (7, 0));
+    }
+
+    #[test]
+    fn the_record_lists_the_first_thousand_fills_and_counts_them_all() {
+        let dir = TrmTestDir::new();
+        let channels = fake_frames(3, 2101);
+        // Round 2k + 1 loses its channel-1 frame, for k = 0 to 1049.
+        let packets = single_frame_packets(&channels, |frames| {
+            for round in (1..2100).step_by(2).rev() {
+                frames.remove(round * 3 + 1);
+            }
+        });
+        let path = write(&dir.0, "many.trm", &build_avi(&AviSpec::closed(3), &packets));
+        let info = inspect_trm(&path).unwrap();
+        assert_eq!(info.frames_per_channel, 2101 - 1050);
+        assert_eq!(info.silence_filled_gaps, 1050);
+        assert_eq!(info.silence_filled_samples, 1050 * 1024);
+        assert_eq!(info.silence_filled.len(), MAX_LISTED_FILLS);
+        assert_eq!(info.silence_filled[999].at_sample, 1999 * 1024);
+        assert_eq!(info.duration_secs, Some(2101.0 * 1024.0 / 16_000.0));
     }
 
     /// Insert `bytes` at `at` in a built AVI (or delete `delete` bytes there)
@@ -2984,17 +3283,24 @@ pub(crate) mod tests {
             (info.channel_resyncs, info.frames_per_channel, info.dropped_frames),
             (1, 7, 2)
         );
+        // Two other-channel frames with no channel 0 before them: a round
+        // is missing, and it is filled.
+        assert_eq!((info.dropped_rounds, info.silence_filled_gaps), (0, 1));
+        assert_eq!(info.silence_filled[0].at_sample, 2 * 1024);
         let (_, files) = deinterleave_trm(&path, &dir.0).unwrap();
         for (channel, file) in files.iter().enumerate() {
             let mut expected = expected_channel(&channels, channel, 8);
-            expected.remove(2);
+            expected[2] = silent_frame(&expected[3]);
             assert_eq!(split_adts(&fs::read(file).unwrap()), expected, "channel {channel}");
         }
         files.iter().for_each(|file| fs::remove_file(file).unwrap());
 
         // Round 3's channel-1 frame appears twice. Only the private bit marks
         // a channel, so that round's last slot gets the repeat; the frame it
-        // displaced is dropped and dealing restarts at round 4.
+        // displaced is dropped and dealing restarts at round 4. The frames
+        // cannot tell a repeat from a lost channel-0 frame, and DepoAudio
+        // takes frames as lost, never as added: one round of silence goes
+        // in before round 4, and the record says where.
         let packets = single_frame_packets(&channels, |frames| {
             let repeat = frames[3 * 3 + 1].clone();
             frames.insert(3 * 3 + 2, repeat);
@@ -3005,19 +3311,20 @@ pub(crate) mod tests {
             (info.channel_resyncs, info.frames_per_channel, info.dropped_frames),
             (1, 8, 1)
         );
+        assert_eq!(info.silence_filled[0].at_sample, 4 * 1024);
         assert!(info.native_blockers().contains(&"channel-order-resynced"));
         let (_, files) = deinterleave_trm(&path, &dir.0).unwrap();
         for (channel, file) in files.iter().enumerate().take(2) {
-            assert_eq!(
-                split_adts(&fs::read(file).unwrap()),
-                expected_channel(&channels, channel, 8)
-            );
+            let mut expected = expected_channel(&channels, channel, 8);
+            expected.insert(4, silent_frame(&expected[4]));
+            assert_eq!(split_adts(&fs::read(file).unwrap()), expected);
         }
         let last = split_adts(&fs::read(&files[2]).unwrap());
         let expected = expected_channel(&channels, 2, 8);
-        assert_eq!(last.len(), 8);
+        assert_eq!(last.len(), 9);
         assert_eq!(last[..3], expected[..3]);
-        assert_eq!(last[4..], expected[4..]);
+        assert_eq!(last[4], silent_frame(&expected[4]));
+        assert_eq!(last[5..], expected[4..]);
     }
 
     #[test]
@@ -3331,6 +3638,161 @@ pub(crate) mod tests {
             "native ftr and the deinterleaved route differ in {differing} samples"
         );
         assert_eq!(dominant_tones(&merged, 4, TONE_RATE), TONE_FREQUENCIES.to_vec());
+    }
+
+    /// Where each channel's clicks fall in [`click_channels`]: one sample
+    /// at 0.8 every [`CLICK_PERIOD`] samples, from this offset.
+    const CLICK_OFFSETS: [u64; 4] = [1000, 1500, 2000, 2500];
+    const CLICK_PERIOD: u64 = 8192;
+
+    /// Four mono channels of clicks encoded by FFmpeg's AAC encoder, so
+    /// that rounds 4 and 5 of every 8 (and the decoded stretches they
+    /// cover) hold no click.
+    fn click_channels(dir: &Path) -> Vec<Vec<Vec<u8>>> {
+        CLICK_OFFSETS
+            .iter()
+            .enumerate()
+            .map(|(channel, offset)| {
+                let out = dir.join(format!("click_{channel}.aac"));
+                let status = std::process::Command::new("ffmpeg")
+                    .args(["-nostdin", "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i"])
+                    .arg(format!(
+                        "aevalsrc='if(eq(mod(n\\,{CLICK_PERIOD})\\,{offset})\\,0.8\\,0)':s={TONE_RATE}:d=2.6"
+                    ))
+                    .args(["-c:a", "aac", "-b:a", "48k", "-f", "adts", "-y"])
+                    .arg(&out)
+                    .status()
+                    .unwrap();
+                assert!(status.success());
+                let frames = split_adts(&fs::read(&out).unwrap());
+                fs::remove_file(&out).unwrap();
+                frames
+            })
+            .collect()
+    }
+
+    /// Sample indexes in `channel` where the decoded level passes 0.3 and
+    /// is a local peak.
+    fn click_positions(samples: &[f32], channels: usize, channel: usize) -> Vec<usize> {
+        let level: Vec<f32> = samples
+            .chunks_exact(channels)
+            .map(|frame| frame[channel].abs())
+            .collect();
+        (0..level.len())
+            .filter(|&i| {
+                level[i] > 0.3
+                    && (i == 0 || level[i - 1] <= level[i])
+                    && (i + 1 == level.len() || level[i + 1] < level[i])
+            })
+            .collect()
+    }
+
+    #[test]
+    fn missing_frames_are_filled_with_silence_so_later_clicks_keep_their_time() {
+        if !aac_tools_available() {
+            return;
+        }
+        let dir = TrmTestDir::new();
+        let channels = click_channels(&dir.0);
+        let rounds = channels.iter().map(Vec::len).min().unwrap();
+        assert!(rounds >= 36, "{rounds} rounds");
+        let (stream, lengths) = ftr_frame_stream(&channels);
+        let intact_packets = round_packets(&stream, &lengths, 4, 1);
+        let intact_path = write(&dir.0, "intact.trm", &build_avi(&AviSpec::closed(4), &intact_packets));
+        let intact_info = inspect_trm(&intact_path).unwrap();
+        assert_eq!(
+            (intact_info.frames_per_channel, intact_info.silence_filled_gaps),
+            (rounds as u64, 0)
+        );
+        let (_, intact_files) = deinterleave_trm(&intact_path, &dir.0).unwrap();
+        let intact = decode_f32(&merged_decode_args(&intact_files));
+        assert_eq!(intact.len(), rounds * 1024 * 4);
+        intact_files.iter().for_each(|file| fs::remove_file(file).unwrap());
+        // Every channel's clicks land on their true sample (the encoder
+        // delays everything by one frame).
+        for (channel, offset) in CLICK_OFFSETS.iter().enumerate() {
+            let expected: Vec<usize> = (0..)
+                .map(|k| (offset + 1024 + k * CLICK_PERIOD) as usize)
+                .take_while(|at| *at < rounds * 1024 - 1024)
+                .collect();
+            let found = click_positions(&intact, 4, channel);
+            assert_eq!(found[..expected.len()], expected[..], "channel {channel}");
+        }
+
+        // A channel-2 frame missing from round 12 (one frame per chunk); a
+        // round cut after channel 1 at round 20 (one round per chunk); a
+        // channel-0 frame missing from round 28.
+        let missing_frame = single_frame_packets(&channels, |frames| {
+            frames.remove(12 * 4 + 2);
+        });
+        let mut cut_round = intact_packets.clone();
+        cut_round[20].truncate(lengths[20 * 4] + lengths[20 * 4 + 1]);
+        let missing_zero = single_frame_packets(&channels, |frames| {
+            frames.remove(28 * 4);
+        });
+        for (name, packets, gap) in [
+            ("missing_frame", missing_frame, 12usize),
+            ("cut_round", cut_round, 20),
+            ("missing_zero", missing_zero, 28),
+        ] {
+            let path = write(
+                &dir.0,
+                &format!("{name}.trm"),
+                &build_avi(&AviSpec::closed(4), &packets),
+            );
+            let info = inspect_trm(&path).unwrap();
+            assert_eq!(info.frames_per_channel, rounds as u64 - 1, "{name}");
+            assert_eq!(
+                info.silence_filled,
+                vec![SilenceFill {
+                    at_sample: gap as u64 * 1024,
+                    samples: 1024,
+                    channels: 4,
+                    reason: FillReason::MissingFrames,
+                }],
+                "{name}"
+            );
+            assert_eq!(info.duration_secs, intact_info.duration_secs, "{name}");
+            let (_, files) = deinterleave_trm(&path, &dir.0).unwrap();
+            let decoded = decode_f32(&merged_decode_args(&files));
+            files.iter().for_each(|file| fs::remove_file(file).unwrap());
+            // Each channel is as long as the full timeline.
+            assert_eq!(decoded.len(), intact.len(), "{name}");
+            // The filled round decodes to silence in every channel.
+            let gap_samples = &decoded[gap * 1024 * 4..(gap + 1) * 1024 * 4];
+            assert!(
+                gap_samples.iter().all(|sample| *sample == 0.0),
+                "{name}: the gap is not silent"
+            );
+            // Outside the two decoded stretches the lost frames overlapped,
+            // every sample is the intact file's, so every click after the
+            // gap is on its true sample.
+            let differing = decoded
+                .iter()
+                .zip(&intact)
+                .enumerate()
+                .filter(|(index, (a, b))| {
+                    let round = index / 4 / 1024;
+                    !(gap..gap + 2).contains(&round) && a.to_bits() != b.to_bits()
+                })
+                .count();
+            assert_eq!(differing, 0, "{name}: {differing} samples moved or changed");
+            for channel in 0..4 {
+                let after: Vec<usize> = click_positions(&decoded, 4, channel)
+                    .into_iter()
+                    .filter(|at| *at >= (gap + 2) * 1024)
+                    .collect();
+                let expected: Vec<usize> = click_positions(&intact, 4, channel)
+                    .into_iter()
+                    .filter(|at| *at >= (gap + 2) * 1024)
+                    .collect();
+                assert!(!after.is_empty(), "{name} channel {channel}");
+                assert_eq!(after, expected, "{name} channel {channel}");
+            }
+            let note = crate::manifest::trm_timeline_note(&info).unwrap();
+            assert!(note.contains("filled 1 damaged section(s)"), "{name}: {note}");
+            assert!(!note.contains("unrecorded"), "{name}: {note}");
+        }
     }
 
     #[test]

@@ -11,6 +11,7 @@ import {
   partitionQueuePaths,
   reexportConfirmCopy,
   trmRecordingNotice,
+  trmSilenceFilledNotice,
   trmSessionNotices,
 } from '../lib/queue'
 import { ftrRecordingDate, ftrSessionKey } from '../utils'
@@ -181,6 +182,18 @@ describe('FTR recording notices', () => {
     expect(
       trmSessionNotices(files, { [a]: route(true, true), [b]: route(false, false), [c]: route(false, true) }),
     ).toEqual({ [b]: TRM_START_BOUNDARY_MISSING })
+  })
+
+  it('says how many damaged sections were filled with silence', () => {
+    expect(trmRecordingNotice(route(true, true, false, { silenceFilledGaps: 2 }))).toBe(
+      '2 damaged sections were filled with silence to keep the timing; see the export record.',
+    )
+    expect(trmRecordingNotice(route(true, true, true, { silenceFilledGaps: 1 }))).toBe(
+      `${TRM_OPEN_ENDED_NOTICE} 1 damaged section was filled with silence to keep the timing; see the export record.`,
+    )
+    expect(trmRecordingNotice(route(true, true, false, { silenceFilledGaps: 0 }))).toBe('')
+    expect(trmSilenceFilledNotice(undefined)).toBe('')
+    expect(trmSilenceFilledNotice(1.5)).toBe('')
   })
 
   it('names a signature, a plain codec and a refusal on the file itself', () => {
