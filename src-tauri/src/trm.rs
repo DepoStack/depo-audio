@@ -50,9 +50,12 @@
 //! marks the other streams, continue with frames that are not. When that
 //! breaks (a lost or extra frame), the partial round is dropped, dealing
 //! restarts at the next stream-0 frame, and the restart is counted. The
-//! rounds the frames show to be missing there are put back as silence in
-//! every stream (an AAC frame with an empty spectrum), so that later audio
-//! keeps its time from the start, and each place is recorded.
+//! rounds the frames show to be missing there are put back in every stream
+//! as AAC frames with an empty spectrum (no new sound, though not digital
+//! silence: see [`silent_frame`]), so that later audio keeps its time from
+//! the start, and each place is recorded. What this cannot rule out (a loss
+//! of a whole round, a repeated frame taken for a lost one, a file that
+//! marks only stream 0) is recorded too ([`TimingCaveat`]).
 //!
 //! Reading streams through the file in fixed-size pieces: memory stays
 //! bounded by one piece, one partial frame and one round of frames, whatever
@@ -239,7 +242,46 @@ pub(crate) enum FillReason {
     UnreadableData,
 }
 
-/// One stretch of silence put in every channel in place of missing rounds.
+/// Whether a multi-stream file marks the frames of its other streams.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub(crate) enum StreamMarking {
+    /// Frames after the first of a round carry the private bit: every frame
+    /// says whether it is stream 0's, and a break in the order is caught.
+    #[serde(rename = "all-streams")]
+    AllStreams,
+    /// No frame after the first of a round carried the private bit, so
+    /// frames are dealt to the streams in turn. A lost or repeated frame
+    /// then cannot be seen: every later frame goes to the wrong stream and
+    /// later audio moves by part of a round, with nothing filled or counted.
+    #[serde(rename = "stream-0-only")]
+    StreamZeroOnly,
+}
+
+/// What DepoAudio's reading of the frames cannot rule out, for the export
+/// record. These are limits of the method, not things found in the file.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub(crate) enum TimingCaveat {
+    /// Frames missing in a run as long as a whole round (one per stream)
+    /// leave frames that still look like whole rounds: such a loss leaves
+    /// no trace, nothing is filled, and later audio plays 1024 samples
+    /// early per round lost. Set whenever frames were read.
+    #[serde(rename = "whole-round-loss-undetectable")]
+    WholeRoundLossUndetectable,
+    /// A repeated frame (another stream's frame out of place, or a stream-0
+    /// frame twice) breaks the order the same way a lost one does, and is
+    /// filled as if frames were missing. Such a fill was not needed: audio
+    /// after it plays later than its time, by its length. Set whenever
+    /// anything was filled.
+    #[serde(rename = "fill-may-be-a-repeated-frame")]
+    FillMayBeRepeatedFrame,
+    /// The file marks only stream 0's frames ([`StreamMarking::StreamZeroOnly`]).
+    #[serde(rename = "unmarked-streams-dealt-in-turn")]
+    UnmarkedStreamsDealtInTurn,
+}
+
+/// One stretch put in every channel in place of missing rounds: AAC frames
+/// with an empty spectrum, which add no new sound (the decoder still fades
+/// the frame before them out across the stretch).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct SilenceFill {
@@ -360,6 +402,11 @@ pub(crate) struct TrmInfo {
     pub silence_filled_gaps: u64,
     /// Samples of silence put in each channel, in all.
     pub silence_filled_samples: u64,
+    /// For FTR AAC with more than one stream and at least one round read:
+    /// whether the file marks its other streams' frames.
+    pub stream_marking: Option<StreamMarking>,
+    /// What the reading of the frames cannot rule out (see [`TimingCaveat`]).
+    pub timing_caveats: Vec<TimingCaveat>,
     /// Damaged stretches of `movi` (an unreadable chunk header, a zero gap,
     /// a chunk size past the end) that the walk skipped to reach the next
     /// audio chunk, and the bytes skipped. The audio they held is lost and
@@ -1089,12 +1136,16 @@ const SILENT_MONO_BLOCK: [u8; 4] = [0x00, 0x00, 0x00, 0x07];
 /// empty), padded to a whole byte.
 const SILENT_STEREO_BLOCK: [u8; 7] = [0x20, 0x00, 0x00, 0x00, 0x00, 0x00, 0x0E];
 
-/// An ADTS frame of 1024 samples of silence per channel, with the profile,
-/// sample rate, channel configuration and private bit of `template` (a
-/// frame of the same stream), no CRC and the 13-bit length set. Its spectrum
-/// is empty, so it adds nothing to what the decoder outputs: the frame
-/// before it still fades out across the filled stretch as the decoder
-/// overlaps frames, and the frame after it fades in, as at any start.
+/// An ADTS frame of 1024 samples per channel with an empty spectrum, with
+/// the profile, sample rate, channel configuration and private bit of
+/// `template` (a frame of the same stream), no CRC and the 13-bit length
+/// set. It adds no new sound, but it does not decode to digital silence:
+/// the decoder overlaps frames, so the frame before it fades out across the
+/// filled stretch (still at a good part of its level in the stretch's
+/// second half), and the frame after it fades in, as at any start. It does
+/// not advance the decoder's noise generator either, so with perceptual
+/// noise substitution (PNS) every later noise-filled band decodes with
+/// different noise than an undamaged file would give; timing is not moved.
 fn silent_frame(template: &[u8]) -> Vec<u8> {
     let block: &[u8] = if adts_channel_config(template) == 2 {
         &SILENT_STEREO_BLOCK
@@ -1191,6 +1242,8 @@ struct DealStats {
     config_mismatches: u64,
     incomplete_final_round: bool,
     cut_final_frame: bool,
+    /// The dealer saw the file mark its other streams' frames.
+    marks_others: bool,
 }
 
 impl<'a> Dealer<'a> {
@@ -1536,6 +1589,7 @@ impl<'a> Dealer<'a> {
                 self.stats.padding += self.pending_skip;
             }
         }
+        self.stats.marks_others = self.marks_others;
         (self.stats, self.sample_rate)
     }
 }
@@ -1905,6 +1959,21 @@ fn build_info(
     let duration_secs = sample_rate
         .filter(|rate| *rate > 0 && layout.continuation_segments == 0)
         .map(|rate| ((stats.rounds + stats.filled_rounds) * SAMPLES_PER_FRAME) as f64 / f64::from(rate));
+    let stream_marking = (streams > 1 && stats.rounds > 0).then_some(if stats.marks_others {
+        StreamMarking::AllStreams
+    } else {
+        StreamMarking::StreamZeroOnly
+    });
+    let mut timing_caveats = Vec::new();
+    if stats.rounds > 0 {
+        timing_caveats.push(TimingCaveat::WholeRoundLossUndetectable);
+    }
+    if stats.fill_gaps > 0 {
+        timing_caveats.push(TimingCaveat::FillMayBeRepeatedFrame);
+    }
+    if stream_marking == Some(StreamMarking::StreamZeroOnly) {
+        timing_caveats.push(TimingCaveat::UnmarkedStreamsDealtInTurn);
+    }
     TrmInfo {
         sample_rate,
         packets: stats.packets,
@@ -1925,6 +1994,8 @@ fn build_info(
         silence_filled_gaps: stats.fill_gaps,
         silence_filled_samples: stats.filled_rounds * SAMPLES_PER_FRAME,
         silence_filled: stats.fills,
+        stream_marking,
+        timing_caveats,
         walk_gaps: stats.walk_gaps,
         walk_gap_bytes: stats.walk_gap_bytes,
         length_high_bit_frames: stats.high_bits,
@@ -2204,7 +2275,7 @@ pub(crate) mod tests {
             .arg(format!(
                 "sine=frequency={frequency}:duration={seconds}:sample_rate={TONE_RATE}"
             ))
-            .args(["-c:a", "aac", "-b:a", "48k", "-f", "adts", "-y"])
+            .args(["-c:a", "aac", "-aac_pns", "0", "-b:a", "48k", "-f", "adts", "-y"])
             .arg(&out)
             .status()
             .unwrap();
@@ -3263,10 +3334,44 @@ pub(crate) mod tests {
         let path = write(&dir.0, "unmarked.trm", &build_avi(&AviSpec::closed(3), &packets));
         let info = inspect_trm(&path).unwrap();
         assert_eq!((info.frames_per_channel, info.channel_resyncs), (4, 0));
+        // The record says the file was read in this mode, and what that
+        // cannot rule out.
+        assert_eq!(info.stream_marking, Some(StreamMarking::StreamZeroOnly));
+        assert_eq!(
+            info.timing_caveats,
+            [
+                TimingCaveat::WholeRoundLossUndetectable,
+                TimingCaveat::UnmarkedStreamsDealtInTurn
+            ]
+        );
         let (_, files) = deinterleave_trm(&path, &dir.0).unwrap();
         for (channel, file) in files.iter().enumerate() {
             assert_eq!(split_adts(&fs::read(file).unwrap()), channels[channel]);
         }
+        files.iter().for_each(|file| fs::remove_file(file).unwrap());
+
+        // A frame lost from such a file cannot be seen: nothing is counted
+        // or filled, and every later frame goes to the next stream along.
+        // This is the limit `unmarked-streams-dealt-in-turn` records.
+        let packets: Vec<Vec<u8>> = (0..4)
+            .map(|round| {
+                (0..3)
+                    .filter(|channel| (round, *channel) != (1, 1))
+                    .flat_map(|channel| channels[channel][round].clone())
+                    .collect()
+            })
+            .collect();
+        let path = write(&dir.0, "unmarked_lost.trm", &build_avi(&AviSpec::closed(3), &packets));
+        let info = inspect_trm(&path).unwrap();
+        assert_eq!(
+            (info.frames_per_channel, info.channel_resyncs, info.silence_filled_gaps),
+            (3, 0, 0)
+        );
+        assert!(info.incomplete_final_round);
+        assert!(info.timing_caveats.contains(&TimingCaveat::UnmarkedStreamsDealtInTurn));
+        let (_, files) = deinterleave_trm(&path, &dir.0).unwrap();
+        let second = split_adts(&fs::read(&files[1]).unwrap());
+        assert_eq!(second[1], channels[2][1], "stream 2's frame went to stream 1");
     }
 
     #[test]
@@ -3659,7 +3764,7 @@ pub(crate) mod tests {
                     .arg(format!(
                         "aevalsrc='if(eq(mod(n\\,{CLICK_PERIOD})\\,{offset})\\,0.8\\,0)':s={TONE_RATE}:d=2.6"
                     ))
-                    .args(["-c:a", "aac", "-b:a", "48k", "-f", "adts", "-y"])
+                    .args(["-c:a", "aac", "-aac_pns", "0", "-b:a", "48k", "-f", "adts", "-y"])
                     .arg(&out)
                     .status()
                     .unwrap();
@@ -3688,7 +3793,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn missing_frames_are_filled_with_silence_so_later_clicks_keep_their_time() {
+    fn missing_frames_are_filled_so_later_clicks_keep_their_time() {
         if !aac_tools_available() {
             return;
         }
@@ -3758,15 +3863,14 @@ pub(crate) mod tests {
             files.iter().for_each(|file| fs::remove_file(file).unwrap());
             // Each channel is as long as the full timeline.
             assert_eq!(decoded.len(), intact.len(), "{name}");
-            // The filled round decodes to silence in every channel.
-            let gap_samples = &decoded[gap * 1024 * 4..(gap + 1) * 1024 * 4];
-            assert!(
-                gap_samples.iter().all(|sample| *sample == 0.0),
-                "{name}: the gap is not silent"
-            );
+            // (The click signal is digital zero around each gap, so the
+            // filled round decodes to zeros here; with sound before a gap
+            // it does not: see the next test.)
             // Outside the two decoded stretches the lost frames overlapped,
             // every sample is the intact file's, so every click after the
-            // gap is on its true sample.
+            // gap is on its true sample. (That holds for this encode, which
+            // uses no PNS; with PNS later noise-filled bands differ too, but
+            // nothing moves: see [`silent_frame`].)
             let differing = decoded
                 .iter()
                 .zip(&intact)
@@ -3789,10 +3893,92 @@ pub(crate) mod tests {
                 assert!(!after.is_empty(), "{name} channel {channel}");
                 assert_eq!(after, expected, "{name} channel {channel}");
             }
+            assert_eq!(info.stream_marking, Some(StreamMarking::AllStreams), "{name}");
+            assert_eq!(
+                info.timing_caveats,
+                [
+                    TimingCaveat::WholeRoundLossUndetectable,
+                    TimingCaveat::FillMayBeRepeatedFrame
+                ],
+                "{name}"
+            );
             let note = crate::manifest::trm_timeline_note(&info).unwrap();
             assert!(note.contains("filled 1 damaged section(s)"), "{name}: {note}");
             assert!(!note.contains("unrecorded"), "{name}: {note}");
+            assert!(!note.contains("may be swapped"), "{name}: {note}");
         }
+    }
+
+    /// A filled round adds no new sound, but it is not digital silence: the
+    /// decoder overlaps frames, so the frame before the gap fades out across
+    /// it. With a tone playing up to the gap, the filled round still holds
+    /// that tone at a good part of its level, falling towards zero by the
+    /// round's end; from the round after next on, every sample is the
+    /// intact file's (this encode uses no PNS; see [`silent_frame`]).
+    #[test]
+    fn a_filled_round_carries_the_fade_out_of_the_frame_before_it() {
+        if !aac_tools_available() {
+            return;
+        }
+        let dir = TrmTestDir::new();
+        let channels = tone_channels(&dir.0, 2.0);
+        let rounds = channels.iter().map(Vec::len).min().unwrap();
+        let (stream, lengths) = ftr_frame_stream(&channels);
+        let intact_path = write(
+            &dir.0,
+            "tone_intact.trm",
+            &build_avi(&AviSpec::closed(4), &round_packets(&stream, &lengths, 4, 1)),
+        );
+        let (_, intact_files) = deinterleave_trm(&intact_path, &dir.0).unwrap();
+        let intact = decode_f32(&merged_decode_args(&intact_files));
+        intact_files.iter().for_each(|file| fs::remove_file(file).unwrap());
+
+        const GAP: usize = 20;
+        let packets = single_frame_packets(&channels, |frames| {
+            frames.remove(GAP * 4 + 1);
+        });
+        let path = write(&dir.0, "tone_gap.trm", &build_avi(&AviSpec::closed(4), &packets));
+        let info = inspect_trm(&path).unwrap();
+        assert_eq!(
+            info.silence_filled,
+            vec![SilenceFill {
+                at_sample: GAP as u64 * 1024,
+                samples: 1024,
+                channels: 4,
+                reason: FillReason::MissingFrames,
+            }]
+        );
+        let (_, files) = deinterleave_trm(&path, &dir.0).unwrap();
+        let decoded = decode_f32(&merged_decode_args(&files));
+        files.iter().for_each(|file| fs::remove_file(file).unwrap());
+        assert_eq!(decoded.len(), intact.len());
+        assert_eq!(decoded.len(), rounds * 1024 * 4);
+
+        let peak = |channel: usize, from: usize, to: usize| {
+            (from..to)
+                .map(|n| decoded[n * 4 + channel].abs())
+                .fold(0.0f32, f32::max)
+        };
+        let gap = GAP * 1024;
+        for channel in 0..4 {
+            let first_half = peak(channel, gap, gap + 512);
+            let second_half = peak(channel, gap + 512, gap + 1024);
+            let last = peak(channel, gap + 1024 - 64, gap + 1024);
+            // lavfi's sine plays at 1/8 of full scale.
+            assert!(first_half > 0.05, "channel {channel}: {first_half}");
+            assert!(second_half > 0.01, "channel {channel}: {second_half}");
+            assert!(
+                second_half < first_half && last < 0.3 * first_half,
+                "channel {channel}: {first_half} {second_half} {last}"
+            );
+        }
+        let differing = decoded
+            .iter()
+            .zip(&intact)
+            .enumerate()
+            .filter(|(index, (a, b))| index / 4 / 1024 >= GAP + 2 && a.to_bits() != b.to_bits())
+            .count();
+        assert_eq!(differing, 0, "{differing} samples after the gap changed");
     }
 
     #[test]
@@ -4229,6 +4415,8 @@ pub(crate) mod tests {
         assert_eq!((info.packets, info.frames_per_channel, info.frames), (240, 240, 960));
         assert_eq!(info.scrambled_frames, 960);
         assert_eq!(info.duration_secs, Some(15.36));
+        assert_eq!(info.stream_marking, Some(StreamMarking::AllStreams));
+        assert_eq!(info.timing_caveats, [TimingCaveat::WholeRoundLossUndetectable]);
         assert_eq!(
             info.ftra,
             Some(FtraInfo {

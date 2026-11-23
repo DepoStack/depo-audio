@@ -125,14 +125,23 @@ export const TRM_END_BOUNDARY_MISSING =
 
 const TRM_PLAIN_CODECS = { mp2: 'MPEG audio layer 2', mp3: 'MP3', wma: 'Windows Media Audio' }
 
-// Places where DepoAudio's split put silence in every channel for rounds of
-// frames missing mid-recording (`silenceFilledGaps`), so later audio keeps
-// its time; the export record lists where (`source.trm.silenceFilled`).
+// Places where DepoAudio's split put AAC frames that add no new sound in
+// every channel for rounds of frames missing mid-recording
+// (`silenceFilledGaps`), so later audio keeps its time; the export record
+// lists where (`source.trm.silenceFilled`). The filled stretch is not digital
+// silence: the decoder fades the sound before it out across it.
 export function trmSilenceFilledNotice(gaps) {
   const count = Number(gaps)
   if (!Number.isInteger(count) || count < 1) return ''
-  return `${count} damaged ${count === 1 ? 'section was' : 'sections were'} filled with silence to keep the timing; see the export record.`
+  return `${count} damaged ${count === 1 ? 'section was' : 'sections were'} filled to keep the timing, with audio frames that add no new sound (the sound just before each fades out across it); see the export record.`
 }
+
+// A file whose frames mark only the first stream (`streamMarking`
+// stream-0-only) is split by giving frames to the streams in turn, so a lost
+// or repeated frame cannot be seen there. Said only when DepoAudio's own
+// split is the route.
+export const TRM_UNMARKED_SPLIT_NOTICE =
+  "This recording marks only its first stream's frames, so DepoAudio splits it by taking frames in turn: if a frame is missing or repeated, every later frame goes to the wrong channel and DepoAudio cannot tell. See the export record."
 
 export function trmRecordingNotice(info) {
   if (info?.trmRefusal) return String(info.trmRefusal)
@@ -145,6 +154,7 @@ export function trmRecordingNotice(info) {
   if (trm.signature) parts.push(TRM_SIGNED_NOTICE)
   const filled = trmSilenceFilledNotice(trm.silenceFilledGaps)
   if (filled) parts.push(filled)
+  if (trm.streamMarking === 'stream-0-only' && trm.decodePath === 'deinterleaved') parts.push(TRM_UNMARKED_SPLIT_NOTICE)
   return parts.join(' ')
 }
 

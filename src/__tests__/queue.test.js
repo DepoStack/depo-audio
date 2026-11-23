@@ -4,6 +4,7 @@ import {
   TRM_OPEN_ENDED_NOTICE,
   TRM_SIGNED_NOTICE,
   TRM_START_BOUNDARY_MISSING,
+  TRM_UNMARKED_SPLIT_NOTICE,
   audioTrackNotice,
   catJobPaths,
   dcrQueueNotices,
@@ -185,16 +186,30 @@ describe('FTR recording notices', () => {
     ).toEqual({ [b]: TRM_START_BOUNDARY_MISSING })
   })
 
-  it('says how many damaged sections were filled with silence', () => {
+  it('says how many damaged sections were filled, without calling the fill silence', () => {
     expect(trmRecordingNotice(route(true, true, false, { silenceFilledGaps: 2 }))).toBe(
-      '2 damaged sections were filled with silence to keep the timing; see the export record.',
+      '2 damaged sections were filled to keep the timing, with audio frames that add no new sound (the sound just before each fades out across it); see the export record.',
     )
     expect(trmRecordingNotice(route(true, true, true, { silenceFilledGaps: 1 }))).toBe(
-      `${TRM_OPEN_ENDED_NOTICE} 1 damaged section was filled with silence to keep the timing; see the export record.`,
+      `${TRM_OPEN_ENDED_NOTICE} 1 damaged section was filled to keep the timing, with audio frames that add no new sound (the sound just before each fades out across it); see the export record.`,
     )
+    expect(trmSilenceFilledNotice(3)).not.toContain('silence')
     expect(trmRecordingNotice(route(true, true, false, { silenceFilledGaps: 0 }))).toBe('')
     expect(trmSilenceFilledNotice(undefined)).toBe('')
     expect(trmSilenceFilledNotice(1.5)).toBe('')
+  })
+
+  it('warns when a file that marks only its first stream is split by DepoAudio', () => {
+    const unmarked = { streamMarking: 'stream-0-only', decodePath: 'deinterleaved' }
+    expect(trmRecordingNotice(route(true, true, false, unmarked))).toBe(TRM_UNMARKED_SPLIT_NOTICE)
+    expect(TRM_UNMARKED_SPLIT_NOTICE).toBe(
+      "This recording marks only its first stream's frames, so DepoAudio splits it by taking frames in turn: if a frame is missing or repeated, every later frame goes to the wrong channel and DepoAudio cannot tell. See the export record.",
+    )
+    // FFmpeg's native decoder reads such a file chunk by chunk: no warning.
+    expect(trmRecordingNotice(route(true, true, false, { ...unmarked, decodePath: 'native-ftr' }))).toBe('')
+    expect(
+      trmRecordingNotice(route(true, true, false, { streamMarking: 'all-streams', decodePath: 'deinterleaved' })),
+    ).toBe('')
   })
 
   it('names a signature, a plain codec and a refusal on the file itself', () => {

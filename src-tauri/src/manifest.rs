@@ -699,31 +699,31 @@ pub(crate) fn build_manifest(input: &ManifestInput<'_>, facts: OutputFacts<'_>) 
 }
 
 /// What the export record says when DepoAudio's split of an FTR recording
-/// filled missing rounds with silence, or skipped unreadable data whose
-/// length is not known. None when neither happened.
+/// filled missing rounds, or skipped unreadable data whose length is not
+/// known. None when neither happened.
 pub(crate) fn trm_timeline_note(info: &crate::trm::TrmInfo) -> Option<String> {
     let unknown = info.walk_gap_bytes > 0 || info.mid_stream_skipped_bytes > 0;
     if info.silence_filled_gaps == 0 && !unknown {
         return None;
     }
-    let mut note = String::new();
+    let mut parts = Vec::new();
     if info.silence_filled_gaps > 0 {
         let length = match info.sample_rate.filter(|rate| *rate > 0) {
             Some(rate) => format!("{:.3} s in all", info.silence_filled_samples as f64 / f64::from(rate)),
             None => format!("{} samples in all", info.silence_filled_samples),
         };
-        note.push_str(&format!(
-            "DepoAudio filled {} damaged section(s) of this FTR recording with silence in every channel ({length}), one round of 1024 samples for each round the frames there show to be missing, so audio after them keeps its time from the start as far as the frames show (frames missing in a run as long as a whole round leave no trace, and DepoAudio cannot count them); source.trm.silenceFilled says where.",
+        parts.push(format!(
+            "DepoAudio filled {} damaged section(s) of this FTR recording in every channel ({length}) with AAC frames that add no new sound, one round of 1024 samples for each round the frames there show to be missing, so audio after them keeps its time from the start as far as the frames show; source.trm.silenceFilled says where. A filled stretch is not digital silence: the audio before it fades out across it. A repeated frame breaks the frame order the same way a lost one does, so a fill may stand for a frame that was repeated, not missing; audio after such a fill plays later than its time by the fill's length. Frames missing in a run as long as a whole round leave no trace, and DepoAudio cannot count them.",
             info.silence_filled_gaps
         ));
     }
     if unknown {
-        if !note.is_empty() {
-            note.push(' ');
-        }
-        note.push_str("Unreadable data was skipped mid-recording; the audio it held is missing and its length is not known, so audio after it may play earlier than its time from the start by an unrecorded amount (DepoAudio filled only the rounds the frames around it show to be missing).");
+        parts.push("Unreadable data was skipped mid-recording; the audio it held is missing and its length is not known, so audio after it may play earlier than its time from the start by an unrecorded amount (DepoAudio filled only the rounds the frames around it show to be missing).".to_string());
     }
-    Some(note)
+    if info.stream_marking == Some(crate::trm::StreamMarking::StreamZeroOnly) {
+        parts.push("This recording marks only its first stream's frames, so DepoAudio gave frames to the streams in turn: after a damaged section it cannot check which stream each later frame belongs to, and channels after it may be swapped.".to_string());
+    }
+    Some(parts.join(" "))
 }
 
 /// Reserve an output path and its manifest path together, both as new empty
@@ -1326,6 +1326,11 @@ pub(crate) mod tests {
                 }],
                 silence_filled_gaps: 1,
                 silence_filled_samples: 1024,
+                stream_marking: Some(crate::trm::StreamMarking::AllStreams),
+                timing_caveats: vec![
+                    crate::trm::TimingCaveat::WholeRoundLossUndetectable,
+                    crate::trm::TimingCaveat::FillMayBeRepeatedFrame,
+                ],
                 walk_gaps: 1,
                 walk_gap_bytes: 12,
                 index_mismatch: true,
@@ -1358,6 +1363,13 @@ pub(crate) mod tests {
         );
         assert!(note.contains("keeps its time from the start"), "{note}");
         assert!(note.contains("by an unrecorded amount"), "{note}");
+        assert!(note.contains("not digital silence"), "{note}");
+        assert!(note.contains("repeated, not missing"), "{note}");
+        assert!(!note.contains("may be swapped"), "{note}");
+        info.stream_marking = Some(crate::trm::StreamMarking::StreamZeroOnly);
+        let note = trm_timeline_note(&info).unwrap();
+        assert!(note.contains("channels after it may be swapped"), "{note}");
+        info.stream_marking = Some(crate::trm::StreamMarking::AllStreams);
         info.walk_gap_bytes = 0;
         info.mid_stream_skipped_bytes = 0;
         let note = trm_timeline_note(&info).unwrap();
