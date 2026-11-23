@@ -82,6 +82,26 @@ pub(crate) struct ProbedSource {
     pub sample_rate: Option<u32>,
     /// How many audio streams the input has; None when the probe failed.
     pub audio_stream_count: Option<u32>,
+    /// How far, in microseconds, the converted stream starts after the
+    /// input's earliest stream (ffprobe's stream `start_time` less the
+    /// format's), when that is later: an audio track that starts 0.5 s into
+    /// a video, for example. FFmpeg keeps that offset in an M4A or Opus
+    /// output; processing that restarts the timeline at 0 (trim, fade)
+    /// puts it back with `-output_ts_offset` (`output_start_offset_args`).
+    pub start_offset_micros: Option<u64>,
+}
+
+/// ffprobe's `start_time` text ("0.500000") in whole microseconds.
+fn start_time_micros(value: &serde_json::Value) -> Option<i64> {
+    let seconds: f64 = value.as_str()?.trim().parse().ok()?;
+    seconds.is_finite().then(|| (seconds * 1_000_000.0).round() as i64)
+}
+
+/// The converted stream's start after the input's earliest stream, when it
+/// is later (see `ProbedSource::start_offset_micros`).
+fn stream_start_offset_micros(probe: &serde_json::Value, stream: &serde_json::Value) -> Option<u64> {
+    let offset = start_time_micros(&stream["start_time"])? - start_time_micros(&probe["format"]["start_time"])?;
+    u64::try_from(offset).ok().filter(|offset| *offset > 0)
 }
 
 fn tag<'a>(tags: &'a serde_json::Value, key: &str) -> Option<&'a str> {
@@ -139,6 +159,7 @@ pub(crate) fn parse_probe(probe: &serde_json::Value) -> ProbedSource {
         timing,
         sample_rate,
         audio_stream_count: audio_stream_count(probe),
+        start_offset_micros: stream_start_offset_micros(probe, stream),
     }
 }
 
@@ -1194,6 +1215,7 @@ pub(crate) mod tests {
 
         // Nothing read, nothing claimed.
         assert_eq!(parse_probe(&serde_json::json!({})).audio_stream_count, None);
+        assert_eq!(parse_probe(&serde_json::json!({})).start_offset_micros, None);
         assert_eq!(
             parse_probe(&serde_json::json!({ "streams": [] })).audio_stream_count,
             None
@@ -1250,6 +1272,29 @@ pub(crate) mod tests {
         assert!(title.starts_with("Roomx"));
         assert_eq!(title.chars().count(), MAX_STREAM_TAG_CHARS);
         assert_eq!(stream.language, None);
+    }
+
+    #[test]
+    fn the_converted_stream_start_after_the_earliest_stream_is_read() {
+        let probe = |format: &str, stream: Option<&str>| {
+            let mut stream_json = serde_json::json!({ "channels": 2, "sample_rate": "48000" });
+            if let Some(start) = stream {
+                stream_json["start_time"] = serde_json::json!(start);
+            }
+            parse_probe(&serde_json::json!({
+                "format": { "format_name": "matroska,webm", "start_time": format },
+                "streams": [stream_json],
+            }))
+            .start_offset_micros
+        };
+        // Audio 0.5 s after the video.
+        assert_eq!(probe("0.000000", Some("0.500000")), Some(500_000));
+        assert_eq!(probe("1.400000", Some("1.433333")), Some(33_333));
+        // The audio is the earliest stream, starts earlier, or has no start.
+        assert_eq!(probe("0.500000", Some("0.500000")), None);
+        assert_eq!(probe("0.000000", Some("-0.021333")), None);
+        assert_eq!(probe("0.000000", None), None);
+        assert_eq!(probe("N/A", Some("0.500000")), None);
     }
 
     #[test]

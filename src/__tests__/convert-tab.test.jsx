@@ -450,17 +450,103 @@ describe('ConvertTab preset picker', () => {
     render(<ConvertTab {...props()} />)
 
     expect(screen.getAllByTestId('preset-processing').map(line => line.textContent)).toEqual(
-      Array(6).fill('Plus what you turned on: High-Pass Filter, Normalize Volume'),
+      Array(6).fill('Processing on: High-Pass Filter, Normalize Volume'),
     )
     expect(screen.getByTestId('preset-status')).toHaveTextContent(
-      'Custom: the format of “For CATalyst audio sync (WAV)” and “For other or older CAT software (WAV)”. Plus what you turned on: High-Pass Filter, Normalize Volume.',
+      'Custom: the format of “For CATalyst audio sync (WAV)” and “For other or older CAT software (WAV)”. Processing on: High-Pass Filter, Normalize Volume.',
     )
     fireEvent.click(screen.getByRole('button', { name: 'For CATalyst audio sync (WAV)' }))
     expect(screen.getByTestId('preset-status')).toHaveTextContent(
-      'Using: For CATalyst audio sync (WAV). Plus what you turned on: High-Pass Filter, Normalize Volume.',
+      'Using: For CATalyst audio sync (WAV). Processing on: High-Pass Filter, Normalize Volume.',
     )
     expect(prefs.setNormalize).not.toHaveBeenCalled()
     expect(prefs.setHpf).not.toHaveBeenCalled()
+  })
+
+  it('asks before Archive is used with processing on, and changes nothing until the person answers', () => {
+    // A 1.0.x Deposition user's saved processing.
+    const saved = {
+      ...preferences(),
+      formatOut: 'mp3',
+      normalize: true,
+      trim: true,
+      fade: true,
+      hpf: true,
+      autoLevel: true,
+    }
+    preferencesContext.current = saved
+    const view = render(<ConvertTab {...props()} />)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Archive — lossless (FLAC)' }))
+    expect(screen.getByTestId('preset-processing-question')).toHaveTextContent(
+      '“Archive — lossless (FLAC)” is for keeping the recording as it is, but processing is on: High-Pass Filter, Normalize Volume, Trim Leading Silence, Fade In / Out. With it on, the archive copy is changed. Nothing has changed yet.',
+    )
+    for (const setter of ['setMode', 'setFormatOut', 'setNormalize', 'setTrim', 'setFade', 'setHpf', 'setAutoLevel']) {
+      expect(saved[setter], setter).not.toHaveBeenCalled()
+    }
+
+    // Cancel: still nothing changed.
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+    expect(screen.queryByTestId('preset-processing-question')).not.toBeInTheDocument()
+    expect(saved.setFormatOut).not.toHaveBeenCalled()
+
+    // Keep processing on: only the preset's format is applied.
+    fireEvent.click(screen.getByRole('button', { name: 'Archive — lossless (FLAC)' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Keep processing on and use this preset' }))
+    expect(saved.setMode).toHaveBeenCalledWith('keep')
+    expect(saved.setFormatOut).toHaveBeenCalledWith('flac')
+    for (const setter of ['setNormalize', 'setTrim', 'setFade', 'setHpf']) {
+      expect(saved[setter], setter).not.toHaveBeenCalled()
+    }
+    view.unmount()
+
+    // Turn processing off: the listed options are turned off, and the format applied.
+    const again = { ...saved, setMode: vi.fn(), setFormatOut: vi.fn(), setAutoLevel: vi.fn() }
+    preferencesContext.current = again
+    render(<ConvertTab {...props()} />)
+    fireEvent.click(screen.getByRole('button', { name: 'Archive — lossless (FLAC)' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Turn processing off and use this preset' }))
+    for (const setter of ['setNormalize', 'setTrim', 'setFade', 'setHpf']) {
+      expect(again[setter], setter).toHaveBeenCalledWith(false)
+    }
+    expect(again.setDeclip).not.toHaveBeenCalled()
+    expect(again.setFormatOut).toHaveBeenCalledWith('flac')
+    expect(screen.queryByTestId('preset-processing-question')).not.toBeInTheDocument()
+  })
+
+  it('uses Archive straight away when no processing is on, and other presets never ask', () => {
+    const prefs = preferences()
+    preferencesContext.current = prefs
+    const view = render(<ConvertTab {...props()} />)
+    fireEvent.click(screen.getByRole('button', { name: 'Archive — lossless (FLAC)' }))
+    expect(screen.queryByTestId('preset-processing-question')).not.toBeInTheDocument()
+    expect(prefs.setFormatOut).toHaveBeenCalledWith('flac')
+    view.unmount()
+
+    const withProcessing = { ...preferences(), normalize: true }
+    preferencesContext.current = withProcessing
+    render(<ConvertTab {...props()} />)
+    fireEvent.click(screen.getByRole('button', { name: 'Send to scopist — small (MP3 192k)' }))
+    expect(screen.queryByTestId('preset-processing-question')).not.toBeInTheDocument()
+    expect(withProcessing.setFormatOut).toHaveBeenCalledWith('mp3')
+    expect(withProcessing.setNormalize).not.toHaveBeenCalled()
+  })
+
+  it('offers one button that turns off the processing that is on, only when clicked', () => {
+    const prefs = { ...preferences(), mode: 'keep', normalize: true, autoLevel: true }
+    preferencesContext.current = prefs
+    const view = render(<ConvertTab {...props()} />)
+    // Auto-level does nothing in Keep Original, so it is not listed or turned off.
+    const button = screen.getByRole('button', { name: 'Turn processing off: Normalize Volume' })
+    expect(prefs.setNormalize).not.toHaveBeenCalled()
+    fireEvent.click(button)
+    expect(prefs.setNormalize).toHaveBeenCalledWith(false)
+    expect(prefs.setAutoLevel).not.toHaveBeenCalled()
+    view.unmount()
+
+    preferencesContext.current = preferences()
+    render(<ConvertTab {...props()} />)
+    expect(screen.queryByRole('button', { name: /Turn processing off/ })).not.toBeInTheDocument()
   })
 
   it('shows every processing option off by default, each with what it changes', () => {
@@ -495,7 +581,7 @@ describe('ConvertTab preset picker', () => {
     render(<ConvertTab {...props()} />)
 
     expect(screen.getByTestId('preset-status')).toHaveTextContent(
-      'Custom: the format of “Smallest file (Opus)”. Plus what you turned on: High-Pass Filter, Normalize Volume, Trim Leading Silence, Fade In / Out. These are the settings of the earlier “Quick Share” preset; its processing stays on until you turn it off.',
+      'Custom: the format of “Smallest file (Opus)”. Processing on: High-Pass Filter, Normalize Volume, Trim Leading Silence, Fade In / Out. These are the settings of the earlier “Quick Share” preset; its processing stays on until you turn it off.',
     )
     expect(screen.getByTestId('preset-picker').querySelectorAll('[aria-pressed="true"]')).toHaveLength(0)
     expect(screen.getByTestId('opus-catalyst-note')).toHaveTextContent(
@@ -546,14 +632,14 @@ describe('ConvertTab preset picker', () => {
     preferencesContext.current = { ...preferencesContext.current, trim: true }
     view.rerender(<ConvertTab {...props()} />)
     expect(screen.getByTestId('preset-status')).toHaveTextContent(
-      'Using: For CATalyst audio sync (WAV). Plus what you turned on: Trim Leading Silence.',
+      'Using: For CATalyst audio sync (WAV). Processing on: Trim Leading Silence.',
     )
 
     // Changing the format by hand ends the match, so the preset is no longer in use.
     preferencesContext.current = { ...preferencesContext.current, formatOut: 'm4a' }
     view.rerender(<ConvertTab {...props()} />)
     expect(screen.getByTestId('preset-status')).toHaveTextContent(
-      'Custom settings. Plus what you turned on: Trim Leading Silence.',
+      'Custom settings. Processing on: Trim Leading Silence.',
     )
     expect(screen.getByTestId('preset-picker').querySelectorAll('[aria-pressed="true"]')).toHaveLength(0)
   })

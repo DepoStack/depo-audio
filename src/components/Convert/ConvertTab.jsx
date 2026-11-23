@@ -19,6 +19,7 @@ import {
   STENOGRAPH_SOURCES,
   PROCESSING_OPTIONS,
   describeSettings,
+  processingOptionsInUse,
   processingSummary,
 } from '../../presets'
 import { usePreferencesContext } from '../../hooks/PreferencesContext'
@@ -166,15 +167,43 @@ export default function ConvertTab({
       setSourceLinkError(`Couldn't open Stenograph's \u201c${source.title}\u201d article: ${String(error)}`)
     }
   }
+  // The processing that would run with the current settings in `nextMode`.
+  const processingFor = nextMode =>
+    processingOptionsInUse({ mode: nextMode, normalize, trim, fade, hpf, autoLevel, declip })
+  // Turn off the given processing options, only when the person asks.
+  const processingSetters = {
+    autoLevel: setAutoLevel,
+    declip: setDeclip,
+    hpf: setHpf,
+    normalize: setNormalize,
+    trim: setTrim,
+    fade: setFade,
+  }
+  const turnProcessingOff = options => {
+    for (const option of options) processingSetters[option.id](false)
+  }
   // A preset sets only the channel mode, the format and the MP3 bitrate. It
-  // never touches processing or the sample rate.
-  const applyPreset = preset => {
+  // never touches processing or the sample rate on its own. A preset whose
+  // name promises the recording unchanged (Archive) asks first when
+  // processing is on: the person keeps it, turns it off, or cancels.
+  const [processingQuestion, setProcessingQuestion] = useState(null)
+  const usePreset = preset => {
+    setProcessingQuestion(null)
     setChosenPresetId(preset.id)
     const s = preset.settings
     handleModeChange(s.mode)
     setFormatOut(s.format)
     if (s.format === 'mp3') setMp3Bitrate(s.mp3Bitrate ?? 192)
   }
+  const applyPreset = preset => {
+    const inUse = processingFor(preset.settings.mode)
+    if (preset.asksAboutProcessing && inUse.length > 0) {
+      setProcessingQuestion({ preset, options: inUse })
+      return
+    }
+    usePreset(preset)
+  }
+  const currentProcessing = processingFor(mode)
   const [analysis, setAnalysis] = useState(null)
   const [scanning, setScanning] = useState(false)
   const [scanProgress, setScanProgress] = useState({ current: 0, total: 0, fileName: '', phase: '', filePct: 0 })
@@ -630,8 +659,47 @@ export default function ConvertTab({
               <span className="type-small text-[hsl(var(--sub))]" data-testid="preset-status" role="status">
                 {presetStatus}
               </span>
+              {currentProcessing.length > 0 && !processingQuestion && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  aria-label={`Turn processing off: ${currentProcessing.map(option => option.name).join(', ')}`}
+                  onClick={() => turnProcessingOff(currentProcessing)}
+                >
+                  Turn processing off
+                </Button>
+              )}
             </CardHeader>
             <CardContent>
+              {processingQuestion && (
+                <div
+                  role="group"
+                  aria-labelledby="preset-processing-question"
+                  data-testid="preset-processing-question"
+                  className="mx-3 mt-3 flex flex-col gap-2 px-3 py-2 rounded-md border border-warning/30 bg-warning/10 type-small text-foreground"
+                >
+                  <p id="preset-processing-question">
+                    {`\u201c${processingQuestion.preset.name}\u201d is for keeping the recording as it is, but processing is on: ${processingQuestion.options.map(option => option.name).join(', ')}. With it on, the archive copy is changed. Nothing has changed yet.`}
+                  </p>
+                  <div className="flex flex-wrap gap-2">
+                    <Button
+                      size="sm"
+                      onClick={() => {
+                        turnProcessingOff(processingQuestion.options)
+                        usePreset(processingQuestion.preset)
+                      }}
+                    >
+                      Turn processing off and use this preset
+                    </Button>
+                    <Button size="sm" variant="outline" onClick={() => usePreset(processingQuestion.preset)}>
+                      Keep processing on and use this preset
+                    </Button>
+                    <Button size="sm" variant="ghost" onClick={() => setProcessingQuestion(null)}>
+                      Cancel
+                    </Button>
+                  </div>
+                </div>
+              )}
               <div className="grid grid-cols-1 gap-2 p-3 sm:grid-cols-2 lg:grid-cols-3">
                 {PRESETS.map(p => {
                   const active = presetInUse?.id === p.id

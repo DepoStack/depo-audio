@@ -79,7 +79,7 @@ export const PROCESSING_OPTIONS = [
     id: 'trim',
     name: 'Trim Leading Silence',
     reason:
-      'Removes silence before the first sound; the output starts later than the recording, and the export record says by how many samples.',
+      'Removes silence before the first sound, judged on the recording’s own levels before any level change, so very quiet speech at the start can be removed even with Normalize on; the output starts later than the recording, and the export record says by how many samples.',
   },
   {
     id: 'fade',
@@ -92,6 +92,11 @@ export const PROCESSING_OPTIONS = [
 // auto-level does nothing in Keep Original and trim nothing in Split
 // Channels.
 export function processingInUse(settings) {
+  return processingOptionsInUse(settings).map(option => option.name)
+}
+
+// The same, as the PROCESSING_OPTIONS entries (id, name and reason).
+export function processingOptionsInUse(settings) {
   const s = resolvePresetSettings(settings)
   const effective = {
     autoLevel: s.autoLevel,
@@ -101,14 +106,15 @@ export function processingInUse(settings) {
     trim: Boolean(s.trim) && s.mode !== 'split',
     fade: Boolean(s.fade),
   }
-  return PROCESSING_OPTIONS.filter(option => effective[option.id]).map(option => option.name)
+  return PROCESSING_OPTIONS.filter(option => effective[option.id])
 }
 
 // The line each preset card shows: what processing a conversion with this
-// preset would run, all of it chosen by the person.
+// preset would run. It says only what is on, not who turned it on: an
+// earlier preset or an older version's defaults may have.
 export function processingSummary(settings) {
   const names = processingInUse(settings)
-  return names.length ? `Plus what you turned on: ${names.join(', ')}` : 'No processing'
+  return names.length ? `Processing on: ${names.join(', ')}` : 'No processing'
 }
 
 export const PRESETS = [
@@ -151,6 +157,9 @@ export const PRESETS = [
     basis: `FLAC is not on Stenograph's list of formats CATalyst can associate. Keep it as the archive copy. ${KEEPS_RATE_NOTE}`,
     source: STENOGRAPH_ASSOCIATE_AUDIO,
     settings: { mode: 'keep', format: 'flac' },
+    // Its name promises the recording unchanged, so choosing it while
+    // processing is on asks first (keep processing, or turn it off).
+    asksAboutProcessing: true,
   },
   {
     id: 'small-opus',
@@ -165,10 +174,14 @@ export const PRESETS = [
 // The settings a preset sets, and nothing else: applying one copies these.
 export const PRESET_FIELDS = ['mode', 'format', 'mp3Bitrate']
 
-// The presets shipped up to 1.1.0, kept only so the picker can tell people
-// whose saved settings are still exactly one of them that this is where their
-// processing came from. Their settings are never applied automatically, and
-// saved settings are never changed to match a new preset.
+// The presets shipped in 1.0.x (the latest published release is 1.0.2;
+// 1.1.0 was never published and kept the same presets), kept only so the
+// picker can tell people whose saved settings are still exactly one of them
+// that this is where their processing came from. 1.0.x presets also turned
+// on Noise Removal and Enhance Clarity, which are retired and always read as
+// off (resolvePresetSettings), so they are left out here. Their settings
+// are never applied automatically, and saved settings are never changed to
+// match a new preset.
 const OFF = {
   denoise: false,
   denoiseQuality: 'fast',
@@ -270,7 +283,7 @@ export function settingsMatchPreset(current, presetSettings) {
   )
 }
 
-// True when the current settings are exactly an earlier (1.1.0) preset,
+// True when the current settings are exactly an earlier (1.0.x) preset,
 // processing included. Settings that have no effect are ignored: the fade
 // length when fades are off, the sample rate for Opus (always 48 kHz), and
 // the MP3 bitrate for other formats.

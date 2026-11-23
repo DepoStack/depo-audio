@@ -344,7 +344,7 @@ pub(crate) const DECODED_LENGTH_FILTER: &str =
     "aresample=48000,astats=metadata=0:reset=0:measure_perchannel=none:measure_overall=Number_of_samples";
 
 /// Why a conversion with Fade on stops when the decoded length is unknown.
-pub(crate) const FADE_LENGTH_UNKNOWN_MESSAGE: &str = "Fade is on, but DepoAudio could not measure how long the recording decodes to, so it cannot place the fade-out at the real end. Nothing was converted. Turn Fade off, or try again.";
+pub(crate) const FADE_LENGTH_UNKNOWN_MESSAGE: &str = "Fade is on, but DepoAudio could not measure how long the recording decodes to, so it cannot place the fade-out at the real end. Nothing was converted. Turn Fade off, or try again. If this is a long recording, raise Processing timeout in Settings, since this check decodes the whole recording once before converting.";
 
 /// FFmpeg arguments that decode the converted stream exactly as a conversion
 /// does (same input decoder, `-map 0:a:0`) and count its samples at
@@ -497,7 +497,7 @@ pub(crate) fn parse_leading_trim_counts(stderr: &[u8]) -> Option<(u64, u64)> {
 }
 
 /// Why a conversion with Trim silence on stops when the trim is not measured.
-pub(crate) const TRIM_UNMEASURED_MESSAGE: &str = "Trim silence is on, but DepoAudio could not measure how much silence is at the start, so it cannot record what trim removes. Nothing was converted. Turn Trim silence off, or try again.";
+pub(crate) const TRIM_UNMEASURED_MESSAGE: &str = "Trim silence is on, but DepoAudio could not measure how much silence is at the start, so it cannot record what trim removes. Nothing was converted. Turn Trim silence off, or try again. If this is a long recording, raise Processing timeout in Settings, since this check decodes the whole recording once before converting.";
 
 /// The measured trim for a stream at `sample_rate`, as the export record
 /// holds it. An all-silent recording is refused rather than converted to an
@@ -552,6 +552,40 @@ pub(crate) async fn measure_leading_trim_cancellable(
     }
     let counts = parse_leading_trim_counts(&output.stderr).ok_or(TRIM_UNMEASURED_MESSAGE)?;
     leading_trim_record(opts, counts, rate).map(Some)
+}
+
+/// Whether the processing chain restarts the timeline at 0: leading trim
+/// (when it removes anything) and Fade, whose fade-in and fade-out times are
+/// on a timeline that starts at 0. A source whose audio starts later than
+/// its other streams (`ProbedSource::start_offset_micros`) would otherwise
+/// have its fades placed too early.
+pub(crate) fn resets_timeline(opts: &ConvertJob, trim_samples: u64) -> bool {
+    opts.fade || (trim_applies(opts) && trim_samples > 0)
+}
+
+/// Numbers the samples from 0 by count, so the fades that follow are placed
+/// on the stream's own samples.
+pub(crate) const TIMELINE_FROM_ZERO: &str = "asetpts=N/SR/TB";
+
+/// The output option that puts back the source's own start offset after the
+/// chain restarted the timeline at 0, moved later by what trim removed, so
+/// an M4A or Opus output keeps the start an untrimmed, unfaded conversion
+/// would have, plus exactly the recorded trim. Formats without a start time
+/// (WAV, FLAC, MP3) ignore it. Nothing when there is no offset to keep or
+/// the timeline was not restarted.
+pub(crate) fn output_start_offset_args(
+    opts: &ConvertJob,
+    start_offset_micros: Option<u64>,
+    trim: Option<&crate::manifest::LeadingTrimRecord>,
+) -> Vec<String> {
+    let trim_samples = trim.map_or(0, |trim| trim.samples);
+    match start_offset_micros {
+        Some(offset) if resets_timeline(opts, trim_samples) => {
+            let seconds = offset as f64 / 1_000_000.0 + trim.map_or(0.0, |trim| trim.seconds);
+            vec!["-output_ts_offset".into(), format!("{seconds:.6}")]
+        }
+        _ => Vec::new(),
+    }
 }
 
 /// Trim silence applies to Mix to Stereo and Keep Original. Split Channels
@@ -655,10 +689,13 @@ pub(crate) fn proc_filters(
     // converted stream's own rate, and removes exactly the measured count.
     // Only leading audio below the threshold is removed: interior pauses
     // and the ending are kept. Split Channels never trims (`trim_applies`).
-    if trim_applies(opts) {
-        if let Some(samples) = trim_samples.filter(|samples| *samples > 0) {
-            filters.extend(leading_trim_filters(samples));
-        }
+    // With Fade on and nothing trimmed, the timeline still restarts at 0 so
+    // the fades are placed on the stream's own samples (`resets_timeline`).
+    let trim_samples = trim_samples.unwrap_or(0);
+    if trim_applies(opts) && trim_samples > 0 {
+        filters.extend(leading_trim_filters(trim_samples));
+    } else if resets_timeline(opts, trim_samples) {
+        filters.push(TIMELINE_FROM_ZERO.into());
     }
 
     // De-clipping runs first — reconstruct clipped peaks before other processing
@@ -1047,7 +1084,7 @@ astats@kept=metadata=0:reset=0:measure_perchannel=none:measure_overall=Number_of
     fn fade_out_is_placed_from_duration() {
         assert_eq!(
             proc_filters(&job(r#", "fade": true"#), None, Some(10.0), None),
-            vec!["afade=t=out:st=9.500:d=0.5", "afade=t=in:d=0.5"]
+            vec!["asetpts=N/SR/TB", "afade=t=out:st=9.500:d=0.5", "afade=t=in:d=0.5"]
         );
     }
 
@@ -1055,7 +1092,7 @@ astats@kept=metadata=0:reset=0:measure_perchannel=none:measure_overall=Number_of
     fn fade_without_known_duration_only_fades_in() {
         assert_eq!(
             proc_filters(&job(r#", "fade": true"#), None, None, None),
-            vec!["afade=t=in:d=0.5"]
+            vec!["asetpts=N/SR/TB", "afade=t=in:d=0.5"]
         );
     }
 
@@ -1064,7 +1101,7 @@ astats@kept=metadata=0:reset=0:measure_perchannel=none:measure_overall=Number_of
         // Track shorter than the fade: fade-out starts at 0, not below
         assert_eq!(
             proc_filters(&job(r#", "fade": true, "fadeDur": 2.0"#), None, Some(1.0), None),
-            vec!["afade=t=out:st=0.000:d=2", "afade=t=in:d=2"]
+            vec!["asetpts=N/SR/TB", "afade=t=out:st=0.000:d=2", "afade=t=in:d=2"]
         );
     }
 
@@ -1145,10 +1182,53 @@ astats@kept=metadata=0:reset=0:measure_perchannel=none:measure_overall=Number_of
         assert_eq!(fade.decoded_source_seconds, 15.0);
         assert_eq!(fade.stated_source_seconds, Some(5.0065));
         assert_eq!(
-            proc_filters(&opts, None, Some(fade.decoded_source_seconds), None)[0],
+            proc_filters(&opts, None, Some(fade.decoded_source_seconds), None)[1],
             "afade=t=out:st=14.500:d=0.5"
         );
         assert_eq!(fade_out_placement(&opts, 0.2, 0.0, None).start_seconds, 0.0);
+    }
+
+    #[test]
+    fn fade_restarts_the_timeline_at_zero_once_even_with_nothing_trimmed() {
+        // Fade alone, and trim that removes nothing: the fades are placed on
+        // the stream's own samples from 0.
+        for (extra, trim) in [("", None), (r#", "trim": true"#, Some(0))] {
+            let filters = proc_filters(&job(&format!(r#", "fade": true{extra}"#)), None, Some(10.0), trim);
+            assert_eq!(filters[0], TIMELINE_FROM_ZERO, "{extra}");
+            assert_eq!(
+                filters.iter().filter(|f| f.starts_with("asetpts")).count(),
+                1,
+                "{extra}"
+            );
+        }
+        // Split Channels never trims, but its fades are on the same timeline.
+        let split = job(r#", "fade": true, "trim": true, "mode": "split""#);
+        assert_eq!(proc_filters(&split, None, Some(10.0), Some(100))[0], TIMELINE_FROM_ZERO);
+        // Neither on: the timeline is left as the decoder gives it.
+        assert!(!resets_timeline(&job(r#", "normalize": true"#), 0));
+        assert!(!resets_timeline(&job(r#", "trim": true"#), 0));
+        assert!(resets_timeline(&job(r#", "trim": true"#), 1));
+        assert!(!resets_timeline(&job(r#", "trim": true, "mode": "split""#), 1));
+    }
+
+    #[test]
+    fn output_start_offset_puts_back_the_source_offset_plus_the_trim() {
+        let trim_job = job(r#", "trim": true"#);
+        let trim = leading_trim_record(&trim_job, (120_000, 115_200), 48_000).unwrap();
+        assert_eq!(
+            output_start_offset_args(&trim_job, Some(500_000), Some(&trim)),
+            vec!["-output_ts_offset", "0.600000"]
+        );
+        // Fade alone restarts the timeline too: the offset alone is put back.
+        assert_eq!(
+            output_start_offset_args(&job(r#", "fade": true"#), Some(500_000), None),
+            vec!["-output_ts_offset", "0.500000"]
+        );
+        // No offset, or a chain that keeps the decoder's timeline: nothing.
+        assert!(output_start_offset_args(&trim_job, None, Some(&trim)).is_empty());
+        assert!(output_start_offset_args(&job(r#", "normalize": true"#), Some(500_000), None).is_empty());
+        let nothing = leading_trim_record(&trim_job, (120_000, 120_000), 48_000).unwrap();
+        assert!(output_start_offset_args(&trim_job, Some(500_000), Some(&nothing)).is_empty());
     }
 
     #[test]

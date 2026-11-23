@@ -135,7 +135,7 @@ describe('processing options', () => {
     expect(processingInUse(DEFAULTS)).toEqual([])
     expect(processingSummary(DEFAULTS)).toBe('No processing')
     expect(processingSummary(current({ normalize: true, hpf: true }))).toBe(
-      'Plus what you turned on: High-Pass Filter, Normalize Volume',
+      'Processing on: High-Pass Filter, Normalize Volume',
     )
     // Options that do nothing in this mode are not listed.
     expect(processingInUse(current({ mode: 'keep', autoLevel: true }))).toEqual([])
@@ -201,7 +201,7 @@ describe('settings saved by earlier versions', () => {
     }
   })
 
-  it('describes the 1.1.0 Deposition settings as custom, with every option still on', () => {
+  it('describes the 1.0.x Deposition settings as custom, with every option still on', () => {
     const deposition = LEGACY_PRESETS.find(p => p.id === 'deposition')
     const state = describeSettings(current(deposition.settings))
     expect(state.kind).toBe('custom')
@@ -221,7 +221,7 @@ describe('settings saved by earlier versions', () => {
     expect(state.processing).toEqual(['Balance Microphone Levels', 'Normalize Volume'])
   })
 
-  it('keeps the 1.1.0 Archive settings, which had no processing, as that format', () => {
+  it('keeps the 1.0.x Archive settings, which had no processing, as that format', () => {
     const archive = LEGACY_PRESETS.find(p => p.id === 'archive')
     const state = describeSettings(current(archive.settings))
     expect(state.kind).toBe('preset')

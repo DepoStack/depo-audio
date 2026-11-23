@@ -466,6 +466,13 @@ fn plan_conversion(
         output_rate,
         trimmed_samples,
     ));
+    // Trim and Fade restart the timeline at 0; this keeps the source's own
+    // start offset (and adds the recorded trim) where the format carries one.
+    encoder_args.extend(crate::ffmpeg::output_start_offset_args(
+        job,
+        probes.probed.start_offset_micros,
+        probes.leading_trim.as_ref(),
+    ));
 
     let mut ffmpeg_args = safe_ffmpeg_input_prelude();
     ffmpeg_args.extend(input_codec);
@@ -2441,7 +2448,7 @@ mod tests {
             serde_json::from_slice(&fs::read(manifest::manifest_path_for(Path::new(&output.path))).unwrap()).unwrap();
         assert_eq!(
             record["processing"]["filterChain"],
-            "afade=t=out:st=2.000:d=2,afade=t=in:d=2"
+            "asetpts=N/SR/TB,afade=t=out:st=2.000:d=2,afade=t=in:d=2"
         );
         assert_eq!(record["processing"]["mapArgs"], serde_json::json!(["-map", "0:a:0"]));
         assert_eq!(record["processing"]["fadeOut"]["startSeconds"], 2.0);
@@ -3608,6 +3615,107 @@ mod tests {
                     "{chain}"
                 );
                 assert!(!chain.contains("silenceremove"), "{chain}");
+            }
+        }
+
+        /// A video whose audio track starts 0.5 s after its picture: M4A and
+        /// Opus outputs keep that start (as an unprocessed conversion does),
+        /// moved later by exactly the recorded trim, and Fade places its
+        /// fade-in and fade-out on the audio's own samples, not 0.5 s early.
+        #[test]
+        fn a_late_audio_track_keeps_its_start_and_its_fades_with_trim_and_fade() {
+            if !court_fixture_tools_available() {
+                return;
+            }
+            let dir = ConversionTestDir::new();
+            let source = dir.0.join("late_audio.mkv");
+            // 0.2 s of silence, then a 440 Hz tone that starts at full level
+            // (cosine), 2.5 s in all; the audio track starts at 0.5 s.
+            run_ffmpeg(
+                &[
+                    "-f",
+                    "lavfi",
+                    "-i",
+                    "color=black:s=64x64:r=10:d=3",
+                    "-itsoffset",
+                    "0.5",
+                    "-f",
+                    "lavfi",
+                    "-i",
+                    "aevalsrc=if(gte(n\\,9600)\\,0.25*cos(2*PI*440*t)\\,0):s=48000:d=2.5:c=stereo",
+                    "-map",
+                    "0:v",
+                    "-map",
+                    "1:a",
+                    "-c:v",
+                    "mpeg4",
+                    "-c:a",
+                    "pcm_s16le",
+                    "-y",
+                ]
+                .map(String::from)
+                .into_iter()
+                .chain([source.to_string_lossy().to_string()])
+                .collect::<Vec<_>>(),
+            );
+            let start_of = |path: &Path| -> f64 {
+                let probe = ffprobe_json(path, &["-show_streams", "-select_streams", "a:0"]);
+                probe["streams"][0]["start_time"].as_str().unwrap().parse().unwrap()
+            };
+            assert_eq!(start_of(&source), 0.5);
+            let convert = |name: &str, mode: &str, format: &str, trim: bool, fade: bool| {
+                let out = dir.0.join(name);
+                fs::create_dir(&out).unwrap();
+                let mut job = court_job(&source, &out, mode, format);
+                job.labels = vec!["Left".into(), "Right".into()];
+                job.chan_vols = vec![1.0; 2];
+                job.rate = "48000".into();
+                job.trim = trim;
+                job.fade = fade;
+                job.fade_dur = 0.5;
+                let conversion = convert_with_system_ffmpeg(&job, None).unwrap();
+                PathBuf::from(&conversion.files[0].path)
+            };
+
+            for format in ["m4a", "opus"] {
+                let plain = start_of(&convert(&format!("plain_{format}"), "keep", format, false, false));
+                assert!(
+                    plain > 0.4,
+                    "{format}: an unprocessed conversion keeps the offset ({plain})"
+                );
+                let trimmed_path = convert(&format!("trim_{format}"), "keep", format, true, false);
+                let record: serde_json::Value =
+                    serde_json::from_slice(&fs::read(manifest::manifest_path_for(&trimmed_path)).unwrap()).unwrap();
+                assert_eq!(record["processing"]["leadingTrim"]["samples"], 9600, "{format}");
+                let trimmed = start_of(&trimmed_path);
+                assert!(
+                    (trimmed - (plain + 0.2)).abs() < 1e-5,
+                    "{format}: trimmed start {trimmed}, unprocessed start {plain} plus the 0.2 s trim"
+                );
+            }
+
+            // Fade on the stereo mix: compared with the same mix without Fade,
+            // the middle is unchanged, the fade-in quiets the first audible
+            // moments and the fade-out runs over the last 0.5 s, not 0.5 s
+            // early with the end silenced.
+            let reference = decode(&convert("nofade", "stereo", "wav", false, false), 48_000, 2, false);
+            let faded = decode(&convert("fade", "stereo", "wav", false, true), 48_000, 2, false);
+            assert_eq!(faded[0].len(), reference[0].len());
+            let rms = |samples: &[f32], from: f64, to: f64| -> f64 {
+                let window = &samples[(from * 48_000.0) as usize..(to * 48_000.0) as usize];
+                (window.iter().map(|&x| f64::from(x) * f64::from(x)).sum::<f64>() / window.len() as f64).sqrt()
+            };
+            for channel in 0..2 {
+                let (r, f) = (&reference[channel], &faded[channel]);
+                let middle = (0.6 * 48_000.0) as usize..(1.9 * 48_000.0) as usize;
+                let worst = middle.map(|i| (r[i] - f[i]).abs()).fold(0.0_f32, f32::max);
+                assert!(worst < 1e-4, "channel {channel}: the middle changed by {worst}");
+                assert!(
+                    rms(f, 0.2, 0.4) < 0.8 * rms(r, 0.2, 0.4),
+                    "channel {channel}: no fade-in"
+                );
+                let end = rms(f, 2.05, 2.25) / rms(r, 2.05, 2.25);
+                assert!(end > 0.3 && end < 0.95, "channel {channel}: fade-out level {end}");
             }
         }
 

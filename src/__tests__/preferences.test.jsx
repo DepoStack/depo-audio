@@ -125,7 +125,7 @@ describe('saved processing from earlier presets', () => {
   beforeEach(() => invoke.mockReset())
 
   it('loads and saves back every processing option exactly as it was saved', async () => {
-    // What 1.1.0 saved after its Deposition preset turned processing on.
+    // What 1.0.x saved after its Deposition preset turned processing on.
     const saved = {
       mode: 'stereo',
       format: 'mp3',
