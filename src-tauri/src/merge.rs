@@ -7,20 +7,16 @@ use tauri::AppHandle;
 
 use crate::ffmpeg::{probe_duration_cancellable, sidecar_output_cancellable};
 use crate::helpers::{ffmpeg_bin_name, AudioFeed};
+use crate::merge_engine::{self, AlignedSource, MergeStrategy, SampleReader, MAX_MERGE_DURATION_SECS};
 use crate::safety::TempFile;
 
 const MAX_MERGE_SOURCES: usize = 4;
 const MAX_MERGE_SOURCE_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 const MAX_MERGE_TOTAL_SOURCE_BYTES: u64 = 4 * 1024 * 1024 * 1024;
-/// The current merge strategies hold all decoded sources plus an output
-/// timeline (and, for mix-all, a one-byte-per-sample overlap counter). At nine
-/// bytes per bounded sample in the worst case, 56 million keeps peak working
-/// memory below roughly 512 MiB.
-const MAX_TOTAL_DECODED_SAMPLES: u64 = 56_000_000;
-const MAX_MERGE_DURATION_SECS: u32 = 30 * 60;
+/// The merge itself decodes and mixes at this rate; the output rate is the
+/// encoder's job.
+const MERGE_SAMPLE_RATE: u32 = 48_000;
 const SYNC_SAMPLE_RATE: u32 = 8_000;
-const SYNC_WINDOW_SECS: usize = 10;
-const SYNC_SEARCH_SECS: usize = 60;
 const SYNC_DECODE_SECS: u32 = 75;
 const MERGE_DECODE_TIMEOUT_SECS: u64 = 20 * 60;
 const MERGE_ENCODE_TIMEOUT_SECS: u64 = 20 * 60;
@@ -65,12 +61,13 @@ impl MergeCancel {
 // Typical use: court reporter mic + backup recorder + phone-in participant.
 //
 // Pipeline:
-//   1. Decode all inputs to same sample rate (48kHz mono WAV)
-//   2. Auto-detect timing offset via cross-correlation
-//   3. Align tracks to a common timeline
-//   4. Score quality per segment using RMS energy (speech clarity proxy)
-//   5. Build output by selecting the cleanest source per segment
-//   6. Crossfade at transition points for smooth blending
+//   1. Probe every source and refuse one over 30 minutes, by name
+//   2. Find each source's offset from the first by cross-correlation
+//   3. Decode every source to a temporary 48 kHz mono WAV
+//   4. Stream the aligned sources through merge_engine block by block,
+//      averaging them (Mix all) or taking the loudest per 500 ms segment
+//      with a 50 ms crossfade (Loudest source), into one temporary WAV
+//   5. Encode that WAV to the chosen format and rate
 
 /// Configuration for a merge job.
 #[derive(Debug, serde::Serialize, serde::Deserialize, Clone)]
@@ -96,7 +93,7 @@ struct ValidatedMergeJob {
     out_name: String,
     format: String,
     rate: String,
-    strategy: String,
+    strategy: MergeStrategy,
 }
 
 fn validate_source(path: &str) -> Result<(PathBuf, u64), String> {
@@ -133,9 +130,11 @@ fn validate_merge_job(job: &MergeJob) -> Result<ValidatedMergeJob, String> {
     if !matches!(job.rate.as_str(), "44100" | "48000") {
         return Err("Merge sample rate must be 44100 or 48000 Hz".into());
     }
-    if !matches!(job.strategy.as_str(), "best_quality" | "mix_all") {
-        return Err("Unsupported merge strategy".into());
-    }
+    let strategy = match job.strategy.as_str() {
+        "mix_all" => MergeStrategy::MixAll,
+        "best_quality" => MergeStrategy::Loudest,
+        _ => return Err("Unsupported merge strategy".into()),
+    };
 
     let mut sources = Vec::with_capacity(job.sources.len());
     let mut seen = HashSet::with_capacity(job.sources.len());
@@ -173,7 +172,7 @@ fn validate_merge_job(job: &MergeJob) -> Result<ValidatedMergeJob, String> {
         out_name: validate_output_name(&job.out_name)?,
         format: job.format.clone(),
         rate: job.rate.clone(),
-        strategy: job.strategy.clone(),
+        strategy,
     })
 }
 
@@ -262,135 +261,16 @@ async fn detect_sync_paths(
     let samples_a = read_wav_samples(&tmp_a, max_sync_samples)?;
     let samples_b = read_wav_samples(&tmp_b, max_sync_samples)?;
 
-    tauri::async_runtime::spawn_blocking(move || detect_sync_samples(&samples_a, &samples_b, SYNC_SAMPLE_RATE as usize))
-        .await
-        .map_err(|e| format!("Sync analysis task failed: {e}"))?
-}
-
-fn detect_sync_samples(samples_a: &[f32], samples_b: &[f32], sample_rate: usize) -> Result<SyncResult, String> {
-    if samples_a.is_empty() || samples_b.is_empty() {
-        return Err("One or both files are empty".into());
-    }
-
-    let search_len = (SYNC_WINDOW_SECS * sample_rate)
-        .min(samples_a.len())
-        .min(samples_b.len());
-    let max_offset = SYNC_SEARCH_SECS * sample_rate;
-
-    let segment_a = &samples_a[..search_len];
-
-    let mut best_corr = 0.0f64;
-    let mut best_offset = 0i64;
-
-    // Coarse search: 100 ms steps. Sampling every fourth point bounds CPU
-    // without changing the time-offset search range.
-    let coarse_stride = (sample_rate / 10).max(1);
-    let search_range = max_offset.min(samples_b.len());
-
-    let neg_range = -(search_range as i64);
-    let pos_range = search_range as i64;
-    let mut coarse_offset = neg_range;
-    while coarse_offset < pos_range {
-        let offset = coarse_offset;
-        coarse_offset += coarse_stride as i64;
-        let corr = cross_correlate_step(segment_a, samples_b, offset, search_len, 4);
-        if corr > best_corr {
-            best_corr = corr;
-            best_offset = offset;
-        }
-    }
-
-    // Fine search: 1 ms steps around the best coarse offset.
-    let fine_start = best_offset - coarse_stride as i64;
-    let fine_end = best_offset + coarse_stride as i64;
-    let fine_stride = (sample_rate / 1000).max(1);
-    for offset in (fine_start..=fine_end).step_by(fine_stride) {
-        let corr = cross_correlate_step(segment_a, samples_b, offset, search_len, 4);
-        if corr > best_corr {
-            best_corr = corr;
-            best_offset = offset;
-        }
-    }
-
-    // Resolve the final 1 ms neighborhood at full sample precision.
-    let sample_start = best_offset - fine_stride as i64;
-    let sample_end = best_offset + fine_stride as i64;
-    for offset in sample_start..=sample_end {
-        let corr = cross_correlate(segment_a, samples_b, offset, search_len);
-        if corr > best_corr {
-            best_corr = corr;
-            best_offset = offset;
-        }
-    }
-
-    // cross_correlate matches a[i] against b[i + offset], so a positive
-    // best_offset means B's content occurs *earlier* than A's. Negate to get
-    // the documented semantics: positive = source B starts later.
-    let offset_seconds = -(best_offset as f64) / sample_rate as f64;
-
-    // Confidence from normalized cross-correlation: corr / (|a| * |b|), with
-    // |b| measured over the overlapping window at the best offset.
-    // energy_a must be measured over the SAME overlapping window as the
-    // correlation (and energy_b). Using the full segment inflates the
-    // denominator when the offset is large (small overlap), pushing genuine
-    // matches below the is_same_event threshold.
-    let energy_a: f64 = (0..search_len)
-        .filter_map(|i| {
-            let idx = i as i64 + best_offset;
-            if idx >= 0 && (idx as usize) < samples_b.len() {
-                let v = segment_a[i] as f64;
-                Some(v * v)
-            } else {
-                None
-            }
-        })
-        .sum();
-    let energy_b: f64 = (0..search_len)
-        .filter_map(|i| {
-            let idx = i as i64 + best_offset;
-            if idx >= 0 && (idx as usize) < samples_b.len() {
-                let v = samples_b[idx as usize] as f64;
-                Some(v * v)
-            } else {
-                None
-            }
-        })
-        .sum();
-    let confidence = if energy_a > 0.0 && energy_b > 0.0 {
-        (best_corr / (energy_a.sqrt() * energy_b.sqrt())).clamp(0.0, 1.0)
-    } else {
-        0.0
-    };
-
-    // Same-event threshold. Confidence is now a true normalized cross-
-    // correlation of raw waveforms from different microphones, which sits
-    // well below the old saturated values even for genuine matches — 0.15
-    // separates matched recordings (~0.2+) from unrelated audio (~0.05).
-    let is_same_event = confidence > 0.15;
-
-    Ok(SyncResult {
-        offset_seconds,
-        confidence,
-        is_same_event,
+    let found = tauri::async_runtime::spawn_blocking(move || {
+        merge_engine::detect_sync_samples(&samples_a, &samples_b, SYNC_SAMPLE_RATE as usize)
     })
-}
-
-/// Cross-correlate segment_a with samples_b at the given offset.
-fn cross_correlate(segment_a: &[f32], samples_b: &[f32], offset: i64, len: usize) -> f64 {
-    cross_correlate_step(segment_a, samples_b, offset, len, 1)
-}
-
-fn cross_correlate_step(segment_a: &[f32], samples_b: &[f32], offset: i64, len: usize, step: usize) -> f64 {
-    let mut sum = 0.0f64;
-    let len = len.min(segment_a.len());
-    for i in (0..len).step_by(step.max(1)) {
-        let a = segment_a[i];
-        let b_idx = i as i64 + offset;
-        if b_idx >= 0 && (b_idx as usize) < samples_b.len() {
-            sum += a as f64 * samples_b[b_idx as usize] as f64;
-        }
-    }
-    sum.abs()
+    .await
+    .map_err(|e| format!("Sync analysis task failed: {e}"))??;
+    Ok(SyncResult {
+        offset_seconds: found.offset_seconds,
+        confidence: found.confidence,
+        is_same_event: found.is_same_event,
+    })
 }
 
 // ── Merge execution ─────────────────────────────────────────────────────────
@@ -406,24 +286,11 @@ pub(crate) async fn merge_audio(app: &AppHandle, job: &MergeJob, cancel: &MergeC
     }
 
     // Probe before decoding so a very long compressed source cannot fill the
-    // temp directory or exhaust memory before the decoded-size limit is seen.
-    let mut estimated_samples = 0f64;
-    for source in &feeds {
+    // temp directory before its length is known.
+    for (source, path) in feeds.iter().zip(&job.sources) {
         let duration = probe_duration_cancellable(app, source, Some(&|| cancel.is_cancelled())).await;
         cancel.check()?;
-        let duration = duration
-            .filter(|duration| duration.is_finite() && *duration > 0.0)
-            .ok_or_else(|| "Cannot determine merge source duration".to_string())?;
-        if duration > MAX_MERGE_DURATION_SECS as f64 {
-            return Err(format!(
-                "Each merge source is limited to {} minutes",
-                MAX_MERGE_DURATION_SECS / 60
-            ));
-        }
-        estimated_samples += duration * 48_000.0;
-        if estimated_samples > MAX_TOTAL_DECODED_SAMPLES as f64 {
-            return Err("Combined decoded audio is too long for the bounded in-memory merge engine".into());
-        }
+        merge_engine::check_source_duration(&crate::helpers::basename(&path.to_string_lossy()), duration)?;
     }
 
     // Step 1: Detect sync offsets relative to the first source
@@ -443,77 +310,55 @@ pub(crate) async fn merge_audio(app: &AppHandle, job: &MergeJob, cancel: &MergeC
     // Step 2: Decode all sources to 48kHz mono
     let mut decoded_files = Vec::new();
     for src in &mut feeds {
-        let tmp = decode_to_mono(app, src, 48_000, MAX_MERGE_DURATION_SECS + 1, cancel).await?;
+        let tmp = decode_to_mono(app, src, MERGE_SAMPLE_RATE, MAX_MERGE_DURATION_SECS + 1, cancel).await?;
         decoded_files.push(tmp);
     }
+    drop(feeds);
 
-    // Step 3: Validate aggregate decoded allocation before reading any source.
-    let mut decoded_sample_count = 0u64;
-    for file in &decoded_files {
-        decoded_sample_count = decoded_sample_count
-            .checked_add(wav_sample_count(file)?)
-            .ok_or_else(|| "Decoded merge size overflow".to_string())?;
-        if decoded_sample_count > MAX_TOTAL_DECODED_SAMPLES {
-            return Err("Combined decoded audio exceeds the merge memory limit".into());
-        }
-    }
-    let decoded_paths: Vec<PathBuf> = decoded_files.iter().map(|file| file.path.clone()).collect();
-    let all_samples = tauri::async_runtime::spawn_blocking(move || {
-        decoded_paths
-            .iter()
-            .map(|path| read_wav_samples(path, MAX_TOTAL_DECODED_SAMPLES as usize))
-            .collect::<Result<Vec<_>, _>>()
-    })
-    .await
-    .map_err(|e| format!("Decoded audio read task failed: {e}"))??;
-    drop(decoded_files);
-    cancel.check()?;
-
-    // Step 4: Align to common timeline
-    let sample_rate = 48_000usize;
+    // Step 3: Place each source on a common timeline, the earliest at zero.
+    let rate = MERGE_SAMPLE_RATE as f64;
     let min_offset = offsets.iter().cloned().fold(f64::INFINITY, f64::min);
-    let adjusted_offsets: Vec<i64> = offsets
-        .iter()
-        .map(|&o| ((o - min_offset) * sample_rate as f64) as i64)
-        .collect();
-
-    // Find total duration (longest aligned track)
-    let total_samples = all_samples
-        .iter()
-        .enumerate()
-        .map(|(i, samples)| {
-            usize::try_from(adjusted_offsets[i])
-                .ok()
-                .and_then(|offset| samples.len().checked_add(offset))
-                .ok_or_else(|| "Aligned merge timeline is too large".to_string())
-        })
-        .collect::<Result<Vec<_>, _>>()?
-        .into_iter()
-        .max()
-        .unwrap_or(0);
-    if total_samples == 0 || total_samples as u64 > MAX_TOTAL_DECODED_SAMPLES {
-        return Err("Aligned merge timeline exceeds the merge memory limit".into());
+    let mut sources = Vec::with_capacity(decoded_files.len());
+    for (file, &offset) in decoded_files.iter().zip(&offsets) {
+        let reader = WavSampleReader::open(&file.path)?;
+        let len = reader.len;
+        sources.push(AlignedSource::new(reader, ((offset - min_offset) * rate) as u64, len));
+    }
+    let total_samples = merge_engine::timeline_len(&sources);
+    if total_samples == 0 {
+        return Err("The merge sources decoded to no audio".into());
+    }
+    if total_samples > merge_engine::max_timeline_samples(MERGE_SAMPLE_RATE) {
+        return Err("The aligned recordings run longer than a merge can write".into());
     }
 
-    // Step 5: Build and write the intermediate on a blocking worker. The
-    // merged Vec is dropped there before encoding starts.
+    // Step 4: Stream the merge into an intermediate WAV on a blocking worker.
     let tmp_wav = crate::workdir::new_temp_path("depoaudio_merged_", "wav")?;
     let tmp_wav_path = tmp_wav.path.clone();
-    let strategy = job.strategy.clone();
-    let duration = tauri::async_runtime::spawn_blocking(move || -> Result<f64, String> {
-        let merged = match strategy.as_str() {
-            "mix_all" => mix_all_strategy(&all_samples, &adjusted_offsets, total_samples),
-            "best_quality" => best_quality_strategy(&all_samples, &adjusted_offsets, total_samples, sample_rate),
-            _ => return Err("Unsupported merge strategy".into()),
+    let strategy = job.strategy;
+    let worker_cancel = cancel.clone();
+    let written = tauri::async_runtime::spawn_blocking(move || -> Result<u64, String> {
+        let mut writer = wav_writer(&tmp_wav_path, MERGE_SAMPLE_RATE)?;
+        let mut sink = |block: &[f32]| {
+            for &sample in block {
+                writer.write_sample(sample).map_err(|e| format!("Write error: {e}"))?;
+            }
+            Ok(())
         };
-        write_wav(&tmp_wav_path, &merged, 48_000)?;
-        Ok(merged.len() as f64 / 48_000.0)
+        let mut tick = |_done: u64, _total: u64| worker_cancel.check();
+        let written =
+            merge_engine::merge_stream(strategy, &mut sources, MERGE_SAMPLE_RATE as usize, &mut sink, &mut tick)?;
+        writer.finalize().map_err(|e| format!("Finalize error: {e}"))?;
+        Ok(written)
     })
     .await
     .map_err(|e| format!("Merge processing task failed: {e}"))??;
+    drop(decoded_files);
     cancel.check()?;
+    let duration = written as f64 / rate;
 
-    // Step 6: Reserve the destination atomically, then encode with a bounded
+    // Step 5: Encode.
+    // Reserve the destination atomically, then encode with a bounded
     // child-process runner. No concurrent merge can claim or delete this path.
     let ext = crate::helpers::output_ext(&job.format);
     let mut reserved = reserve_output(&job.out_dir, &job.out_name, ext)?;
@@ -563,130 +408,6 @@ pub(crate) async fn merge_audio(app: &AppHandle, job: &MergeJob, cancel: &MergeC
         sync_offsets: offsets,
         warning: None,
     })
-}
-
-// ── Merge strategies ────────────────────────────────────────────────────────
-
-/// Mix all sources together with equal weight (simple average).
-fn mix_all_strategy(sources: &[Vec<f32>], offsets: &[i64], total_samples: usize) -> Vec<f32> {
-    let mut output = vec![0.0f32; total_samples];
-    // Source count is capped at four, so one byte per sample is sufficient and
-    // avoids another four-byte timeline-sized allocation.
-    let mut counts = vec![0u8; total_samples];
-
-    for (src_idx, samples) in sources.iter().enumerate() {
-        let offset = offsets[src_idx];
-        for (i, &s) in samples.iter().enumerate() {
-            let out_idx = i as i64 + offset;
-            if out_idx >= 0 && (out_idx as usize) < total_samples {
-                output[out_idx as usize] += s;
-                counts[out_idx as usize] += 1;
-            }
-        }
-    }
-
-    // Average where multiple sources overlap
-    for i in 0..total_samples {
-        if counts[i] > 1 {
-            output[i] /= counts[i] as f32;
-        }
-    }
-
-    output
-}
-
-/// Select the highest quality segment from available sources.
-/// Uses RMS energy in speech-likely regions as a quality proxy.
-fn best_quality_strategy(sources: &[Vec<f32>], offsets: &[i64], total_samples: usize, sample_rate: usize) -> Vec<f32> {
-    let mut output = vec![0.0f32; total_samples];
-
-    // Process in 500ms segments
-    let segment_size = sample_rate / 2;
-    let crossfade_len = sample_rate / 20; // 50ms crossfade
-
-    let mut pos = 0usize;
-    let mut prev_best: Option<usize> = None;
-
-    while pos < total_samples {
-        let end = (pos + segment_size).min(total_samples);
-
-        // Find the best source for this segment (highest RMS)
-        let mut best_src = 0;
-        let mut best_rms = 0.0f64;
-
-        for (src_idx, samples) in sources.iter().enumerate() {
-            let offset = offsets[src_idx];
-            let mut rms_sum = 0.0f64;
-            let mut count = 0usize;
-
-            for out_idx in pos..end {
-                let src_idx_sample = out_idx as i64 - offset;
-                if src_idx_sample >= 0 && (src_idx_sample as usize) < samples.len() {
-                    let s = samples[src_idx_sample as usize] as f64;
-                    rms_sum += s * s;
-                    count += 1;
-                }
-            }
-
-            let rms = if count > 0 {
-                (rms_sum / count as f64).sqrt()
-            } else {
-                0.0
-            };
-            if rms > best_rms {
-                best_rms = rms;
-                best_src = src_idx;
-            }
-        }
-
-        // Copy best source to output
-        let offset = offsets[best_src];
-        for (j, out) in output[pos..end].iter_mut().enumerate() {
-            let src_idx_sample = (pos + j) as i64 - offset;
-            if src_idx_sample >= 0 && (src_idx_sample as usize) < sources[best_src].len() {
-                *out = sources[best_src][src_idx_sample as usize];
-            }
-        }
-
-        // Apply crossfade if source changed
-        if let Some(prev) = prev_best {
-            if prev != best_src && pos > 0 {
-                let fade_start = pos.saturating_sub(crossfade_len / 2);
-                let fade_end = (pos + crossfade_len / 2).min(total_samples);
-                let fade_len = fade_end - fade_start;
-
-                for j in 0..fade_len {
-                    let t = j as f32 / fade_len as f32;
-                    let prev_offset = offsets[prev];
-                    let prev_idx = (fade_start + j) as i64 - prev_offset;
-                    let prev_sample = if prev_idx >= 0 && (prev_idx as usize) < sources[prev].len() {
-                        sources[prev][prev_idx as usize]
-                    } else {
-                        0.0
-                    };
-
-                    // Fetch the NEW source directly for the whole window: in
-                    // the first half output[] still holds the previous source,
-                    // so blending against output would make the ramp a no-op
-                    // until the midpoint and leave a half-amplitude step.
-                    let new_offset = offsets[best_src];
-                    let new_idx = (fade_start + j) as i64 - new_offset;
-                    let new_sample = if new_idx >= 0 && (new_idx as usize) < sources[best_src].len() {
-                        sources[best_src][new_idx as usize]
-                    } else {
-                        0.0
-                    };
-
-                    output[fade_start + j] = prev_sample * (1.0 - t) + new_sample * t;
-                }
-            }
-        }
-
-        prev_best = Some(best_src);
-        pos += segment_size;
-    }
-
-    output
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
@@ -771,21 +492,44 @@ async fn decode_feed_to_mono(
     Ok(tmp)
 }
 
-fn wav_sample_count(path: &Path) -> Result<u64, String> {
+fn open_float_wav(path: &Path) -> Result<hound::WavReader<std::io::BufReader<std::fs::File>>, String> {
     let reader = hound::WavReader::open(path).map_err(|e| format!("WAV read error: {}", e))?;
     let spec = reader.spec();
     if spec.channels != 1 || spec.bits_per_sample != 32 || spec.sample_format != hound::SampleFormat::Float {
         return Err("Decoded merge audio has an unexpected WAV layout".into());
     }
-    Ok(reader.duration() as u64)
+    Ok(reader)
+}
+
+/// Reads one decoded source front to back for the merge engine.
+struct WavSampleReader {
+    reader: hound::WavReader<std::io::BufReader<std::fs::File>>,
+    len: u64,
+}
+
+impl WavSampleReader {
+    fn open(path: &Path) -> Result<Self, String> {
+        let reader = open_float_wav(path)?;
+        let len = reader.duration() as u64;
+        Ok(Self { reader, len })
+    }
+}
+
+impl SampleReader for WavSampleReader {
+    fn read_exact_into(&mut self, out: &mut [f32]) -> Result<(), String> {
+        let mut samples = self.reader.samples::<f32>();
+        for slot in out.iter_mut() {
+            *slot = samples
+                .next()
+                .ok_or_else(|| "Decoded merge audio ended early".to_string())?
+                .map_err(|e| format!("WAV sample decode error: {e}"))?;
+        }
+        Ok(())
+    }
 }
 
 fn read_wav_samples(path: &Path, max_samples: usize) -> Result<Vec<f32>, String> {
-    let reader = hound::WavReader::open(path).map_err(|e| format!("WAV read error: {}", e))?;
-    let spec = reader.spec();
-    if spec.channels != 1 || spec.bits_per_sample != 32 || spec.sample_format != hound::SampleFormat::Float {
-        return Err("Decoded merge audio has an unexpected WAV layout".into());
-    }
+    let reader = open_float_wav(path)?;
     let count = reader.duration() as usize;
     if count > max_samples {
         return Err("Decoded merge audio exceeds the sample limit".into());
@@ -796,19 +540,14 @@ fn read_wav_samples(path: &Path, max_samples: usize) -> Result<Vec<f32>, String>
         .map_err(|e| format!("WAV sample decode error: {e}"))
 }
 
-fn write_wav(path: &Path, samples: &[f32], rate: u32) -> Result<(), String> {
+fn wav_writer(path: &Path, rate: u32) -> Result<hound::WavWriter<std::io::BufWriter<std::fs::File>>, String> {
     let spec = hound::WavSpec {
         channels: 1,
         sample_rate: rate,
         bits_per_sample: 32,
         sample_format: hound::SampleFormat::Float,
     };
-    let mut writer = hound::WavWriter::create(path, spec).map_err(|e| format!("WAV write error: {}", e))?;
-    for &s in samples {
-        writer.write_sample(s).map_err(|e| format!("Write error: {}", e))?;
-    }
-    writer.finalize().map_err(|e| format!("Finalize error: {}", e))?;
-    Ok(())
+    hound::WavWriter::create(path, spec).map_err(|e| format!("WAV write error: {}", e))
 }
 
 struct ReservedOutput {
@@ -840,26 +579,61 @@ mod tests {
     }
 
     #[test]
-    fn cross_correlate_offset_sign_convention() {
-        // Construct B containing A's content delayed by 100 samples:
-        // b[i + 100] = a[i], i.e. recorder B started 100 samples EARLIER.
-        let mut a = vec![0.0f32; 400];
-        a[10] = 1.0;
-        a[50] = -0.5;
-        a[200] = 0.8;
-        let mut b = vec![0.0f32; 600];
-        for (i, &v) in a.iter().enumerate() {
-            b[i + 100] = v;
-        }
+    fn decoded_wavs_stream_through_the_engine_into_a_wav() {
+        // Two decoded sources as the merge writes them, the second placed
+        // three samples later: the engine reads them in blocks and the
+        // intermediate WAV holds their average where both play.
+        let dir = test_dir("engine_wav");
+        std::fs::create_dir_all(&dir).unwrap();
+        let write = |name: &str, samples: &[f32]| {
+            let path = dir.join(name);
+            let mut writer = wav_writer(&path, MERGE_SAMPLE_RATE).unwrap();
+            for &s in samples {
+                writer.write_sample(s).unwrap();
+            }
+            writer.finalize().unwrap();
+            path
+        };
+        let a = write("a.wav", &[1.0; 8]);
+        let b = write("b.wav", &[3.0; 8]);
+        let mut sources = vec![
+            AlignedSource::new(WavSampleReader::open(&a).unwrap(), 0, 8),
+            AlignedSource::new(WavSampleReader::open(&b).unwrap(), 3, 8),
+        ];
+        let out = dir.join("merged.wav");
+        let mut writer = wav_writer(&out, MERGE_SAMPLE_RATE).unwrap();
+        let mut sink = |block: &[f32]| {
+            block
+                .iter()
+                .try_for_each(|&s| writer.write_sample(s).map_err(|e| e.to_string()))
+        };
+        let written = merge_engine::merge_stream(
+            MergeStrategy::MixAll,
+            &mut sources,
+            MERGE_SAMPLE_RATE as usize,
+            &mut sink,
+            &mut |_, _| Ok(()),
+        )
+        .unwrap();
+        writer.finalize().unwrap();
+        assert_eq!(written, 11);
+        let merged = read_wav_samples(&out, 100).unwrap();
+        assert_eq!(merged, vec![1.0, 1.0, 1.0, 2.0, 2.0, 2.0, 2.0, 2.0, 3.0, 3.0, 3.0]);
+        let _ = std::fs::remove_dir_all(dir);
+    }
 
-        // The correlation peak must be at offset = +100 (a[i] vs b[i + offset]),
-        // which detect_sync negates so that positive offset_seconds means
-        // "source B starts later".
-        let at_plus = cross_correlate(&a, &b, 100, a.len());
-        let at_zero = cross_correlate(&a, &b, 0, a.len());
-        let at_minus = cross_correlate(&a, &b, -100, a.len());
-        assert!(at_plus > at_zero, "peak should be at +100, not 0");
-        assert!(at_plus > at_minus, "peak should be at +100, not -100");
+    #[test]
+    fn a_short_decoded_wav_is_an_error_not_silence() {
+        let dir = test_dir("engine_short");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("short.wav");
+        let mut writer = wav_writer(&path, MERGE_SAMPLE_RATE).unwrap();
+        writer.write_sample(0.5f32).unwrap();
+        writer.finalize().unwrap();
+        let mut reader = WavSampleReader::open(&path).unwrap();
+        let mut out = [0.0f32; 2];
+        assert!(reader.read_exact_into(&mut out).is_err());
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]

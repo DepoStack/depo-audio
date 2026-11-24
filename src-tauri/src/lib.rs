@@ -15,6 +15,8 @@ mod manifest;
 // owner decides to ship Merge; nothing in the app can reach it today.
 #[allow(dead_code)]
 mod merge;
+#[allow(dead_code)]
+mod merge_engine;
 mod models;
 mod persistence;
 mod safety;
