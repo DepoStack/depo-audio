@@ -71,7 +71,7 @@ pub(crate) fn get_formats() -> Vec<FormatInfo> {
             note: Some("Direct Audio: a file header, then one Ogg Opus stream per recording session, each with one mono stream per channel. Sessions are joined in order.".into()) },
         FormatInfo { key: "ftr".into(), name: "FTR Recording".into(), vendor: "For The Record".into(),
             status: "experimental".into(), handler: "ftr".into(), channels: Some("4–16".into()),
-            note: Some("FTR uses its own multichannel codec (tag 0x4180) and requires FFmpeg's native FTR decoder. Drop all .trm files for a session together.".into()) },
+            note: Some("FTR interleaves one AAC stream per microphone (or per pair of microphones). DepoAudio reads a file with FFmpeg's native FTR decoder when its layout allows, and otherwise splits the streams itself first; the export record says which. This reading is based on interoperability notes and has not yet been checked against a recording made by FTR. Add all .trm, .ftr or .tll files of a session together.".into()) },
         FormatInfo { key: "bwf".into(), name: "Broadcast WAV".into(), vendor: "CourtSmart / Various".into(),
             status: "supported".into(), handler: "passthrough".into(), channels: None, note: None },
         // The audio is read out of the .dm into a temporary WAV (dm.rs).
@@ -121,12 +121,15 @@ pub(crate) fn is_standard_format(ext: &str) -> bool {
     )
 }
 
-/// Input-decoder arguments that must appear before `-i`.
+/// Input-decoder arguments that must appear before `-i` when FFmpeg reads an
+/// FTR recording as it is.
 ///
-/// FTR packets contain one modified AAC unit per court channel. FFmpeg's native
-/// `ftr` decoder unwraps and repairs those units before delegating to AAC; using
-/// the ordinary `aac` decoder directly fails on real recordings and must never
-/// be used as a fallback.
+/// FTR chunks contain one modified AAC frame per court channel. FFmpeg's
+/// native `ftr` decoder unwraps and repairs those frames before delegating to
+/// AAC; the ordinary `aac` decoder cannot read the interleaved file. When the
+/// native decoder cannot take a file, DepoAudio does not fall back to plain
+/// AAC on it: it splits the channels first (`crate::trm`) and decodes each
+/// channel's own ADTS stream.
 ///
 /// SGMCA streams are decoded with libopus, the reference Opus decoder. An
 /// SGMCA concat script (see `prepare_sgmca_feed`) also gets the concat
@@ -166,7 +169,7 @@ pub(crate) fn detect_format_by_extension(path: &str) -> Option<FormatInfo> {
     let key = match ext.as_str() {
         // Court formats
         "sgmca" => "sgmca",
-        "trm" | "ftr" => "ftr",
+        "trm" | "ftr" | "tll" => "ftr",
         "aes" => "aes",
         "dm" => "digitalcat",
         "dcr" => "dcr",
@@ -546,6 +549,353 @@ pub(crate) fn prepare_sgmca_feed(
     Ok((guard.path.clone(), Some(guard), info))
 }
 
+/// What the caller knows about the FFmpeg that will read the feed.
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct FeedOptions {
+    /// The FFmpeg build has its native `ftr` decoder.
+    pub native_ftr: bool,
+    /// An earlier native `ftr` attempt on this file failed.
+    pub native_failed: bool,
+}
+
+const MERGED_SOURCE_LABEL: &str = "[da_src]";
+const MERGED_OUTPUT_LABEL: &str = "[da_out]";
+
+/// The audio FFmpeg reads for one selected file: usually the file itself; an
+/// SGMCA's recording sessions through a temporary concat script naming their
+/// byte ranges of the original; a `.dm`'s or a Liberty / BIS DCR's audio
+/// read into a temporary WAV; or, for an FTR recording that
+/// FFmpeg's native decoder cannot take as it is, one temporary mono ADTS file
+/// per channel, joined back in channel order with `amerge`. Temporary files
+/// live exactly as long as the feed, in DepoAudio's private work folder
+/// (workdir.rs).
+#[derive(Debug)]
+pub(crate) struct AudioFeed {
+    inputs: Vec<PathBuf>,
+    /// Options placed before every `-i` (a decoder or demuxer choice).
+    input_codec: Vec<String>,
+    trm: Option<crate::trm::TrmRoute>,
+    /// Channels in each input: 1, or 2 for a stereo-stream FTR recording
+    /// split into one stereo file per pair of microphones.
+    channels_per_input: u32,
+    /// An FTR recording DepoAudio could not read, handed to FFmpeg's native
+    /// decoder as it is: why the inspection failed.
+    trm_inspection_error: Option<String>,
+    /// For a `.dm`: its blocks and time stamps, for the export record.
+    dm_timeline: Option<crate::dm::DmTimeline>,
+    /// What the DCR reader found, for a Liberty / BIS Digital `.dcr`.
+    dcr: Option<crate::dcr::DcrInfo>,
+    /// For an SGMCA: its layout (recording sessions, start times), as the
+    /// SGMCA reader found it.
+    sgmca: Option<crate::sgmca::SgmcaInfo>,
+    /// For a DCR whose codec FFmpeg decodes one channel per stream: the
+    /// FFmpeg run that joins the channels into `inputs[0]`
+    /// (`finish_prepared_feed`).
+    merge: Option<crate::dcr::MergeStep>,
+    _guards: Vec<crate::safety::TempFile>,
+    /// The folder holding the channel files; dropped after them.
+    _channel_dir: Option<crate::workdir::TempDir>,
+}
+
+impl AudioFeed {
+    /// The file itself, with the decoder its extension calls for (libopus
+    /// for SGMCA, see [`input_codec_args`]) and otherwise FFmpeg's own
+    /// choice. An FTR file read this way (MP2, MP3 or WMA audio) gets no
+    /// forced decoder: the native `ftr` decoder is only for FTR AAC.
+    pub(crate) fn plain(path: PathBuf) -> Self {
+        let input_codec = if is_trm_path(&path) {
+            Vec::new()
+        } else {
+            input_codec_args(&path)
+        };
+        Self {
+            inputs: vec![path],
+            input_codec,
+            trm: None,
+            channels_per_input: 1,
+            trm_inspection_error: None,
+            dm_timeline: None,
+            dcr: None,
+            sgmca: None,
+            merge: None,
+            _guards: Vec::new(),
+            _channel_dir: None,
+        }
+    }
+
+    /// The first input: the file ffprobe reads when nothing is known.
+    pub(crate) fn path(&self) -> &Path {
+        &self.inputs[0]
+    }
+
+    /// The FTR route taken, for the export record.
+    pub(crate) fn trm(&self) -> Option<&crate::trm::TrmRoute> {
+        self.trm.as_ref()
+    }
+
+    /// For a `.dm`: its blocks and time stamps, for the export record.
+    pub(crate) fn dm_timeline(&self) -> Option<&crate::dm::DmTimeline> {
+        self.dm_timeline.as_ref()
+    }
+
+    /// For a Liberty / BIS Digital `.dcr`: what the reader found.
+    pub(crate) fn dcr(&self) -> Option<&crate::dcr::DcrInfo> {
+        self.dcr.as_ref()
+    }
+
+    /// For an SGMCA: its layout, as the SGMCA reader found it.
+    pub(crate) fn sgmca(&self) -> Option<&crate::sgmca::SgmcaInfo> {
+        self.sgmca.as_ref()
+    }
+
+    /// The DCR channel merge still to run before the feed can be read, if
+    /// any, taken out of the feed ([`finish_prepared_feed`] runs it).
+    pub(crate) fn take_merge(&mut self) -> Option<crate::dcr::MergeStep> {
+        self.merge.take()
+    }
+
+    /// Why DepoAudio could not read this FTR recording itself, when it was
+    /// handed to FFmpeg's native decoder as it is instead.
+    pub(crate) fn trm_inspection_error(&self) -> Option<&str> {
+        self.trm_inspection_error.as_deref()
+    }
+
+    /// Several inputs that `amerge` joins into the converted stream.
+    pub(crate) fn is_merged(&self) -> bool {
+        self.inputs.len() > 1
+    }
+
+    /// Every input in order, each preceded by `per_input` and the feed's own
+    /// input options: `[per_input] [-c:a ftr | -f aac] -i <input>`.
+    pub(crate) fn input_args(&self, per_input: &[String]) -> Vec<String> {
+        let mut args = Vec::new();
+        for input in &self.inputs {
+            args.extend(per_input.iter().cloned());
+            args.extend(self.input_codec.iter().cloned());
+            args.extend(["-i".into(), input.to_string_lossy().to_string()]);
+        }
+        args
+    }
+
+    /// The arguments for the input that holds one channel, when the feed
+    /// has one input per channel or per pair (so a per-channel pass decodes
+    /// only that input), and the channel's index inside that input when the
+    /// input holds more than one.
+    pub(crate) fn channel_input_args(&self, channel: u32, per_input: &[String]) -> Option<(Vec<String>, Option<u32>)> {
+        if !self.is_merged() {
+            return None;
+        }
+        let per = self.channels_per_input.max(1);
+        let input = self.inputs.get((channel / per) as usize)?;
+        let mut args: Vec<String> = per_input.to_vec();
+        args.extend(self.input_codec.iter().cloned());
+        args.extend(["-i".into(), input.to_string_lossy().to_string()]);
+        Some((args, (per > 1).then_some(channel % per)))
+    }
+
+    /// `[0:a:0][1:a:0]…amerge=inputs=N`: the joined stream holds input 0's
+    /// channels, then input 1's, and so on (for stereo inputs, channels 2k
+    /// and 2k + 1 are input k's).
+    fn merge_filter(&self) -> String {
+        let labels: String = (0..self.inputs.len())
+            .map(|index| format!("[{index}:{}]", source_audio_stream_specifier()))
+            .collect();
+        format!("{labels}amerge=inputs={}", self.inputs.len())
+    }
+
+    /// The filtergraph prefix (empty, or the `amerge` step ending in `;`)
+    /// and the label of the converted stream inside a `-filter_complex`.
+    pub(crate) fn filter_source(&self) -> (String, String) {
+        if self.is_merged() {
+            (
+                format!("{}{MERGED_SOURCE_LABEL};", self.merge_filter()),
+                MERGED_SOURCE_LABEL.into(),
+            )
+        } else {
+            (String::new(), source_audio_filter_input())
+        }
+    }
+
+    /// How an output reads the converted stream with an optional filter
+    /// chain: `-map 0:a:0 [-af <chain>]` for one input, or, for joined
+    /// inputs, `-filter_complex <amerge>[,<chain>][da_out] -map [da_out]`
+    /// (FFmpeg does not allow `-af` on a filtergraph's output).
+    pub(crate) fn source_output_args(&self, chain: Option<&str>) -> Vec<String> {
+        let (option, graph, map) = self.source_filtering(chain);
+        let mut args = Vec::new();
+        if let (Some(option), Some(graph)) = (option, graph) {
+            if option == "-filter_complex" {
+                args.extend([option.to_string(), graph]);
+                args.extend(map);
+            } else {
+                args.extend(map);
+                args.extend([option.to_string(), graph]);
+            }
+        } else {
+            args.extend(map);
+        }
+        args
+    }
+
+    /// The parts of [`Self::source_output_args`]: filter option, filter
+    /// graph or chain, and the `-map` arguments.
+    pub(crate) fn source_filtering(&self, chain: Option<&str>) -> (Option<&'static str>, Option<String>, Vec<String>) {
+        if self.is_merged() {
+            let graph = match chain {
+                Some(chain) => format!("{},{chain}{MERGED_OUTPUT_LABEL}", self.merge_filter()),
+                None => format!("{}{MERGED_OUTPUT_LABEL}", self.merge_filter()),
+            };
+            (
+                Some("-filter_complex"),
+                Some(graph),
+                vec!["-map".into(), MERGED_OUTPUT_LABEL.into()],
+            )
+        } else {
+            match chain {
+                Some(chain) => (Some("-af"), Some(chain.to_string()), source_audio_map_args()),
+                None => (None, None, source_audio_map_args()),
+            }
+        }
+    }
+
+    /// The FTR route when DepoAudio read the recording's audio chunks
+    /// itself; None for other files and for an FTR recording whose audio
+    /// (MP2, MP3, WMA) FFmpeg reads as it is.
+    fn trm_read(&self) -> Option<&crate::trm::TrmRoute> {
+        self.trm
+            .as_ref()
+            .filter(|route| route.decode_path != crate::trm::DecodePath::Plain)
+    }
+
+    /// DepoAudio read this FTR recording's frames, so its duration and
+    /// channel count come from that read, not from ffprobe.
+    pub(crate) fn trm_frames_read(&self) -> bool {
+        self.trm_read().is_some()
+    }
+
+    /// Channel count read from the recording itself (FTR), if any.
+    pub(crate) fn known_channels(&self) -> Option<u32> {
+        self.trm_read().map(|route| u32::from(route.info.channels))
+    }
+
+    /// Duration from the frames actually read (FTR): never from a header
+    /// length an unclosed recording leaves at its placeholder.
+    pub(crate) fn known_duration(&self) -> Option<f64> {
+        self.trm_read().and_then(|route| route.info.duration_secs)
+    }
+
+    /// FFmpeg reads this FTR recording with its native decoder.
+    pub(crate) fn used_native_ftr(&self) -> bool {
+        self.trm
+            .as_ref()
+            .is_some_and(|route| route.decode_path == crate::trm::DecodePath::NativeFtr)
+    }
+
+    pub(crate) fn known_sample_rate(&self) -> Option<u32> {
+        self.trm_read().and_then(|route| route.info.sample_rate)
+    }
+}
+
+/// The name prefix of each conversion's own channel-file folder inside
+/// this run's private work folder: `depoaudio_trm_run_<32 hex>`.
+const CHANNEL_DIR_PREFIX: &str = "depoaudio_trm_run_";
+
+/// The selected file is an FTR recording (`.trm`, `.ftr`, `.tll`).
+pub(crate) fn is_trm_path(path: &Path) -> bool {
+    detect_format_by_extension(&path.to_string_lossy()).is_some_and(|format| format.handler == "ftr")
+}
+
+/// An FTR recording handed to FFmpeg's native decoder as it is, without
+/// DepoAudio's layout reading; `reason` says why, for the export record.
+fn native_as_is(src: &Path, reason: String) -> AudioFeed {
+    AudioFeed {
+        inputs: vec![src.to_path_buf()],
+        input_codec: input_codec_args(src),
+        trm: None,
+        channels_per_input: 1,
+        trm_inspection_error: Some(reason),
+        dm_timeline: None,
+        dcr: None,
+        sgmca: None,
+        merge: None,
+        _guards: Vec::new(),
+        _channel_dir: None,
+    }
+}
+
+fn prepare_trm_feed(
+    src: &Path,
+    options: FeedOptions,
+    cancelled: Option<&(dyn Fn() -> bool + Send + Sync)>,
+) -> Result<AudioFeed, String> {
+    let info = match crate::trm::inspect_trm_with_cancel(src, cancelled) {
+        Ok(info) => info,
+        Err(error) if cancelled.is_some_and(|check| check()) || error == crate::trm::TRM_CANCELLED_MESSAGE => {
+            return Err(error)
+        }
+        // FTR's own splitter refuses this layout: so does DepoAudio, by
+        // every route.
+        Err(error) if crate::trm::is_refusal(&error) => return Err(error),
+        // DepoAudio's reading of the layout is unconfirmed, so a file it
+        // cannot read goes to FFmpeg's native decoder as it is, as before;
+        // the export record gives the reason.
+        Err(error) if options.native_ftr && !options.native_failed => return Ok(native_as_is(src, error)),
+        Err(error) => return Err(error),
+    };
+    let (decode_path, reasons) = crate::trm::choose_route(&info, options);
+    // DepoAudio read the layout but found no complete round to split (its
+    // stream-marker rule, from notes never checked against a real FTR
+    // recording, may not fit this recorder): the native decoder, which does
+    // not use that rule, reads the file as it is, as for an unreadable one.
+    if decode_path == crate::trm::DecodePath::Deinterleaved
+        && info.frames_per_channel == 0
+        && options.native_ftr
+        && !options.native_failed
+    {
+        return Ok(native_as_is(src, crate::trm::NO_COMPLETE_ROUND_MESSAGE.to_string()));
+    }
+    match decode_path {
+        crate::trm::DecodePath::NativeFtr => Ok(AudioFeed {
+            inputs: vec![src.to_path_buf()],
+            input_codec: input_codec_args(src),
+            trm: Some(crate::trm::TrmRoute::new(info, decode_path, reasons)),
+            channels_per_input: 1,
+            trm_inspection_error: None,
+            dm_timeline: None,
+            dcr: None,
+            sgmca: None,
+            merge: None,
+            _guards: Vec::new(),
+            _channel_dir: None,
+        }),
+        // MP2, MP3 or WMA in an FTR file: FFmpeg picks the decoder.
+        crate::trm::DecodePath::Plain => Ok(AudioFeed {
+            trm: Some(crate::trm::TrmRoute::new(info, decode_path, reasons)),
+            ..AudioFeed::plain(src.to_path_buf())
+        }),
+        crate::trm::DecodePath::Deinterleaved => {
+            let channel_dir = crate::workdir::new_temp_dir(CHANNEL_DIR_PREFIX)?;
+            let (written, files) =
+                crate::trm::deinterleave_trm_with_cancel(src, channel_dir.path(), Some(&info), cancelled)?;
+            let guards = files.iter().cloned().map(crate::safety::TempFile::new).collect();
+            let channels_per_input = u32::from(written.channels_per_stream.max(1));
+            Ok(AudioFeed {
+                inputs: files,
+                input_codec: vec!["-f".into(), "aac".into()],
+                trm: Some(crate::trm::TrmRoute::new(written, decode_path, reasons)),
+                channels_per_input,
+                trm_inspection_error: None,
+                dm_timeline: None,
+                dcr: None,
+                sgmca: None,
+                merge: None,
+                _guards: guards,
+                _channel_dir: Some(channel_dir),
+            })
+        }
+    }
+}
+
 // ── DigitalCAT .dm demux ──────────────────────────────────────────────────────
 
 /// Read the audio of a `.dm` into a new temporary RIFF WAVE file (see
@@ -563,7 +913,7 @@ fn demux_dm_with_cancel(
     if crate::dm::audio_totals(&dm).0 == 0 {
         return Err("This .dm file has no audio left to convert: every block was recorded over or empty.".into());
     }
-    // In the private work folder, like the SGMCA copy above.
+    // In the private work folder, like the SGMCA concat script above.
     let (guard, file) = crate::workdir::new_temp_file("depoaudio_", "wav")?;
     let mut writer = std::io::BufWriter::with_capacity(256 * 1024, file);
     crate::dm::write_wav(src, &dm, &mut writer, &is_cancelled)?;
@@ -577,37 +927,6 @@ fn demux_dm_with_cancel(
     Ok((guard, timeline))
 }
 
-/// The file FFmpeg reads for one source, and what still has to happen to it.
-/// An SGMCA with a vendor prefix becomes a temporary Ogg copy, a `.dm` a
-/// temporary WAV of its audio, and a Liberty / BIS DCR a temporary WAV
-/// (`crate::dcr`), each in DepoAudio's private work folder
-/// (`crate::workdir`); every other format is read as it is. A DCR whose
-/// codec FFmpeg decodes one channel per stream also needs `merge` run before
-/// `path` holds its audio. Every temporary file is removed when this is
-/// dropped.
-pub(crate) struct PreparedFeed {
-    pub path: PathBuf,
-    /// The temporary copy, when there is one; removed when this drops.
-    pub guard: Option<crate::safety::TempFile>,
-    pub merge: Option<crate::dcr::MergeStep>,
-    /// What the DCR reader found, for a DCR source.
-    pub dcr: Option<crate::dcr::DcrInfo>,
-    /// For a `.dm`: its blocks and time stamps, for the export record.
-    pub dm_timeline: Option<crate::dm::DmTimeline>,
-}
-
-impl PreparedFeed {
-    pub(crate) fn ready(path: PathBuf, guard: Option<crate::safety::TempFile>) -> Self {
-        Self {
-            path,
-            guard,
-            merge: None,
-            dcr: None,
-            dm_timeline: None,
-        }
-    }
-}
-
 pub(crate) fn has_extension(src: &Path, wanted: &str) -> bool {
     src.extension()
         .and_then(|extension| extension.to_str())
@@ -616,14 +935,17 @@ pub(crate) fn has_extension(src: &Path, wanted: &str) -> bool {
 
 /// Prepare the selected file for FFmpeg: an SGMCA gets a concat script over
 /// its recording sessions (`prepare_sgmca_feed`), a `.dm` has its audio
-/// read into a WAV and a Liberty / BIS DCR is demuxed into a WAV, each a
-/// temporary file in the private work folder that every probe, scan,
-/// waveform and conversion reads; any other file is used as it is. A DCR may
-/// still need its channel merge (`finish_prepared_feed`).
-pub(crate) fn prepare_audio_feed_detailed(
+/// read into a WAV, a Liberty / BIS DCR is demuxed into a WAV, and an FTR
+/// recording is read as it is by FFmpeg's native decoder or split into one
+/// temporary file per stream, each temporary file in the private work
+/// folder; every probe, scan, waveform and conversion reads the result. Any
+/// other file is used as it is. A DCR may still need its channel merge
+/// (`finish_prepared_feed`).
+pub(crate) fn prepare_audio_feed_with_cancel(
     src: &Path,
+    options: FeedOptions,
     cancelled: Option<&(dyn Fn() -> bool + Send + Sync)>,
-) -> Result<PreparedFeed, String> {
+) -> Result<AudioFeed, String> {
     if cancelled.is_some_and(|check| check()) {
         return Err(AUDIO_PREPARATION_CANCELLED_MESSAGE.into());
     }
@@ -636,46 +958,35 @@ pub(crate) fn prepare_audio_feed_detailed(
                     None => &never,
                 };
                 let feed = crate::dcr::prepare_feed(src, check)?;
-                Ok(PreparedFeed {
-                    path: feed.path,
-                    guard: Some(feed.guard),
-                    merge: feed.merge,
-                    dcr: Some(feed.info),
-                    dm_timeline: None,
-                })
+                let mut prepared = AudioFeed::plain(feed.path);
+                prepared._guards.push(feed.guard);
+                prepared.merge = feed.merge;
+                prepared.dcr = Some(feed.info);
+                Ok(prepared)
             }
             DcrContent::Tiff => Err(DCR_IMAGE_NOTE.into()),
             DcrContent::Other => Err(DCR_NOTE.into()),
         };
     }
+    if is_trm_path(src) {
+        return prepare_trm_feed(src, options, cancelled);
+    }
     if has_extension(src, "dm") {
         let (guard, timeline) = demux_dm_with_cancel(src, cancelled)?;
-        let mut prepared = PreparedFeed::ready(guard.path.clone(), Some(guard));
+        let mut prepared = AudioFeed::plain(guard.path.clone());
         prepared.dm_timeline = Some(timeline);
+        prepared._guards.push(guard);
         return Ok(prepared);
     }
     if !has_extension(src, "sgmca") {
-        return Ok(PreparedFeed::ready(src.to_path_buf(), None));
+        return Ok(AudioFeed::plain(src.to_path_buf()));
     }
 
-    let (feed, guard, _) = prepare_sgmca_feed(src, cancelled)?;
-    Ok(PreparedFeed::ready(feed, guard))
-}
-
-/// `prepare_audio_feed_detailed` for callers that need only the file and
-/// its guard. A DCR whose channels still have to be merged by FFmpeg is
-/// refused here rather than handed over half made: async callers use
-/// `prepare_audio_feed_cancellable`, which runs the merge. Used by tests.
-#[cfg(test)]
-pub(crate) fn prepare_audio_feed_with_cancel(
-    src: &Path,
-    cancelled: Option<&(dyn Fn() -> bool + Send + Sync)>,
-) -> Result<(PathBuf, Option<crate::safety::TempFile>), String> {
-    let prepared = prepare_audio_feed_detailed(src, cancelled)?;
-    if prepared.merge.is_some() {
-        return Err("This recording's channels still need to be joined by FFmpeg before it can be read.".into());
-    }
-    Ok((prepared.path, prepared.guard))
+    let (feed, guard, info) = prepare_sgmca_feed(src, cancelled)?;
+    let mut prepared = AudioFeed::plain(feed);
+    prepared._guards.extend(guard);
+    prepared.sgmca = Some(info);
+    Ok(prepared)
 }
 
 /// How long the FFmpeg run that joins a DCR's channels may take.
@@ -686,10 +997,10 @@ const DCR_MERGE_TIMEOUT_SECS: u64 = 4 * 60 * 60;
 /// either way; on failure the partial feed is removed too.
 pub(crate) async fn finish_prepared_feed(
     app: &tauri::AppHandle,
-    mut prepared: PreparedFeed,
+    mut prepared: AudioFeed,
     cancelled: &(dyn Fn() -> bool + Sync),
-) -> Result<PreparedFeed, String> {
-    let Some(merge) = prepared.merge.take() else {
+) -> Result<AudioFeed, String> {
+    let Some(merge) = prepared.take_merge() else {
         return Ok(prepared);
     };
     let crate::dcr::MergeStep { inputs, args } = merge;
@@ -707,8 +1018,8 @@ pub(crate) async fn finish_prepared_feed(
     }
     let codec = prepared.dcr.as_ref().map(|info| info.codec.clone()).unwrap_or_default();
     match output {
-        Some(output) if output.success && prepared.path.is_file() => {
-            crate::dcr::clear_channel_mask(&prepared.path)?;
+        Some(output) if output.success && prepared.path().is_file() => {
+            crate::dcr::clear_channel_mask(prepared.path())?;
             Ok(prepared)
         }
         Some(output) => Err(dcr_merge_error(&codec, &output.stderr)),
@@ -747,21 +1058,51 @@ pub(crate) fn dcr_merge_error(codec: &str, stderr: &[u8]) -> String {
 }
 
 /// Prepare a feed without blocking the async command executor, and run any
-/// remaining FFmpeg step. The cancellation predicate is checked between
-/// every 64 KiB copied (SGMCA) or 65,536 atoms (DCR) and owns no borrowed
-/// command state, so scan/conversion/waveform callers can reuse it.
+/// remaining FFmpeg step (a DCR's channel merge). The cancellation predicate
+/// is checked between every 64 KiB read or copied (65,536 atoms for a DCR)
+/// and owns no borrowed command state, so scan/conversion/waveform callers
+/// can reuse it. For an FTR recording this asks the bundled FFmpeg (once per
+/// process) whether it has the native `ftr` decoder.
 pub(crate) async fn prepare_audio_feed_cancellable(
     app: &tauri::AppHandle,
     src: PathBuf,
     cancelled: Arc<dyn Fn() -> bool + Send + Sync>,
-) -> Result<(PathBuf, Option<crate::safety::TempFile>), String> {
-    let blocking_cancel = cancelled.clone();
-    let prepared =
-        tauri::async_runtime::spawn_blocking(move || prepare_audio_feed_detailed(&src, Some(blocking_cancel.as_ref())))
-            .await
-            .map_err(|error| format!("Audio preparation task failed: {error}"))??;
-    let finished = finish_prepared_feed(app, prepared, cancelled.as_ref()).await?;
-    Ok((finished.path, finished.guard))
+) -> Result<AudioFeed, String> {
+    let options = crate::ffmpeg::feed_options(app, &src).await;
+    let prepared = prepare_audio_feed_with_options(src, options, cancelled.clone()).await?;
+    finish_prepared_feed(app, prepared, cancelled.as_ref()).await
+}
+
+/// The blocking part of [`prepare_audio_feed_cancellable`], with the feed
+/// options already known, on a blocking thread. A DCR's channel merge is not
+/// run here: callers that can get one pass the feed to
+/// [`finish_prepared_feed`].
+pub(crate) async fn prepare_audio_feed_with_options(
+    src: PathBuf,
+    options: FeedOptions,
+    cancelled: Arc<dyn Fn() -> bool + Send + Sync>,
+) -> Result<AudioFeed, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        prepare_audio_feed_with_cancel(&src, options, Some(cancelled.as_ref()))
+    })
+    .await
+    .map_err(|error| format!("Audio preparation task failed: {error}"))?
+}
+
+/// The feed for an FTR recording on which FFmpeg's native decoder already
+/// failed: always the split-channel route, with "native-decode-failed" among
+/// the reasons the export record gives.
+pub(crate) async fn prepare_audio_feed_after_native_failure(
+    app: &tauri::AppHandle,
+    src: PathBuf,
+    cancelled: Arc<dyn Fn() -> bool + Send + Sync>,
+) -> Result<AudioFeed, String> {
+    let options = FeedOptions {
+        native_ftr: true,
+        native_failed: true,
+    };
+    let prepared = prepare_audio_feed_with_options(src, options, cancelled.clone()).await?;
+    finish_prepared_feed(app, prepared, cancelled.as_ref()).await
 }
 
 // ── Output format helpers ─────────────────────────────────────────────────────
@@ -1035,11 +1376,128 @@ mod tests {
         let ftr = detect_format_for_path("SESSION.FTR").unwrap();
         assert_eq!(ftr.key, "ftr");
         assert_eq!(ftr.handler, "ftr");
+
+        for name in ["session.tll", "SESSION.TLL"] {
+            let tll = detect_format_for_path(name).unwrap();
+            assert_eq!((tll.key.as_str(), tll.handler.as_str()), ("ftr", "ftr"), "{name}");
+            assert!(is_trm_path(Path::new(name)));
+        }
+        assert!(!is_trm_path(Path::new("session.trs")));
+        assert!(detect_format_for_path("session.trs").is_none());
+    }
+
+    #[test]
+    fn a_merged_feed_joins_its_inputs_in_channel_order() {
+        let feed = AudioFeed {
+            inputs: (0..3)
+                .map(|channel| PathBuf::from(format!("/tmp/ch{channel}.aac")))
+                .collect(),
+            input_codec: vec!["-f".into(), "aac".into()],
+            trm: None,
+            channels_per_input: 1,
+            trm_inspection_error: None,
+            dm_timeline: None,
+            dcr: None,
+            sgmca: None,
+            merge: None,
+            _guards: Vec::new(),
+            _channel_dir: None,
+        };
+        assert!(feed.is_merged());
+        assert_eq!(
+            feed.input_args(&["-t".into(), "5".into()]),
+            [
+                "-t",
+                "5",
+                "-f",
+                "aac",
+                "-i",
+                "/tmp/ch0.aac",
+                "-t",
+                "5",
+                "-f",
+                "aac",
+                "-i",
+                "/tmp/ch1.aac",
+                "-t",
+                "5",
+                "-f",
+                "aac",
+                "-i",
+                "/tmp/ch2.aac"
+            ]
+        );
+        assert_eq!(
+            feed.source_output_args(Some("volume=2")),
+            [
+                "-filter_complex",
+                "[0:a:0][1:a:0][2:a:0]amerge=inputs=3,volume=2[da_out]",
+                "-map",
+                "[da_out]"
+            ]
+        );
+        assert_eq!(
+            feed.source_output_args(None),
+            [
+                "-filter_complex",
+                "[0:a:0][1:a:0][2:a:0]amerge=inputs=3[da_out]",
+                "-map",
+                "[da_out]"
+            ]
+        );
+        assert_eq!(
+            feed.filter_source(),
+            (
+                "[0:a:0][1:a:0][2:a:0]amerge=inputs=3[da_src];".to_string(),
+                "[da_src]".to_string()
+            )
+        );
+        let (args, inner) = feed.channel_input_args(2, &[]).unwrap();
+        assert_eq!(args, ["-f", "aac", "-i", "/tmp/ch2.aac"]);
+        assert_eq!(inner, None);
+        assert!(feed.channel_input_args(3, &[]).is_none());
+
+        // A stereo-stream FTR split: input k holds channels 2k and 2k + 1.
+        let stereo = AudioFeed {
+            channels_per_input: 2,
+            inputs: feed.inputs[..2].to_vec(),
+            input_codec: feed.input_codec.clone(),
+            trm: None,
+            trm_inspection_error: None,
+            dm_timeline: None,
+            dcr: None,
+            sgmca: None,
+            merge: None,
+            _guards: Vec::new(),
+            _channel_dir: None,
+        };
+        let (args, inner) = stereo.channel_input_args(3, &[]).unwrap();
+        assert_eq!(args, ["-f", "aac", "-i", "/tmp/ch1.aac"]);
+        assert_eq!(inner, Some(1));
+        assert_eq!(stereo.channel_input_args(0, &[]).unwrap().1, Some(0));
+        assert!(stereo.channel_input_args(4, &[]).is_none());
+
+        let plain = AudioFeed::plain(PathBuf::from("/in.wav"));
+        assert!(!plain.is_merged());
+        assert_eq!(
+            plain.source_output_args(Some("volume=2")),
+            ["-map", "0:a:0", "-af", "volume=2"]
+        );
+        assert_eq!(plain.source_output_args(None), ["-map", "0:a:0"]);
+        assert_eq!(plain.filter_source(), (String::new(), "[0:a:0]".to_string()));
+        assert!(plain.channel_input_args(0, &[]).is_none());
     }
 
     #[test]
     fn ftr_input_uses_native_decoder_and_never_plain_aac() {
-        for path in ["session.trm", "session.ftr", "SESSION.TRM", "SESSION.FTR"] {
+        for path in [
+            "session.trm",
+            "session.ftr",
+            "session.tll",
+            "SESSION.TRM",
+            "SESSION.FTR",
+            "SESSION.TLL",
+        ] {
             let args = input_codec_args(Path::new(path));
             assert_eq!(args, vec!["-c:a", "ftr"], "unexpected decoder args for {path}");
             assert!(!args.iter().any(|arg| arg.eq_ignore_ascii_case("aac")));
@@ -1050,12 +1508,171 @@ mod tests {
     }
 
     #[test]
+    fn an_ftr_recording_depoaudio_cannot_read_goes_to_the_native_decoder_when_present() {
+        let dir = ReservationTestDir::new();
+        let source = dir.path().join("unreadable.trm");
+        fs::write(&source, b"RIFF\x10\0\0\0AVI LIST\x04\0\0\0junk").unwrap();
+        let native = FeedOptions {
+            native_ftr: true,
+            native_failed: false,
+        };
+        let feed = prepare_audio_feed_with_cancel(&source, native, None).unwrap();
+        assert!(feed.trm().is_none());
+        assert!(
+            !feed.used_native_ftr(),
+            "no layout was read, so there is no split route to retry"
+        );
+        assert!(feed.trm_inspection_error().unwrap().contains("FTR recording"));
+        assert_eq!(feed.input_args(&[])[..2], ["-c:a", "ftr"]);
+
+        // Without the decoder, or once it has failed, the reason is the error.
+        assert!(prepare_audio_feed_with_cancel(&source, FeedOptions::default(), None).is_err());
+        let failed = FeedOptions {
+            native_failed: true,
+            ..native
+        };
+        assert!(prepare_audio_feed_with_cancel(&source, failed, None).is_err());
+    }
+
+    #[test]
+    fn an_ftr_recording_with_no_round_to_split_goes_to_the_native_decoder_when_present() {
+        use crate::trm::tests as trm_fixture;
+        let dir = ReservationTestDir::new();
+        // Every frame carries the private bit, so DepoAudio's split finds no
+        // stream-0 frame; FFmpeg's native decoder does not use the bit.
+        let channels = trm_fixture::fake_frames(2, 3);
+        let (mut stream, lengths) = trm_fixture::ftr_frame_stream(&channels);
+        let mut pos = 0;
+        for length in &lengths {
+            stream[pos + 2] |= 0x02;
+            pos += length;
+        }
+        let source = dir.path().join("all_private.trm");
+        fs::write(
+            &source,
+            trm_fixture::build_avi(
+                &trm_fixture::AviSpec::closed(2),
+                &trm_fixture::round_packets(&stream, &lengths, 2, 1),
+            ),
+        )
+        .unwrap();
+        assert_eq!(crate::trm::inspect_trm(&source).unwrap().frames_per_channel, 0);
+        let native = FeedOptions {
+            native_ftr: true,
+            native_failed: false,
+        };
+        let feed = prepare_audio_feed_with_cancel(&source, native, None).unwrap();
+        assert!(feed.trm().is_none() && !feed.trm_frames_read());
+        assert_eq!(feed.trm_inspection_error(), Some(crate::trm::NO_COMPLETE_ROUND_MESSAGE));
+        assert_eq!(
+            feed.input_args(&[]),
+            ["-c:a", "ftr", "-i", source.to_string_lossy().as_ref()]
+        );
+        // Without the decoder, or once it has failed, there is nothing to split.
+        for options in [
+            FeedOptions::default(),
+            FeedOptions {
+                native_failed: true,
+                ..native
+            },
+        ] {
+            assert!(prepare_audio_feed_with_cancel(&source, options, None)
+                .unwrap_err()
+                .contains("No complete round"));
+        }
+    }
+
+    #[test]
+    fn channel_files_go_to_a_new_private_folder_removed_with_the_feed() {
+        use crate::trm::tests as trm_fixture;
+        let dir = ReservationTestDir::new();
+        let channels = trm_fixture::fake_frames(2, 3);
+        let (stream, _) = trm_fixture::ftr_frame_stream(&channels);
+        let source = dir.path().join("split.trm");
+        fs::write(
+            &source,
+            trm_fixture::build_avi(
+                &trm_fixture::AviSpec::closed(2),
+                &trm_fixture::sized_packets(&stream, 37),
+            ),
+        )
+        .unwrap();
+        let feed = prepare_audio_feed_with_cancel(&source, FeedOptions::default(), None).unwrap();
+        assert_eq!(feed.trm().unwrap().decode_path, crate::trm::DecodePath::Deinterleaved);
+        let folder = feed.inputs[0].parent().unwrap().to_path_buf();
+        assert!(feed.inputs.iter().all(|input| input.parent() == Some(folder.as_path())));
+        assert!(folder
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .starts_with(CHANNEL_DIR_PREFIX));
+        // In this run's private work folder (workdir.rs), not the shared
+        // system temporary folder.
+        assert!(folder.starts_with(crate::workdir::tests::test_root()));
+        assert_eq!(
+            crate::workdir::tests::thread_run_files(),
+            [folder.file_name().unwrap().to_string_lossy().to_string()]
+        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = |path: &Path| fs::symlink_metadata(path).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode(&folder), 0o700);
+            for input in &feed.inputs {
+                assert_eq!(mode(input), 0o600, "{}", input.display());
+            }
+        }
+        // A second conversion gets a folder of its own.
+        let other = crate::workdir::new_temp_dir(CHANNEL_DIR_PREFIX).unwrap();
+        assert_ne!(other.path(), folder);
+        drop(other);
+        drop(feed);
+        assert!(!folder.exists());
+        assert!(crate::workdir::tests::thread_run_files().is_empty());
+    }
+
+    #[test]
+    fn an_ftr_layout_ftr_itself_refuses_is_not_handed_to_the_native_decoder() {
+        use crate::trm::tests as trm_fixture;
+        let dir = ReservationTestDir::new();
+        let channels = trm_fixture::fake_frames(2, 3);
+        let (stream, lengths) = trm_fixture::ftr_frame_stream(&channels);
+        let mut spec = trm_fixture::AviSpec::closed(2);
+        spec.tag = 0x0180;
+        let source = dir.path().join("no_layout_bits.trm");
+        fs::write(
+            &source,
+            trm_fixture::build_avi(&spec, &trm_fixture::round_packets(&stream, &lengths, 2, 1)),
+        )
+        .unwrap();
+        let native = FeedOptions {
+            native_ftr: true,
+            native_failed: false,
+        };
+        assert_eq!(
+            prepare_audio_feed_with_cancel(&source, native, None).unwrap_err(),
+            crate::trm::TRM_UNSPLITTABLE_MESSAGE
+        );
+
+        // MP2 audio in an FTR file: FFmpeg reads it as it is, with no
+        // decoder forced and no split.
+        spec.tag = 0x0050;
+        let plain = dir.path().join("mp2.trm");
+        fs::write(&plain, trm_fixture::build_avi(&spec, &[vec![0x11; 40]])).unwrap();
+        let feed = prepare_audio_feed_with_cancel(&plain, native, None).unwrap();
+        assert_eq!(feed.trm().unwrap().decode_path, crate::trm::DecodePath::Plain);
+        assert_eq!(feed.input_args(&[]), ["-i", plain.to_string_lossy().as_ref()]);
+        assert!(!feed.used_native_ftr() && !feed.trm_frames_read());
+        assert_eq!((feed.known_channels(), feed.known_duration()), (None, None));
+    }
+
+    #[test]
     fn sgmca_feed_refuses_a_file_without_the_direct_audio_header() {
         let dir = ReservationTestDir::new();
         let source = dir.path().join("broken.sgmca");
         fs::write(&source, b"vendor header without an ogg stream, padded to forty bytes").unwrap();
 
-        let error = prepare_audio_feed_with_cancel(&source, None).unwrap_err();
+        let error = prepare_audio_feed_with_cancel(&source, FeedOptions::default(), None).unwrap_err();
 
         assert!(error.contains("not a Direct Audio file"), "{error}");
     }
@@ -1130,10 +1747,11 @@ mod tests {
         let source = dir.path().join("plain.sgmca");
         fs::write(&source, crate::sgmca::fixtures::synthetic(5, 312, 0, |_| 30)).unwrap();
 
-        let (prepared, guard) = prepare_audio_feed_with_cancel(&source, None).unwrap();
-        assert!(guard.is_none());
-        assert_eq!(prepared, source);
-        assert_eq!(input_codec_args(&prepared), ["-c:a", "libopus"]);
+        let prepared = prepare_audio_feed_with_cancel(&source, FeedOptions::default(), None).unwrap();
+        assert!(prepared._guards.is_empty());
+        assert_eq!(prepared.path(), source);
+        assert_eq!(prepared.input_args(&[])[..2], ["-c:a", "libopus"]);
+        assert_eq!(prepared.sgmca().unwrap().segments.len(), 1);
     }
 
     #[test]
@@ -1150,7 +1768,7 @@ mod tests {
         let checks = AtomicUsize::new(0);
         let cancelled = || checks.fetch_add(1, Ordering::Relaxed) >= 4;
 
-        let error = prepare_audio_feed_with_cancel(&source, Some(&cancelled)).err().unwrap();
+        let error = prepare_audio_feed_with_cancel(&source, FeedOptions::default(), Some(&cancelled)).unwrap_err();
 
         assert_eq!(error, AUDIO_PREPARATION_CANCELLED_MESSAGE);
         assert!(checks.load(Ordering::Relaxed) >= 5);
@@ -1183,23 +1801,23 @@ mod tests {
             "digitalcat"
         );
 
-        let prepared = prepare_audio_feed_detailed(&source, None).unwrap();
-        assert_ne!(prepared.path, source);
-        assert!(prepared.path.starts_with(crate::workdir::tests::test_root()));
-        assert_eq!(prepared.path.extension().unwrap(), "wav");
-        let wav = fs::read(&prepared.path).unwrap();
+        let prepared = prepare_audio_feed_with_cancel(&source, FeedOptions::default(), None).unwrap();
+        assert_ne!(prepared.path(), source);
+        assert!(prepared.path().starts_with(crate::workdir::tests::test_root()));
+        assert_eq!(prepared.path().extension().unwrap(), "wav");
+        let wav = fs::read(prepared.path()).unwrap();
         assert_eq!(&wav[..4], b"RIFF");
         assert_eq!(&wav[8..16], b"WAVEfmt ");
-        let timeline = prepared.dm_timeline.clone().unwrap();
+        let timeline = prepared.dm_timeline().cloned().unwrap();
         assert_eq!(timeline.blocks_erased, 1);
-        let feed = prepared.path.clone();
+        let feed = prepared.path().to_path_buf();
         drop(prepared);
         assert!(!feed.exists(), "the temporary WAV goes with its guard");
         assert_eq!(fs::read(&source).unwrap(), bytes, "the original is only read");
 
         let checks = AtomicUsize::new(0);
         let cancelled = || checks.fetch_add(1, Ordering::Relaxed) >= 2;
-        let error = prepare_audio_feed_with_cancel(&source, Some(&cancelled)).unwrap_err();
+        let error = prepare_audio_feed_with_cancel(&source, FeedOptions::default(), Some(&cancelled)).unwrap_err();
         assert_eq!(error, AUDIO_PREPARATION_CANCELLED_MESSAGE);
         assert!(
             crate::workdir::tests::thread_run_files().is_empty(),
@@ -1214,7 +1832,9 @@ mod tests {
             crate::dm::tests::dm_bytes(&crate::dm::tests::gsm_format(), 520, &[(0, &block), (0, &block)]),
         )
         .unwrap();
-        let error = prepare_audio_feed_detailed(&erased, None).err().unwrap();
+        let error = prepare_audio_feed_with_cancel(&erased, FeedOptions::default(), None)
+            .err()
+            .unwrap();
         assert!(error.contains("no audio left"), "{error}");
         assert!(crate::workdir::tests::thread_run_files().is_empty());
 
@@ -1222,11 +1842,11 @@ mod tests {
         // complete blocks before it, and the queue still gets a duration.
         let cut = dir.path().join("Session 1 (cut).dm");
         fs::write(&cut, &bytes[..bytes.len() - 220]).unwrap();
-        let prepared = prepare_audio_feed_detailed(&cut, None).unwrap();
-        let timeline = prepared.dm_timeline.clone().unwrap();
+        let prepared = prepare_audio_feed_with_cancel(&cut, FeedOptions::default(), None).unwrap();
+        let timeline = prepared.dm_timeline().cloned().unwrap();
         assert_eq!(timeline.blocks_total, 2);
         assert_eq!(timeline.truncated_tail_bytes, 308);
-        let wav = fs::read(&prepared.path).unwrap();
+        let wav = fs::read(prepared.path()).unwrap();
         // One kept block (the other is recorded over): 520 bytes of data.
         assert_eq!(
             u32::from_le_bytes(wav[wav.len() - 524..wav.len() - 520].try_into().unwrap()),

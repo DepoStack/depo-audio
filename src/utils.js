@@ -23,11 +23,32 @@ export function basename(p) {
 // order IS chronological order, with sub-second precision and no midnight
 // rollover issues. File mtimes are useless here: copying the files (how
 // court audio is delivered) rewrites them.
-const FTR_NAME_RE = /^(.+)_(\d{8})-(\d{4,6})_([0-9a-f]{16})\.(trm|ftr)$/i
-const CHUNK_EXT_RE = /\.(trm|ftr)$/i
+const FTR_NAME_RE = /^(.+)_(\d{8})-(\d{4,6})_([0-9a-f]{16})\.(trm|ftr|tll)$/i
+const CHUNK_EXT_RE = /\.(trm|ftr|tll)$/i
 
 /**
- * Chronologically order a batch of FTR recording chunks (.trm/.ftr).
+ * Where an FTR chunk was recorded, for the queue's session notice: its folder
+ * and recording location from the canonical chunk name (the same location
+ * grouping `sortRecordingChunks` uses). Null for a name that is not
+ * canonical, which is never grouped. The date is separate
+ * (`ftrRecordingDate`): a session can run past midnight.
+ */
+export function ftrSessionKey(path) {
+  const name = basename(path)
+  const match = name.match(FTR_NAME_RE)
+  if (!match) return null
+  const folder = (path || '').replace(/\\/g, '/').slice(0, -name.length)
+  return `${folder}|${match[1].toLowerCase()}`
+}
+
+/** The recording date (YYYYMMDD) in a canonical FTR chunk name, or null. */
+export function ftrRecordingDate(path) {
+  const match = basename(path).match(FTR_NAME_RE)
+  return match ? match[2] : null
+}
+
+/**
+ * Chronologically order a batch of FTR recording chunks (.trm/.ftr/.tll).
  *
  * Only reorders when the ENTIRE batch is FTR chunks — a mixed selection keeps
  * the user's order. Chunks from different recording locations (courtrooms)

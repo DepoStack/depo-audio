@@ -5,8 +5,8 @@ use std::sync::Arc;
 use regex::Regex;
 use tauri::{AppHandle, Emitter};
 
-use crate::ffmpeg::{ensure_ftr_decoder, probe_channels_cancellable, probe_duration_cancellable};
-use crate::helpers::ffprobe_bin_name;
+use crate::ffmpeg::{probe_channels_cancellable, probe_duration_cancellable};
+use crate::helpers::{ffprobe_bin_name, AudioFeed};
 use crate::types::AnalysisResult;
 
 // ── Audio analysis engine ────────────────────────────────────────────────────
@@ -119,32 +119,17 @@ fn channel_gains_from_lufs(per_channel_lufs: &[f64]) -> Vec<f64> {
         .collect()
 }
 
-/// Bounded conversion-time auto-level pass. This intentionally performs only
-/// the representative loudness measurements needed for channel gains; it does
-/// not invoke VAD, Smart Turn, quality scoring, speaker models, or full PCM
-/// predecode.
-pub(crate) async fn analyze_channel_gains(
+/// Bounded conversion-time auto-level pass on an already prepared feed (the
+/// conversion's own, so an FTR recording is not read or split twice). This
+/// intentionally performs only the representative loudness measurements
+/// needed for channel gains; it does not invoke VAD, Smart Turn, quality
+/// scoring, speaker models, or full PCM predecode.
+pub(crate) async fn analyze_feed_channel_gains(
     app: &AppHandle,
-    path: &str,
-    max_size: u64,
+    feed: &AudioFeed,
     ctx: Option<&ScanCtx>,
 ) -> Result<Vec<f64>, String> {
-    let source = Path::new(path);
-    crate::safety::check_file_safe_with_limit(source, max_size)?;
-    let preparation_context = ctx.cloned();
-    let preparation_cancelled: Arc<dyn Fn() -> bool + Send + Sync> =
-        Arc::new(move || preparation_context.as_ref().is_some_and(ScanCtx::cancelled));
-    let prepared = prepare_with_heartbeat(app, source, preparation_cancelled, ctx).await;
     check(ctx)?;
-    let (feed_path, _feed_guard) = prepared?;
-    let feed = feed_path.as_path();
-
-    let input_codec = crate::helpers::input_codec_args(feed);
-    if !input_codec.is_empty() {
-        ensure_ftr_decoder(app).await?;
-        check(ctx)?;
-    }
-
     let is_cancelled = || ctx.map(|context| context.cancelled()).unwrap_or(false);
     let channels = probe_channels_cancellable(app, feed, Some(&is_cancelled)).await;
     check(ctx)?;
@@ -155,7 +140,7 @@ pub(crate) async fn analyze_channel_gains(
         ));
     }
 
-    let (per_channel_lufs, _, _) = analyze_loudness_and_peaks(app, feed, channels, &input_codec, ctx).await?;
+    let (per_channel_lufs, _, _) = analyze_loudness_and_peaks(app, feed, channels, ctx).await?;
     check(ctx)?;
     Ok(channel_gains_from_lufs(&per_channel_lufs))
 }
@@ -198,7 +183,7 @@ async fn prepare_with_heartbeat(
     source: &Path,
     cancelled: Arc<dyn Fn() -> bool + Send + Sync>,
     ctx: Option<&ScanCtx>,
-) -> Result<(std::path::PathBuf, Option<crate::safety::TempFile>), String> {
+) -> Result<AudioFeed, String> {
     let prepare = crate::helpers::prepare_audio_feed_cancellable(app, source.to_path_buf(), cancelled);
     tokio::pin!(prepare);
     loop {
@@ -220,17 +205,12 @@ pub(crate) async fn analyze_audio(
     let preparation_context = ctx.cloned();
     let preparation_cancelled: Arc<dyn Fn() -> bool + Send + Sync> =
         Arc::new(move || preparation_context.as_ref().is_some_and(ScanCtx::cancelled));
-    let prepared = prepare_with_heartbeat(app, source, preparation_cancelled, ctx).await;
+    // An FTR recording is read through here and either decoded by FFmpeg's
+    // native decoder or split into per-channel files first (crate::trm).
+    let prepared = prepare_with_heartbeat(app, source, preparation_cancelled.clone(), ctx).await;
     check(ctx)?;
-    let (feed_path, _feed_guard) = prepared?;
-    let feed = feed_path.as_path();
-
-    // Select FFmpeg's native FTR decoder explicitly. Plain AAC cannot decode
-    // FTR's modified, per-channel packet layout.
-    let input_codec = crate::helpers::input_codec_args(feed);
-    if !input_codec.is_empty() {
-        ensure_ftr_decoder(app).await?;
-    }
+    let mut prepared_feed = prepared?;
+    let feed = &prepared_feed;
 
     emit(ctx, "probe", 0.02);
     // Probe basic metadata. On probe failure assume ONE channel — inventing
@@ -254,9 +234,25 @@ pub(crate) async fn analyze_audio(
     let sample_rate = probe_sample_rate(app, feed, ctx).await.unwrap_or(48000);
     check(ctx)?;
 
-    // Run loudness + peak analysis per channel
-    let (per_channel_lufs, per_channel_peak, loudness_failures) =
-        analyze_loudness_and_peaks(app, feed, channels, &input_codec, ctx).await?;
+    // Run loudness + peak analysis per channel. If FFmpeg's native FTR
+    // decoder read none of the channels, split the channels and try once more.
+    let loudness = analyze_loudness_and_peaks(app, feed, channels, ctx).await;
+    check(ctx)?;
+    let (per_channel_lufs, per_channel_peak, loudness_failures) = match loudness {
+        Err(error) if feed.used_native_ftr() => {
+            let retry = crate::helpers::prepare_audio_feed_after_native_failure(
+                app,
+                source.to_path_buf(),
+                preparation_cancelled,
+            )
+            .await;
+            check(ctx)?;
+            prepared_feed =
+                retry.map_err(|retry_error| format!("{error}; splitting its channels also failed: {retry_error}"))?;
+            analyze_loudness_and_peaks(app, &prepared_feed, channels, ctx).await?
+        }
+        other => other?,
+    };
     check(ctx)?;
 
     // Detect clipping
@@ -365,9 +361,8 @@ fn build_recommendations(
 
 async fn analyze_loudness_and_peaks(
     app: &AppHandle,
-    feed: &Path,
+    feed: &AudioFeed,
     channels: u32,
-    input_codec: &[String],
     ctx: Option<&ScanCtx>,
 ) -> Result<(Vec<f64>, Vec<f64>, u32), String> {
     let mut lufs_vec = Vec::with_capacity(channels as usize);
@@ -380,7 +375,7 @@ async fn analyze_loudness_and_peaks(
     if channels <= 1 {
         // Mono or single-channel: analyze directly
         emit(ctx, "loudness", 0.05);
-        match analyze_single_channel(app, feed, None, input_codec, ctx, 0.05).await {
+        match analyze_single_channel(app, feed, None, ctx, 0.05).await {
             Ok((lufs, peak)) => {
                 lufs_vec.push(lufs);
                 peak_vec.push(peak);
@@ -397,7 +392,7 @@ async fn analyze_loudness_and_peaks(
             check(ctx)?;
             let pct = 0.05 + 0.20 * (ch as f64 / channels as f64);
             emit(ctx, "loudness", pct);
-            match analyze_single_channel(app, feed, Some(ch), input_codec, ctx, pct).await {
+            match analyze_single_channel(app, feed, Some(ch), ctx, pct).await {
                 Ok((lufs, peak)) => {
                     lufs_vec.push(lufs);
                     peak_vec.push(peak);
@@ -418,38 +413,66 @@ async fn analyze_loudness_and_peaks(
     Ok((lufs_vec, peak_vec, failures))
 }
 
-/// FFmpeg arguments for one loudness/peak pass after the input prelude and
-/// codec hint: a bounded sample (`-t` before `-i`), the converted audio stream
-/// mapped explicitly (`-map 0:a:0`, the stream the channel probe counted),
-/// optionally one channel isolated with `pan=mono`, then `ebur128`. Using
-/// pan=mono instead of channelsplit avoids hardcoding a channel layout.
+/// FFmpeg arguments for one loudness/peak pass after the input prelude
+/// (the inputs come from `feed_loudness_pass_args`): a bounded sample (`-t`
+/// before `-i`), the converted audio stream mapped explicitly (`-map 0:a:0`,
+/// the stream the channel probe counted), optionally one channel isolated
+/// with `pan=mono`, then `ebur128`. Using pan=mono instead of channelsplit
+/// avoids hardcoding a channel layout.
+#[cfg(test)]
 pub(crate) fn loudness_pass_args(feed: &str, channel: Option<u32>, secs: &str) -> Vec<String> {
+    let mut args: Vec<String> = vec!["-t".into(), secs.into(), "-i".into(), feed.into()];
+    args.extend(loudness_pass_tail(channel, crate::helpers::source_audio_map_args()));
+    args
+}
+
+fn loudness_pass_tail(channel: Option<u32>, map: Vec<String>) -> Vec<String> {
     let filter = match channel {
         Some(ch) => format!("pan=mono|c0=c{ch},ebur128=peak=true"),
         None => "ebur128=peak=true".into(),
     };
-    let mut args: Vec<String> = vec!["-t".into(), secs.into(), "-i".into(), feed.into()];
-    args.extend(crate::helpers::source_audio_map_args());
+    let mut args = map;
     args.extend(["-af".into(), filter, "-f".into(), "null".into(), "-".into()]);
+    args
+}
+
+/// One loudness pass for `feed`. A feed with one input per channel (a split
+/// FTR recording) reads only that channel's file, so a 16-channel scan does
+/// not decode all 16 channels 16 times.
+fn feed_loudness_pass_args(feed: &AudioFeed, channel: Option<u32>, secs: &str) -> Vec<String> {
+    let per_input = vec!["-t".to_string(), secs.to_string()];
+    if let Some((input, inner)) = channel.and_then(|channel| feed.channel_input_args(channel, &per_input)) {
+        let mut args = input;
+        args.extend(loudness_pass_tail(inner, crate::helpers::source_audio_map_args()));
+        return args;
+    }
+    if feed.is_merged() {
+        let filter = match channel {
+            Some(ch) => format!("pan=mono|c0=c{ch},ebur128=peak=true"),
+            None => "ebur128=peak=true".into(),
+        };
+        let mut args = feed.input_args(&per_input);
+        args.extend(feed.source_output_args(Some(&filter)));
+        args.extend(["-f".into(), "null".into(), "-".into()]);
+        return args;
+    }
+    let mut args = feed.input_args(&per_input);
+    args.extend(loudness_pass_tail(channel, crate::helpers::source_audio_map_args()));
     args
 }
 
 async fn analyze_single_channel(
     app: &AppHandle,
-    feed: &Path,
+    feed: &AudioFeed,
     channel: Option<u32>,
-    input_codec: &[String],
     ctx: Option<&ScanCtx>,
     pct: f64,
 ) -> Result<(f64, f64), String> {
-    let feed_str = feed.to_string_lossy().to_string();
-
     // `-t` (input option, before `-i`) limits analysis to a representative
     // sample so a long recording can't make this pass run for minutes.
     let secs = crate::ffmpeg::ANALYSIS_SAMPLE_SECS.to_string();
     let mut args = crate::helpers::safe_ffmpeg_input_prelude();
-    args.extend(input_codec.iter().cloned());
-    args.extend(loudness_pass_args(&feed_str, channel, &secs));
+    args.extend(feed_loudness_pass_args(feed, channel, &secs));
 
     // Bounded timeout backstop — the -t cap means a healthy run finishes in
     // seconds, so a wedged ffmpeg can never hang the Scan. The heartbeat
@@ -485,7 +508,11 @@ async fn analyze_single_channel(
 
 // ── Sample rate probing ─────────────────────────────────────────────────────
 
-async fn probe_sample_rate(app: &AppHandle, feed: &Path, ctx: Option<&ScanCtx>) -> Option<u32> {
+async fn probe_sample_rate(app: &AppHandle, feed: &AudioFeed, ctx: Option<&ScanCtx>) -> Option<u32> {
+    if let Some(rate) = feed.known_sample_rate() {
+        return Some(rate);
+    }
+    let feed = feed.path();
     let mut args: Vec<String> = vec![
         "-v".into(),
         "quiet".into(),

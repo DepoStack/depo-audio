@@ -1,8 +1,10 @@
 //! DepoAudio's private work folder for temporary audio copies.
 //!
 //! Every temporary audio file (the copy of a prefixed SGMCA, the WAV read out
-//! of a `.dm`, Merge's decoded and mixed WAVs) is created in
-//! `<app cache dir>/work/<run-id>/`, one run folder per app launch:
+//! of a `.dm`, an FTR recording's split channel files, Merge's decoded and
+//! mixed WAVs) is created in `<app cache dir>/work/<run-id>/`, one run folder
+//! per app launch (the FTR channel files in a 0700 folder of their own per
+//! conversion inside it, see [`new_temp_dir`]):
 //!
 //! - On Unix the `work` and run folders are mode 0700 and each file is created
 //!   only if new, with mode 0600. On Windows the per-user cache folder's
@@ -568,6 +570,62 @@ pub(crate) fn new_temp_path(prefix: &str, ext: &str) -> Result<TempFile, String>
     new_temp_file(prefix, ext).map(|(guard, _file)| guard)
 }
 
+/// A temporary folder in this run's folder, removed with everything in it
+/// when dropped.
+#[derive(Debug)]
+pub(crate) struct TempDir(PathBuf);
+
+impl TempDir {
+    pub(crate) fn path(&self) -> &Path {
+        &self.0
+    }
+}
+
+impl Drop for TempDir {
+    fn drop(&mut self) {
+        // The folder is this run's own (random name, created here, owner
+        // only); remove_dir_all does not follow links inside it.
+        let _ = fs::remove_dir_all(&self.0);
+    }
+}
+
+/// A new, empty folder in this run's folder, named `<prefix><uuid>`, for
+/// several temporary files that belong together (an FTR recording's channel
+/// files). It must not exist yet (an existing folder or link is never
+/// reused) and on Unix is mode 0700, so another local user can neither read
+/// the decoded audio nor replace a file in it before FFmpeg reads it. A
+/// launch or "Clear all DepoAudio data" sweep removes it with its run folder
+/// if the run was killed before the guard dropped.
+pub(crate) fn new_temp_dir(prefix: &str) -> Result<TempDir, String> {
+    let dir = run_dir()?;
+    new_temp_dir_in(&dir, prefix)
+}
+
+fn new_temp_dir_in(parent: &Path, prefix: &str) -> Result<TempDir, String> {
+    let fail = |error: std::io::Error| format!("Could not create a temporary folder for audio files: {error}");
+    let path = parent.join(format!("{prefix}{}", Uuid::new_v4().simple()));
+    let mut builder = fs::DirBuilder::new();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        builder.mode(0o700);
+    }
+    builder.create(&path).map_err(fail)?;
+    let guard = TempDir(path);
+    let metadata = fs::symlink_metadata(guard.path()).map_err(fail)?;
+    if !metadata.is_dir() {
+        return Err("The temporary folder for audio files is not a plain folder.".into());
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if metadata.permissions().mode() & 0o077 != 0 {
+            return Err("The temporary folder for audio files could be read by other users.".into());
+        }
+    }
+    Ok(guard)
+}
+
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
@@ -629,6 +687,28 @@ pub(crate) mod tests {
         // Another handle cannot take the lock while the run holds it.
         let other = File::open(&lock).unwrap();
         assert!(other.try_lock().is_err());
+    }
+
+    #[test]
+    fn temporary_folders_are_new_private_and_removed_with_everything_in_them() {
+        let made = new_temp_dir("depoaudio_trm_run_").unwrap();
+        assert!(made.path().is_dir());
+        assert_eq!(made.path().parent(), Some(run_dir().unwrap().as_path()));
+        #[cfg(unix)]
+        assert_eq!(mode(made.path()), 0o700);
+        // Creation never accepts a folder that is already there.
+        assert!(fs::DirBuilder::new().create(made.path()).is_err());
+        fs::write(made.path().join("depoaudio_trm_ch0.aac"), b"x").unwrap();
+        let other = new_temp_dir("depoaudio_trm_run_").unwrap();
+        assert_ne!(other.path(), made.path());
+        let path = made.path().to_path_buf();
+        drop(made);
+        drop(other);
+        assert!(!path.exists());
+        assert!(thread_run_files().is_empty());
+        // A missing parent is an error, not a folder made elsewhere.
+        let base = TestDir::new("tempdir");
+        assert!(new_temp_dir_in(&base.0.join("missing"), "depoaudio_trm_run_").is_err());
     }
 
     #[test]

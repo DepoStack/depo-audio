@@ -67,7 +67,24 @@ fn hex(bytes: &[u8]) -> String {
 pub(crate) struct SourceTiming {
     pub time_reference_samples: u64,
     pub sample_rate: u32,
+    /// Where the start came from: `bwf-bext-time-reference`, or for an FTR
+    /// recording `ftr-tloc`, `ftr-tutc` or `ftr-file-name` (see
+    /// `crate::trm::TrmInfo::start_timing`).
+    pub source: &'static str,
 }
+
+impl SourceTiming {
+    /// The start counts from local midnight, as a bext TimeReference does.
+    /// An FTR start from `TUTC` (UTC) or from the `FILE` name (zone not
+    /// stated) does not, so it is never written into an output's bext chunk:
+    /// a tool reading it would place the audio off by the zone offset.
+    pub(crate) fn is_local_time_of_day(&self) -> bool {
+        !matches!(self.source, "ftr-tutc" | "ftr-file-name")
+    }
+}
+
+/// A start read from a source's own BWF `bext` chunk.
+pub(crate) const BEXT_TIMING_SOURCE: &str = "bwf-bext-time-reference";
 
 /// Facts about the conversion input that the manifest needs, read from one
 /// ffprobe `-show_format -show_streams -select_streams a` JSON document
@@ -161,6 +178,36 @@ fn audio_stream_count(probe: &serde_json::Value) -> Option<u32> {
         .filter(|count| *count > 0)
 }
 
+/// Source facts an FTR feed already holds from reading the recording: its
+/// channel count, one audio stream, and the start from its TLOC/TUTC/FILE
+/// chunks. None for any other feed, and for an FTR recording whose audio
+/// FFmpeg reads as it is (MP2, MP3, WMA), which are probed with ffprobe.
+pub(crate) fn probed_from_feed(feed: &crate::helpers::AudioFeed) -> Option<ProbedSource> {
+    let route = feed.trm()?;
+    if route.decode_path == crate::trm::DecodePath::Plain {
+        return None;
+    }
+    Some(ProbedSource {
+        channels: Some(u32::from(route.info.channels)),
+        timing: route.info.start_timing(),
+        // An FTR recording has no bext origination date.
+        origination_date: None,
+        audio_stream_count: Some(1),
+        sample_rate: route.info.sample_rate,
+        // DepoAudio reads the recording's own frames from its first sample.
+        start_offset_micros: None,
+    })
+}
+
+/// An FTR recording's own start, for a feed probed with ffprobe (its AVI
+/// container carries no bext chunk).
+pub(crate) fn with_trm_timing(mut probed: ProbedSource, feed: &crate::helpers::AudioFeed) -> ProbedSource {
+    if let Some(timing) = feed.trm().and_then(|route| route.info.start_timing()) {
+        probed.timing = Some(timing);
+    }
+    probed
+}
+
 pub(crate) fn parse_probe(probe: &serde_json::Value) -> ProbedSource {
     let stream = &probe["streams"][crate::helpers::SOURCE_AUDIO_STREAM as usize];
     let channels = positive_u32(&stream["channels"]);
@@ -181,6 +228,7 @@ pub(crate) fn parse_probe(probe: &serde_json::Value) -> ProbedSource {
         (Some(time_reference_samples), Some(sample_rate)) => Some(SourceTiming {
             time_reference_samples,
             sample_rate,
+            source: BEXT_TIMING_SOURCE,
         }),
         _ => None,
     };
@@ -219,6 +267,14 @@ pub struct AudioStreamsInfo {
     pub converted_index: u32,
     pub streams: Vec<AudioStreamSummary>,
     pub duration_secs: Option<f64>,
+    /// For an FTR recording: what reading it found (session flags, whether
+    /// it was closed) and the route a conversion would take now.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub trm: Option<crate::trm::TrmRoute>,
+    /// For an FTR recording DepoAudio refuses (as FTR's own splitter
+    /// would): why, for the queue notice.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub trm_refusal: Option<String>,
     /// For an SGMCA file: how many recording sessions (segments) it holds.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub recording_sessions: Option<u32>,
@@ -246,6 +302,50 @@ pub struct AudioStreamsInfo {
     pub dm: Option<crate::dm::DmQueueInfo>,
 }
 
+/// The queue's view of an FTR recording that DepoAudio refuses: no streams.
+pub(crate) fn trm_refused_streams(reason: String) -> AudioStreamsInfo {
+    AudioStreamsInfo {
+        converted_index: crate::helpers::SOURCE_AUDIO_STREAM,
+        streams: Vec::new(),
+        duration_secs: None,
+        trm: None,
+        trm_refusal: Some(reason),
+        recording_sessions: None,
+        still_recording: None,
+        unread_bytes: None,
+        omitted_sessions: None,
+        cut_short_session: None,
+        dcr: None,
+        dm: None,
+    }
+}
+
+/// The queue's view of an FTR recording, from reading it rather than from
+/// ffprobe: one audio stream with the recording's channel count and the
+/// duration of the frames actually written (an unclosed recording's header
+/// length is a placeholder, never a duration).
+pub(crate) fn trm_audio_streams(route: crate::trm::TrmRoute) -> AudioStreamsInfo {
+    AudioStreamsInfo {
+        converted_index: crate::helpers::SOURCE_AUDIO_STREAM,
+        streams: vec![AudioStreamSummary {
+            channels: Some(u32::from(route.info.channels)),
+            sample_rate: route.info.sample_rate,
+            language: None,
+            title: None,
+        }],
+        duration_secs: route.info.duration_secs,
+        trm: Some(route),
+        trm_refusal: None,
+        recording_sessions: None,
+        still_recording: None,
+        unread_bytes: None,
+        omitted_sessions: None,
+        cut_short_session: None,
+        dcr: None,
+        dm: None,
+    }
+}
+
 /// The queue's view of an SGMCA file, from its own headers and pages (ffprobe
 /// cannot read the Direct Audio layout): one audio stream, the joined
 /// duration of every recording session, and how many sessions there are.
@@ -265,6 +365,8 @@ pub(crate) fn sgmca_audio_streams(info: &crate::sgmca::SgmcaInfo) -> AudioStream
         unread_bytes: Some(info.unread_bytes),
         omitted_sessions: Some(info.omitted_segments.clone()),
         cut_short_session: info.cut_short_segment,
+        trm: None,
+        trm_refusal: None,
         dcr: None,
         dm: None,
     }
@@ -341,6 +443,8 @@ pub(crate) fn parse_audio_streams(probe: &serde_json::Value) -> AudioStreamsInfo
         converted_index: crate::helpers::SOURCE_AUDIO_STREAM,
         streams,
         duration_secs,
+        trm: None,
+        trm_refusal: None,
         recording_sessions: None,
         still_recording: None,
         unread_bytes: None,
@@ -367,7 +471,7 @@ pub(crate) fn rescale_time_reference(timing: SourceTiming, output_rate: u32) -> 
 pub(crate) fn shifted_timing(timing: SourceTiming, trimmed_samples: u64) -> SourceTiming {
     SourceTiming {
         time_reference_samples: timing.time_reference_samples.saturating_add(trimmed_samples),
-        sample_rate: timing.sample_rate,
+        ..timing
     }
 }
 
@@ -384,7 +488,8 @@ pub(crate) fn output_sample_rate(encoder_args: &[String]) -> Option<u32> {
 /// what leading-silence trim removed (0 without trim), counted at the source
 /// rate: the output's first sample is that much later than the source's, so
 /// its start is the source start plus that amount. Empty when the output is
-/// not WAV or the start is unknown.
+/// not WAV or the start is unknown or not local time of day
+/// ([`SourceTiming::is_local_time_of_day`]).
 pub(crate) fn bext_args(
     format: &str,
     timing: Option<SourceTiming>,
@@ -392,7 +497,7 @@ pub(crate) fn bext_args(
     trimmed_samples: u64,
 ) -> Vec<String> {
     match (format, timing, output_rate) {
-        ("wav", Some(timing), Some(rate)) => vec![
+        ("wav", Some(timing), Some(rate)) if timing.is_local_time_of_day() => vec![
             "-write_bext".into(),
             "1".into(),
             "-metadata".into(),
@@ -439,6 +544,13 @@ pub(crate) struct FileRecord {
     pub file_name: String,
     pub sha256: String,
     pub size_bytes: u64,
+    /// For an FTR recording: what reading it found and how it was decoded.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub trm: Option<crate::trm::TrmRoute>,
+    /// For an FTR recording DepoAudio could not read: why. FFmpeg's native
+    /// `ftr` decoder then read the file as it is, without DepoAudio's checks.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub trm_inspection_error: Option<String>,
     /// For an SGMCA source: its layout and recording sessions.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sgmca: Option<SgmcaSourceRecord>,
@@ -748,21 +860,30 @@ pub(crate) fn start_time_record(
     let trimmed = leading_trim.map_or(0, |trim| trim.samples);
     let output_reference = output_rate.map(|rate| rescale_time_reference(shifted_timing(timing, trimmed), rate));
     let written = !bext_args(format, Some(timing), output_rate, trimmed).is_empty();
-    let note = match (trimmed > 0, written) {
-        (true, true) => "Leading-silence trim removed processing.leadingTrim.samples samples from the start, so the output starts that much later than the source. The output WAV carries the source start plus that amount in its own bext chunk, rescaled to the output sample rate.",
-        (true, false) => "Leading-silence trim removed processing.leadingTrim.samples samples from the start, so the output starts that much later than the source; outputTimeReferenceSamples is the source start plus that amount at the output rate. This format has no bext chunk, and DepoAudio removes the copied time_reference tag from it, so the start is recorded here only.",
-        (false, true) => "The output WAV carries the same start in its own bext chunk, rescaled to the output sample rate.",
-        (false, false) => "The output starts at the source start. This format has no bext chunk, and DepoAudio removes the copied time_reference tag from it, so the start is recorded here only.",
+    let not_local = "A bext time reference counts from local midnight and this start is not local time, so DepoAudio writes no start into the output (and removes any copied time_reference tag); the start is recorded here only.";
+    let note = match (trimmed > 0, written, timing.is_local_time_of_day()) {
+        (true, true, _) => "Leading-silence trim removed processing.leadingTrim.samples samples from the start, so the output starts that much later than the source. The output WAV carries the source start plus that amount in its own bext chunk, rescaled to the output sample rate.".to_string(),
+        (true, false, false) => format!("Leading-silence trim removed processing.leadingTrim.samples samples from the start, so the output starts that much later than the source; outputTimeReferenceSamples is the source start plus that amount at the output rate. {not_local}"),
+        (true, false, true) => "Leading-silence trim removed processing.leadingTrim.samples samples from the start, so the output starts that much later than the source; outputTimeReferenceSamples is the source start plus that amount at the output rate. This format has no bext chunk, and DepoAudio removes the copied time_reference tag from it, so the start is recorded here only.".to_string(),
+        (false, true, _) => "The output WAV carries the same start in its own bext chunk, rescaled to the output sample rate.".to_string(),
+        (false, false, false) => not_local.to_string(),
+        (false, false, true) => "The output starts at the source start. This format has no bext chunk, and DepoAudio removes the copied time_reference tag from it, so the start is recorded here only.".to_string(),
+    };
+    let origin = match timing.source {
+        "ftr-tloc" => "The start is the time of day in the FTR recording's TLOC chunk (local time). ",
+        "ftr-tutc" => "The start is the time of day in the FTR recording's TUTC chunk (UTC; the recording has no TLOC chunk). ",
+        "ftr-file-name" => "The start is the time of day in the name stored in the FTR recording's FILE chunk, which does not state its time zone. ",
+        _ => "",
     };
     StartTimeRecord {
         known: true,
-        source: Some("bwf-bext-time-reference"),
+        source: Some(timing.source),
         source_time_reference_samples: Some(timing.time_reference_samples),
         source_sample_rate: Some(timing.sample_rate),
         seconds_since_midnight: Some((seconds * 1000.0).round() / 1000.0),
         output_time_reference_samples: output_reference,
         written_to_output: written,
-        note: note.into(),
+        note: format!("{origin}{note}"),
     }
 }
 
@@ -835,13 +956,52 @@ pub(crate) fn build_manifest(input: &ManifestInput<'_>, facts: OutputFacts<'_>) 
             index: crate::helpers::SOURCE_AUDIO_STREAM,
             source_audio_stream_count: input.probed.audio_stream_count,
         },
-        start_time: start_time_record(
-            input.probed.timing,
-            sample_rate,
-            facts.leading_trim.as_ref(),
-            facts.format,
-        ),
+        start_time: {
+            let mut record = start_time_record(
+                input.probed.timing,
+                sample_rate,
+                facts.leading_trim.as_ref(),
+                facts.format,
+            );
+            if let Some(note) = input
+                .source
+                .trm
+                .as_ref()
+                .and_then(|route| trm_timeline_note(&route.info))
+            {
+                record.note = format!("{} {note}", record.note);
+            }
+            record
+        },
     }
+}
+
+/// What the export record says when DepoAudio's split of an FTR recording
+/// filled missing rounds, or skipped unreadable data whose length is not
+/// known. None when neither happened.
+pub(crate) fn trm_timeline_note(info: &crate::trm::TrmInfo) -> Option<String> {
+    let unknown = info.walk_gap_bytes > 0 || info.mid_stream_skipped_bytes > 0;
+    if info.silence_filled_gaps == 0 && !unknown {
+        return None;
+    }
+    let mut parts = Vec::new();
+    if info.silence_filled_gaps > 0 {
+        let length = match info.sample_rate.filter(|rate| *rate > 0) {
+            Some(rate) => format!("{:.3} s in all", info.silence_filled_samples as f64 / f64::from(rate)),
+            None => format!("{} samples in all", info.silence_filled_samples),
+        };
+        parts.push(format!(
+            "DepoAudio filled {} damaged section(s) of this FTR recording in every channel ({length}) with AAC frames that add no new sound, one round of 1024 samples for each round the frames there show to be missing, so audio after them keeps its time from the start as far as the frames show; source.trm.silenceFilled says where. A filled stretch is not digital silence: the audio before it fades out across it. A repeated frame breaks the frame order the same way a lost one does, so a fill may stand for a frame that was repeated, not missing; audio after such a fill plays later than its time by the fill's length. Frames missing in a run as long as a whole round leave no trace, and DepoAudio cannot count them.",
+            info.silence_filled_gaps
+        ));
+    }
+    if unknown {
+        parts.push("Unreadable data was skipped mid-recording; the audio it held is missing and its length is not known, so audio after it may play earlier than its time from the start by an unrecorded amount (DepoAudio filled only the rounds the frames around it show to be missing).".to_string());
+    }
+    if info.stream_marking == Some(crate::trm::StreamMarking::StreamZeroOnly) {
+        parts.push("This recording marks only its first stream's frames, so DepoAudio gave frames to the streams in turn: after a damaged section it cannot check which stream each later frame belongs to, and channels after it may be swapped.".to_string());
+    }
+    Some(parts.join(" "))
 }
 
 /// Reserve an output path and its manifest path together, both as new empty
@@ -926,6 +1086,8 @@ pub(crate) mod tests {
                 file_name: "synthetic_session.wav".into(),
                 sha256: "a".repeat(64),
                 size_bytes: 1024,
+                trm: None,
+                trm_inspection_error: None,
                 sgmca: None,
                 dcr: None,
                 dm_timeline: None,
@@ -1116,7 +1278,8 @@ pub(crate) mod tests {
             probed.timing,
             Some(SourceTiming {
                 time_reference_samples: 158_760_000,
-                sample_rate: 44_100
+                sample_rate: 44_100,
+                source: BEXT_TIMING_SOURCE,
             })
         );
         // Upper-case tag names (some ffprobe builds) are read the same way.
@@ -1169,6 +1332,7 @@ pub(crate) mod tests {
         let timing = Some(SourceTiming {
             time_reference_samples: 48_000,
             sample_rate: 48_000,
+            source: BEXT_TIMING_SOURCE,
         });
         let clear = vec!["-metadata".to_string(), "time_reference=".to_string()];
         assert_eq!(
@@ -1201,11 +1365,46 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn only_a_local_time_of_day_start_is_written_into_a_wav_bext_chunk() {
+        let clear = vec!["-metadata".to_string(), "time_reference=".to_string()];
+        let at = |source: &'static str| SourceTiming {
+            time_reference_samples: 9 * 3600 * 16_000,
+            sample_rate: 16_000,
+            source,
+        };
+        for source in [BEXT_TIMING_SOURCE, "ftr-tloc"] {
+            assert!(
+                !bext_args("wav", Some(at(source)), Some(16_000), 0).is_empty(),
+                "{source}"
+            );
+            let record = start_time_record(Some(at(source)), Some(16_000), None, "wav");
+            assert!(record.written_to_output, "{source}");
+        }
+        // UTC, or a zone the name does not state: kept in the record only.
+        for source in ["ftr-tutc", "ftr-file-name"] {
+            assert!(
+                bext_args("wav", Some(at(source)), Some(16_000), 0).is_empty(),
+                "{source}"
+            );
+            assert_eq!(
+                start_time_metadata_args("wav", Some(at(source)), Some(16_000), 0),
+                clear,
+                "{source}"
+            );
+            let record = start_time_record(Some(at(source)), Some(16_000), None, "wav");
+            assert!(record.known && !record.written_to_output, "{source}");
+            assert_eq!(record.output_time_reference_samples, Some(9 * 3600 * 16_000));
+            assert!(record.note.contains("not local time"), "{}", record.note);
+        }
+    }
+
+    #[test]
     fn time_reference_is_rescaled_to_the_output_rate() {
         // 01:00:00 at 44.1 kHz is 158,760,000 samples; at 48 kHz, 172,800,000.
         let timing = SourceTiming {
             time_reference_samples: 158_760_000,
             sample_rate: 44_100,
+            source: BEXT_TIMING_SOURCE,
         };
         assert_eq!(rescale_time_reference(timing, 48_000), 172_800_000);
         assert_eq!(rescale_time_reference(timing, 44_100), 158_760_000);
@@ -1213,11 +1412,13 @@ pub(crate) mod tests {
         let one = SourceTiming {
             time_reference_samples: 1,
             sample_rate: 44_100,
+            source: BEXT_TIMING_SOURCE,
         };
         assert_eq!(rescale_time_reference(one, 48_000), 1);
         let huge = SourceTiming {
             time_reference_samples: u64::MAX,
             sample_rate: 8_000,
+            source: BEXT_TIMING_SOURCE,
         };
         assert_eq!(rescale_time_reference(huge, 192_000), u64::MAX);
     }
@@ -1227,6 +1428,7 @@ pub(crate) mod tests {
         let timing = Some(SourceTiming {
             time_reference_samples: 48_000,
             sample_rate: 48_000,
+            source: BEXT_TIMING_SOURCE,
         });
         assert_eq!(
             bext_args("wav", timing, Some(16_000), 0),
@@ -1251,6 +1453,7 @@ pub(crate) mod tests {
         let timing = SourceTiming {
             time_reference_samples: u64::MAX - 1,
             sample_rate: 48_000,
+            source: "bwf-bext-time-reference",
         };
         assert_eq!(shifted_timing(timing, 10).time_reference_samples, u64::MAX);
     }
@@ -1509,6 +1712,203 @@ pub(crate) mod tests {
             let value = serde_json::to_value(&faded).unwrap();
             assert_eq!(value["processing"]["fadeOut"]["decodedSourceSeconds"], 15.0);
         }
+    }
+
+    fn sample_trm_route(ftra: Option<crate::trm::FtraInfo>, reasons: &[&str]) -> crate::trm::TrmRoute {
+        crate::trm::TrmRoute::new(
+            crate::trm::TrmInfo {
+                tag: 0x4180,
+                audio_codec: crate::trm::AudioCodec::FtrAac,
+                stream_layout: Some(crate::trm::StreamLayout::Mono),
+                channels: 4,
+                streams: 4,
+                channels_per_stream: 1,
+                sample_rate: Some(16_000),
+                format_sample_rate: 16_000,
+                header_scale: Some(1024),
+                header_rate: Some(16_000),
+                header_chunk_count: None,
+                declared_streams: Some(2),
+                stream_lists: 2,
+                start_boundary: true,
+                end_boundary: false,
+                open_ended: true,
+                start_utc: Some("2026-01-01T09:00:00Z".into()),
+                start_local: Some("2026-01-01T09:00:00".into()),
+                start_basis: Some(crate::trm::StartBasis::Local),
+                start_filetime: Some(0x01DC_7AFD_0268_A800),
+                recorded_file_name: Some("Synthetic sample (not FTR)_20260101-0900_01dc7afd0268a800.trm".into()),
+                recorded_file_name_present: true,
+                user_name_present: true,
+                user_data_present: false,
+                signature: Some(crate::trm::SIGNED_NOT_VERIFIED),
+                index_kind: crate::trm::IndexKind::Walked,
+                packets: 10,
+                frames: 40,
+                frames_per_channel: 10,
+                scrambled_frames: 20,
+                straddling_frames: 3,
+                misaligned_packets: 2,
+                multi_round_packets: 1,
+                resync_skipped_bytes: 0,
+                channel_resyncs: 1,
+                mid_stream_skipped_bytes: 9,
+                padding_bytes: 10,
+                trailing_skipped_bytes: 3,
+                incomplete_final_round: true,
+                dropped_frames: 1,
+                dropped_rounds: 1,
+                silence_filled: vec![crate::trm::SilenceFill {
+                    at_sample: 3072,
+                    samples: 1024,
+                    channels: 4,
+                    reason: crate::trm::FillReason::UnreadableData,
+                }],
+                silence_filled_gaps: 1,
+                silence_filled_samples: 1024,
+                stream_marking: Some(crate::trm::StreamMarking::AllStreams),
+                timing_caveats: vec![
+                    crate::trm::TimingCaveat::WholeRoundLossUndetectable,
+                    crate::trm::TimingCaveat::FillMayBeRepeatedFrame,
+                ],
+                walk_gaps: 1,
+                walk_gap_bytes: 12,
+                index_mismatch: true,
+                length_high_bit_frames: 2,
+                frame_channel_mismatches: 0,
+                truncated: false,
+                continuation_segments: 0,
+                grew_while_read: true,
+                ftra,
+                video_streams: 1,
+                duration_secs: Some(0.64),
+                file_bytes: 4096,
+            },
+            if reasons.is_empty() {
+                crate::trm::DecodePath::NativeFtr
+            } else {
+                crate::trm::DecodePath::Deinterleaved
+            },
+            reasons.iter().map(|reason| reason.to_string()).collect(),
+        )
+    }
+
+    #[test]
+    fn a_split_that_filled_or_skipped_audio_says_so() {
+        let mut info = sample_trm_route(None, &[]).info;
+        let note = trm_timeline_note(&info).unwrap();
+        assert!(
+            note.contains("filled 1 damaged section(s)") && note.contains("(0.064 s in all)"),
+            "{note}"
+        );
+        assert!(note.contains("keeps its time from the start"), "{note}");
+        assert!(note.contains("by an unrecorded amount"), "{note}");
+        assert!(note.contains("not digital silence"), "{note}");
+        assert!(note.contains("repeated, not missing"), "{note}");
+        assert!(!note.contains("may be swapped"), "{note}");
+        info.stream_marking = Some(crate::trm::StreamMarking::StreamZeroOnly);
+        let note = trm_timeline_note(&info).unwrap();
+        assert!(note.contains("channels after it may be swapped"), "{note}");
+        info.stream_marking = Some(crate::trm::StreamMarking::AllStreams);
+        info.walk_gap_bytes = 0;
+        info.mid_stream_skipped_bytes = 0;
+        let note = trm_timeline_note(&info).unwrap();
+        assert!(!note.contains("unrecorded"), "{note}");
+        info.silence_filled.clear();
+        info.silence_filled_gaps = 0;
+        info.silence_filled_samples = 0;
+        assert_eq!(trm_timeline_note(&info), None);
+        // A missing pad byte (a gap of 0 bytes) loses nothing.
+        info.walk_gaps = 2;
+        assert_eq!(trm_timeline_note(&info), None);
+    }
+
+    #[test]
+    fn ftr_source_records_match_the_published_schema() {
+        let probed = ProbedSource {
+            channels: Some(4),
+            timing: None,
+            audio_stream_count: Some(1),
+            ..ProbedSource::default()
+        };
+        let ftra = crate::trm::FtraInfo {
+            a: 1,
+            b: 2,
+            c: 3,
+            d: 4,
+            e: 5,
+        };
+        for route in [
+            sample_trm_route(None, &[]),
+            sample_trm_route(
+                Some(ftra),
+                &[
+                    "open-ended",
+                    "no-usable-index",
+                    "index-misses-audio-chunks",
+                    "native-decode-failed",
+                ],
+            ),
+        ] {
+            let mut manifest = sample_input(&probed, &[], false);
+            manifest.source.trm = Some(route.clone());
+            let errors = schema_errors(&manifest);
+            assert!(errors.is_empty(), "{errors:#?}");
+            let value = serde_json::to_value(&manifest).unwrap();
+            assert_eq!(
+                value["source"]["trm"]["decodePath"],
+                serde_json::json!(route.decode_path)
+            );
+            assert_eq!(value["source"]["trm"]["indexKind"], "walked");
+            assert_eq!(value["source"]["trm"]["openEnded"], true);
+            assert_eq!(value["source"]["trm"]["startBoundary"], true);
+            assert_eq!(value["source"]["trm"]["startUtc"], "2026-01-01T09:00:00Z");
+            assert_eq!(value["source"]["trm"]["startBasis"], "tloc-local");
+            assert_eq!(value["source"]["trm"]["signature"], "signed (not verified)");
+            // Private text is recorded only as present or not.
+            assert_eq!(value["source"]["trm"]["userNamePresent"], true);
+            assert_eq!(value["source"]["trm"]["userDataPresent"], false);
+            assert!(value["source"]["trm"].get("startFiletime").is_none());
+            assert!(value["source"]["trm"].get("fileBytes").is_none());
+        }
+        // A recording with MP3 audio, read by FFmpeg as it is.
+        let mut route = sample_trm_route(None, &[]);
+        route.info.audio_codec = crate::trm::AudioCodec::Mp3;
+        route.info.tag = 0x0055;
+        route.info.stream_layout = None;
+        route.info.index_kind = crate::trm::IndexKind::NotRead;
+        route.info.start_basis = Some(crate::trm::StartBasis::FileName);
+        route.info.signature = None;
+        let route = crate::trm::TrmRoute::new(route.info, crate::trm::DecodePath::Plain, vec!["not-ftr-aac".into()]);
+        assert!(route.input_options.is_empty());
+        let mut manifest = sample_input(&probed, &[], false);
+        manifest.source.trm = Some(route);
+        let errors = schema_errors(&manifest);
+        assert!(errors.is_empty(), "{errors:#?}");
+        // A reason the schema does not list is rejected, so the two cannot drift.
+        let mut manifest = sample_input(&probed, &[], false);
+        manifest.source.trm = Some(sample_trm_route(None, &["made-up-reason"]));
+        assert!(!schema_errors(&manifest).is_empty());
+        // Other sources carry no trm object at all.
+        let plain = serde_json::to_value(sample_input(&probed, &[], false)).unwrap();
+        assert!(plain["source"].get("trm").is_none());
+    }
+
+    #[test]
+    fn ftr_queue_streams_come_from_reading_the_recording() {
+        let info = trm_audio_streams(sample_trm_route(None, &["open-ended"]));
+        assert_eq!(info.streams.len(), 1);
+        assert_eq!(info.streams[0].channels, Some(4));
+        assert_eq!(info.streams[0].sample_rate, Some(16_000));
+        assert_eq!(info.duration_secs, Some(0.64));
+        let value = serde_json::to_value(&info).unwrap();
+        assert_eq!(value["trm"]["openEnded"], true);
+        assert_eq!(value["trm"]["startBoundary"], true);
+        assert_eq!(value["trm"]["endBoundary"], false);
+        assert!(value.get("trmRefusal").is_none());
+        let refused = serde_json::to_value(trm_refused_streams(crate::trm::TRM_UNSPLITTABLE_MESSAGE.into())).unwrap();
+        assert_eq!(refused["streams"], serde_json::json!([]));
+        assert_eq!(refused["trmRefusal"], crate::trm::TRM_UNSPLITTABLE_MESSAGE);
     }
 
     #[test]
@@ -1979,7 +2379,8 @@ pub(crate) mod tests {
             probed.timing,
             Some(SourceTiming {
                 time_reference_samples: 158_760_000,
-                sample_rate: 44_100
+                sample_rate: 44_100,
+                source: BEXT_TIMING_SOURCE,
             })
         );
 
@@ -1994,7 +2395,8 @@ pub(crate) mod tests {
             carried.timing,
             Some(SourceTiming {
                 time_reference_samples: 172_800_000,
-                sample_rate: 48_000
+                sample_rate: 48_000,
+                source: BEXT_TIMING_SOURCE,
             })
         );
         // After 0.1 s of leading-silence trim (4,410 samples at 44.1 kHz) the
@@ -2008,7 +2410,8 @@ pub(crate) mod tests {
             parse_probe(&probe_json(&trimmed_output)).timing,
             Some(SourceTiming {
                 time_reference_samples: 172_804_800,
-                sample_rate: 48_000
+                sample_rate: 48_000,
+                source: "bwf-bext-time-reference",
             })
         );
 

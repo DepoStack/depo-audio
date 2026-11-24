@@ -21,7 +21,7 @@ Open and convert proprietary court-recording formats, improve levels and clippin
 
 DepoAudio handles the audio side of a deposition or hearing, end to end:
 
-- 🎧 **Convert** proprietary court formats (Stenograph SGMCA, FTR `.trm`, CourtSmart BWF) and standard audio to WAV, MP3, FLAC, Opus, M4A, or SGMCA (Direct Audio) — mix to stereo, keep the channel layout, or split one file per source channel and name it by role.
+- 🎧 **Convert** proprietary court formats (Stenograph SGMCA, FTR `.trm`/`.tll`, CourtSmart BWF) and standard audio to WAV, MP3, FLAC, Opus, M4A, or SGMCA (Direct Audio) — mix to stereo, keep the channel layout, or split one file per source channel and name it by role.
 - **Improve** audio with local, non-learned controls for microphone-channel leveling, clipped peaks, high-pass filtering, normalization, silence trim, and fades.
 - ▶️ **Play & review** in a built-in player — color-coded audio tracks, 0.5×–2× speed, A-B loop, bookmarks, and transcript proofing: open an existing transcript and follow it against the audio.
 - 🗂️ **Organize** every conversion into an auto-filed case library, and pull recordings straight from installed court software.
@@ -101,7 +101,7 @@ Scanning is a bounded, cancellable local analysis pass. FFmpeg performs the sele
 | Format                                       | Vendor                     | Status                             |
 | -------------------------------------------- | -------------------------- | ---------------------------------- |
 | **SGMCA**                                    | Stenograph · Case CATalyst | ✅ Supported                       |
-| **FTR / TRM**                                | For The Record             | 🧪 Experimental                    |
+| **FTR / TRM / TLL**                          | For The Record             | 🧪 Experimental                    |
 | **BWF**                                      | CourtSmart · Various       | ✅ Supported                       |
 | **DigitalCAT / SoundSync (.dm)**             | Stenovations               | 🧪 Experimental                    |
 | **DCR**                                      | Liberty / BIS Digital      | 🧪 Experimental                    |
@@ -116,6 +116,17 @@ Scanning is a bounded, cancellable local analysis pass. FFmpeg performs the sele
 The MPG, VOB, TS, MTS, M2TS, WMV and ASF rows are smoke-tested at each
 release with synthetic files carrying MP2, AC-3 or WMAv2 audio. No real
 deposition recording in these containers has been tried yet.
+
+FTR recordings are read as the owner's interoperability notes describe them:
+one AAC stream per microphone (format tag 0x4180) or stereo streams of two
+microphones (0x8180), split by DepoAudio when FFmpeg's native FTR decoder
+cannot take the file as it is. FTR AAC without either flag is refused, as
+FTR's own player refuses it. The recording's start (its TLOC, TUTC or FILE
+time) goes into WAV outputs' BWF start time; the user name and free-text
+chunks are never copied, only noted as present. This has been checked with
+synthetic files and with one sample made by the owner's rebuild tool
+(`scripts/fixtures/trm/vendor-notes-samples/`), not with a recording made by
+FTR.
 
 An SGMCA (Direct Audio) file can hold several recording sessions; DepoAudio
 reads every one and joins them in order (the gaps between them are not

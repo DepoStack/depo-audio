@@ -48,6 +48,7 @@ export default function MergeTab() {
               'sgmca',
               'trm',
               'ftr',
+              'tll',
               'bwf',
             ],
           },

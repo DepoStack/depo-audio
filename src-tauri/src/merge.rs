@@ -6,7 +6,7 @@ use std::sync::Arc;
 use tauri::AppHandle;
 
 use crate::ffmpeg::{probe_duration_cancellable, sidecar_output_cancellable};
-use crate::helpers::ffmpeg_bin_name;
+use crate::helpers::{ffmpeg_bin_name, AudioFeed};
 use crate::safety::TempFile;
 
 const MAX_MERGE_SOURCES: usize = 4;
@@ -177,31 +177,28 @@ fn validate_merge_job(job: &MergeJob) -> Result<ValidatedMergeJob, String> {
     })
 }
 
-/// Read an SGMCA's layout (or a `.dm`'s blocks, or a `.dcr`) once and keep
-/// its temporary feed alive for the whole merge. Reusing it avoids reading
-/// every page of a potentially large recording again for duration probing,
-/// sync detection, and decoding for the merge.
-async fn prepare_merge_source(
-    app: &AppHandle,
-    path: PathBuf,
-    cancel: &MergeCancel,
-) -> Result<(PathBuf, Option<TempFile>), String> {
-    let predicate = cancel.predicate();
-    cancel_checked(
-        cancel,
-        crate::helpers::prepare_audio_feed_cancellable(app, path, predicate),
-    )
-    .await
+/// Read an SGMCA's layout (or a `.dm`'s blocks, or a `.dcr`, or split an
+/// FTR recording's channels) once and keep its temporary feed alive for the
+/// whole merge. Reusing it avoids reading every page of a potentially large
+/// recording again for duration probing, sync detection, and decoding for
+/// the merge.
+async fn prepare_merge_source(app: &AppHandle, path: PathBuf, cancel: &MergeCancel) -> Result<AudioFeed, String> {
+    cancel.check()?;
+    let options = crate::ffmpeg::feed_options(app, &path).await;
+    let feed = prepare_merge_feed(path, options, cancel).await?;
+    // A DCR whose channels FFmpeg still has to join.
+    let finished = crate::helpers::finish_prepared_feed(app, feed, &|| cancel.is_cancelled()).await;
+    cancel.check()?;
+    finished
 }
 
-/// Run a source preparation only if the merge is not cancelled, and report
-/// a cancel that lands while it runs as the merge's cancel.
-async fn cancel_checked(
+async fn prepare_merge_feed(
+    path: PathBuf,
+    options: crate::helpers::FeedOptions,
     cancel: &MergeCancel,
-    preparation: impl std::future::Future<Output = Result<(PathBuf, Option<TempFile>), String>>,
-) -> Result<(PathBuf, Option<TempFile>), String> {
+) -> Result<AudioFeed, String> {
     cancel.check()?;
-    let prepared = preparation.await;
+    let prepared = crate::helpers::prepare_audio_feed_with_options(path, options, cancel.predicate()).await;
     cancel.check()?;
     prepared
 }
@@ -246,15 +243,15 @@ pub(crate) async fn detect_sync(
     if source_a == source_b {
         return Err("Choose two different source files for sync detection".into());
     }
-    let (source_a, _guard_a) = prepare_merge_source(app, source_a, cancel).await?;
-    let (source_b, _guard_b) = prepare_merge_source(app, source_b, cancel).await?;
-    detect_sync_paths(app, &source_a, &source_b, cancel).await
+    let mut source_a = prepare_merge_source(app, source_a, cancel).await?;
+    let mut source_b = prepare_merge_source(app, source_b, cancel).await?;
+    detect_sync_paths(app, &mut source_a, &mut source_b, cancel).await
 }
 
 async fn detect_sync_paths(
     app: &AppHandle,
-    source_a: &Path,
-    source_b: &Path,
+    source_a: &mut AudioFeed,
+    source_b: &mut AudioFeed,
     cancel: &MergeCancel,
 ) -> Result<SyncResult, String> {
     // A short, low-rate decode contains enough speech for sync detection while
@@ -400,24 +397,18 @@ fn cross_correlate_step(segment_a: &[f32], samples_b: &[f32], offset: i64, len: 
 
 /// Merge multiple audio files into one synchronized output.
 pub(crate) async fn merge_audio(app: &AppHandle, job: &MergeJob, cancel: &MergeCancel) -> Result<MergeResult, String> {
-    let mut job = validate_merge_job(job)?;
-    let mut prepared_sources = Vec::with_capacity(job.sources.len());
-    let mut source_guards = Vec::new();
+    let job = validate_merge_job(job)?;
+    // Each feed (and any temporary file it owns) lives until every
+    // probe/decode finishes.
+    let mut feeds = Vec::with_capacity(job.sources.len());
     for source in &job.sources {
-        let (prepared, guard) = prepare_merge_source(app, source.clone(), cancel).await?;
-        prepared_sources.push(prepared);
-        if let Some(guard) = guard {
-            source_guards.push(guard);
-        }
+        feeds.push(prepare_merge_source(app, source.clone(), cancel).await?);
     }
-    job.sources = prepared_sources;
-    // The guards intentionally live until every probe/decode finishes.
-    let _source_guards = source_guards;
 
     // Probe before decoding so a very long compressed source cannot fill the
     // temp directory or exhaust memory before the decoded-size limit is seen.
     let mut estimated_samples = 0f64;
-    for source in &job.sources {
+    for source in &feeds {
         let duration = probe_duration_cancellable(app, source, Some(&|| cancel.is_cancelled())).await;
         cancel.check()?;
         let duration = duration
@@ -437,8 +428,9 @@ pub(crate) async fn merge_audio(app: &AppHandle, job: &MergeJob, cancel: &MergeC
 
     // Step 1: Detect sync offsets relative to the first source
     let mut offsets = vec![0.0f64]; // First source is reference (offset = 0)
-    for i in 1..job.sources.len() {
-        let sync = detect_sync_paths(app, &job.sources[0], &job.sources[i], cancel).await?;
+    for i in 1..feeds.len() {
+        let (reference, rest) = feeds.split_at_mut(1);
+        let sync = detect_sync_paths(app, &mut reference[0], &mut rest[i - 1], cancel).await?;
         if !sync.is_same_event {
             return Err(format!(
                 "Source {} could not be confidently matched to the reference recording",
@@ -450,7 +442,7 @@ pub(crate) async fn merge_audio(app: &AppHandle, job: &MergeJob, cancel: &MergeC
 
     // Step 2: Decode all sources to 48kHz mono
     let mut decoded_files = Vec::new();
-    for src in &job.sources {
+    for src in &mut feeds {
         let tmp = decode_to_mono(app, src, 48_000, MAX_MERGE_DURATION_SECS + 1, cancel).await?;
         decoded_files.push(tmp);
     }
@@ -699,9 +691,37 @@ fn best_quality_strategy(sources: &[Vec<f32>], offsets: &[i64], total_samples: u
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
+/// Decode `feed` to mono. If FFmpeg's native FTR decoder fails, the feed is
+/// replaced by the split-channel route and decoded once more, as conversion
+/// and Scan do; later passes then use the split route too.
 async fn decode_to_mono(
     app: &AppHandle,
-    path: &Path,
+    feed: &mut AudioFeed,
+    rate: u32,
+    max_secs: u32,
+    cancel: &MergeCancel,
+) -> Result<TempFile, String> {
+    match decode_feed_to_mono(app, feed, rate, max_secs, cancel).await {
+        Err(error) if feed.used_native_ftr() && !cancel.is_cancelled() => {
+            let source = feed.path().to_path_buf();
+            *feed = crate::helpers::prepare_audio_feed_after_native_failure(app, source, cancel.predicate())
+                .await
+                .map_err(|split| {
+                    if cancel.is_cancelled() {
+                        MERGE_CANCELLED_MESSAGE.to_string()
+                    } else {
+                        format!("{error}; splitting its channels also failed: {split}")
+                    }
+                })?;
+            decode_feed_to_mono(app, feed, rate, max_secs, cancel).await
+        }
+        other => other,
+    }
+}
+
+async fn decode_feed_to_mono(
+    app: &AppHandle,
+    feed: &AudioFeed,
     rate: u32,
     max_secs: u32,
     cancel: &MergeCancel,
@@ -717,22 +737,15 @@ async fn decode_to_mono(
         "-protocol_whitelist".into(),
         "file".into(),
     ];
-    let input_codec = crate::helpers::input_codec_args(path);
-    if !input_codec.is_empty() {
-        crate::ffmpeg::ensure_ftr_decoder(app).await?;
-        args.extend(input_codec);
-    }
-    args.extend(["-i".into(), path.to_string_lossy().to_string()]);
+    args.extend(feed.input_args(&[]));
     // The same audio stream every other pass reads, not FFmpeg's pick.
-    args.extend(crate::helpers::source_audio_map_args());
+    args.extend(feed.source_output_args(Some(&format!("aresample={rate}"))));
     args.extend([
         "-t".into(),
         max_secs.to_string(),
         "-vn".into(),
         "-sn".into(),
         "-dn".into(),
-        "-af".into(),
-        format!("aresample={}", rate),
         "-ac".into(),
         "1".into(),
         "-acodec".into(),
@@ -918,14 +931,10 @@ mod tests {
         let bytes = crate::sgmca::fixtures::synthetic_direct(5, 312, 0, |_| 30);
         std::fs::write(&source, &bytes).unwrap();
 
-        // As prepare_merge_source, without an app handle (no DCR merge here).
-        let prepare = |source: PathBuf| {
-            let predicate = cancel.predicate();
-            async move { crate::helpers::prepare_audio_feed_with_cancel(&source, Some(predicate.as_ref())) }
-        };
-        let prepared = tauri::async_runtime::block_on(cancel_checked(&cancel, prepare(source.clone()))).unwrap();
-        assert!(prepared.1.is_some(), "uncancelled: the script is written");
-        let script = prepared.0.clone();
+        let options = crate::helpers::FeedOptions::default();
+        let prepared = tauri::async_runtime::block_on(prepare_merge_feed(source.clone(), options, &cancel)).unwrap();
+        let script = prepared.path().to_path_buf();
+        assert_ne!(script, source, "uncancelled: the script is written");
         assert!(script.starts_with(crate::workdir::tests::test_root()));
         drop(prepared);
         assert!(!script.exists(), "the script goes with its guard");
@@ -933,7 +942,7 @@ mod tests {
         held_by_command.cancel();
         assert!(cancel.is_cancelled());
         assert!((cancel.predicate())());
-        let error = tauri::async_runtime::block_on(cancel_checked(&cancel, prepare(source.clone()))).unwrap_err();
+        let error = tauri::async_runtime::block_on(prepare_merge_feed(source.clone(), options, &cancel)).unwrap_err();
         assert_eq!(error, MERGE_CANCELLED_MESSAGE);
         assert_eq!(std::fs::read(&source).unwrap(), bytes, "the source is only read");
         let _ = std::fs::remove_dir_all(dir);
@@ -958,10 +967,12 @@ mod tests {
             }
             flag.is_cancelled()
         });
-        let (path, guard) = crate::helpers::prepare_audio_feed_with_cancel(&source, Some(predicate.as_ref()))
-            .map(|(path, guard)| (Some(path), guard))
-            .unwrap_or((None, None));
-        assert!(path.is_none() && guard.is_none(), "the preparation was cancelled");
+        let feed = crate::helpers::prepare_audio_feed_with_cancel(
+            &source,
+            crate::helpers::FeedOptions::default(),
+            Some(predicate.as_ref()),
+        );
+        assert!(feed.is_err(), "the preparation was cancelled");
         assert!(cancel.is_cancelled());
         assert!(
             crate::workdir::tests::thread_run_files().is_empty(),

@@ -102,11 +102,11 @@ export default function useFileDrop(dropOverrideRef, queueLocked = false) {
 
         const notices = []
         if (trsCompanions.length > 0) {
-          const chunkCount = filtered.filter(path => /\.(?:ftr|trm)$/i.test(path)).length
+          const chunkCount = filtered.filter(path => /\.(?:ftr|trm|tll)$/i.test(path)).length
           notices.push(
             chunkCount > 0
-              ? `TRS session companion detected. All ${chunkCount} dropped FTR/TRM ${chunkCount === 1 ? 'chunk is' : 'chunks are'} queued in chronological order, but TRS session metadata and protection validation are not yet supported.`
-              : 'TRS session companion detected. TRS session metadata and protection validation are not yet supported, so select or drop the accompanying FTR/TRM chunks directly.',
+              ? `TRS session companion detected. All ${chunkCount} dropped FTR ${chunkCount === 1 ? 'chunk is' : 'chunks are'} queued in chronological order, but TRS session metadata and protection validation are not yet supported.`
+              : 'TRS session companion detected. TRS session metadata and protection validation are not yet supported, so select or drop the accompanying FTR chunks (.trm, .ftr, .tll) directly.',
           )
         }
         if (formatFailures.length > 0) {
@@ -225,6 +225,7 @@ export default function useFileDrop(dropOverrideRef, queueLocked = false) {
               'sgmca',
               'trm',
               'ftr',
+              'tll',
               'bwf',
               'dm',
               'dcr',
