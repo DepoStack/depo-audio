@@ -496,13 +496,6 @@ expect(
     !modelsSource.includes('https://'),
   'models.rs must expose only deletion-only legacy cleanup without a network installation path',
 )
-expect(
-  modelsSource.includes('recommended_denoise: "unavailable".into()') &&
-    modelsSource.includes('recommend_speaker_detection: false') &&
-    modelsSource.includes('recommend_enhance: false') &&
-    modelsSource.includes('dereverb_available: false'),
-  `v${version} system capabilities must fail closed for every learned-model feature`,
-)
 for (const filename of forbiddenModels) {
   expect(artifactInventory.includes(`'${filename}'`), `artifact inventory must reject model material ${filename}`)
   expect(

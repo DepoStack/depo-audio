@@ -28,23 +28,23 @@ export const NOT_TESTED_NOTE = 'Not tested in CAT software'
 export const OPUS_CATALYST_NOTE =
   'Stenograph says Opus plays only in CATalyst 20 or newer, and lists .opus among the files CATalyst can associate. Older versions cannot play it; send WAV instead.'
 
+// Fields of the learned-model processing removed in 1.2.0. Presets never set
+// them, stale settings that still carry them have them dropped here, and the
+// backend refuses any job that turns one on.
+const RETIRED_LEARNED_FIELDS = ['denoise', 'denoiseQuality', 'enhance', 'dereverb']
+
 // Resolve release- and mode-dependent settings before a preset is compared or
-// applied. Retired learned-model flags always fail closed.
+// applied.
 export function resolvePresetSettings(settings) {
-  return {
+  const resolved = {
     ...settings,
     autoLevel: settings.mode === 'keep' ? false : Boolean(settings.autoLevel),
-    denoise: false,
-    enhance: false,
-    dereverb: false,
   }
+  for (const field of RETIRED_LEARNED_FIELDS) delete resolved[field]
+  return resolved
 }
 
 const OFF = {
-  denoise: false,
-  denoiseQuality: 'fast',
-  enhance: false,
-  dereverb: false,
   declip: false,
 }
 
@@ -185,7 +185,7 @@ export const PRESETS = [
   },
 ]
 
-// The presets shipped up to 1.1.0, kept only so the picker can tell people
+// The presets shipped up to 1.0.2 (1.1.0 was never published), kept only so the picker can tell people
 // whose saved settings still match one of them which new preset is closest.
 // Their settings are never applied automatically.
 export const LEGACY_PRESETS = [

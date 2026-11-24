@@ -2,10 +2,14 @@
 
 ## Supported Versions
 
-| Version | Supported              |
-| ------- | ---------------------- |
-| 1.0.x   | ✅ Current             |
-| < 1.0   | ❌ No longer supported |
+| Version | Supported                                        |
+| ------- | ------------------------------------------------ |
+| 1.2.x   | Planned: supported once 1.2.0 is published       |
+| 1.0.x   | Supported; 1.0.2 is the latest published release |
+| < 1.0   | No longer supported                              |
+
+1.1.0 and 1.0.3 were never published. When 1.2.0 is published, 1.2.x becomes
+the supported line.
 
 ## Reporting a Vulnerability
 
@@ -25,11 +29,11 @@ deadline.
 
 DepoAudio processes audio files locally on your machine and does not upload
 recordings for conversion, playback, analysis, or cleanup. Runtime network
-activity in v1.1.0 is limited to features the user or release configuration
+activity in v1.2.0 is limited to features the user or release configuration
 enables:
 
-- **No learned-model network path** — v1.1.0 does not bundle, install,
-  download, or execute learned-model files. Exact legacy app-data files can be
+- **No learned-model code path** — v1.2.0 does not bundle, install,
+  download, or execute learned-model files (local AI is planned for v2). Exact legacy app-data files can be
   listed only for user-initiated deletion.
 - **Optional update checks and downloads** — available only when a published
   build contains a verified updater configuration. Releases without signed

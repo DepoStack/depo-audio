@@ -136,7 +136,6 @@ pub fn run() {
             commands::infer_case_name_cmd,
             commands::analyze_audio_cmd,
             commands::cancel_scan_cmd,
-            commands::system_capabilities_cmd,
             commands::legacy_model_cleanup_catalog_cmd,
             commands::delete_legacy_model_cmd,
             commands::waveform_peaks_cmd,

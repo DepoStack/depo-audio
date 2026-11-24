@@ -89,7 +89,14 @@ export const FORMAT_ROWS = [
     group: 'standard',
   },
   // Court reporting formats — require conversion
-  { ext: '.sgmca', vendor: 'Stenograph · Case CATalyst', ch: '1–16 ch', status: 'supported', group: 'court' },
+  {
+    ext: '.sgmca',
+    vendor: 'Stenograph · Case CATalyst',
+    ch: '1–16 ch',
+    status: 'supported',
+    note: 'Multi-session reading and SGMCA output are Preview; tested with synthetic files only',
+    group: 'court',
+  },
   {
     ext: '.trm  .ftr  .tll',
     vendor: 'For The Record · FTR Gold',

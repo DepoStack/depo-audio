@@ -198,13 +198,6 @@ pub fn cancel_scan_cmd(state: State<'_, AppState>) {
     state.scan_epoch.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
 }
 
-// ── System capabilities command ──────────────────────────────────────────────
-
-#[tauri::command]
-pub fn system_capabilities_cmd() -> models::SystemCapabilities {
-    models::detect_capabilities()
-}
-
 // ── Model management commands ──────────────────────────────────────────────
 
 #[tauri::command]

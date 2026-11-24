@@ -1,0 +1,265 @@
+{
+  "schemaVersion": 2,
+  "version": "1.2.0",
+  "reviewedDate": "2026-11-24",
+  "status": "NO-GO",
+  "candidate": {
+    "tag": "v1.2.0",
+    "releaseId": null,
+    "sourceCommit": null,
+    "assetManifestSha256": null,
+    "updater": "undecided",
+    "updaterPublicKey": null,
+    "publicationDate": null,
+    "approvedBy": null,
+    "releaseTaggerEmail": null
+  },
+  "blockers": [
+    {
+      "id": "shipped-model-commercial-rights",
+      "status": "open",
+      "version": "1.2.0",
+      "reviewedDate": "2026-11-24",
+      "description": "v1.2.0 must ship zero learned models (local AI is planned for v2). CI can prove the zero-model build; the owner closes this after review. The separate decision about the public models-v1 release is the models-v1-distribution-decision blocker. No v1.2.0 evidence yet; the v1.0.3 and v1.1.0 run evidence is void.",
+      "evidenceNeeded": [
+        "From the v1.2.0 release run, retain the models:check result on the exact source commit and the four RELEASE-INVENTORY-*.json files showing every extracted installer (MSI, NSIS EXE, DMG, app archive) carries zero learned-model weights, no ONNX Runtime, and no model install or download path.",
+        "On an installed v1.2.0 app, confirm legacy app-data model files left by v1.0.2 are never loaded, are listed only in Settings -> Model files for deletion, and are removed by Clear all DepoAudio data.",
+        "Add the v1.2.0 release run URL and the exact log lines relied on to evidenceRefs (empty until the v1.2.0 candidate is built)."
+      ],
+      "evidenceRefs": []
+    },
+    {
+      "id": "models-v1-distribution-decision",
+      "status": "open",
+      "version": "1.2.0",
+      "reviewedDate": "2026-11-24",
+      "description": "The public models-v1 release (id 354629817) still holds the nine learned-model files v1.0.2 can download, and their commercial-rights review is open (THIRD_PARTY_LICENSES.md, Historical model inventory). v1.2.0 does not use them; not distributing them in v1.2.0 is not retroactive rights clearance. Owner decision; .github/workflows/restore-models.yml and its release-contract assertions stay until it is made.",
+      "evidenceNeeded": [
+        "Record the release owner's decision on the public models-v1 release: keep it as immutable compatibility history for v1.0.2, restrict it, or withdraw it (with what that means for v1.0.2 installs that still offer downloads).",
+        "If the decision changes or removes models-v1, list the follow-up repository changes (restore-models.yml, the release-contract assertions that read it, THIRD_PARTY_LICENSES.md) and whether they block v1.2.0."
+      ],
+      "evidenceRefs": []
+    },
+    {
+      "id": "format-reader-interoperability-rights",
+      "status": "open",
+      "version": "1.2.0",
+      "reviewedDate": "2026-11-24",
+      "description": "Legal and rights review of the format readers new in v1.2.0: DigitalCAT / SoundSync .dm (and .bmf marker files), Liberty / BIS Digital .dcr, the FTR channel-splitting route and the SGMCA Direct Audio reader and writer. Their layouts come from owner-supplied interoperability notes; the committed samples were made by the owner's tools, not by vendor software. Owner/legal decision; no CI evidence can close it.",
+      "evidenceNeeded": [
+        "Retain the owner-supplied interoperability notes for each format (docs/formats/dm.md, docs/DCR.md, docs/SGMCA.md and the FTR notes) with their source and the terms under which they were obtained.",
+        "Record the owner's or counsel's conclusion that shipping readers (and the SGMCA writer) built from those notes is permitted, including any vendor licence, EULA or interoperability-exception question, and that no vendor code, library or recording is included.",
+        "Confirm the committed fixtures under scripts/fixtures/ (trm, dcr, dm, sgmca) were made by the owner's own tools and hold no case audio or personal data."
+      ],
+      "evidenceRefs": []
+    },
+    {
+      "id": "preview-format-real-recording-checks",
+      "status": "open",
+      "version": "1.2.0",
+      "reviewedDate": "2026-11-24",
+      "description": "DigitalCAT .dm, Liberty / BIS Digital .dcr, the FTR robustness route (channel splitting, damaged-round fill, start time) and SGMCA multi-session reading and writing have been tested with synthetic samples only and are labelled Preview. A check with real recordings is not required to ship v1.2.0, but the outcome must be stated. Owner closes.",
+      "evidenceNeeded": [
+        "For each Preview format, record either a check against a real recording made by the vendor's software (what was converted, on which release build, and the result, with no case audio or names retained) or the explicit owner decision to ship it as Preview without one.",
+        "Confirm the README format table, the in-app format table and the v1.2.0 changelog label these four as Preview and say they were tested with synthetic samples only.",
+        "For SGMCA output, record whether CATalyst has opened a DepoAudio-written file; until then the changelog and README must keep saying it has not."
+      ],
+      "evidenceRefs": []
+    },
+    {
+      "id": "javascript-runtime-notices",
+      "status": "open",
+      "version": "1.2.0",
+      "reviewedDate": "2026-11-24",
+      "description": "JavaScript notice evidence for the exact v1.2.0 npm graph. The v1.1.0 run evidence is void. Needs fresh v1.2.0 run evidence and a named reviewer.",
+      "evidenceNeeded": [
+        "From the v1.2.0 release run, retain the strict notices check (generate-javascript-notices.mjs --strict --check) on the exact source commit and the four RELEASE-INVENTORY-*.json files byte-binding COMPONENTS.json and THIRD-PARTY-NOTICES.html, with zero unresolved components.",
+        "Confirm the emitted graph maps react-remove-scroll-bar imports to the DepoAudio compatibility module and distributes no bytes from react-remove-scroll-bar@2.3.8, and that the Tauri, tslib, Tailwind CSS and tailwindcss-animate notices are preserved.",
+        "Add the v1.2.0 release run URL and the exact log lines relied on to evidenceRefs (empty until the v1.2.0 candidate is built)."
+      ],
+      "evidenceRefs": []
+    },
+    {
+      "id": "macos-ffmpeg-rc2-evidence",
+      "status": "open",
+      "version": "1.2.0",
+      "reviewedDate": "2026-11-24",
+      "description": "macOS FFmpeg sidecar evidence for the v1.2.0 candidate. The v1.0.3 and v1.1.0 evidence does not carry over.",
+      "evidenceNeeded": [
+        "From the v1.2.0 release run, retain the macOS job evidence that both universal sidecars build from the hash-pinned FFmpeg 7.1.5, LAME 3.100 and Opus 1.6.1 sources, reject GPL/nonfree configuration, link only to macOS system libraries, and pass native FTR decode, the decoders the Preview formats need, and every released encoder/filter check.",
+        "Extract both downloadable macOS containers (DMG and app archive) and verify byte-identical macOS inventories, matching source, configuration, toolchain, license and checksum evidence, and DepoAudio_1.2.0_third-party-source.tar.gz.",
+        "Add the v1.2.0 release run URL and the exact log lines relied on to evidenceRefs (empty until the v1.2.0 candidate is built)."
+      ],
+      "evidenceRefs": []
+    },
+    {
+      "id": "windows-ffmpeg-source-and-notices",
+      "status": "open",
+      "version": "1.2.0",
+      "reviewedDate": "2026-11-24",
+      "description": "Windows FFmpeg payload match is CI evidence; compliant corresponding-source delivery for the BtbN binaries is an owner/legal determination. The Windows leg now builds on the self-hosted runner by default (#211), so the run must say which runner built the candidate.",
+      "evidenceNeeded": [
+        "Extract the v1.2.0 MSI and NSIS payloads and match the packaged ffmpeg.exe and ffprobe.exe to the reviewed BtbN LGPL build (asset 496767001, ffmpeg-N-125875-g5d4d3bdc61-win64-lgpl.zip).",
+        "Record which runner built the Windows candidate (self-hosted or github-hosted) from the release run's windows_runner input.",
+        "Establish compliant corresponding-source delivery and preserve the exact license, configuration, source reference and required notices for the distributed Windows binaries (owner decision).",
+        "Add the v1.2.0 release run URL and the exact log lines relied on to evidenceRefs (empty until the v1.2.0 candidate is built)."
+      ],
+      "evidenceRefs": []
+    },
+    {
+      "id": "webview2-final-installer-evidence",
+      "status": "open",
+      "version": "1.2.0",
+      "reviewedDate": "2026-11-24",
+      "description": "The workflow records only build-input evidence (finalInstallerEmbeddingVerified=false). Needs fresh v1.2.0 extraction evidence.",
+      "evidenceNeeded": [
+        "On Windows, extract the v1.2.0 MSI Binary table and NSIS payload, match both embedded WebView2 installers to the SHA-256 recorded in WEBVIEW2-EVIDENCE-windows.json, and retain the extraction evidence.",
+        "Review and record the exact Microsoft redistribution terms that apply to the embedded runtime (owner decision).",
+        "Add the v1.2.0 release run URL and the exact log lines relied on to evidenceRefs (empty until the v1.2.0 candidate is built)."
+      ],
+      "evidenceRefs": []
+    },
+    {
+      "id": "synthetic-ftr-packaged-decode",
+      "status": "open",
+      "version": "1.2.0",
+      "reviewedDate": "2026-11-24",
+      "description": "Packaged FTR decode evidence for the v1.2.0 candidate. Earlier run references must not be reused.",
+      "evidenceNeeded": [
+        "From the v1.2.0 release run, prove the exact macOS and Windows sidecars and installer payloads normally decode the deterministic synthetic 440 Hz FTR-tagged fixture generated by scripts/ftr-smoke-fixture.mjs, and that the container and .dm smoke fixtures pass.",
+        "Confirm from the four v1.2.0 inventories that the generated fixtures and every derived smoke-test output are absent from all installers, release assets and retained public artifacts.",
+        "Add the v1.2.0 release run URL and the exact log lines relied on to evidenceRefs (empty until the v1.2.0 candidate is built)."
+      ],
+      "evidenceRefs": []
+    },
+    {
+      "id": "packaged-install-and-upgrade-validation",
+      "status": "open",
+      "version": "1.2.0",
+      "reviewedDate": "2026-11-24",
+      "description": "Clean-machine installs and upgrades from v1.0.2 on real macOS and Windows hardware. None of the work since v1.0.2 has run in an installed app.",
+      "evidenceNeeded": [
+        "Reconcile the exact v1.2.0 MSI, NSIS EXE, DMG and app archive payloads against the binary contract, third-party ledger (including the bundled fonts), checksums and expected resource inventory.",
+        "Clean machines: install and start both Windows installers on clean Windows 10 and 11 x64 systems without WebView2, and start both macOS deliverables on macOS 13.3+ on Apple Silicon and Intel. Record what an unsigned build shows (Gatekeeper and SmartScreen prompts) and the steps a user takes past them.",
+        "Upgrade: upgrade an existing v1.0.2 installation through MSI, NSIS and macOS paths, and confirm the library, preferences, saved transcripts and bookmarks survive, old bundled model resources are gone, and legacy app-data model files are shown only for deletion.",
+        "On the installed apps, exercise conversion with its export record and BWF start time on the release sidecars, the three-pane Player with transcript proofing, the listening mix and playback keys, Compare with original, Reveal in folder and Open in Player, Scan suggestions, Library re-export confirmation, Settings scrolling, Your data backup/import/clear, Copy diagnostics, the bundled Archivo and Fragment Mono fonts rendering offline, and legacy-model deletion.",
+        "Add the v1.2.0 release run URL and the exact log lines relied on to evidenceRefs (empty until the v1.2.0 candidate is built)."
+      ],
+      "evidenceRefs": []
+    },
+    {
+      "id": "signing-notarization-and-updater-decision",
+      "status": "open",
+      "version": "1.2.0",
+      "reviewedDate": "2026-11-24",
+      "description": "Owner decision recorded for v1.2.0: macOS and Windows code signing are off, so the candidate is built unsigned (ad-hoc macOS signature, unsigned Windows installers, no notarization). Closure is owner-only: record the publication decision for each unavailable protection (Authenticode, Apple signing, notarization, Gatekeeper, SmartScreen) and what users are told. The in-app updater is the separate updater-keys-or-unavailable blocker.",
+      "evidenceNeeded": [
+        "From the v1.2.0 release.yml run log, retain the 'Detect signing configuration' notices for Apple and Windows signing, and confirm 'Build unsigned macOS packages' ran and the signed build steps were skipped.",
+        "Verify Authenticode, Apple signing, notarization, Gatekeeper, SmartScreen on the downloaded v1.2.0 assets, or record an explicit owner publication decision for each unavailable protection (expected: all unavailable for v1.2.0).",
+        "Confirm the README and release notes tell users the installers are unsigned and how to open them, without claiming any platform protection."
+      ],
+      "evidenceRefs": []
+    },
+    {
+      "id": "updater-keys-or-unavailable",
+      "status": "open",
+      "version": "1.2.0",
+      "reviewedDate": "2026-11-24",
+      "description": "The release workflow detects the updater secrets at build time; the owner may or may not set them before the v1.2.0 build. Either outcome is acceptable once recorded. v1.0.2 has no in-app updater, so v1.2.0 users cannot receive v1.2.0 itself through it either way.",
+      "evidenceNeeded": [
+        "From the v1.2.0 run log, retain the 'Detect signing configuration' updater output (updater=true or the 'Updater signing secrets absent' notice).",
+        "If updater=true: confirm 'Verify updater signing key pair' ran, the private draft carries exactly the three updater signatures (DepoAudio_1.2.0_universal.app.tar.gz.sig, DepoAudio_1.2.0_x64_en-US.msi.sig, DepoAudio_1.2.0_x64-setup.exe.sig) and no latest.json, and set candidate.updater to 'signed' with candidate.updaterPublicKey equal to the TAURI_UPDATER_PUBLIC_KEY value.",
+        "If the secrets were absent: confirm the draft has no .sig asset and no latest.json, set candidate.updater to 'unavailable' with updaterPublicKey null, and keep the README saying in-app updates are unavailable for this release.",
+        "Add the v1.2.0 release run URL and the exact log lines relied on to evidenceRefs (empty until the v1.2.0 candidate is built)."
+      ],
+      "evidenceRefs": []
+    },
+    {
+      "id": "rust-advisory-exception-acceptance",
+      "status": "open",
+      "version": "1.2.0",
+      "reviewedDate": "2026-11-24",
+      "description": "v1.2.0 is built from main with no deny.toml advisory exception (ignore = []). Since v1.1.0 was prepared, cookie moved to 0.18.3 for a new advisory against 0.18.2 (#221). RUSTSEC-2026-0543 (chrono) stays cleared by removing chrono, with the owner's bounded fallback exception (remove by 2027-03-31) unused.",
+      "evidenceNeeded": [
+        "Release owner sign-off that the v1.0.3 and v1.1.0 candidates are superseded and that v1.2.0 is built from main with no advisory exception.",
+        "At publication time, rerun cargo deny check advisories against the exact v1.2.0 candidate source commit and retain the result; any advisory without a recorded owner acceptance blocks publication."
+      ],
+      "evidenceRefs": []
+    },
+    {
+      "id": "codec-patent-review",
+      "status": "open",
+      "version": "1.2.0",
+      "reviewedDate": "2026-11-24",
+      "description": "Legal codec and patent review; no CI evidence can close it.",
+      "evidenceNeeded": [
+        "Complete and retain a codec and patent-pool review appropriate to the intended commercial distribution territories for the enabled AAC, MP3, Opus, FLAC, WAV and FTR processing path, and for the decoders the new readers use (GSM 6.10, IMA and Microsoft ADPCM, A-law, mu-law, MP2, AC-3, WMA).",
+        "Record the release-owner decision separately from the open-source copyright-license review."
+      ],
+      "evidenceRefs": []
+    },
+    {
+      "id": "bundled-fonts-ofl-ledger",
+      "status": "open",
+      "version": "1.2.0",
+      "reviewedDate": "2026-11-24",
+      "description": "v1.2.0 is the first published release to bundle third-party fonts: Archivo and Fragment Mono (SIL Open Font License 1.1) in public/fonts, compiled into the app. They are recorded in THIRD_PARTY_LICENSES.md and listed, with their copyright lines and OFL texts, in the bundled third-party notices, but need an owner licence and distribution decision.",
+      "evidenceNeeded": [
+        "Confirm the exact upstream source and copyright notice of the subset Archivo and Fragment Mono woff2 files copied from depo-stack public/fonts, and that each matches its bundled OFL text.",
+        "Decide whether reproducing both OFL texts in the bundled third-party notices meets the OFL condition that the copyright notice and licence accompany each copy, or whether the About screen should also link to them.",
+        "Record the release owner's licence and distribution-ledger decision for bundling the fonts."
+      ],
+      "evidenceRefs": []
+    },
+    {
+      "id": "release-publication-environment-and-tag-ruleset",
+      "status": "open",
+      "version": "1.2.0",
+      "reviewedDate": "2026-11-24",
+      "description": "The publish job has never run, so the GitHub settings it depends on have not been confirmed by a run. Repository YAML cannot set them.",
+      "evidenceNeeded": [
+        "Environment release-publication: a wait timer of at least 1440 minutes, administrator bypass turned off (can_admins_bypass false), and deployment limited to the single branch main. Retain a screenshot or API read-back with the date.",
+        "An active tag ruleset including refs/tags/v* with Restrict creations, Restrict updates and Restrict deletions on, and only the release owner on the bypass list. Retain the ruleset id and read-back.",
+        "Retain the inspect run (operation=inspect, confirmation 'INSPECT v1.2.0') log showing the read-only checks passed."
+      ],
+      "evidenceRefs": []
+    },
+    {
+      "id": "signed-release-tag",
+      "status": "open",
+      "version": "1.2.0",
+      "reviewedDate": "2026-11-24",
+      "description": "The v1.2.0 tag must be a signed annotated tag at the exact candidate source commit, by the release owner, created only after the candidate is built and recorded.",
+      "evidenceNeeded": [
+        "The release owner's SSH or GPG signing key is on their GitHub account, and candidate.releaseTaggerEmail is a verified email on that account.",
+        "Retain the output of 'git tag -v v1.2.0' and GitHub's verified status for the tag, and confirm the tag points at candidate.sourceCommit."
+      ],
+      "evidenceRefs": []
+    },
+    {
+      "id": "publication-24h-hold",
+      "status": "open",
+      "version": "1.2.0",
+      "reviewedDate": "2026-11-24",
+      "description": "Publication waits at least 24 hours after dispatch in the release-publication environment, with no administrator bypass, so the release can be cancelled before anything is written.",
+      "evidenceNeeded": [
+        "Retain the publish run (confirmation 'PUBLISH v1.2.0') showing the wait timer ran its full length before the job started, and that the job's own environment-protection check passed.",
+        "Record that nobody cancelled or bypassed the hold, and the UTC date the job ran (it must equal candidate.publicationDate)."
+      ],
+      "evidenceRefs": []
+    },
+    {
+      "id": "release-changelog-finalization",
+      "status": "open",
+      "version": "1.2.0",
+      "reviewedDate": "2026-11-24",
+      "description": "Closes only in the approval commit, after every other blocker is closed.",
+      "evidenceNeeded": [
+        "Replace the v1.2.0 Unpublished changelog marker with the approved publication date (equal to candidate.publicationDate) only after every other publication blocker is closed, without changing the frozen release-notes body.",
+        "Bind the release notes, source commit, installer inventories and downloadable asset checksums to the exact v1.2.0 publication candidate.",
+        "Check every frozen release-notes statement against the v1.2.0 run evidence before closing, including the Preview labels and the updater wording (updater-keys-or-unavailable). If any statement does not hold, change the notes and build a new candidate."
+      ],
+      "evidenceRefs": []
+    }
+  ]
+}
