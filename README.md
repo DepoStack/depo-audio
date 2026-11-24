@@ -265,7 +265,7 @@ release owner should confirm it on the Actions page (or with `gh workflow list -
 src/                     # React 19 frontend
   components/
     Convert/  Player/  Library/  common/  ui/
-    Merge/               # hidden: not in the sidebar, commands not on IPC
+    Merge/               # Merge tab: sync and merge two to four recordings
   hooks/                 # theme, prefs, conversion
   lib/                   # player, proofing, waveform, local-data helpers
   App.jsx                # app shell: sidebar nav (Convert · Player · Library) and Settings
@@ -278,7 +278,7 @@ src-tauri/               # Rust backend (Tauri 2)
     sgmca.rs             # SGMCA Direct Audio reader and writer
     workdir.rs           # private per-run work folder for temporary audio
     conversion.rs        # validated local FFmpeg conversion pipeline
-    ffmpeg.rs            # sidecar + filter chain      merge.rs (hidden, not on IPC)
+    ffmpeg.rs            # sidecar + filter chain      merge.rs / merge_engine.rs (Merge)
     manifest.rs          # <output>.depoaudio.json export record
     models.rs            # deletion-only cleanup of model files left by v1.0.2
     catdetect.rs         # court-software detection     safety.rs / helpers.rs
