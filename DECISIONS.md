@@ -15,3 +15,8 @@
 - The README's "No account or subscription is required" and "audio is not uploaded" stay true, and so do the same
   promises on depoaudio.com.
 - People who want a recording in Transcript or Video move the file themselves for now.
+- Merge: make it ready and ship it (owner, 2026-11-24). This replaces the 2026-11-13 decision to move it to a
+  branch, which was never carried out. It closes the issue #90 readiness list first (M4A, 2 to 4 sources, a real
+  per-source length, "Loudest source" in place of "Best Quality", tests) and the website shows it only with that
+  release. Spec: issue #227. Tests sit at the merge job: two tones with a known offset in, the merged file and the
+  offset out.
