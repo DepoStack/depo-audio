@@ -9,10 +9,11 @@ export default function ProcessingToggle({ name, desc, checked, onChange, smart,
   return (
     <div
       className={cn(
-        'flex items-center justify-between gap-4 px-3 py-2 border-b border-border hover:bg-secondary/50 transition-colors',
+        'flex items-center justify-between gap-4 pr-3 py-2 border-b border-border hover:bg-secondary/50 transition-colors',
         // Unavailable rows are drawn in ink 2, never faded.
         disabled ? 'cursor-not-allowed text-ink-2' : 'cursor-pointer',
-        smart && 'border-l-2 border-l-[hsl(var(--blue)/0.2)] pl-2.5',
+        // Text stays on the zone edge; the recommended-group rule hangs in the gutter.
+        smart && '-ml-3 border-l-2 border-l-[hsl(var(--blue)/0.2)] pl-2.5',
       )}
     >
       <div className="flex flex-col gap-0.5">

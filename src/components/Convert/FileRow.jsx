@@ -83,7 +83,9 @@ export default function FileRow({ file, streams, sessionNotice = '', job, onRemo
             ))}
         </div>
         <div className="flex items-center gap-2 shrink-0">
-          <StatusChip status={status} />
+          {/* A rejected file never converts, so it does not say Waiting:
+              its word matches its rule and the Remove note below the list. */}
+          <StatusChip status={isRej && status === 'waiting' ? 'rejected' : status} />
           {!converting && (
             <button
               className="h-6 w-6 inline-flex items-center justify-center text-ink-2 hover:text-destructive hover:bg-secondary"
@@ -112,7 +114,7 @@ export default function FileRow({ file, streams, sessionNotice = '', job, onRemo
             pct != null ? ` ${Math.round(pct)}%` : job?.seconds > 0 ? ` ${Math.round(job.seconds)}s` : ''
           }`
           return (
-            <div className="px-3 pb-2">
+            <div className="pl-[42px] pr-3 pb-2">
               {(job?.phase || pct != null || job?.seconds > 0) && (
                 <span className="type-small text-ink-2 block mb-1">{progressText}</span>
               )}
@@ -138,7 +140,7 @@ export default function FileRow({ file, streams, sessionNotice = '', job, onRemo
           )
         })()}
       {status === 'done' && job.outputs?.length > 0 && (
-        <div className="px-3 pb-2 flex flex-col gap-1">
+        <div className="pl-[42px] pr-3 pb-2 flex flex-col gap-1">
           {job.outputs.map((out, i) => (
             <MiniPlayer key={out.path} out={out} color={CH_COLORS[i % 4]} multi={job.outputs.length > 1} />
           ))}
@@ -246,17 +248,17 @@ export default function FileRow({ file, streams, sessionNotice = '', job, onRemo
         </div>
       )}
       {status === 'done' && job.warning && (
-        <p role="alert" className="notice mx-3 mb-2">
+        <p role="alert" className="notice ml-[42px] mr-3 mb-2">
           {job.warning}
         </p>
       )}
       {status === 'cancelled' && (
-        <p className="px-3 pb-2 type-small text-ink-2">
+        <p className="pl-[42px] pr-3 pb-2 type-small text-ink-2">
           {job.error || 'Conversion cancelled. No partial output was kept.'}
         </p>
       )}
       {status === 'error' && (
-        <div className="px-3 pb-2">
+        <div className="pl-[42px] pr-3 pb-2">
           <button
             className="type-small text-ink-2 hover:text-foreground transition-colors flex items-center gap-1"
             onClick={() => setExpanded(e => !e)}

@@ -131,10 +131,11 @@
   line-height: var(--ds-type-label-leading);
 }
 /* Tabular record numbers only (line numbers, times, track index, CH n,
-   sizes): the 12px floor at regular weight. Prose is never set in it. */
+   sizes): the label size (the 12px floor) at regular weight. Not a new step
+   in the scale, and prose is never set in it. */
 @utility type-min {
-  font-size: var(--ds-type-min-size);
-  line-height: var(--ds-type-min-leading);
+  font-size: var(--ds-type-label-size);
+  line-height: var(--ds-type-small-leading);
 }
 @utility type-wordmark {
   font-size: var(--ds-type-wordmark-size);
@@ -750,13 +751,14 @@
   }
 }
 
-/* Player listening-mix sliders (ListeningMix.jsx). The native unfilled track
-   is about 2:1 against the light card, under WCAG 1.4.11's 3:1, so the track
-   is drawn here: a 1px ink-2 border (well over 3:1 on the card in both
-   themes), filled in ink up to the value (--mix-fill, set by the component),
-   and an ink thumb ringed in the card color so it stays visible on the fill.
-   Square, like every other shape (the world is square). The Convert channel
-   mix sliders use it too, so gold stays the one fill per view. */
+/* Player listening-mix sliders (ListeningMix.jsx) and the Convert channel mix.
+   The native unfilled track is about 2:1 against the light card, under WCAG
+   1.4.11's 3:1, so the track is drawn here: a 1px ink-2 border (well over 3:1
+   on the card in both themes), filled in ink 2 up to the value (--mix-fill,
+   set by the component), so it never outweighs the gold action in dark. The
+   thumb is a hollow square, card filled with a 2px ink frame, so it stands
+   apart from the fill at any value. Disabled: dashed track, no fill, ink-2
+   thumb frame, matching the other unavailable controls. */
 .mix-range {
   appearance: none;
   -webkit-appearance: none;
@@ -765,20 +767,12 @@
 .mix-range::-webkit-slider-runnable-track {
   height: 8px;
   border: 1px solid hsl(var(--sub));
-  background: linear-gradient(
-    to right,
-    hsl(var(--foreground)) var(--mix-fill, 0%),
-    hsl(var(--card)) var(--mix-fill, 0%)
-  );
+  background: linear-gradient(to right, hsl(var(--sub)) var(--mix-fill, 0%), hsl(var(--card)) 0);
 }
 .mix-range::-moz-range-track {
   height: 6px;
   border: 1px solid hsl(var(--sub));
-  background: linear-gradient(
-    to right,
-    hsl(var(--foreground)) var(--mix-fill, 0%),
-    hsl(var(--card)) var(--mix-fill, 0%)
-  );
+  background: linear-gradient(to right, hsl(var(--sub)) var(--mix-fill, 0%), hsl(var(--card)) 0);
 }
 .mix-range::-webkit-slider-thumb {
   -webkit-appearance: none;
@@ -786,14 +780,26 @@
   width: 18px;
   height: 18px;
   margin-top: -6px;
-  border: 2px solid hsl(var(--card));
-  background: hsl(var(--foreground));
-  box-shadow: 0 0 0 1px hsl(var(--foreground));
+  border: 2px solid hsl(var(--foreground));
+  background: hsl(var(--card));
 }
 .mix-range::-moz-range-thumb {
   width: 14px;
   height: 14px;
-  border: 2px solid hsl(var(--card));
-  background: hsl(var(--foreground));
-  box-shadow: 0 0 0 1px hsl(var(--foreground));
+  border: 2px solid hsl(var(--foreground));
+  background: hsl(var(--card));
+}
+.mix-range:disabled::-webkit-slider-runnable-track {
+  border-style: dashed;
+  background: hsl(var(--card));
+}
+.mix-range:disabled::-moz-range-track {
+  border-style: dashed;
+  background: hsl(var(--card));
+}
+.mix-range:disabled::-webkit-slider-thumb {
+  border-color: hsl(var(--sub));
+}
+.mix-range:disabled::-moz-range-thumb {
+  border-color: hsl(var(--sub));
 }

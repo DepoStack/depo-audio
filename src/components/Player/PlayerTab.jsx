@@ -1193,7 +1193,7 @@ export default function PlayerTab({ dropHandlerRef, onConvertFiles, openRequest,
                         {fmtTime(b.time)}
                       </button>
                       <input
-                        className="flex-1 min-w-0 bg-transparent type-small placeholder:text-ink-2"
+                        className="flex-1 min-w-0 bg-transparent type-small placeholder:italic placeholder:text-ink-2"
                         value={b.label}
                         placeholder="Add a note…"
                         onChange={e =>

@@ -467,9 +467,10 @@ export default function Transcript({
       on ? 'bg-secondary text-foreground ring-1 ring-inset ring-foreground' : 'text-ink-2 hover:text-foreground',
     )
   const gutter = 'w-10 shrink-0 text-right type-min tabular-nums text-ink-2'
-  // Unavailable is a hidden (dashed) line in ink 2, never faded.
+  // Unavailable is a hidden (dashed) line in ink 2, never faded; it also drops
+  // to regular weight, so it differs from the semibold live buttons in dark too.
   const smallButton =
-    'inline-flex h-7 items-center gap-1 border border-input px-2 tabular-nums hover:bg-secondary disabled:border-dashed disabled:text-ink-2 disabled:hover:bg-transparent'
+    'inline-flex h-7 items-center gap-1 border border-input px-2 font-semibold tabular-nums hover:bg-secondary disabled:border-dashed disabled:font-normal disabled:text-ink-2 disabled:hover:bg-transparent'
   const title = 'type-label text-ink-2'
 
   const status = copied ? 'Lines and times copied to the clipboard.' : message
@@ -482,15 +483,23 @@ export default function Transcript({
       aria-label="Flags for review"
       className={cn('flex flex-col', !inPane && 'shrink-0 border-t border-border px-4 pb-2')}
     >
-      <div className="flex min-h-10 flex-wrap items-center justify-between gap-x-2">
-        <h3 className={cn('shrink-0', title)}>
+      {/* The title holds its own 40px head line, as the Listening mix does; in
+          a narrow pane the action wraps under it, its text on the same edge. */}
+      <div className={cn('flex flex-wrap items-center justify-between gap-x-2', !inPane && 'min-h-10')}>
+        <h3 className={cn('shrink-0', inPane && 'flex min-h-10 items-center', title)}>
           Flags for review{flags.length ? ` (${flags.length})` : ''}
           {!inPane && flags.length > FLAG_ROWS_SHOWN && (
             <span className="font-normal"> · scroll for {flags.length - FLAG_ROWS_SHOWN} more</span>
           )}
         </h3>
         {flags.length > 0 && (
-          <Button size="sm" variant="ghost" onClick={exportFlags} title="Save flags as CSV or text">
+          <Button
+            size="sm"
+            variant="ghost"
+            className={cn('shrink-0', inPane && '-mx-2.5 mb-1')}
+            onClick={exportFlags}
+            title="Save flags as CSV or text"
+          >
             <Download size={12} /> Export flags
           </Button>
         )}
@@ -528,12 +537,12 @@ export default function Transcript({
             }
             const note = inPane ? (
               <FlagNote
-                className="min-h-6 min-w-0 flex-1 border-b border-input bg-transparent px-0.5 py-0.5 type-small placeholder:text-ink-2 focus:border-foreground"
+                className="min-h-6 min-w-0 flex-1 border-b border-input bg-transparent py-0.5 placeholder:italic placeholder:text-ink-2 focus:border-foreground"
                 {...noteProps}
               />
             ) : (
               <input
-                className="h-6 min-w-0 flex-1 border-b border-input bg-transparent px-0.5 type-small placeholder:text-ink-2 focus:border-foreground"
+                className="h-6 min-w-0 flex-1 border-b border-input bg-transparent px-0.5 type-small placeholder:italic placeholder:text-ink-2 focus:border-foreground"
                 {...noteProps}
               />
             )
@@ -553,14 +562,18 @@ export default function Transcript({
               </span>
             )
             return inPane ? (
-              <li key={f.id} className="group flex flex-col gap-1 type-min">
-                <div className="flex items-center gap-2 min-w-0">
-                  {ref}
+              // Ref, excerpt and note share one left edge; the excerpt and
+              // note are transcript text, so they keep the 14px body size.
+              <li key={f.id} className="group flex flex-col gap-1">
+                <div className="flex items-center gap-2 min-w-0 type-min">
+                  <span aria-hidden="true" className="shrink-0 tabular-nums text-ink-2">
+                    {lineRef(segments[f.index], f.index)}
+                  </span>
                   {jump}
                   <span className="flex-1" />
                   {remove}
                 </div>
-                <span className="type-small line-clamp-2 break-words" title={f.excerpt}>
+                <span className="line-clamp-2 break-words" title={f.excerpt}>
                   {f.excerpt}
                 </span>
                 <div className="flex">{note}</div>
@@ -600,7 +613,7 @@ export default function Transcript({
               <Locate size={11} />{' '}
               {held ? (
                 <span>
-                  <span className="@max-[44rem]:sr-only">Follow paused: </span>back to playing line
+                  <span className="@max-[40rem]:sr-only">Follow paused: </span>back to playing line
                 </span>
               ) : (
                 'Follow audio'
@@ -611,11 +624,11 @@ export default function Transcript({
             <>
               {/* In a narrow card the labels become icon-only (the name stays for screen readers). */}
               <Button size="sm" variant="ghost" onClick={importFile} title="Open another transcript">
-                <Upload size={12} /> <span className="@max-[38rem]:sr-only">Open another</span>
+                <Upload size={12} /> <span className="@max-[34rem]:sr-only">Open another</span>
               </Button>
               <Button size="sm" variant="ghost" onClick={copyText} title="Copy the lines with their times">
                 {copied ? <Check size={12} /> : <Copy size={12} />}{' '}
-                <span className="@max-[38rem]:sr-only">{copied ? 'Copied' : 'Copy with times'}</span>
+                <span className="@max-[34rem]:sr-only">{copied ? 'Copied' : 'Copy with times'}</span>
               </Button>
               <Button
                 size="sm"

@@ -23,7 +23,7 @@ import {
   processingSummary,
 } from '../../presets'
 import { usePreferencesContext } from '../../hooks/PreferencesContext'
-import { AlertTriangle, Check, Loader2, Play } from 'lucide-react'
+import { AlertTriangle, Check, Loader2, Lock, Play } from 'lucide-react'
 import { Button } from '../ui/button'
 import { Badge } from '../ui/badge'
 import { Input } from '../ui/input'
@@ -543,15 +543,21 @@ export default function ConvertTab({
           {/* ── FILES (drop zone + queue) — the workflow starts here ─────── */}
           <div
             aria-busy={queueLocked}
-            className={`recording-intake grid items-center gap-4 border border-dashed p-4 transition-colors sm:grid-cols-[auto_minmax(0,1fr)_auto] ${
-              dragOver && !queueLocked ? 'border-foreground bg-secondary' : 'border-input bg-card'
-            } ${queueLocked ? 'text-ink-2' : ''}`}
+            // Dashed marks a live drop target only. Locked: a plain hairline,
+            // ink 2, and the lock glyph in place of the waveform.
+            className={`recording-intake grid items-center gap-4 border p-4 transition-colors sm:grid-cols-[auto_minmax(0,1fr)_auto] ${
+              queueLocked
+                ? 'border-border text-ink-2'
+                : dragOver
+                  ? 'border-dashed border-foreground bg-secondary'
+                  : 'border-dashed border-input bg-card'
+            }`}
             onDragOver={queueLocked ? undefined : onDragOver}
             onDragLeave={onDragLeave}
             onDrop={queueLocked ? undefined : onDrop}
           >
             <span aria-hidden="true" className="grid place-items-center">
-              <WaveformIcon />
+              {queueLocked ? <Lock size={28} strokeWidth={1.6} /> : <WaveformIcon />}
             </span>
             <div className="min-w-0">
               <p className="font-semibold">
@@ -590,7 +596,8 @@ export default function ConvertTab({
                   </button>
                 )}
               </div>
-              <div className="flex flex-col border-y border-border divide-y divide-border">
+              {/* Top rule only: the next zone's rule closes the list. */}
+              <div className="flex flex-col border-t border-border divide-y divide-border">
                 {files.map(f => (
                   <FileRow
                     key={f.path}
@@ -762,7 +769,7 @@ export default function ConvertTab({
                 <button
                   key={m.id}
                   aria-pressed={mode === m.id}
-                  className="choice flex-row items-center gap-3"
+                  className="choice flex-row items-center gap-3 pr-8"
                   onClick={() => handleModeChange(m.id)}
                 >
                   <ModeIcon id={m.id} active={mode === m.id} />
@@ -770,6 +777,11 @@ export default function ConvertTab({
                     <span className="type-small font-semibold">{m.label}</span>
                     <span className="type-small text-ink-2">{m.desc}</span>
                   </div>
+                  {mode === m.id && (
+                    <span aria-hidden="true" className="absolute top-2 right-2">
+                      <Check aria-hidden="true" className="h-3.5 w-3.5" strokeWidth={2.2} />
+                    </span>
+                  )}
                 </button>
               ))}
             </div>
@@ -1017,7 +1029,7 @@ export default function ConvertTab({
 
               {/* ── Every processing option, always shown and off until the
                   person turns it on. A scan only marks what it recommends. ── */}
-              <p className={`border-t border-border px-3 pt-4 pb-1 ${title}`}>Signal repair</p>
+              <p className={`border-t border-border pt-4 pb-1 ${title}`}>Signal repair</p>
 
               <ProcessingToggle
                 smart
@@ -1046,7 +1058,7 @@ export default function ConvertTab({
                 detected={analysis?.hasClipping ? 'Clipping found' : null}
               />
 
-              <p className={`px-3 pt-4 pb-1 ${title}`}>Fine-tune</p>
+              <p className={`pt-4 pb-1 ${title}`}>Fine-tune</p>
 
               <ProcessingToggle
                 name={PROCESSING.hpf.name}
@@ -1097,7 +1109,7 @@ export default function ConvertTab({
               />
 
               {/* Processing chain preview */}
-              <div className="flex items-center gap-2 px-3 py-2 border-b border-border">
+              <div className="flex items-center gap-2 pr-3 py-2 border-b border-border">
                 <span className={`shrink-0 ${title}`}>Chain</span>
                 {anyProcessing ? (
                   <div className="flex items-center gap-1 flex-wrap">
@@ -1139,7 +1151,7 @@ export default function ConvertTab({
                 )}
               </div>
 
-              <p className="px-3 pt-2 type-small text-ink-2">
+              <p className="pt-2 type-small text-ink-2">
                 All processing runs on your machine — nothing is uploaded or sent anywhere.
               </p>
             </div>

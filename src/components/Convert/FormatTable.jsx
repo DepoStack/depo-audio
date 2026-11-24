@@ -42,7 +42,7 @@ export default function FormatTable() {
           {exportFirst.map(row => (
             <FormatRow key={`${row.ext}-${row.vendor}`} row={row} />
           ))}
-          <div className="flex items-start gap-2 px-3 py-2 type-small text-ink-2">
+          <div className="flex items-start gap-2 pr-3 py-2 type-small text-ink-2">
             <CircleX aria-hidden="true" className="mt-0.5 h-3.5 w-3.5 shrink-0 text-destructive" strokeWidth={1.8} />
             <span>
               DepoAudio recognizes these files but cannot open them. Export or convert them to WAV in the software that
@@ -55,7 +55,7 @@ export default function FormatTable() {
   )
 }
 
-const group = 'px-3 pt-4 pb-1 type-label text-ink-2'
+const group = 'pt-4 pb-1 type-label text-ink-2'
 
 function FormatRow({ row }) {
   const status =
@@ -67,7 +67,7 @@ function FormatRow({ row }) {
   const { Icon } = status
 
   return (
-    <div className="format-support-row grid grid-cols-[minmax(0,1fr)_auto] items-center gap-3 border-b border-border px-3 py-2 hover:bg-secondary/50">
+    <div className="format-support-row grid grid-cols-[minmax(0,1fr)_auto] items-center gap-3 border-b border-border pr-3 py-2 hover:bg-secondary/50">
       <div className="min-w-0">
         <span className="block truncate type-small font-medium">{row.ext}</span>
         <span className="block truncate type-small text-ink-2">{row.vendor}</span>
