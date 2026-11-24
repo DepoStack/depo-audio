@@ -86,7 +86,7 @@ pub(crate) fn get_formats() -> Vec<FormatInfo> {
             status: "unsupported".into(), handler: "rejected".into(), channels: None,
             note: Some("AES-128 encrypted. Open in Eclipse → File → Export Audio → WAV first.".into()) },
         // A .dcr with the HGCRLCRS signature (crate::dcr) is demuxed into a
-        // temporary WAV feed. Experimental: synthetic files only.
+        // temporary WAV feed. Preview: synthetic files only.
         FormatInfo { key: "dcr".into(), name: "Liberty / BIS Digital DCR".into(), vendor: "Liberty / BIS Digital".into(),
             status: "experimental".into(), handler: "dcr".into(), channels: Some("1–16".into()),
             note: Some(DCR_READER_NOTE.into()) },

@@ -12,7 +12,7 @@ use crate::types::AnalysisResult;
 // ── Audio analysis engine ────────────────────────────────────────────────────
 //
 // Pre-scans audio with FFmpeg/ffprobe to report objective signal and container
-// observations available in the v1.0.3 release.
+// observations available without learned-model inference.
 
 /// Target loudness for auto-leveling (LUFS).
 const TARGET_LUFS: f64 = -16.0;
@@ -272,7 +272,7 @@ pub(crate) async fn analyze_audio(
         false
     };
 
-    // v1.0.3 intentionally performs no learned-model inference. Retain the
+    // DepoAudio intentionally performs no learned-model inference. Retain the
     // wire fields for compatibility, but report no neural analysis result.
     let needs_denoise = false;
     let is_narrowband = sample_rate <= NARROWBAND_RATE;

@@ -28,7 +28,7 @@ The web view storage sits in the system web view's data folder for DepoAudio.
 On Windows that is expected under `%LOCALAPPDATA%\com.andrewmayes.depoaudio\EBWebView`;
 on macOS it is expected under `~/Library/WebKit/com.andrewmayes.depoaudio`.
 Neither location has been checked on an installed build yet. The installed-app
-pass in `V1.1.0-RELEASE-CANDIDATE.md` must confirm both before the website
+pass in [`V1.2.0-RELEASE-CANDIDATE.md`](V1.2.0-RELEASE-CANDIDATE.md) must confirm both before the website
 states them.
 
 **Not stored by DepoAudio:** your recordings, converted files, the

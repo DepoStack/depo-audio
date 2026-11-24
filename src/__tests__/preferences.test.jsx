@@ -113,7 +113,8 @@ describe('usePreferences hydration', () => {
     })
 
     const savedPatch = invoke.mock.calls.find(([command]) => command === 'prefs_set')[1].patch
-    expect(savedPatch).toMatchObject({ denoise: false, denoiseQuality: 'fast', enhance: false, dereverb: false })
+    for (const field of ['denoise', 'denoiseQuality', 'enhance', 'dereverb'])
+      expect(savedPatch).not.toHaveProperty(field)
     expect(result.current).not.toHaveProperty('setDenoise')
     expect(result.current).not.toHaveProperty('setEnhance')
     expect(result.current).not.toHaveProperty('setDereverb')
@@ -188,11 +189,8 @@ describe('processing defaults', () => {
 
   it('fails closed even when stale settings request learned processing', () => {
     const split = PRESETS.find(preset => preset.id === 'split-wav')
-    expect(resolvePresetSettings({ ...split.settings, denoise: true, enhance: true, dereverb: true })).toMatchObject({
-      denoise: false,
-      enhance: false,
-      dereverb: false,
-    })
+    const resolved = resolvePresetSettings({ ...split.settings, denoise: true, enhance: true, dereverb: true })
+    for (const field of ['denoise', 'enhance', 'dereverb']) expect(resolved).not.toHaveProperty(field)
     expect(resolvePresetSettings({ ...split.settings, mode: 'keep', autoLevel: true }).autoLevel).toBe(false)
   })
 

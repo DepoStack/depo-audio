@@ -22,7 +22,7 @@ export default function FormatTable() {
             Supported formats
           </CardTitle>
           <p className="mt-1 type-small text-[hsl(var(--sub))]">
-            Direct support, experimental court audio, and export-first formats
+            Available formats, Preview court audio, and export-first formats
           </p>
         </div>
         {open ? (
@@ -67,9 +67,9 @@ export default function FormatTable() {
 function FormatRow({ row }) {
   const status =
     row.status === 'supported'
-      ? { Icon: CircleCheck, label: 'Supported', className: 'text-success' }
+      ? { Icon: CircleCheck, label: 'Available', className: 'text-success' }
       : row.status === 'experimental'
-        ? { Icon: CircleDashed, label: 'Experimental', className: 'text-warning' }
+        ? { Icon: CircleDashed, label: 'Preview', className: 'text-warning' }
         : { Icon: CircleX, label: 'Export first', className: 'text-destructive' }
   const { Icon } = status
 

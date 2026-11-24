@@ -171,7 +171,7 @@ describe('conversion cancellation', () => {
     await act(async () => batch)
   })
 
-  it('forces learned-model flags off in the final IPC payload', async () => {
+  it('sends no learned-model fields in the IPC payload, even when asked to', async () => {
     const file = { path: 'C:\\case\\source.wav', name: 'source.wav' }
     const { result } = renderHook(() => useConversion())
 
@@ -184,7 +184,8 @@ describe('conversion cancellation', () => {
     await waitFor(() => expect(invoke.mock.calls.some(([command]) => command === 'convert')).toBe(true))
     const activeJob = invoke.mock.calls.find(([command]) => command === 'convert')[1].job
 
-    expect(activeJob).toMatchObject({ denoise: false, denoiseQuality: 'fast', enhance: false, dereverb: false })
+    for (const field of ['denoise', 'denoiseQuality', 'enhance', 'dereverb'])
+      expect(activeJob).not.toHaveProperty(field)
     act(() => emit('convert:done', { id: activeJob.id, files: [] }))
     await act(async () => batch)
   })

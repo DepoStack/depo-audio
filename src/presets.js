@@ -39,16 +39,20 @@ export const OPUS_CATALYST_NOTE =
 export const KEEPS_RATE_NOTE = 'Keeps your sample rate setting.'
 export const OPUS_RATE_NOTE = 'Opus is always 48 kHz.'
 
+// Fields of the learned-model processing removed in 1.2.0. Presets never set
+// them, stale settings that still carry them have them dropped here, and the
+// backend refuses any job that turns one on.
+const RETIRED_LEARNED_FIELDS = ['denoise', 'denoiseQuality', 'enhance', 'dereverb']
+
 // Resolve release- and mode-dependent settings before they are compared or
-// described. Retired learned-model flags always fail closed.
+// described.
 export function resolvePresetSettings(settings) {
-  return {
+  const resolved = {
     ...settings,
     autoLevel: settings.mode === 'keep' ? false : Boolean(settings.autoLevel),
-    denoise: false,
-    enhance: false,
-    dereverb: false,
   }
+  for (const field of RETIRED_LEARNED_FIELDS) delete resolved[field]
+  return resolved
 }
 
 // The processing options, in the order the Convert tab lists them, with the
@@ -179,14 +183,10 @@ export const PRESET_FIELDS = ['mode', 'format', 'mp3Bitrate']
 // picker can tell people whose saved settings are still exactly one of them
 // that this is where their processing came from. 1.0.x presets also turned
 // on Noise Removal and Enhance Clarity, which are retired and always read as
-// off (resolvePresetSettings), so they are left out here. Their settings
+// off (resolvePresetSettings drops them), so they are left out here. Their settings
 // are never applied automatically, and saved settings are never changed to
 // match a new preset.
 const OFF = {
-  denoise: false,
-  denoiseQuality: 'fast',
-  enhance: false,
-  dereverb: false,
   declip: false,
 }
 export const LEGACY_PRESETS = [
