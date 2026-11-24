@@ -71,7 +71,7 @@ Scanning is a bounded, cancellable local analysis pass. FFmpeg performs the sele
 - **Three output modes**: mix to stereo, keep original, or split by channel
 - **Per-channel** labels and volume
 - **Batch** the whole session at once
-- **Presets** named for where the file is going (CATalyst audio sync, other CAT software, scopist, one file per microphone, archive, smallest file), each with the reason for its format
+- **Presets** named for where the file is going (CATalyst audio sync, other CAT software, scopist, one file per microphone, archive, smallest file), each with the reason for its format; a preset sets only the channel mode and format, never processing
 - **Compare with original**: switch between a converted file and its source at the same position
 
 ### Signal cleanup (local, non-learned)
@@ -98,7 +98,7 @@ Scanning is a bounded, cancellable local analysis pass. FFmpeg performs the sele
 ### Safety for legal audio
 
 - **An export record beside every output** (`<output>.depoaudio.json`): source and output names (never folders), SHA-256 of both, the app version, the exact FFmpeg filters and encoder settings, the converted audio track and the recording start time when there is one. Schema: [`docs/export-manifest.schema.json`](docs/export-manifest.schema.json)
-- **The audio stays in place**: no added delay, Trim stops at the first sample above the threshold, Keep Original refuses MP3, M4A or Opus that would lose channels, and every step names the first audio track. A conversion that would move or drop audio is refused with a message
+- **The audio stays in place**: no added delay, Trim stops at the first sample above the threshold and the export record says how many samples it removed, Keep Original refuses MP3, M4A or Opus that would lose channels, and every step names the first audio track. A conversion that would move or drop audio is refused with a message
 - **The original is never changed**; temporary copies go in a private per-run work folder that is cleared at every launch
 - **Your data**: Settings shows where DepoAudio keeps its data, and lets you back up, restore or clear all of it. DepoAudio does not encrypt local data itself, so keep full-disk encryption on ([`docs/LOCAL-DATA.md`](docs/LOCAL-DATA.md))
 - **Copy diagnostics** copies the app version, operating system, processor type and FFmpeg version only; error messages, file names and folder paths are never included

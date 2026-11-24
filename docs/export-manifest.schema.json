@@ -405,6 +405,20 @@
             "decodedSourceSeconds": { "type": "number", "minimum": 0 },
             "statedSourceSeconds": { "type": ["number", "null"], "minimum": 0 }
           }
+        },
+        "leadingTrim": {
+          "type": ["object", "null"],
+          "additionalProperties": false,
+          "required": ["samples", "seconds", "sampleRate", "thresholdDb", "decodedSourceSamples", "measuredWith"],
+          "description": "What Trim silence removed from the start (samples is 0 when the recording starts above the threshold), or null when Trim silence was off or did not apply (it never runs in split mode). Before the conversion, a measuring pass (measuredWith) counts the decoded samples, runs FFmpeg's leading-silence detection and counts what is left; the conversion then removes exactly samples samples per channel (asetpts=N/SR/TB,atrim=start_sample=<samples>,asetpts=PTS-STARTPTS at the start of filterChain). The output's first sample is source sample <samples>. Written by versions after 1.1.0; earlier records do not have it.",
+          "properties": {
+            "samples": { "type": "integer", "minimum": 0, "description": "Samples removed from the start of every channel, at sampleRate." },
+            "seconds": { "type": "number", "minimum": 0, "description": "samples / sampleRate." },
+            "sampleRate": { "type": "integer", "minimum": 1, "description": "The converted stream's own sample rate, which samples counts at (before any resampling to output.sampleRate)." },
+            "thresholdDb": { "type": "number", "maximum": 0, "description": "The silence threshold in dBFS: the output starts at the first sample above it on any channel." },
+            "decodedSourceSamples": { "type": "integer", "minimum": 1, "description": "The converted stream's decoded length in samples per channel, from the measuring pass." },
+            "measuredWith": { "type": "string", "description": "The exact FFmpeg filter of the measuring pass." }
+          }
         }
       }
     },
@@ -440,7 +454,7 @@
         "sourceTimeReferenceSamples": { "type": ["integer", "null"], "minimum": 0, "description": "BWF bext TimeReference of the source, or for an FTR recording the time of day of its start: samples since midnight at sourceSampleRate." },
         "sourceSampleRate": { "type": ["integer", "null"], "minimum": 1 },
         "secondsSinceMidnight": { "type": ["number", "null"], "minimum": 0 },
-        "outputTimeReferenceSamples": { "type": ["integer", "null"], "minimum": 0, "description": "The same start, rescaled to output.sampleRate. Null when the output start differs from the source start (leading-silence trim) or the start is unknown." },
+        "outputTimeReferenceSamples": { "type": ["integer", "null"], "minimum": 0, "description": "The output's start, rescaled to output.sampleRate: the source start, plus processing.leadingTrim.samples when Trim silence removed audio from the start (records written by 1.1.0 and earlier left it null after trim). Null when the start is unknown." },
         "writtenToOutput": { "type": "boolean", "description": "True when the output WAV carries outputTimeReferenceSamples in its own bext chunk. When false, the output carries no time_reference at all and this record is the only place the start is kept. A start that is not local time of day (ftr-tutc, ftr-file-name) is never written to an output, since a bext time reference counts from local midnight." },
         "note": { "type": "string" }
       }

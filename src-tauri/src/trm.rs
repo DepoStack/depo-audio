@@ -4453,7 +4453,7 @@ pub(crate) mod tests {
             (timing.time_reference_samples, timing.sample_rate),
             (9 * 3600 * 16_000, 16_000)
         );
-        let record = crate::manifest::start_time_record(Some(timing), Some(48_000), false, "wav");
+        let record = crate::manifest::start_time_record(Some(timing), Some(48_000), None, "wav");
         assert!(record.known && record.written_to_output);
         assert_eq!(record.seconds_since_midnight, Some(32_400.0));
         assert_eq!(record.output_time_reference_samples, Some(9 * 3600 * 48_000));

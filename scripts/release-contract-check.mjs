@@ -1218,6 +1218,27 @@ expect(
     releaseWorkflow.split(`-af '${trimFilter},${stereoLimiter}'`).length === 3,
   'release.yml must smoke-test the exact trim and stereo limiter filters on the macOS and Windows FFmpeg',
 )
+// Trim silence measures what it removes with a sample count, the detection
+// and a second count, then removes that many samples by count; both smoke
+// tests run the measuring filter and the removal filters as the app builds
+// them (ffmpeg.rs leading_trim_measure_filter and leading_trim_filters).
+const sampleCountStats = ffmpegSource.match(/const SAMPLE_COUNT_STATS: &str = "([^"]+)";/)?.[1]
+const trimMeasureFilter =
+  sampleCountStats && trimFilter && `astats@total=${sampleCountStats},${trimFilter},astats@kept=${sampleCountStats}`
+const trimApplyFilters = [...(ffmpegSource.match(/fn leading_trim_filters[\s\S]*?\n}/)?.[0] ?? '').matchAll(/"([^"]+)"/g)]
+  .map(match => match[1])
+  .join(',')
+  .replace('{samples}', '1')
+expect(
+  trimMeasureFilter && releaseWorkflow.split(`-af '${trimMeasureFilter}'`).length === 3,
+  'release.yml must smoke-test the exact trim measuring filter (ffmpeg.rs leading_trim_measure_filter) on the macOS and Windows FFmpeg',
+)
+expect(
+  trimApplyFilters === 'asetpts=N/SR/TB,atrim=start_sample=1,asetpts=PTS-STARTPTS' &&
+    releaseWorkflow.split(`-af '${trimApplyFilters}'`).length === 3,
+  'release.yml must smoke-test the exact trim removal filters (ffmpeg.rs leading_trim_filters) on the macOS and Windows FFmpeg',
+)
+
 // Fade's fade-out is placed from a decoded-length pass; both smoke tests run
 // its exact filter so an FFmpeg without astats cannot ship.
 const decodedLengthFilter = ffmpegSource.match(/const DECODED_LENGTH_FILTER: &str =\s*"([^"]+)";/)?.[1]

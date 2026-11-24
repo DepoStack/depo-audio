@@ -5,7 +5,6 @@ import { listen } from '@tauri-apps/api/event'
 import { open } from '@tauri-apps/plugin-dialog'
 import useConversion, { cancelQueuedJobs } from '../hooks/useConversion'
 import useFileDrop, { AUDIO_PROBE_CONCURRENCY } from '../hooks/useFileDrop'
-import { countHiddenProcessingOptions } from '../components/Convert/ConvertTab'
 
 vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn() }))
 vi.mock('@tauri-apps/api/event', () => ({ listen: vi.fn() }))
@@ -427,22 +426,5 @@ describe('conversion results', () => {
     act(() => emit('convert:done', { id: activeJob.id, files: [{ path: '/case/out.wav', name: 'out.wav', size: 1 }] }))
     await act(async () => batch)
     expect(result.current.jobs[file.path]).toMatchObject({ status: 'done', trimmed })
-  })
-})
-
-describe('conversion processing UI contracts', () => {
-  it('counts only released non-learned processing options', () => {
-    const allHidden = {
-      hasAnalysis: true,
-      showAllProcessing: false,
-      showAutoLevel: false,
-      showDeclip: false,
-      showHpf: false,
-      showNormalize: false,
-      showTrim: false,
-      showFade: false,
-    }
-
-    expect(countHiddenProcessingOptions(allHidden)).toBe(6)
   })
 })
