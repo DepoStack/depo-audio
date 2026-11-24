@@ -673,6 +673,11 @@ fn encode_args(input: &Path, format: &str, rate: &str, output: &Path) -> Vec<Str
         "file".into(),
         "-i".into(),
         input.to_string_lossy().to_string(),
+        // The intermediate is a one-channel float WAV whose header names the
+        // channel front-left, not mono. Without this, LAME writes it as
+        // stereo and FFmpeg's AAC encoder refuses the layout.
+        "-ac".into(),
+        "1".into(),
     ];
     args.extend(crate::helpers::output_args(format, rate, 192));
     args.extend(["-y".into(), output.to_string_lossy().to_string()]);
