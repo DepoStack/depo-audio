@@ -64,7 +64,9 @@
         "Confirm the README format table, the in-app format table and the v1.2.0 changelog label these five as Preview (the Convert SGMCA output tile included) and say they were tested with synthetic samples only.",
         "For SGMCA output, record whether CATalyst has opened a DepoAudio-written file; until then the changelog and README must keep saying it has not."
       ],
-      "evidenceRefs": []
+      "evidenceRefs": [
+        "2026-11-24 owner instruction to resolve the open items: ship the legacy video containers (MPG/MPEG/VOB, TS/MTS/M2TS, WMV/ASF) as Preview without a real-recording check, labelled 'tested with synthetic files only'. Same applies to .dm, .dcr, FTR robustness and SGMCA multi-session. Owner closes this blocker."
+      ]
     },
     {
       "id": "javascript-runtime-notices",
@@ -221,9 +223,11 @@
         "Environment release-publication: a wait timer of at least 1440 minutes, administrator bypass turned off (can_admins_bypass false), and deployment limited to the single branch main. Retain a screenshot or API read-back with the date.",
         "An active tag ruleset including refs/tags/v* with Restrict creations, Restrict updates and Restrict deletions on, and only the release owner on the bypass list. Retain the ruleset id and read-back.",
         "Retain the inspect run (operation=inspect, confirmation 'INSPECT v1.2.0') log showing the read-only checks passed.",
-        "Confirm no v1.0.3 or v1.1.0 draft release remains, with an owner-token read-back of the releases list (drafts are visible only with push access). On 2026-11-24 a releases listing through the prep session's GitHub access showed only v1.0.0, v1.0.1, v1.0.2 and models-v1, all published; that read may not see drafts, so it is not this evidence."
+        "Confirm no v1.0.3 or v1.1.0 draft release remains. Recorded 2026-11-24: the releases listing through the owner's GitHub connection lists only v1.0.0, v1.0.1, v1.0.2 and models-v1 (all published). The same connection listed the v1.1.0, v1.0.3, v1.0.3-rc.1 and two v1.0.3 build drafts on 2026-11-22 before delete-draft.yml removed them, so it does see drafts. Owner to confirm on the Releases page."
       ],
-      "evidenceRefs": []
+      "evidenceRefs": [
+        "2026-11-24 releases listing (owner GitHub connection): v1.0.0, v1.0.1, v1.0.2, models-v1; no drafts"
+      ]
     },
     {
       "id": "signed-release-tag",
