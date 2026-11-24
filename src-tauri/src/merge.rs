@@ -11,6 +11,9 @@ use crate::merge_engine::{self, AlignedSource, MergeStrategy, SampleReader, MAX_
 use crate::safety::TempFile;
 
 const MAX_MERGE_SOURCES: usize = 4;
+/// The output formats a merge writes. The Merge screen offers exactly the
+/// formats in `src/mergeFormats.json`; a test keeps the two lists equal.
+const MERGE_FORMATS: &[&str] = &["wav", "mp3", "flac", "opus", "m4a"];
 const MAX_MERGE_SOURCE_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 const MAX_MERGE_TOTAL_SOURCE_BYTES: u64 = 4 * 1024 * 1024 * 1024;
 /// The merge itself decodes and mixes at this rate; the output rate is the
@@ -79,11 +82,12 @@ pub struct MergeJob {
     pub out_dir: String,
     /// Output filename (without extension).
     pub out_name: String,
-    /// Output format: wav, mp3, flac, opus.
+    /// Output format: one of `MERGE_FORMATS`.
     pub format: String,
     /// Sample rate for output.
     pub rate: String,
-    /// Merge strategy: "best_quality" or "mix_all".
+    /// Merge strategy: "mix_all" or "loudest" ("best_quality", the earlier
+    /// name for loudest, is still accepted).
     pub strategy: String,
 }
 
@@ -120,21 +124,26 @@ fn validate_output_name(name: &str) -> Result<String, String> {
     }
 }
 
+fn parse_strategy(key: &str) -> Result<MergeStrategy, String> {
+    match key {
+        "mix_all" => Ok(MergeStrategy::MixAll),
+        // `best_quality` is the name 1.1 and earlier builds sent.
+        "loudest" | "best_quality" => Ok(MergeStrategy::Loudest),
+        _ => Err("Unsupported merge strategy".into()),
+    }
+}
+
 fn validate_merge_job(job: &MergeJob) -> Result<ValidatedMergeJob, String> {
     if !(2..=MAX_MERGE_SOURCES).contains(&job.sources.len()) {
         return Err(format!("Merge requires 2 to {MAX_MERGE_SOURCES} source files"));
     }
-    if !matches!(job.format.as_str(), "wav" | "mp3" | "flac" | "opus") {
+    if !MERGE_FORMATS.contains(&job.format.as_str()) {
         return Err("Unsupported merge output format".into());
     }
     if !matches!(job.rate.as_str(), "44100" | "48000") {
         return Err("Merge sample rate must be 44100 or 48000 Hz".into());
     }
-    let strategy = match job.strategy.as_str() {
-        "mix_all" => MergeStrategy::MixAll,
-        "best_quality" => MergeStrategy::Loudest,
-        _ => return Err("Unsupported merge strategy".into()),
-    };
+    let strategy = parse_strategy(&job.strategy)?;
 
     let mut sources = Vec::with_capacity(job.sources.len());
     let mut seen = HashSet::with_capacity(job.sources.len());
@@ -363,19 +372,7 @@ pub(crate) async fn merge_audio(app: &AppHandle, job: &MergeJob, cancel: &MergeC
     let ext = crate::helpers::output_ext(&job.format);
     let mut reserved = reserve_output(&job.out_dir, &job.out_name, ext)?;
     let out_path = reserved.path.clone();
-    let out_codec = crate::helpers::output_args(&job.format, &job.rate, 192);
-    let mut args: Vec<String> = vec![
-        "-nostdin".into(),
-        "-hide_banner".into(),
-        "-loglevel".into(),
-        "error".into(),
-        "-protocol_whitelist".into(),
-        "file".into(),
-        "-i".into(),
-        tmp_wav.to_string_lossy().to_string(),
-    ];
-    args.extend(out_codec);
-    args.extend(["-y".into(), out_path.to_string_lossy().to_string()]);
+    let args = encode_args(&tmp_wav.path, &job.format, &job.rate, &out_path);
     let output = sidecar_output_cancellable(
         app,
         ffmpeg_bin_name(),
@@ -540,6 +537,24 @@ fn read_wav_samples(path: &Path, max_samples: usize) -> Result<Vec<f32>, String>
         .map_err(|e| format!("WAV sample decode error: {e}"))
 }
 
+/// FFmpeg arguments that encode the intermediate WAV to the chosen output,
+/// with the converter's own codec settings for each format.
+fn encode_args(input: &Path, format: &str, rate: &str, output: &Path) -> Vec<String> {
+    let mut args: Vec<String> = vec![
+        "-nostdin".into(),
+        "-hide_banner".into(),
+        "-loglevel".into(),
+        "error".into(),
+        "-protocol_whitelist".into(),
+        "file".into(),
+        "-i".into(),
+        input.to_string_lossy().to_string(),
+    ];
+    args.extend(crate::helpers::output_args(format, rate, 192));
+    args.extend(["-y".into(), output.to_string_lossy().to_string()]);
+    args
+}
+
 fn wav_writer(path: &Path, rate: u32) -> Result<hound::WavWriter<std::io::BufWriter<std::fs::File>>, String> {
     let spec = hound::WavSpec {
         channels: 1,
@@ -619,6 +634,93 @@ mod tests {
         assert_eq!(written, 11);
         let merged = read_wav_samples(&out, 100).unwrap();
         assert_eq!(merged, vec![1.0, 1.0, 1.0, 2.0, 2.0, 2.0, 2.0, 2.0, 3.0, 3.0, 3.0]);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn strategy_keys_are_mix_all_and_loudest_with_the_old_name_kept() {
+        assert_eq!(parse_strategy("mix_all").unwrap(), MergeStrategy::MixAll);
+        assert_eq!(parse_strategy("loudest").unwrap(), MergeStrategy::Loudest);
+        assert_eq!(parse_strategy("best_quality").unwrap(), MergeStrategy::Loudest);
+        for unknown in ["", "best", "Loudest", "mix all"] {
+            assert!(parse_strategy(unknown).is_err(), "accepted {unknown:?}");
+        }
+    }
+
+    #[test]
+    fn the_screen_and_the_job_offer_the_same_formats() {
+        let screen: Vec<String> = serde_json::from_str(include_str!("../../src/mergeFormats.json")).unwrap();
+        assert_eq!(screen, MERGE_FORMATS, "src/mergeFormats.json and MERGE_FORMATS differ");
+    }
+
+    /// FFmpeg and ffprobe from PATH (CI installs them); without them the
+    /// test is skipped, unless DEPOAUDIO_REQUIRE_FFMPEG_TESTS=1.
+    fn system_ffmpeg_available() -> bool {
+        let found = std::process::Command::new("ffmpeg").arg("-version").output().is_ok()
+            && std::process::Command::new("ffprobe").arg("-version").output().is_ok();
+        if !found {
+            assert!(
+                std::env::var_os("DEPOAUDIO_REQUIRE_FFMPEG_TESTS").is_none_or(|value| value != "1"),
+                "DEPOAUDIO_REQUIRE_FFMPEG_TESTS=1, but ffmpeg/ffprobe is not on PATH"
+            );
+            eprintln!("skipping: ffmpeg/ffprobe not on PATH");
+        }
+        found
+    }
+
+    #[test]
+    fn every_offered_format_encodes_at_the_right_length_and_rate() {
+        if !system_ffmpeg_available() {
+            return;
+        }
+        let dir = test_dir("formats");
+        std::fs::create_dir_all(&dir).unwrap();
+        // Two seconds of a synthetic 440 Hz tone, as the merge's intermediate.
+        let input = dir.join("intermediate.wav");
+        let mut writer = wav_writer(&input, MERGE_SAMPLE_RATE).unwrap();
+        for i in 0..2 * MERGE_SAMPLE_RATE {
+            let t = i as f32 / MERGE_SAMPLE_RATE as f32;
+            writer
+                .write_sample(0.3 * (std::f32::consts::TAU * 440.0 * t).sin())
+                .unwrap();
+        }
+        writer.finalize().unwrap();
+
+        for &format in MERGE_FORMATS {
+            let output = dir.join(format!("merged{}", crate::helpers::output_ext(format)));
+            let run = std::process::Command::new("ffmpeg")
+                .args(encode_args(&input, format, "48000", &output))
+                .output()
+                .unwrap();
+            assert!(
+                run.status.success(),
+                "{format}: {}",
+                String::from_utf8_lossy(&run.stderr)
+            );
+            let probe = std::process::Command::new("ffprobe")
+                .args([
+                    "-v",
+                    "error",
+                    "-show_entries",
+                    "stream=sample_rate,channels:format=duration",
+                    "-of",
+                    "default=noprint_wrappers=1",
+                ])
+                .arg(&output)
+                .output()
+                .unwrap();
+            let text = String::from_utf8_lossy(&probe.stdout);
+            let field = |key: &str| {
+                text.lines()
+                    .find_map(|line| line.strip_prefix(&format!("{key}=")))
+                    .unwrap_or_else(|| panic!("{format}: no {key} in {text}"))
+                    .to_string()
+            };
+            assert_eq!(field("sample_rate"), "48000", "{format}");
+            assert_eq!(field("channels"), "1", "{format}");
+            let duration: f64 = field("duration").parse().unwrap();
+            assert!((duration - 2.0).abs() < 0.06, "{format}: {duration} s");
+        }
         let _ = std::fs::remove_dir_all(dir);
     }
 

@@ -4,6 +4,7 @@ import { open } from '@tauri-apps/plugin-dialog'
 import { Loader2, X } from 'lucide-react'
 import { cn } from '../../lib/utils'
 import { FORMATS_OUT, CH_COLORS } from '../../constants'
+import MERGE_FORMATS from '../../mergeFormats.json'
 import { fmtSize, fmtTime, sortRecordingChunks } from '../../utils'
 import { Button } from '../ui/button'
 import { Card, CardHeader, CardTitle, CardContent } from '../ui/card'
@@ -18,7 +19,7 @@ export default function MergeTab() {
   const rate = '48000'
   const [outName, setOutName] = useState('')
   const [format, setFormat] = useState('wav')
-  const [strategy, setStrategy] = useState('best_quality')
+  const [strategy, setStrategy] = useState('loudest')
   const [syncing, setSyncing] = useState(false)
   const [merging, setMerging] = useState(false)
   const [syncResults, setSyncResults] = useState([])
@@ -222,15 +223,16 @@ export default function MergeTab() {
                     <input
                       type="radio"
                       name="strategy"
-                      value="best_quality"
-                      checked={strategy === 'best_quality'}
-                      onChange={() => setStrategy('best_quality')}
+                      value="loudest"
+                      checked={strategy === 'loudest'}
+                      onChange={() => setStrategy('loudest')}
                       className="mt-0.5 accent-primary"
                     />
                     <div className="flex flex-col">
-                      <span className="type-label text-foreground">Best quality</span>
+                      <span className="type-label text-foreground">Loudest source</span>
                       <span className="type-small text-[hsl(var(--sub))]">
-                        Picks the clearest source for each moment — fills gaps automatically
+                        Uses whichever recording is loudest for each half second, with a short crossfade when it
+                        switches
                       </span>
                     </div>
                   </label>
@@ -244,9 +246,9 @@ export default function MergeTab() {
                       className="mt-0.5 accent-primary"
                     />
                     <div className="flex flex-col">
-                      <span className="type-label text-foreground">Mix all together</span>
+                      <span className="type-label text-foreground">Mix all</span>
                       <span className="type-small text-[hsl(var(--sub))]">
-                        Blends all sources equally — louder but keeps everything
+                        Averages every recording that is playing at each moment
                       </span>
                     </div>
                   </label>
@@ -260,7 +262,7 @@ export default function MergeTab() {
                   <div>
                     <Label className="mb-1.5 block">Format</Label>
                     <div className="flex gap-0.5 bg-secondary rounded-md p-0.5">
-                      {FORMATS_OUT.filter(f => f.id !== 'sgmca').map(f => (
+                      {FORMATS_OUT.filter(f => MERGE_FORMATS.includes(f.id)).map(f => (
                         <button
                           key={f.id}
                           title={f.desc}
