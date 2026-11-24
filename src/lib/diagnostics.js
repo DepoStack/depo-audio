@@ -13,7 +13,7 @@ const PLATFORM_WORD = /^[a-z0-9_]{1,32}$/
 // FFmpeg reports "7.1.1", "n7.1.1-20250301" or "N-118000-g1234abcd".
 const FFMPEG_VERSION = /^[nN]?-?\d[0-9A-Za-z.+~_-]{0,63}$/
 const MEDIA_SUFFIX =
-  /\.(?:wav|mp3|flac|opus|m4a|ogg|trm|ftr|sgmca|dm|aes|dcr|ds2|arf|wrf|msv|dvf|mp4|mov|mpg|mpeg|vob|ts|mts|m2ts|wmv|asf|json|txt|exe|app)$/i
+  /\.(?:wav|mp3|flac|opus|m4a|ogg|trm|ftr|tll|sgmca|dm|aes|dcr|ds2|arf|wrf|msv|dvf|mp4|mov|mpg|mpeg|vob|ts|mts|m2ts|wmv|asf|json|txt|exe|app)$/i
 const ERROR_CLASS = /^[A-Za-z_$][A-Za-z0-9_$]{0,63}$/
 
 function allowed(value, pattern) {

@@ -8,12 +8,14 @@ use std::time::SystemTime;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 
-const AUDIO_EXTENSIONS: &[&str] = &["sgmca", "trm", "ftr", "bwf", "dm", "aes", "wav", "mp3", "flac", "m4a"];
+const AUDIO_EXTENSIONS: &[&str] = &[
+    "sgmca", "trm", "ftr", "tll", "bwf", "dm", "aes", "wav", "mp3", "flac", "m4a",
+];
 pub(crate) const DEFAULT_SCAN_DEPTH: usize = 5;
 const MAX_SCAN_DEPTH: usize = 20;
 const FTR_SESSION_GAP_100NS: u64 = 15 * 60 * 10_000_000;
 static FTR_NAME_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?i)^(.+)_(\d{8})-(\d{4,6})_([0-9a-f]{16})\.(trm|ftr)$").expect("the FTR filename regex is valid")
+    Regex::new(r"(?i)^(.+)_(\d{8})-(\d{4,6})_([0-9a-f]{16})\.(trm|ftr|tll)$").expect("the FTR filename regex is valid")
 });
 
 // ── Court reporting software detection ──────────────────────────────────────
@@ -22,7 +24,7 @@ static FTR_NAME_RE: LazyLock<Regex> = LazyLock::new(|| {
 // audio files (jobs) for easy import into the library. Supports:
 //
 //   - Stenograph Case CATalyst (.sgmca files)
-//   - FTR Gold / For The Record (.trm, .ftr files)
+//   - FTR Gold / For The Record (.trm, .ftr, .tll files)
 //   - Eclipse CAT (.aes files — flagged as encrypted)
 //   - DigitalCAT (.dm files)
 //   - CourtSmart (.bwf files)
@@ -158,7 +160,7 @@ fn build_profiles() -> Vec<CatProfile> {
         CatProfile {
             name: "FTR Gold",
             vendor: "For The Record",
-            extensions: &["trm", "ftr"],
+            extensions: &["trm", "ftr", "tll"],
             search_paths: vec![
                 docs.join("FTR"),
                 docs.join("FTR Gold"),
@@ -320,7 +322,7 @@ fn scan_cat_jobs_in(base: &Path, max_depth: usize) -> Vec<CatJob> {
 fn jobs_for_directory(base: &Path, directory: &Path, files: Vec<DiscoveredFile>) -> Vec<CatJob> {
     let (ftr_files, other_files): (Vec<_>, Vec<_>) = files
         .into_iter()
-        .partition(|file| matches!(file.file.format.as_str(), "trm" | "ftr"));
+        .partition(|file| matches!(file.file.format.as_str(), "trm" | "ftr" | "tll"));
     let directory_name = directory
         .file_name()
         .map(|name| name.to_string_lossy().to_string())
@@ -517,7 +519,7 @@ fn infer_software(files: &[CatJobFile]) -> String {
     for f in files {
         match f.format.as_str() {
             "sgmca" => return "Case CATalyst".into(),
-            "trm" | "ftr" => return "FTR Gold".into(),
+            "trm" | "ftr" | "tll" => return "FTR Gold".into(),
             "bwf" => return "CourtSmart".into(),
             "dm" => return "DigitalCAT".into(),
             "aes" => return "Eclipse".into(),

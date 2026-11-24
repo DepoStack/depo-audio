@@ -92,11 +92,12 @@ pub async fn detect_format(path: String) -> Option<FormatInfo> {
 }
 
 /// The audio streams of a queued file, for the Convert queue's multi-track
-/// and recording-session notices and the WAV size estimate. Read-only: one
-/// ffprobe of the original file, or for an SGMCA a walk of its own headers
-/// and pages (ffprobe cannot read the Direct Audio layout). A `.dm` is
-/// answered from its own header and block headers (no FFmpeg), with what was
-/// recorded over, and a Liberty / BIS DCR by DepoAudio's own reader
+/// notice, the FTR and recording-session notices and the WAV size estimate.
+/// Read-only: one ffprobe of the original file, one read of an FTR
+/// recording, or for an SGMCA a walk of its own headers and pages (ffprobe
+/// cannot read the Direct Audio layout). A `.dm` is answered from its own
+/// header and block headers (no FFmpeg), with what was recorded over, and a
+/// Liberty / BIS DCR by DepoAudio's own reader
 /// (`crate::dcr::queue_streams_info`). Returns None for a rejected format, or
 /// an SGMCA that cannot be read (conversion then gives the reason).
 #[tauri::command]
@@ -115,6 +116,40 @@ pub async fn probe_audio_streams_cmd(
             Ok(info.ok().map(|info| crate::manifest::sgmca_audio_streams(&info)))
         }
         Some(format) if format.handler == "rejected" => Ok(None),
+        // An FTR recording is read through (never changed) for its channel
+        // count, the duration of the audio actually written, its session
+        // flags and the decode route; ffprobe would take an unclosed
+        // recording's placeholder length for its duration.
+        Some(format) if format.handler == "ftr" => {
+            let options = crate::ffmpeg::feed_options(&app, source).await;
+            let trm_path = source.to_path_buf();
+            let inspected = tauri::async_runtime::spawn_blocking(move || crate::trm::inspect_trm(&trm_path))
+                .await
+                .map_err(|error| format!("FTR inspection task failed: {error}"))?;
+            match inspected {
+                Ok(info) => {
+                    let (decode_path, route_reasons) = crate::trm::choose_route(&info, options);
+                    let route = crate::trm::TrmRoute::new(info, decode_path, route_reasons);
+                    if decode_path == crate::trm::DecodePath::Plain {
+                        // MP2, MP3 or WMA: what FFmpeg reads, plus what the
+                        // FTR header chunks say.
+                        return Ok(crate::ffmpeg::probe_audio_streams(&app, source).await.map(|streams| {
+                            crate::manifest::AudioStreamsInfo {
+                                trm: Some(route),
+                                ..streams
+                            }
+                        }));
+                    }
+                    Ok(Some(crate::manifest::trm_audio_streams(route)))
+                }
+                Err(error) if crate::trm::is_refusal(&error) => Ok(Some(crate::manifest::trm_refused_streams(error))),
+                // DepoAudio could not read the layout; a conversion then
+                // hands the file to FFmpeg's native decoder as it is, so the
+                // queue shows what ffprobe reads, as it did before.
+                Err(_) if options.native_ftr => Ok(crate::ffmpeg::probe_audio_streams(&app, source).await),
+                Err(_) => Ok(None),
+            }
+        }
         Some(format) if format.handler == "dcr" => {
             let source = source.to_path_buf();
             tauri::async_runtime::spawn_blocking(move || crate::dcr::queue_streams_info(&source))

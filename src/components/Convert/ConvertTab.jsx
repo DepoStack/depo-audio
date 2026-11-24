@@ -33,6 +33,7 @@ import ProcessingToggle from './ProcessingToggle'
 import FormatTable from './FormatTable'
 import FileRow from './FileRow'
 import { wavSizeEstimateText } from '../../lib/outputSize'
+import { trmSessionNotices } from '../../lib/queue'
 import { SCAN_SAMPLE_NOTE, aggregateAnalysisResults } from '../../lib/analysis'
 
 // The backend emits scan:progress events throughout each file's analysis
@@ -434,6 +435,7 @@ export default function ConvertTab({
   const procCount = [autoLevelEffective, declip, hpf, normalize, trimEffective, fade].filter(Boolean).length
   const formatLabel = FORMATS_OUT.find(f => f.id === formatOut)?.label || formatOut
   const wavEstimate = formatOut === 'wav' ? wavSizeEstimateText(files, audioStreams, { mode, rate }) : ''
+  const sessionNotices = trmSessionNotices(files, audioStreams)
   const modeLabel = MODES.find(m => m.id === mode)?.label || mode
   const unsupportedFiles = files.filter(file => file.fmt?.status === 'unsupported')
   const resultParts = [
@@ -574,6 +576,7 @@ export default function ConvertTab({
                     key={f.path}
                     file={f}
                     streams={audioStreams[f.path]}
+                    sessionNotice={sessionNotices[f.path] || ''}
                     job={jobs[f.path]}
                     onRemove={() => removeFile(f.path, converting)}
                     converting={converting}

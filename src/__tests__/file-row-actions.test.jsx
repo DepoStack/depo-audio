@@ -144,6 +144,45 @@ describe('Queued rows with several audio tracks', () => {
   })
 })
 
+describe('Queued FTR recordings', () => {
+  afterEach(cleanup)
+
+  const trmStreams = openEnded => ({
+    convertedIndex: 0,
+    streams: [{ channels: 4, sampleRate: 16000, language: null, title: null }],
+    durationSecs: 12.8,
+    trm: { openEnded, startBoundary: true, endBoundary: false, decodePath: 'deinterleaved' },
+  })
+  const recording = { path: '/case/CR1_20260101-0900_01d409706d824cb0.trm', name: 'CR1.trm', fmt: null }
+
+  it('says when the recorder did not close the file', () => {
+    render(<FileRow file={recording} streams={trmStreams(true)} onRemove={vi.fn()} converting={false} />)
+    expect(
+      screen.getByText(
+        "This recording's header says it was never closed (or is still recording); DepoAudio read the audio written so far.",
+      ),
+    ).toBeTruthy()
+  })
+
+  it('shows the session notice it is given and nothing for a closed file', () => {
+    render(
+      <FileRow
+        file={recording}
+        streams={trmStreams(false)}
+        sessionNotice="No queued file is marked as this session's last file; if the session has later files, add them too."
+        onRemove={vi.fn()}
+        converting={false}
+      />,
+    )
+    expect(screen.queryByText(/not closed properly/)).toBeNull()
+    expect(
+      screen.getByText(
+        "No queued file is marked as this session's last file; if the session has later files, add them too.",
+      ),
+    ).toBeTruthy()
+  })
+})
+
 describe('Queued SGMCA rows', () => {
   afterEach(cleanup)
 

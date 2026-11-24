@@ -777,6 +777,8 @@ pub(crate) fn streams_info(path: &Path) -> Option<crate::manifest::AudioStreamsI
             title: None,
         }],
         duration_secs,
+        trm: None,
+        trm_refusal: None,
         recording_sessions: None,
         still_recording: None,
         unread_bytes: None,

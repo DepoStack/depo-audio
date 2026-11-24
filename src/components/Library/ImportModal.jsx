@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useLayoutEffect, useRef, useState } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import { open as openDialog } from '@tauri-apps/plugin-dialog'
 import { Loader2, X } from 'lucide-react'
@@ -30,7 +30,9 @@ export default function ImportModal({ defaultLabels, existingCases, onDone, onCl
 
   const labelValue = label === '__custom__' ? customLabel : label
 
-  useEffect(() => {
+  // In the same commit that shows the alert: with a passive effect the alert
+  // could be on screen (and read) while focus was still elsewhere.
+  useLayoutEffect(() => {
     if (error) errorRef.current?.focus()
   }, [error])
 

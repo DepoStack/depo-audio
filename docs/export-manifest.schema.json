@@ -31,6 +31,112 @@
         "fileName": { "type": "string", "description": "File name only, never a folder path." },
         "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$", "description": "SHA-256 of the original file as selected, before any format preparation." },
         "sizeBytes": { "type": "integer", "minimum": 0 },
+        "trmInspectionError": { "type": "string", "description": "Only for an FTR recording DepoAudio could not read, or in which it found no complete round of frames to split: why. FFmpeg's native ftr decoder then read the file as it is (ffmpeg -c:a ftr -i <source>), without DepoAudio's layout checks, and there is no trm object. Written by versions after 1.1.0." },
+        "trm": {
+          "type": "object",
+          "description": "Only for an FTR recording (.trm, .ftr, .tll): what DepoAudio found when it read the file, and how FFmpeg decoded it. The layout reading follows the owner's interoperability notes and has been checked against a sample made by the owner's rebuild tool, not against a recording made by FTR. The USER (user name) and UDAT (free text) chunks are never copied here: only whether they hold text; the FILE chunk's text only when it is a name in the recorder's own format. Written by versions after 1.1.0.",
+          "additionalProperties": false,
+          "required": ["tag", "channels", "sampleRate", "startBoundary", "endBoundary", "openEnded", "indexKind", "packets", "frames", "framesPerChannel", "scrambledFrames", "straddlingFrames", "misalignedPackets", "resyncSkippedBytes", "incompleteFinalRound", "droppedFrames", "truncated", "ftra", "videoStreams", "durationSecs", "decodePath", "routeReasons"],
+          "properties": {
+            "tag": { "type": "integer", "minimum": 0, "maximum": 65535, "description": "WAVEFORMATEX format tag as stored. Low 12 bits 0x180: FTR AAC; bit 0x4000: one mono stream per microphone; bit 0x8000: stereo streams." },
+            "audioCodec": { "enum": ["ftr-aac", "mp2", "mp3", "wma"], "description": "The codec the tag's low 12 bits name. mp2, mp3 and wma are read by FFmpeg as ordinary audio (decodePath ffmpeg-plain). Written by versions after 1.1.0 that record it." },
+            "streamLayout": { "enum": ["mono-streams", "stereo-streams", null], "description": "For FTR AAC, how the microphones are interleaved: one mono stream each (tag bit 0x4000) or stereo streams of two microphones (tag bit 0x8000); null for other codecs. Written by versions after 1.1.0 that record it." },
+            "channels": { "type": "integer", "minimum": 1, "maximum": 16, "description": "Channel (microphone) count from the audio format header." },
+            "streams": { "type": "integer", "minimum": 0, "maximum": 16, "description": "Interleaved AAC streams: channels for mono streams, channels / 2 for stereo streams; 0 for other codecs. Stream k of a stereo-stream file holds channels 2k and 2k + 1. Written by versions after 1.1.0 that record it." },
+            "channelsPerStream": { "type": "integer", "minimum": 0, "maximum": 2, "description": "1 for mono streams, 2 for stereo streams; 0 for other codecs. Written by versions after 1.1.0 that record it." },
+            "sampleRate": { "type": ["integer", "null"], "minimum": 7350, "maximum": 96000, "description": "From the first stream-0 AAC frame header; null when no frame was read (always for other codecs)." },
+            "formatSampleRate": { "type": "integer", "minimum": 0, "description": "nSamplesPerSec of the audio format header. Written by versions after 1.1.0 that record it." },
+            "headerScale": { "type": ["integer", "null"], "minimum": 0, "description": "Audio stream header dwScale as stored (1024 for FTR AAC). Written by versions after 1.1.0 that record it." },
+            "headerRate": { "type": ["integer", "null"], "minimum": 0, "description": "Audio stream header dwRate as stored (the sample rate for FTR AAC). Written by versions after 1.1.0 that record it." },
+            "headerChunkCount": { "type": ["integer", "null"], "minimum": 0, "description": "Audio stream header dwLength: the number of audio chunks the recorder counted when it closed the file. Null while it holds 0x7FFFFFFF (openEnded). Informational: packets is what was read. Written by versions after 1.1.0 that record it." },
+            "declaredStreams": { "type": ["integer", "null"], "minimum": 0, "description": "Main header dwStreams as stored. It can count an input that has no stream header list (the level meter), so streamLists is what DepoAudio uses. Written by versions after 1.1.0 that record it." },
+            "streamLists": { "type": "integer", "minimum": 0, "description": "strl lists present in the header. Written by versions after 1.1.0 that record it." },
+            "startBoundary": { "type": "boolean", "description": "Main header flag 0x20000000: FTR joins no earlier file to this one." },
+            "endBoundary": { "type": "boolean", "description": "Main header flag 0x40000000: FTR joins no later file to this one." },
+            "startUtc": { "type": ["string", "null"], "description": "The TUTC chunk (the file's start, UTC) as an RFC 3339 time ending in Z; null without the chunk. Written by versions after 1.1.0 that record it." },
+            "startLocal": { "type": ["string", "null"], "description": "The TLOC chunk (the same start in the recorder's local time) as a date and time with no offset; null without the chunk. Written by versions after 1.1.0 that record it." },
+            "startBasis": { "enum": ["tloc-local", "tutc-utc", "file-name-unknown-zone", null], "description": "Which time gives startTime: TLOC (local, as a BWF time reference counts it), else TUTC (UTC), else the FILETIME in the FILE chunk's name (its time zone not stated); null when none is present. Written by versions after 1.1.0 that record it." },
+            "recordedFileName": { "type": ["string", "null"], "description": "The FILE chunk: the name the recorder gave this file, only when it is in the recorder's own name format (see recordedFileNamePresent); null otherwise. Written by versions after 1.1.0 that record it." },
+            "recordedFileNamePresent": { "type": "boolean", "description": "The FILE chunk holds text. Its text is recorded in recordedFileName only when it is a file name in the recorder's own format (name part of at most 28 letters, digits or !$`() +,-.=[]^'{}, then _YYYYMMDD-HHMM_ and the FILETIME as 16 lowercase hex digits matching that date and time, then an extension); any other text is never recorded. Written by versions after 1.1.0 that record it." },
+            "userNamePresent": { "type": "boolean", "description": "A USER chunk holds a user name. The name itself is never recorded. Written by versions after 1.1.0 that record it." },
+            "userDataPresent": { "type": "boolean", "description": "A UDAT chunk holds free text. The text itself is never recorded. Written by versions after 1.1.0 that record it." },
+            "signature": { "enum": ["signed (not verified)", null], "description": "SIGN/CERT chunks follow the index. DepoAudio does not check (or write) signatures. Written by versions after 1.1.0 that record it." },
+            "openEnded": { "type": "boolean", "description": "The audio length field holds the value a recorder leaves in a file it never closed; the duration then comes from the frames read." },
+            "indexKind": { "enum": ["idx1-absolute", "idx1-relative", "walked", "not-read"], "description": "How the audio chunks were found: the idx1 index (absolute or movi-relative offsets) or a walk of the movi list; not-read when the codec is not FTR AAC and FFmpeg read the file as it is." },
+            "packets": { "type": "integer", "minimum": 0, "description": "Audio chunks read." },
+            "frames": { "type": "integer", "minimum": 0, "description": "AAC frames delivered to the channels (whole rounds only)." },
+            "framesPerChannel": { "type": "integer", "minimum": 0 },
+            "scrambledFrames": { "type": "integer", "minimum": 0, "description": "Delivered frames that were descrambled." },
+            "straddlingFrames": { "type": "integer", "minimum": 0, "description": "Frames that begin in one audio chunk and end in a later one." },
+            "misalignedPackets": { "type": "integer", "minimum": 0, "description": "Audio chunks that do not start and end on a channel-0 round boundary." },
+            "multiRoundPackets": { "type": "integer", "minimum": 0, "description": "Audio chunks that hold more than one whole round of frames. Written by versions after 1.1.0 that check it." },
+            "resyncSkippedBytes": { "type": "integer", "minimum": 0, "description": "Bytes skipped before the first channel-0 frame." },
+            "channelResyncs": { "type": "integer", "minimum": 0, "description": "Times the channel order broke after the first channel-0 frame (a channel-0 frame where another channel's was due, or the reverse, as after a lost or extra frame): the partial round was dropped and dealing restarted at the next channel-0 frame. The round delivered just before a restart can hold a frame in the wrong slot. Written by versions after 1.1.0 that check it." },
+            "midStreamSkippedBytes": { "type": "integer", "minimum": 0, "description": "Unreadable bytes skipped after the first channel-0 frame and before the last frame delivered. Written by versions after 1.1.0 that check it." },
+            "paddingBytes": { "type": "integer", "minimum": 0, "description": "Zero bytes skipped between whole rounds or after the last one. Not treated as truncation. Written by versions after 1.1.0 that check it." },
+            "trailingSkippedBytes": { "type": "integer", "minimum": 0, "description": "Non-zero bytes after the last frame delivered that are not a frame. Written by versions after 1.1.0 that check it." },
+            "incompleteFinalRound": { "type": "boolean", "description": "The last round was missing channels and was not delivered." },
+            "droppedFrames": { "type": "integer", "minimum": 0, "description": "Frames read but not delivered: their round was incomplete, or they were out of channel order." },
+            "droppedRounds": { "type": "integer", "minimum": 0, "description": "Incomplete rounds of frames dropped mid-recording (their frames were not delivered). The rounds the frames show to be missing are filled (silenceFilled). Written by versions after 1.1.0 that check it." },
+            "silenceFilled": {
+              "type": "array",
+              "description": "Where DepoAudio put AAC frames that add no new sound (an empty spectrum, not digital silence) in every channel in place of rounds of frames missing mid-recording, so that later audio keeps its time from the start, in order. When the channel order breaks, the fill is the fewest whole rounds (1024 samples each) that hold the frames seen between two channel-0 frames, less the round delivered: that is right when frames went missing and none were added. Frames missing in a run as long as a whole round (one per stream) leave frames that still look like whole rounds, so such a loss leaves no trace and is not filled (timingCaveats: whole-round-loss-undetectable); a repeated frame looks like a lost one and is filled, and then audio after the fill plays later than its time by the fill's length (timingCaveats: fill-may-be-a-repeated-frame). The decoder overlaps frames, so the frame before a filled stretch fades out across it and is still heard in it (at a good part of its level in the stretch's second half), and the frame after it fades in. The filled frames do not advance the decoder's noise generator: in a recording coded with perceptual noise substitution (PNS), every later noise-filled band decodes with different noise than an undamaged recording would give (so later samples are not bit-identical to one), although no audio moves. Nothing is put in after the last round delivered. At most 1000 places are listed; silenceFilledGaps counts them all. Written by versions after 1.1.0 that fill.",
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["atSample", "samples", "channels", "reason"],
+                "properties": {
+                  "atSample": { "type": "integer", "minimum": 0, "description": "Where the filled stretch starts, in samples from the first frame delivered, at sampleRate (stretches filled earlier count)." },
+                  "samples": { "type": "integer", "minimum": 1024, "description": "Samples filled in each channel: whole rounds of 1024." },
+                  "channels": { "type": "integer", "minimum": 1, "maximum": 16, "description": "Channels that got it: every channel of the recording." },
+                  "reason": { "enum": ["missing-frames", "unreadable-data"], "description": "missing-frames: the channel order broke there, so frames are missing, or one was repeated (the frames cannot tell which; see timingCaveats). unreadable-data: unreadable data was skipped there too; how much audio it held is not known, so later audio may still be earlier than its time from the start (startTime.note says so)." }
+                }
+              }
+            },
+            "silenceFilledGaps": { "type": "integer", "minimum": 0, "description": "Places filled (see silenceFilled), listed there or not. Written by versions after 1.1.0 that fill." },
+            "silenceFilledSamples": { "type": "integer", "minimum": 0, "description": "Samples filled in each channel, in all; durationSecs counts them. Written by versions after 1.1.0 that fill." },
+            "streamMarking": { "enum": ["all-streams", "stream-0-only", null], "description": "For FTR AAC with more than one stream and at least one round read: all-streams when frames after the first of a round carry the private bit, so every frame says whether it is stream 0's and a break in the order is caught; stream-0-only when none did, so DepoAudio gave frames to the streams in turn: a lost or repeated frame in such a file cannot be seen, nothing is filled or counted for it, and every later frame goes to the wrong stream (timingCaveats: unmarked-streams-dealt-in-turn). null otherwise. Written by versions after 1.1.0 that record it." },
+            "timingCaveats": {
+              "type": "array",
+              "description": "What DepoAudio's reading of the frames cannot rule out; limits of the method, not things found in the file. Written by versions after 1.1.0 that record it.",
+              "items": { "enum": ["whole-round-loss-undetectable", "fill-may-be-a-repeated-frame", "unmarked-streams-dealt-in-turn"], "description": "whole-round-loss-undetectable (whenever frames were read): frames missing in a run as long as a whole round leave frames that still look like whole rounds, so such a loss is not counted or filled and later audio plays 1024 samples early per round lost. fill-may-be-a-repeated-frame (whenever anything was filled): a repeated frame breaks the order like a lost one and is filled as missing-frames; such a fill was not needed, and audio after it plays later than its time by its length. unmarked-streams-dealt-in-turn (streamMarking stream-0-only): after a lost or repeated frame, every later frame goes to the wrong stream and later audio moves by part of a round, with nothing filled or counted." }
+            },
+            "walkGaps": { "type": "integer", "minimum": 0, "description": "Places where the walk of the movi list met data that is not a chunk (an unreadable chunk header, a zero gap, a chunk size past the end) and looked ahead for the next audio chunk. Written by versions after 1.1.0 that check it." },
+            "walkGapBytes": { "type": "integer", "minimum": 0, "description": "Bytes the walk skipped at those places (0 for a chunk written without its pad byte). The audio they held is missing and its length is not known. Written by versions after 1.1.0 that check it." },
+            "indexMismatch": { "type": "boolean", "description": "idx1 does not list every audio chunk: movi holds audio chunks after the last one listed, or the number listed is not the header's chunk count (headerChunkCount, ftra.d). The chunks were then found by walking movi when that found more. Written by versions after 1.1.0 that check it." },
+            "lengthHighBitFrames": { "type": "integer", "minimum": 0, "description": "Delivered frames with either of the two ADTS frame-length bits FTR ignores set; DepoAudio cleared them in the temporary channel files. Written by versions after 1.1.0 that check it." },
+            "frameChannelMismatches": { "type": "integer", "minimum": 0, "description": "Delivered frames whose ADTS channel configuration is not channelsPerStream. A file with any is not split. Written by versions after 1.1.0 that check it." },
+            "truncated": { "type": "boolean", "description": "The file ends inside a chunk or a frame, or its chunk list stops at unreadable data." },
+            "continuationSegments": { "type": "integer", "minimum": 0, "description": "RIFF AVIX (OpenDML) segments after the first RIFF. DepoAudio does not read their audio: the counts cover the first segment only and durationSecs is null. Written by versions after 1.1.0 that check it." },
+            "grewWhileRead": { "type": "boolean", "description": "The file grew between DepoAudio's inspection and its channel split (a recording still being written); only the part inspected was converted. Written by versions after 1.1.0 that check it." },
+            "ftra": {
+              "type": ["object", "null"],
+              "description": "The optional FTRA chunk's five values, as read; null when the file has none. Reported only; DepoAudio does not use them.",
+              "if": { "type": "object" },
+              "then": {
+                "additionalProperties": false,
+                "required": ["a", "b", "c", "d", "e"],
+                "properties": {
+                  "a": { "type": "integer", "minimum": 0 },
+                  "b": { "type": "integer", "minimum": 0 },
+                  "c": { "type": "integer", "minimum": 0 },
+                  "d": { "type": "integer", "minimum": 0 },
+                  "e": { "type": "integer", "minimum": 0 }
+                }
+              }
+            },
+            "videoStreams": { "type": "integer", "minimum": 0, "description": "Video stream headers in the file; video is never converted." },
+            "durationSecs": { "type": ["number", "null"], "minimum": 0, "description": "(Frames per channel + rounds filled) x 1024 samples / sample rate; null when no frame was found or the file has continuation segments." },
+            "decodePath": { "enum": ["native-ftr", "deinterleaved", "ffmpeg-plain"], "description": "native-ftr: FFmpeg's ftr decoder read the file as it is. deinterleaved: DepoAudio wrote each stream to a temporary ADTS file (mono, or stereo for stereo streams; descrambled, equal frame counts) and FFmpeg joined them in channel order with amerge. ffmpeg-plain: MP2, MP3 or WMA audio, read by FFmpeg as it is with the decoder it picks." },
+            "routeReasons": {
+              "type": "array",
+              "description": "Why the native decoder was not used; empty for native-ftr.",
+              "items": { "enum": ["not-ftr-aac", "frame-channels-differ-from-header", "silence-filled", "no-usable-index", "index-misses-audio-chunks", "open-ended", "truncated", "frames-cross-chunks", "chunks-not-on-round-boundaries", "several-rounds-per-chunk", "data-before-channel-0", "channel-order-resynced", "unreadable-data", "zero-padding", "incomplete-rounds", "frame-length-high-bits", "native-decoder-unavailable", "native-decode-failed"] }
+            },
+            "inputOptions": { "type": "array", "items": { "type": "string" }, "description": "The options FFmpeg was given before each -i: [\"-c:a\", \"ftr\"] before the recording itself (native-ftr), [\"-f\", \"aac\"] before each temporary channel file (deinterleaved), or none (ffmpeg-plain). Written by versions after 1.1.0 that record it." },
+            "inputCount": { "type": "integer", "minimum": 1, "maximum": 16, "description": "How many -i inputs FFmpeg read: 1 for native-ftr and ffmpeg-plain, or one temporary file per stream for deinterleaved, which filterChain joins in channel order with amerge before anything else. The temporary files are deleted afterwards. Written by versions after 1.1.0 that record it." }
+          }
+        },
         "sgmca": {
           "type": "object",
           "description": "Present for an SGMCA (Direct Audio) source. The recording identifier in its file header is not recorded. Written by versions after 1.1.0.",
@@ -287,7 +393,7 @@
         "filterOption": { "enum": ["-af", "-filter_complex", null], "description": "The FFmpeg option that carried filterChain, or null when no filter ran." },
         "filterChain": { "type": ["string", "null"], "description": "The exact FFmpeg filter string used. In split mode it is the whole graph; channel.sourceChannelIndex names this file's branch." },
         "encoderArgs": { "type": "array", "items": { "type": "string" }, "description": "The exact FFmpeg encoder and metadata arguments for this output, without file paths. Stream selection is in mapArgs." },
-        "mapArgs": { "type": "array", "items": { "type": "string" }, "description": "The exact FFmpeg -map arguments for this output: -map 0:a:0 (the converted source stream) for stereo and keep, -map [opN] (this channel's branch of filterChain) for split. The command is: ffmpeg -i <source> [filterOption filterChain] mapArgs encoderArgs <output>. Written by versions after 1.1.0." },
+        "mapArgs": { "type": "array", "items": { "type": "string" }, "description": "The exact FFmpeg -map arguments for this output: for stereo and keep, -map 0:a:0 (the converted source stream), or -map [da_out] when an FTR recording was read as one input per channel (filterChain then ends in [da_out]); -map [opN] (this channel's branch of filterChain) for split. The command is: ffmpeg <inputs> [filterOption filterChain] mapArgs encoderArgs <output>, where <inputs> is -i <source>, or for an FTR recording source.trm.inputCount times source.trm.inputOptions -i <input> (the recording itself, or each temporary channel file in channel order). Written by versions after 1.1.0." },
         "fadeOut": {
           "type": ["object", "null"],
           "additionalProperties": false,
@@ -330,12 +436,12 @@
       "required": ["known", "source", "sourceTimeReferenceSamples", "sourceSampleRate", "secondsSinceMidnight", "outputTimeReferenceSamples", "writtenToOutput", "note"],
       "properties": {
         "known": { "type": "boolean" },
-        "source": { "enum": ["bwf-bext-time-reference", null] },
-        "sourceTimeReferenceSamples": { "type": ["integer", "null"], "minimum": 0, "description": "BWF bext TimeReference of the source: samples since midnight at sourceSampleRate." },
+        "source": { "enum": ["bwf-bext-time-reference", "ftr-tloc", "ftr-tutc", "ftr-file-name", null], "description": "bwf-bext-time-reference: the source's own bext chunk. ftr-tloc, ftr-tutc, ftr-file-name: an FTR recording's TLOC (local) or TUTC (UTC) chunk, or the FILETIME in its FILE chunk's name (time zone not stated); see source.trm.startBasis. The ftr values are written by versions after 1.1.0." },
+        "sourceTimeReferenceSamples": { "type": ["integer", "null"], "minimum": 0, "description": "BWF bext TimeReference of the source, or for an FTR recording the time of day of its start: samples since midnight at sourceSampleRate." },
         "sourceSampleRate": { "type": ["integer", "null"], "minimum": 1 },
         "secondsSinceMidnight": { "type": ["number", "null"], "minimum": 0 },
         "outputTimeReferenceSamples": { "type": ["integer", "null"], "minimum": 0, "description": "The same start, rescaled to output.sampleRate. Null when the output start differs from the source start (leading-silence trim) or the start is unknown." },
-        "writtenToOutput": { "type": "boolean", "description": "True when the output WAV carries outputTimeReferenceSamples in its own bext chunk. When false, the output carries no time_reference at all and this record is the only place the start is kept." },
+        "writtenToOutput": { "type": "boolean", "description": "True when the output WAV carries outputTimeReferenceSamples in its own bext chunk. When false, the output carries no time_reference at all and this record is the only place the start is kept. A start that is not local time of day (ftr-tutc, ftr-file-name) is never written to an output, since a bext time reference counts from local midnight." },
         "note": { "type": "string" }
       }
     }

@@ -90,7 +90,13 @@ export const FORMAT_ROWS = [
   },
   // Court reporting formats — require conversion
   { ext: '.sgmca', vendor: 'Stenograph · Case CATalyst', ch: '1–16 ch', status: 'supported', group: 'court' },
-  { ext: '.trm  .ftr', vendor: 'For The Record · FTR Gold', ch: '4–16 ch', status: 'experimental', group: 'court' },
+  {
+    ext: '.trm  .ftr  .tll',
+    vendor: 'For The Record · FTR Gold',
+    ch: '4–16 ch',
+    status: 'experimental',
+    group: 'court',
+  },
   { ext: '.bwf', vendor: 'CourtSmart · Various', ch: 'varies', status: 'supported', group: 'court' },
   {
     ext: '.dm',

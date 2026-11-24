@@ -6,7 +6,7 @@ use tauri::{AppHandle, Emitter};
 use tauri_plugin_shell::process::CommandEvent;
 use tauri_plugin_shell::ShellExt;
 
-use crate::helpers::{ffmpeg_bin_name, ffprobe_bin_name};
+use crate::helpers::{ffmpeg_bin_name, ffprobe_bin_name, AudioFeed};
 use crate::types::{ConvertJob, ProgressEvent};
 
 /// How many seconds of audio the pre-scan / auto-level analysis reads.
@@ -194,27 +194,35 @@ pub(crate) async fn ftr_decoder_available(app: &AppHandle) -> Result<bool, Strin
     Ok(available)
 }
 
-/// Return a user-actionable error before starting a TRM scan/conversion when
-/// the bundled multimedia engine cannot support the format at all.
-pub(crate) async fn ensure_ftr_decoder(app: &AppHandle) -> Result<(), String> {
-    if ftr_decoder_available(app).await? {
-        Ok(())
+/// Feed options for `src`: for an FTR recording, whether the bundled FFmpeg
+/// has its native decoder (a failed check counts as no); nothing to ask for
+/// any other file.
+pub(crate) async fn feed_options(app: &AppHandle, src: &Path) -> crate::helpers::FeedOptions {
+    let native_ftr = if crate::helpers::is_trm_path(src) {
+        ftr_decoder_available(app).await.unwrap_or(false)
     } else {
-        Err(
-            "This FTR/TRM recording requires FFmpeg's native 'ftr' decoder, but this FFmpeg build does not provide it. Update or reinstall DepoAudio; forcing the ordinary AAC decoder cannot decode FTR's multichannel bitstream."
-                .into(),
-        )
+        false
+    };
+    crate::helpers::FeedOptions {
+        native_ftr,
+        native_failed: false,
     }
 }
 
 // Note: ffprobe auto-detects codecs and does not accept ffmpeg input options
 // like -acodec, so the probe helpers take no input codec arguments.
+/// The converted stream's duration. An FTR feed's comes from the frames read,
+/// so an unclosed recording's placeholder length is never used.
 pub(crate) async fn probe_duration_cancellable(
     app: &AppHandle,
-    feed: &Path,
+    feed: &AudioFeed,
     cancelled: CancelCheck<'_>,
 ) -> Option<f64> {
-    let output = sidecar_output_cancellable(app, ffprobe_bin_name(), duration_probe_args(feed), 30, cancelled).await?;
+    if feed.trm_frames_read() {
+        return feed.known_duration();
+    }
+    let output =
+        sidecar_output_cancellable(app, ffprobe_bin_name(), duration_probe_args(feed.path()), 30, cancelled).await?;
     parse_duration_probe(&output.stdout)
 }
 
@@ -251,10 +259,14 @@ pub(crate) fn parse_duration_probe(stdout: &[u8]) -> Option<f64> {
 
 pub(crate) async fn probe_channels_cancellable(
     app: &AppHandle,
-    feed: &Path,
+    feed: &AudioFeed,
     cancelled: CancelCheck<'_>,
 ) -> Option<u32> {
-    let out = sidecar_output_cancellable(app, ffprobe_bin_name(), channel_probe_args(feed), 30, cancelled).await?;
+    if let Some(channels) = feed.known_channels() {
+        return Some(channels);
+    }
+    let out =
+        sidecar_output_cancellable(app, ffprobe_bin_name(), channel_probe_args(feed.path()), 30, cancelled).await?;
     parse_channel_probe(&out.stdout)
 }
 
@@ -295,16 +307,21 @@ pub(crate) fn parse_channel_probe(stdout: &[u8]) -> Option<u32> {
 /// record: the manifest then says the start is unknown instead of guessing.
 pub(crate) async fn probe_manifest_source_cancellable(
     app: &AppHandle,
-    feed: &Path,
+    feed: &AudioFeed,
     cancelled: CancelCheck<'_>,
 ) -> crate::manifest::ProbedSource {
-    let Some(out) = sidecar_output_cancellable(app, ffprobe_bin_name(), manifest_probe_args(feed), 30, cancelled).await
+    if let Some(probed) = crate::manifest::probed_from_feed(feed) {
+        return probed;
+    }
+    let Some(out) =
+        sidecar_output_cancellable(app, ffprobe_bin_name(), manifest_probe_args(feed.path()), 30, cancelled).await
     else {
         return crate::manifest::ProbedSource::default();
     };
-    serde_json::from_slice::<serde_json::Value>(&out.stdout)
+    let probed = serde_json::from_slice::<serde_json::Value>(&out.stdout)
         .map(|probe| crate::manifest::parse_probe(&probe))
-        .unwrap_or_default()
+        .unwrap_or_default();
+    crate::manifest::with_trm_timing(probed, feed)
 }
 
 /// ffprobe arguments for the export record's source facts: format tags and
@@ -356,11 +373,13 @@ pub(crate) const DECODED_LENGTH_FILTER: &str =
 pub(crate) const FADE_LENGTH_UNKNOWN_MESSAGE: &str = "Fade is on, but DepoAudio could not measure how long the recording decodes to, so it cannot place the fade-out at the real end. Nothing was converted. Turn Fade off, or try again.";
 
 /// FFmpeg arguments that decode the converted stream exactly as a conversion
-/// does (same input decoder, `-map 0:a:0`) and count its samples at
-/// `DECODED_LENGTH_RATE`. The count is the length that is really converted,
-/// which a stated duration may not be: a chained Ogg file states its last
-/// link's length, and a VBR MP3 without an index states an estimate.
-pub(crate) fn decoded_length_args(feed: &Path) -> Vec<String> {
+/// does (same inputs and input decoder, `-map 0:a:0`, or for an FTR
+/// recording split into channel files the same `amerge`) and count its
+/// samples at `DECODED_LENGTH_RATE`. The count is the length that is really
+/// converted, which a stated duration may not be: a chained Ogg file states
+/// its last link's length, and a VBR MP3 without an index states an
+/// estimate.
+pub(crate) fn decoded_length_args(feed: &AudioFeed) -> Vec<String> {
     sample_count_args(feed, DECODED_LENGTH_FILTER)
 }
 
@@ -375,25 +394,16 @@ pub(crate) const SOURCE_LENGTH_FILTER: &str =
 /// conversion does and count its samples at the stream's own rate: the
 /// exact source length an SGMCA output is checked against when no header
 /// states it (see `conversion::plan_sgmca_output`).
-pub(crate) fn source_length_args(feed: &Path) -> Vec<String> {
+pub(crate) fn source_length_args(feed: &AudioFeed) -> Vec<String> {
     sample_count_args(feed, SOURCE_LENGTH_FILTER)
 }
 
-fn sample_count_args(feed: &Path, filter: &str) -> Vec<String> {
+fn sample_count_args(feed: &AudioFeed, filter: &str) -> Vec<String> {
     let mut args = crate::helpers::safe_ffmpeg_input_prelude();
     args.extend(["-nostats".into(), "-v".into(), "info".into()]);
-    args.extend(crate::helpers::input_codec_args(feed));
-    args.extend(["-i".into(), feed.to_string_lossy().to_string()]);
-    args.extend(crate::helpers::source_audio_map_args());
-    args.extend([
-        "-vn".into(),
-        "-sn".into(),
-        "-af".into(),
-        filter.into(),
-        "-f".into(),
-        "null".into(),
-        "-".into(),
-    ]);
+    args.extend(feed.input_args(&[]));
+    args.extend(feed.source_output_args(Some(filter)));
+    args.extend(["-vn".into(), "-sn".into(), "-f".into(), "null".into(), "-".into()]);
     args
 }
 
@@ -420,7 +430,7 @@ pub(crate) fn parse_decoded_samples(stderr: &[u8]) -> Option<u64> {
 /// or reports no count.
 pub(crate) async fn measure_source_samples_cancellable(
     app: &AppHandle,
-    feed: &Path,
+    feed: &AudioFeed,
     timeout_secs: u64,
     cancelled: CancelCheck<'_>,
 ) -> Option<u64> {
@@ -440,7 +450,7 @@ pub(crate) async fn measure_source_samples_cancellable(
 
 pub(crate) async fn measure_decoded_seconds_cancellable(
     app: &AppHandle,
-    feed: &Path,
+    feed: &AudioFeed,
     timeout_secs: u64,
     cancelled: CancelCheck<'_>,
 ) -> Option<f64> {
@@ -484,7 +494,7 @@ pub(crate) fn fade_out_placement(
 pub(crate) async fn build_proc_filters_with_gain(
     app: &AppHandle,
     opts: &ConvertJob,
-    feed: &Path,
+    feed: &AudioFeed,
     auto_gain: Option<f64>,
     stated: Option<f64>,
     cancelled: CancelCheck<'_>,
@@ -893,15 +903,15 @@ Decoders:
 
     #[test]
     fn decoded_length_pass_maps_the_converted_stream_and_counts_at_48_khz() {
-        let args = decoded_length_args(Path::new("/in/session.sgmca"));
+        let feed = AudioFeed::plain(std::path::PathBuf::from("/in/session.sgmca"));
+        let args = decoded_length_args(&feed);
         let joined = args.join(" ");
         assert!(
-            joined.contains("-c:a libopus -i /in/session.sgmca -map 0:a:0 -vn -sn"),
+            joined.contains(
+                "-c:a libopus -i /in/session.sgmca -map 0:a:0 -af aresample=48000,astats=metadata=0:reset=0:measure_perchannel=none:measure_overall=Number_of_samples -vn -sn -f null -"
+            ),
             "{joined}"
         );
-        assert!(joined.contains(
-            "-af aresample=48000,astats=metadata=0:reset=0:measure_perchannel=none:measure_overall=Number_of_samples -f null -"
-        ));
         assert_eq!(&args[..4], &["-nostdin", "-hide_banner", "-protocol_whitelist", "file"]);
         assert!(DECODED_LENGTH_FILTER.starts_with(&format!("aresample={DECODED_LENGTH_RATE},")));
     }

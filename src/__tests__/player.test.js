@@ -115,6 +115,7 @@ describe('constants', () => {
       'sgmca',
       'trm',
       'ftr',
+      'tll',
       'bwf',
       'dm',
       'dcr',
@@ -181,7 +182,7 @@ describe('compareTarget', () => {
     })
   })
   it('disables compare for court containers with a plain reason', () => {
-    for (const ext of ['sgmca', 'trm', 'ftr', 'dm', 'dcr']) {
+    for (const ext of ['sgmca', 'trm', 'ftr', 'tll', 'dm', 'dcr']) {
       const target = compareTarget(`/in/a.${ext}`, [mp3])
       expect(target.enabled).toBe(false)
       expect(target.reason).toBe(COMPARE_UNAVAILABLE_REASON)
