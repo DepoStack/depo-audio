@@ -1,5 +1,5 @@
 use std::fs;
-use std::io::{Read, Seek, SeekFrom, Write};
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 
 use std::sync::{Arc, OnceLock};
@@ -68,7 +68,7 @@ pub(crate) fn get_formats() -> Vec<FormatInfo> {
         // Court reporting formats — require conversion
         FormatInfo { key: "sgmca".into(), name: "Stenograph SGMCA".into(), vendor: "Case CATalyst".into(),
             status: "supported".into(), handler: "sgmca".into(), channels: Some("1–16".into()),
-            note: Some("Ogg Opus with one mono stream per channel (mapping family 255).".into()) },
+            note: Some("Direct Audio: a file header, then one Ogg Opus stream per recording session, each with one mono stream per channel. Sessions are joined in order.".into()) },
         FormatInfo { key: "ftr".into(), name: "FTR Recording".into(), vendor: "For The Record".into(),
             status: "experimental".into(), handler: "ftr".into(), channels: Some("4–16".into()),
             note: Some("FTR uses its own multichannel codec (tag 0x4180) and requires FFmpeg's native FTR decoder. Drop all .trm files for a session together.".into()) },
@@ -128,12 +128,21 @@ pub(crate) fn is_standard_format(ext: &str) -> bool {
 /// the ordinary `aac` decoder directly fails on real recordings and must never
 /// be used as a fallback.
 ///
-/// SGMCA streams are decoded with libopus, the reference Opus decoder.
+/// SGMCA streams are decoded with libopus, the reference Opus decoder. An
+/// SGMCA concat script (see `prepare_sgmca_feed`) also gets the concat
+/// demuxer options from `feed_format_args`, which must come before `-i`.
 /// FFmpeg's built-in Opus decoder has been seen to corrupt a channel of a
 /// 16 kHz mapping-family-255 stream (one channel decoding to full-scale
 /// noise) that libopus decodes cleanly; every bundled FFmpeg build includes
 /// libopus.
 pub(crate) fn input_codec_args(path: &Path) -> Vec<String> {
+    // An SGMCA concat script: the demuxer options, then libopus.
+    if is_sgmca_concat_feed(path) {
+        let mut args = feed_format_args(path);
+        args.extend(["-c:a".into(), "libopus".into()]);
+        args.extend(sgmca_feed_start_args(path));
+        return args;
+    }
     // Extension only: the FTR handler does not depend on file content, and
     // this runs inside async conversion and probe paths.
     match detect_format_by_extension(&path.to_string_lossy()) {
@@ -407,39 +416,101 @@ pub(crate) fn source_audio_filter_input() -> String {
     format!("[0:{}]", source_audio_stream_specifier())
 }
 
-// ── SGMCA header stripping ────────────────────────────────────────────────────
+// ── SGMCA input ──────────────────────────────────────────────────────────────
 
 pub(crate) const AUDIO_PREPARATION_CANCELLED_MESSAGE: &str = "Audio preparation cancelled";
 
-fn strip_sgmca_header_with_cancel(
+/// File-name prefix and extension of the concat script an SGMCA feed uses.
+const SGMCA_FEED_PREFIX: &str = "depoaudio_sgmca_";
+const SGMCA_FEED_EXTENSION: &str = "ffconcat";
+
+/// True for the concat script `prepare_sgmca_feed` writes.
+fn is_sgmca_concat_feed(path: &Path) -> bool {
+    path.extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| extension.eq_ignore_ascii_case(SGMCA_FEED_EXTENSION))
+        && path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name.starts_with(SGMCA_FEED_PREFIX))
+}
+
+/// The marker before the first session's pre-skip in a concat script's name.
+const SGMCA_FEED_LEAD_MARKER: &str = "_lead";
+
+/// The first session's Opus pre-skip, from the name of the concat script
+/// `prepare_sgmca_feed` wrote. None for any other path.
+fn sgmca_feed_lead(path: &Path) -> Option<u16> {
+    if !is_sgmca_concat_feed(path) {
+        return None;
+    }
+    let stem = path.file_stem()?.to_str()?;
+    let (_, lead) = stem.rsplit_once(SGMCA_FEED_LEAD_MARKER)?;
+    lead.parse().ok()
+}
+
+/// `-itsoffset` for an SGMCA concat script, so its audio starts at zero as a
+/// bare Ogg file does.
+///
+/// FFmpeg's Ogg demuxer gives a bare Opus stream a start time that already
+/// allows for the pre-skip, so its first decoded sample lands at zero. The
+/// concat demuxer takes the first packet's timestamp instead, which is the
+/// pre-skip *before* zero, and FFmpeg then moves the whole input later by
+/// that much. WAV, FLAC, MP3 and Ogg outputs drop the gap, but MP4 (M4A)
+/// keeps it as a lead-in: every sample came out 312 samples (6.5 ms) late
+/// and the file grew by as much. This moves the input back by exactly the
+/// pre-skip, so the first decoded sample is at zero for every output.
+fn sgmca_feed_start_args(path: &Path) -> Vec<String> {
+    match sgmca_feed_lead(path) {
+        Some(lead) if lead > 0 => vec![
+            "-itsoffset".into(),
+            // Microseconds: within 0.05 of a sample, and FFmpeg rounds to the
+            // nearest sample at 48 kHz.
+            format!("-{}us", (u64::from(lead) * 1_000_000 + 24_000) / 48_000),
+        ],
+        _ => Vec::new(),
+    }
+}
+
+/// Input options (before `-i`) that every ffmpeg and ffprobe call needs to
+/// read `feed`. For an SGMCA concat script: the concat demuxer, `-safe 0`
+/// (its entries are `subfile` URLs into the original file) and a protocol
+/// whitelist of `file` and `subfile` only. Nothing for any other feed.
+pub(crate) fn feed_format_args(feed: &Path) -> Vec<String> {
+    if is_sgmca_concat_feed(feed) {
+        vec![
+            "-protocol_whitelist".into(),
+            "file,subfile".into(),
+            "-f".into(),
+            "concat".into(),
+            "-safe".into(),
+            "0".into(),
+        ]
+    } else {
+        Vec::new()
+    }
+}
+
+/// Read an SGMCA file's layout and give FFmpeg a way to read its audio.
+///
+/// A Direct Audio file holds a header and one Ogg Opus stream per recording
+/// session. FFmpeg gets a small concat script (a temporary text file of a
+/// few hundred bytes, removed with the returned guard) that plays each
+/// session's byte range of the original file in file order through the
+/// `subfile` protocol, so no copy of the audio is made and the original is
+/// only read. A bare Ogg file (the older layout) is used in place. The full
+/// page walk checks every CRC before FFmpeg is started, so damage is named
+/// with its segment and byte.
+pub(crate) fn prepare_sgmca_feed(
     src: &Path,
     cancelled: Option<&(dyn Fn() -> bool + Send + Sync)>,
-) -> Result<(PathBuf, Option<crate::safety::TempFile>), String> {
+) -> Result<(PathBuf, Option<crate::safety::TempFile>, crate::sgmca::SgmcaInfo), String> {
     let is_cancelled = || cancelled.is_some_and(|check| check());
     if is_cancelled() {
         return Err(AUDIO_PREPARATION_CANCELLED_MESSAGE.into());
     }
-
-    let mut file = fs::File::open(src).map_err(|e| e.to_string())?;
-    let file_size = fs::metadata(src).map_err(|e| e.to_string())?.len();
-    if file_size == 0 {
-        return Err("SGMCA file is empty".into());
-    }
-    // The stream starts at the first CRC-correct beginning-of-stream page
-    // that carries an Opus identification header, so stray "OggS" bytes in
-    // a prefix are skipped and a damaged or non-Opus file is named as such
-    // before FFmpeg sees it. Plain SGMCA files start at byte 0 and are used
-    // in place.
-    let offset = crate::sgmca::locate_stream(&mut file)?;
-    if is_cancelled() {
-        return Err(AUDIO_PREPARATION_CANCELLED_MESSAGE.into());
-    }
-    // FFmpeg plays a file with several sessions (one Ogg stream each) as one
-    // stream with the gaps between them closed, which moves every later
-    // session to the wrong time. Such a file is refused, by name of each
-    // session, until sessions can be handled one at a time.
-    crate::sgmca::ensure_single_session(&mut file, offset, cancelled).map_err(|error| {
-        if is_cancelled() {
+    let info = crate::sgmca::inspect(src, cancelled).map_err(|error| {
+        if error == crate::sgmca::INSPECT_CANCELLED_MESSAGE {
             AUDIO_PREPARATION_CANCELLED_MESSAGE.to_string()
         } else {
             error
@@ -448,37 +519,31 @@ fn strip_sgmca_header_with_cancel(
     if is_cancelled() {
         return Err(AUDIO_PREPARATION_CANCELLED_MESSAGE.into());
     }
-    if offset == 0 {
-        return Ok((src.to_path_buf(), None));
+    if info.container == crate::sgmca::Container::BareOgg {
+        return Ok((src.to_path_buf(), None, info));
     }
-
-    // The copy goes in DepoAudio's private work folder (workdir.rs). It
-    // keeps the .sgmca extension so every later step treats it as SGMCA
-    // (decoder choice included); FFmpeg finds the Ogg stream by content.
-    file.seek(SeekFrom::Start(offset)).map_err(|e| e.to_string())?;
-    let (guard, mut out) = crate::workdir::new_temp_file("depoaudio_", "sgmca")?;
-    // On any error or cancellation the guard drops and removes the copy.
-    let mut chunk = vec![0u8; 65536];
-    loop {
-        if is_cancelled() {
-            return Err(AUDIO_PREPARATION_CANCELLED_MESSAGE.into());
-        }
-        let n = file.read(&mut chunk).map_err(|error| error.to_string())?;
-        if n == 0 {
-            break;
-        }
-        out.write_all(&chunk[..n]).map_err(|error| error.to_string())?;
-    }
-    if is_cancelled() {
-        return Err(AUDIO_PREPARATION_CANCELLED_MESSAGE.into());
-    }
+    let script = crate::sgmca::concat_script(src, &info)?;
+    // The first session FFmpeg plays carries the pre-skip the input must be
+    // moved back by (see `sgmca_feed_start_args`).
+    let lead = info
+        .segments
+        .iter()
+        .find(|segment| segment.samples > 0)
+        .map_or(0, |segment| segment.head.pre_skip);
+    // The script goes in DepoAudio's private work folder (workdir.rs), like
+    // every other temporary file a conversion reads. It names only byte
+    // ranges of the file the person selected, and its name carries the
+    // pre-skip after the identifier (`<prefix><uuid>_lead<n>.ffconcat`).
+    let (guard, mut file) = crate::workdir::new_temp_file_tagged(
+        SGMCA_FEED_PREFIX,
+        &format!("{SGMCA_FEED_LEAD_MARKER}{lead}"),
+        SGMCA_FEED_EXTENSION,
+    )
+    .map_err(|error| format!("Could not prepare the SGMCA sessions for FFmpeg: {error}"))?;
     // Read back by this run only: no sync_all.
-    Ok((guard.path.clone(), Some(guard)))
-}
-
-#[cfg(test)]
-pub(crate) fn strip_sgmca_header(src: &Path) -> Result<(PathBuf, Option<crate::safety::TempFile>), String> {
-    strip_sgmca_header_with_cancel(src, None)
+    file.write_all(script.as_bytes())
+        .map_err(|error| format!("Could not prepare the SGMCA sessions for FFmpeg: {error}"))?;
+    Ok((guard.path.clone(), Some(guard), info))
 }
 
 // ── DigitalCAT .dm demux ──────────────────────────────────────────────────────
@@ -532,7 +597,7 @@ pub(crate) struct PreparedFeed {
 }
 
 impl PreparedFeed {
-    fn ready(path: PathBuf, guard: Option<crate::safety::TempFile>) -> Self {
+    pub(crate) fn ready(path: PathBuf, guard: Option<crate::safety::TempFile>) -> Self {
         Self {
             path,
             guard,
@@ -549,11 +614,12 @@ pub(crate) fn has_extension(src: &Path, wanted: &str) -> bool {
         .is_some_and(|extension| extension.eq_ignore_ascii_case(wanted))
 }
 
-/// Prepare the selected file for FFmpeg: an SGMCA loses its vendor prefix,
-/// a `.dm` has its audio read into a WAV and a Liberty / BIS DCR is demuxed
-/// into a WAV, each in a temporary copy that every probe, scan, waveform and
-/// conversion reads; any other file is used as it is. A DCR may still need
-/// its channel merge (`finish_prepared_feed`).
+/// Prepare the selected file for FFmpeg: an SGMCA gets a concat script over
+/// its recording sessions (`prepare_sgmca_feed`), a `.dm` has its audio
+/// read into a WAV and a Liberty / BIS DCR is demuxed into a WAV, each a
+/// temporary file in the private work folder that every probe, scan,
+/// waveform and conversion reads; any other file is used as it is. A DCR may
+/// still need its channel merge (`finish_prepared_feed`).
 pub(crate) fn prepare_audio_feed_detailed(
     src: &Path,
     cancelled: Option<&(dyn Fn() -> bool + Send + Sync)>,
@@ -592,7 +658,7 @@ pub(crate) fn prepare_audio_feed_detailed(
         return Ok(PreparedFeed::ready(src.to_path_buf(), None));
     }
 
-    let (feed, guard) = strip_sgmca_header_with_cancel(src, cancelled)?;
+    let (feed, guard, _) = prepare_sgmca_feed(src, cancelled)?;
     Ok(PreparedFeed::ready(feed, guard))
 }
 
@@ -734,7 +800,10 @@ pub(crate) fn output_args(format: &str, rate: &str, mp3_bitrate: u32) -> Vec<Str
             "48000".into(),
         ],
         // Stenograph Direct Audio: Ogg Opus with one uncoupled mono stream
-        // per channel (mapping family 255) and a 16 kHz input rate tag.
+        // per channel (mapping family 255), encoded at 48 kHz as the notes
+        // say CATalyst's own encoder runs (so the input rate tag is 48000). FFmpeg
+        // writes the bare Ogg stream; the conversion then adds the Direct
+        // Audio file and segment headers (`sgmca::write_direct_audio`).
         // The bitrate depends on the channel count, so the conversion plan
         // adds it. `-f ogg` because FFmpeg does not know the extension.
         "sgmca" => vec![
@@ -747,7 +816,7 @@ pub(crate) fn output_args(format: &str, rate: &str, mp3_bitrate: u32) -> Vec<Str
             "-vbr".into(),
             "on".into(),
             "-ar".into(),
-            "16000".into(),
+            "48000".into(),
             "-f".into(),
             "ogg".into(),
         ],
@@ -981,85 +1050,103 @@ mod tests {
     }
 
     #[test]
-    fn sgmca_header_strip_rejects_missing_ogg_stream() {
+    fn sgmca_feed_refuses_a_file_without_the_direct_audio_header() {
         let dir = ReservationTestDir::new();
         let source = dir.path().join("broken.sgmca");
-        fs::write(&source, b"vendor header without an ogg stream").unwrap();
+        fs::write(&source, b"vendor header without an ogg stream, padded to forty bytes").unwrap();
 
-        let error = strip_sgmca_header(&source).unwrap_err();
+        let error = prepare_audio_feed_with_cancel(&source, None).unwrap_err();
 
-        assert!(error.contains("does not contain an Ogg audio stream"));
+        assert!(error.contains("not a Direct Audio file"), "{error}");
     }
 
     #[test]
-    fn sgmca_header_strip_copies_from_the_opus_stream() {
+    fn direct_audio_sgmca_is_read_in_place_through_a_concat_script() {
         let dir = ReservationTestDir::new();
         let source = dir.path().join("recording.sgmca");
-        let stream = crate::sgmca::fixtures::synthetic(5, 312, 0, |_| 30);
-        // A stray marker in the prefix must not be taken for the stream.
-        let mut bytes = b"vendor-prefix OggS stray".to_vec();
-        bytes.extend_from_slice(&stream);
-        fs::write(&source, bytes).unwrap();
+        let bytes = crate::sgmca::fixtures::synthetic_direct(5, 312, 0, |_| 30);
+        fs::write(&source, &bytes).unwrap();
 
-        let (prepared, guard) = strip_sgmca_header(&source).unwrap();
+        let (feed, guard, info) = prepare_sgmca_feed(&source, None).unwrap();
         assert!(guard.is_some());
-        assert!(prepared.starts_with(crate::workdir::tests::test_root()));
-        assert_eq!(fs::read(&prepared).unwrap(), stream);
+        assert!(is_sgmca_concat_feed(&feed));
+        assert!(
+            feed.starts_with(crate::workdir::tests::test_root()),
+            "the script goes in the private work folder"
+        );
+        let script = fs::read_to_string(&feed).unwrap();
+        assert!(script.starts_with("ffconcat version 1.0\n"));
+        assert!(
+            script.contains(&format!("subfile,,start,96,end,{},,:file:", bytes.len())),
+            "{script}"
+        );
+        assert_eq!(info.segments.len(), 1);
+        assert_eq!(
+            input_codec_args(&feed),
+            [
+                "-protocol_whitelist",
+                "file,subfile",
+                "-f",
+                "concat",
+                "-safe",
+                "0",
+                "-c:a",
+                "libopus",
+                "-itsoffset",
+                "-6500us"
+            ]
+        );
+        assert_eq!(sgmca_feed_lead(&feed), Some(312));
+        assert_eq!(feed_format_args(&feed)[..2], ["-protocol_whitelist", "file,subfile"]);
+        assert!(feed_format_args(&source).is_empty());
+        // The original is never touched, and the script goes with its guard.
+        assert_eq!(fs::read(&source).unwrap(), bytes);
         drop(guard);
-        assert!(!prepared.exists(), "the copy goes with its guard");
+        assert!(!feed.exists());
     }
 
     #[test]
-    fn a_multi_session_sgmca_is_refused_with_or_without_a_header() {
-        let dir = ReservationTestDir::new();
-        let one = crate::sgmca::fixtures::synthetic(50, 312, 0, |_| 30);
-        let segmented = crate::sgmca::fixtures::segmented(&[
-            ("2026-11-22T10:15:30-0500", &one),
-            ("2026-11-22T10:20:00-0500", &one),
-        ]);
-        let mut chained = one.clone();
-        chained.extend_from_slice(&one);
-        for (name, bytes) in [("segmented.sgmca", segmented), ("chained.sgmca", chained)] {
-            let source = dir.path().join(name);
-            fs::write(&source, bytes).unwrap();
-            let error = prepare_audio_feed_with_cancel(&source, None).unwrap_err();
-            assert!(error.contains("2 recording sessions"), "{name}: {error}");
-        }
-        let entries: Vec<_> = fs::read_dir(dir.path()).unwrap().collect();
-        assert_eq!(entries.len(), 2, "no temporary copy is left beside the sources");
+    fn an_sgmca_concat_feed_is_moved_back_by_exactly_its_first_pre_skip() {
+        let feed = |name: &str| std::env::temp_dir().join(name);
+        let args = |name: &str| sgmca_feed_start_args(&feed(name));
+        assert_eq!(args("depoaudio_sgmca_ab12_lead312.ffconcat"), ["-itsoffset", "-6500us"]);
+        // 311 samples are 6479.17 us: the nearest microsecond, which FFmpeg
+        // rounds back to exactly 311 samples.
+        assert_eq!(args("depoaudio_sgmca_ab12_lead311.ffconcat"), ["-itsoffset", "-6479us"]);
+        assert_eq!(
+            args("depoaudio_sgmca_ab12_lead4152.ffconcat"),
+            ["-itsoffset", "-86500us"]
+        );
+        assert!(args("depoaudio_sgmca_ab12_lead0.ffconcat").is_empty());
+        // Not a feed this app wrote, or no pre-skip in its name.
+        assert!(args("other_lead312.ffconcat").is_empty());
+        assert!(args("depoaudio_sgmca_ab12_lead312.wav").is_empty());
+        assert!(args("depoaudio_sgmca_ab12.ffconcat").is_empty());
     }
 
     #[test]
-    fn plain_sgmca_is_used_in_place() {
+    fn bare_ogg_sgmca_is_used_in_place() {
         let dir = ReservationTestDir::new();
         let source = dir.path().join("plain.sgmca");
         fs::write(&source, crate::sgmca::fixtures::synthetic(5, 312, 0, |_| 30)).unwrap();
 
-        let (prepared, guard) = strip_sgmca_header(&source).unwrap();
+        let (prepared, guard) = prepare_audio_feed_with_cancel(&source, None).unwrap();
         assert!(guard.is_none());
         assert_eq!(prepared, source);
+        assert_eq!(input_codec_args(&prepared), ["-c:a", "libopus"]);
     }
 
     #[test]
-    fn sgmca_header_strip_rejects_a_marker_without_an_opus_header() {
-        let dir = ReservationTestDir::new();
-        let source = dir.path().join("damaged.sgmca");
-        fs::write(&source, b"vendor-prefixOggSaudio-payload").unwrap();
-
-        let error = strip_sgmca_header(&source).unwrap_err();
-        assert!(error.contains("no readable Opus stream header"), "{error}");
-    }
-
-    #[test]
-    fn sgmca_header_strip_honors_cancellation_while_copying() {
+    fn sgmca_feed_honors_cancellation_while_reading() {
         use std::sync::atomic::{AtomicUsize, Ordering};
 
         let dir = ReservationTestDir::new();
         let source = dir.path().join("large-recording.sgmca");
-        let mut contents = b"vendor-prefix".to_vec();
-        contents.extend_from_slice(&crate::sgmca::fixtures::synthetic(5, 312, 0, |_| 30));
-        contents.resize(256 * 1024, 7);
-        fs::write(&source, contents).unwrap();
+        fs::write(
+            &source,
+            crate::sgmca::fixtures::synthetic_direct(20_000, 312, 0, |_| 30),
+        )
+        .unwrap();
         let checks = AtomicUsize::new(0);
         let cancelled = || checks.fetch_add(1, Ordering::Relaxed) >= 4;
 

@@ -5,6 +5,7 @@ import PlayerTab from '../components/Player/PlayerTab'
 
 vi.mock('@tauri-apps/api/core', () => ({
   convertFileSrc: path => `asset://${path}`,
+  invoke: vi.fn(() => Promise.resolve(null)),
 }))
 
 vi.mock('@tauri-apps/plugin-dialog', () => ({
@@ -38,7 +39,7 @@ describe('Player transcript wiring', () => {
     vi.restoreAllMocks()
   })
 
-  it('mounts the synced transcript editor for the active track', async () => {
+  it('mounts the transcript proofing panel for the active track', async () => {
     render(<PlayerTab dropHandlerRef={{ current: null }} onConvertFiles={vi.fn()} />)
 
     fireEvent.click(screen.getByRole('button', { name: /add audio files to the playlist/i }))

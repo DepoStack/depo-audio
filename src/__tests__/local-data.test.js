@@ -7,7 +7,7 @@ import {
   restoreWebData,
   summarizeWebData,
 } from '../lib/localData'
-import { removeStoredSegments, saveStoredSegments, storageKey } from '../lib/transcript'
+import { removeStoredSegments, saveStoredSegments, storageKey, syncKey } from '../lib/transcript'
 
 // Synthetic data only: no real case content.
 const lineA = { id: 'a', start: 1, speaker: 'Q', text: 'Synthetic question' }
@@ -64,6 +64,12 @@ describe('transcript storage removal', () => {
 })
 
 describe('collecting web data for a backup', () => {
+  it('carries proofing flags in the transcripts a backup collects', () => {
+    const flagged = { ...lineA, flag: { note: 'check' } }
+    const storage = memoryStorage({ [storageKey('/a.wav')]: JSON.stringify([flagged]) })
+    expect(collectWebData(storage).transcripts['/a.wav']).toEqual([flagged])
+  })
+
   it('collects non-empty transcripts and valid bookmarks only', () => {
     const storage = memoryStorage({
       [storageKey('/a.wav')]: JSON.stringify([lineA]),
@@ -102,17 +108,27 @@ describe('clearing web data', () => {
     storage = memoryStorage({
       [storageKey('/a.wav')]: JSON.stringify([lineA]),
       [storageKey('C:\\cases\\b.wav')]: JSON.stringify([lineB]),
+      [syncKey('/a.wav')]: JSON.stringify({ shift: 1.5 }),
       'player-bookmarks': '[]',
       'player-speed': '2',
       'player-backstep': '3',
+      'player-volume': '0.8',
+      'player-layout': '{"left":260}',
       'depoaudio-theme': 'dark',
       'not-depoaudio': 'kept',
     })
   })
 
   it('removes every DepoAudio key and nothing else', () => {
-    expect(WEB_STORAGE_KEYS).toEqual(['player-bookmarks', 'player-speed', 'player-backstep', 'depoaudio-theme'])
-    expect(clearWebData(storage)).toEqual({ removed: 6, failed: 0 })
+    expect(WEB_STORAGE_KEYS).toEqual([
+      'player-bookmarks',
+      'player-speed',
+      'player-backstep',
+      'player-volume',
+      'player-layout',
+      'depoaudio-theme',
+    ])
+    expect(clearWebData(storage)).toEqual({ removed: 9, failed: 0 })
     expect([...storage.data.keys()]).toEqual(['not-depoaudio'])
   })
 
@@ -120,7 +136,7 @@ describe('clearing web data', () => {
     storage.removeItem = () => {
       throw new Error('blocked')
     }
-    expect(clearWebData(storage)).toEqual({ removed: 0, failed: 6 })
+    expect(clearWebData(storage)).toEqual({ removed: 0, failed: 9 })
   })
 })
 

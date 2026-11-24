@@ -3,9 +3,12 @@
 //! These used to come from `chrono`. Each formatter here reproduces the exact
 //! text chrono wrote, so export records, backups and libraries written by
 //! older builds and by this one look the same, and nothing that reads them
-//! back (the app, a court, a script) sees a change. Everything is UTC; the
-//! app never needs the local offset, so `time`'s `local-offset` feature is
-//! not used.
+//! back (the app, a court, a script) sees a change. Everything is UTC,
+//! except the start time written into an SGMCA segment header, which the
+//! Direct Audio layout stores as local wall-clock time. That one local
+//! offset comes from the operating system (`local_offset_at`), not from
+//! `time`'s `local-offset` feature, which refuses to answer on Linux and
+//! macOS once the app has more than one thread.
 
 use std::time::SystemTime;
 use time::OffsetDateTime;
@@ -87,11 +90,106 @@ pub(crate) fn rfc3339_library(time: &OffsetDateTime) -> String {
     )
 }
 
+/// This computer's UTC offset at the instant `utc`, from the operating
+/// system's time-zone rules, so the daylight-saving rule for that date is
+/// applied. None when the system cannot say.
+pub(crate) fn local_offset_at(utc: OffsetDateTime) -> Option<time::UtcOffset> {
+    let seconds = sys::offset_seconds(utc.unix_timestamp())?;
+    time::UtcOffset::from_whole_seconds(seconds).ok()
+}
+
+/// The instant `utc` as an SGMCA segment start: local wall-clock time and
+/// this computer's offset, `YYYY-MM-DDTHH:MM:SS±hhmm`. Seconds only. When the
+/// offset cannot be read the text is in UTC with `+0000`, which is still the
+/// same instant.
+pub(crate) fn local_start_text(utc: OffsetDateTime) -> Option<String> {
+    let offset = local_offset_at(utc).unwrap_or(time::UtcOffset::UTC);
+    let local = utc.to_offset(offset);
+    let minutes = offset.whole_minutes() as i32;
+    crate::sgmca::format_start_text(time::PrimitiveDateTime::new(local.date(), local.time()), minutes)
+}
+
+/// `local_start_text` for the current time.
+pub(crate) fn local_start_text_now() -> Option<String> {
+    local_start_text(now_utc())
+}
+
+#[cfg(unix)]
+mod sys {
+    pub(super) fn offset_seconds(unix: i64) -> Option<i32> {
+        // time_t is 64-bit here but 32-bit on some targets.
+        #[allow(clippy::useless_conversion)]
+        let time: libc::time_t = unix.try_into().ok()?;
+        // SAFETY: `tm` is plain data (its one pointer may be null), and
+        // localtime_r writes only into it. localtime_r reads the TZ
+        // environment variable, which is unsound only if another thread
+        // changes the environment at the same time; DepoAudio never does.
+        let mut tm: libc::tm = unsafe { std::mem::zeroed() };
+        let result = unsafe { libc::localtime_r(&time, &mut tm) };
+        if result.is_null() {
+            return None;
+        }
+        i32::try_from(tm.tm_gmtoff).ok()
+    }
+}
+
+#[cfg(windows)]
+mod sys {
+    use windows_sys::Win32::Foundation::{FILETIME, SYSTEMTIME};
+    use windows_sys::Win32::System::Time::{
+        FileTimeToSystemTime, SystemTimeToFileTime, SystemTimeToTzSpecificLocalTime,
+    };
+
+    /// Seconds between 1601-01-01 (the FILETIME epoch) and 1970-01-01.
+    const FILETIME_UNIX_OFFSET: i64 = 11_644_473_600;
+
+    pub(super) fn offset_seconds(unix: i64) -> Option<i32> {
+        let ticks = u64::try_from(unix.checked_add(FILETIME_UNIX_OFFSET)?.checked_mul(10_000_000)?).ok()?;
+        let utc_file = FILETIME {
+            dwLowDateTime: ticks as u32,
+            dwHighDateTime: (ticks >> 32) as u32,
+        };
+        let mut utc: SYSTEMTIME = unsafe { std::mem::zeroed() };
+        let mut local: SYSTEMTIME = unsafe { std::mem::zeroed() };
+        let mut local_file = FILETIME::default();
+        // SAFETY: every pointer is to a local value of the type the function
+        // expects; a null time-zone pointer means the current time zone.
+        let converted = unsafe {
+            FileTimeToSystemTime(&utc_file, &mut utc) != 0
+                && SystemTimeToTzSpecificLocalTime(std::ptr::null(), &utc, &mut local) != 0
+                && SystemTimeToFileTime(&local, &mut local_file) != 0
+        };
+        if !converted {
+            return None;
+        }
+        let local_ticks = (u64::from(local_file.dwHighDateTime) << 32) | u64::from(local_file.dwLowDateTime);
+        let difference = (i128::from(local_ticks) - i128::from(ticks)) / 10_000_000;
+        i32::try_from(difference).ok()
+    }
+}
+
+#[cfg(not(any(unix, windows)))]
+mod sys {
+    pub(super) fn offset_seconds(_unix: i64) -> Option<i32> {
+        None
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use time::format_description::well_known::Rfc3339;
     use time::macros::datetime;
+
+    #[test]
+    fn local_start_text_is_the_same_instant_in_local_time() {
+        let utc = datetime!(2026-11-22 15:15:30 UTC);
+        let text = local_start_text(utc).unwrap();
+        let (local, offset_minutes) = crate::sgmca::parse_start_text(&text).unwrap();
+        let offset = time::UtcOffset::from_whole_seconds(offset_minutes * 60).unwrap();
+        assert_eq!(local.assume_offset(offset), utc);
+        assert_eq!(Some(offset), local_offset_at(utc).or(Some(time::UtcOffset::UTC)));
+    }
 
     #[test]
     fn date_is_utc_year_month_day() {

@@ -1,7 +1,24 @@
-import { useState, useRef, useEffect, useId } from 'react'
-import { convertFileSrc } from '@tauri-apps/api/core'
+import { useState, useRef, useEffect, useLayoutEffect, useId, useMemo } from 'react'
+import { convertFileSrc, invoke } from '@tauri-apps/api/core'
 import { open } from '@tauri-apps/plugin-dialog'
-import { Play, Pause, SkipBack, SkipForward, Bookmark, X, Plus, Repeat, Copy, Check } from 'lucide-react'
+import {
+  Play,
+  Pause,
+  SkipBack,
+  SkipForward,
+  Bookmark,
+  X,
+  Plus,
+  Repeat,
+  Copy,
+  Check,
+  ListMusic,
+  PanelLeftClose,
+  PanelLeftOpen,
+  PanelRightClose,
+  PanelRightOpen,
+  AudioLines,
+} from 'lucide-react'
 import { cn, shouldIgnoreNavigationShortcut } from '../../lib/utils'
 import { fmtTime, sortRecordingChunks } from '../../utils'
 import { useSpeakerColors, speakerColorAt, SPEAKER_COUNT } from '../../lib/speakerColors'
@@ -26,16 +43,42 @@ import Waveform from '../common/Waveform'
 import { WaveformIcon } from '../common/Icons'
 import WorkspaceHeader from '../common/WorkspaceHeader'
 import Transcript from './Transcript'
+import ListeningMix from './ListeningMix'
+import PaneSplitter from './PaneSplitter'
+import { fmtClock } from '../../lib/transcript'
+import {
+  isNarrow,
+  paneRange,
+  paneWidths,
+  readLayout,
+  resizeLayout,
+  writeLayout,
+  SPLITTER_WIDTH,
+} from '../../lib/playerLayout'
+import {
+  CHANNEL_PROBE_URL,
+  createChannelMixer,
+  initialStrips,
+  mixChannelCount,
+  stripChanged,
+  loadVolume,
+  probedChannelCount,
+} from '../../lib/channelMixer'
+
+const NO_STRIPS = []
 
 // ── Global Audio Player ─────────────────────────────────────────────────────
 //
 // Play any audio file directly — no conversion needed. Playlist tracks get
 // colors from the existing --speaker-N design tokens without inferring who is speaking.
 //
-// Layout: a Now Playing surface (large seekable waveform) + a playlist/
-// bookmarks rail scroll above a PERSISTENT transport bar (controls + a thin
-// progress scrubber) that never scrolls away, so play/pause and position
-// stay reachable no matter how far you scroll.
+// Layout: three panes over a PERSISTENT transport bar (controls + a thin
+// progress scrubber). Left: Playlist and Bookmarks. Centre, the largest:
+// transcript proofing. Right: Now Playing (compact waveform), the listening
+// mix and the flags. Each pane scrolls inside itself, so the page does not.
+// The side panes resize (drag or keyboard on the splitter) or collapse, and
+// their sizes are kept per viewer (lib/playerLayout.js). Below 1100px they
+// become drawers opened from a toolbar, and the transcript keeps the width.
 //
 // Keyboard transport (when not typing in a field):
 //   Space / K  play-pause      ← / →  seek ±5s       J / L  seek ±10s
@@ -44,24 +87,56 @@ import Transcript from './Transcript'
 // Auto-backstep: resuming after a pause first rewinds the chosen number of
 // seconds (shown as "Backstep" in the transport). Seeks, track changes and
 // A-B loop wraps clear the pause point, so they never rewind.
+//
+// Listening mix: a master volume (saved like speed) and, for a file with 2 or
+// more channels, an opt-in "Separate channels" strip per channel. Turning it
+// on swaps in a new <audio> element with crossOrigin set and routes it
+// through Web Audio (lib/channelMixer.js); turning it off swaps back to plain
+// playback. The position and play state carry over. Strips reset for each
+// track and are not saved. Nothing here changes any file.
 
 const PLAYER_STORAGE_WARNING =
-  'Player bookmarks, speed and backstep cannot be saved in this session. Export important bookmark notes before closing DepoAudio.'
+  'Player bookmarks, speed, volume, backstep and pane sizes cannot be saved in this session. Export important bookmark notes before closing DepoAudio.'
+
+const PANE_NAMES = { left: 'Playlist and bookmarks', right: 'Now playing, listening mix and flags' }
+
+function browserStorage() {
+  try {
+    return window.localStorage
+  } catch {
+    return null
+  }
+}
+
+function viewportWidth() {
+  return typeof window === 'undefined' ? Infinity : window.innerWidth
+}
 
 function loadPlayerStorageState() {
   try {
     return {
       speed: loadSpeed(window.localStorage.getItem('player-speed')),
       backstep: loadBackstep(window.localStorage.getItem('player-backstep')),
+      volume: loadVolume(window.localStorage.getItem('player-volume')),
       bookmarks: loadBookmarks(window.localStorage.getItem('player-bookmarks')),
-      error: '',
+      ...(() => {
+        const { layout, error } = readLayout(window.localStorage)
+        return { layout, error: error ? PLAYER_STORAGE_WARNING : '' }
+      })(),
     }
   } catch {
-    return { speed: 1, backstep: loadBackstep(null), bookmarks: [], error: PLAYER_STORAGE_WARNING }
+    return {
+      speed: 1,
+      backstep: loadBackstep(null),
+      volume: loadVolume(null),
+      bookmarks: [],
+      layout: readLayout(null).layout,
+      error: PLAYER_STORAGE_WARNING,
+    }
   }
 }
 
-export default function PlayerTab({ dropHandlerRef, onConvertFiles, openRequest, onOpenRequestHandled }) {
+export default function PlayerTab({ dropHandlerRef, onConvertFiles, openRequest, onOpenRequestHandled, playbackKeys }) {
   const [tracks, setTracks] = useState([]) // { path, name, colorIndex, label }
   const [activeTrack, setActiveTrack] = useState(null)
   const [playing, setPlaying] = useState(false)
@@ -71,6 +146,32 @@ export default function PlayerTab({ dropHandlerRef, onConvertFiles, openRequest,
   const [initialStorage] = useState(loadPlayerStorageState)
   const [speed, setSpeedState] = useState(initialStorage.speed)
   const [backstep, setBackstepState] = useState(initialStorage.backstep)
+  const [volume, setVolumeState] = useState(initialStorage.volume)
+  // Listening mix. audioKey changes swap in a fresh <audio> element: a
+  // MediaElementSource can be made once per element, and only an element
+  // without crossOrigin plays exactly as before.
+  const [mixOn, setMixOn] = useState(false)
+  const [audioKey, setAudioKey] = useState(0)
+  const [probe, setProbe] = useState({ path: null, channels: null })
+  const [heard, setHeard] = useState({ path: null, count: null })
+  const [mix, setMix] = useState({ path: null, strips: [] })
+  const [probeAvailable, setProbeAvailable] = useState(true)
+  const [mixNotice, setMixNotice] = useState('')
+  // The track whose strips started at 100% because the previous track's
+  // Mute, Solo or volume changes were dropped (the Player says so).
+  const [stripsResetPath, setStripsResetPath] = useState(null)
+  const mixerRef = useRef(null)
+  // True once an element with the mix on has loaded a file. The asset
+  // protocol's CORS then works, so a later error on another file is that
+  // file's own decode error, not a reason to turn the mix off.
+  const mixLoadedRef = useRef(false)
+  // { time, play, pausedAt } to apply once a swapped-in element has loaded.
+  // Until then, play/pause (buttons, in-app and playback keys) change `play`
+  // instead of acting on an element that has not loaded yet.
+  const restoreRef = useRef(null)
+  // The pause position to keep through the restore's own seek, so turning
+  // Separate channels on or off while paused keeps the Backstep resume point.
+  const restoreSeekRef = useRef(null)
   const backstepRuleId = useId()
   // Position where the person last paused this track. Any seek (including our
   // own backstep and the A-B loop wrap) clears it, so only a plain resume rewinds.
@@ -165,6 +266,15 @@ export default function PlayerTab({ dropHandlerRef, onConvertFiles, openRequest,
     const a = audioRef.current
     if (!a || !activeTrack) return
     setPlaybackError('')
+    restoreSeekRef.current = null
+    const pending = restoreRef.current
+    if (pending) {
+      // Paused here: the next resume rewinds by Backstep, as for any pause
+      restoreRef.current = pending.play
+        ? { ...pending, play: false, pausedAt: pending.time }
+        : { ...pending, play: true }
+      return
+    }
     if (!a.paused) {
       a.pause()
       return
@@ -173,7 +283,48 @@ export default function PlayerTab({ dropHandlerRef, onConvertFiles, openRequest,
     const start = resumePosition({ currentTime: a.currentTime, pausedAt: pausedAtRef.current, backstep, loopStart })
     pausedAtRef.current = null
     if (start !== a.currentTime) a.currentTime = start
+    mixerRef.current?.resume()
     a.play().catch(e => setPlaybackError(`Couldn't play ${activeTrack.name}: ${e}`))
+  }
+
+  const applyVolume = v => {
+    const next = loadVolume(v)
+    setVolumeState(next)
+    try {
+      window.localStorage.setItem('player-volume', String(next))
+    } catch {
+      setStorageError(PLAYER_STORAGE_WARNING)
+    }
+  }
+
+  // Swap the <audio> element, keeping position and play state.
+  const swapAudio = nextMixOn => {
+    const a = audioRef.current
+    // A swap that has not loaded yet (for example the mix failed to start)
+    // still holds the position to go back to.
+    if (!restoreRef.current && a) {
+      restoreRef.current = {
+        time: a.currentTime || 0,
+        play: !a.paused,
+        pausedAt: a.paused ? pausedAtRef.current : null,
+      }
+    }
+    a?.pause()
+    mixLoadedRef.current = false
+    setMixOn(nextMixOn)
+    setAudioKey(k => k + 1)
+  }
+  const toggleMix = () => {
+    setMixNotice('')
+    swapAudio(!mixOn)
+  }
+  // Kept until the person tries again: pressing Play must not hide why the
+  // channel strips went away.
+  const mixFailed = reason => {
+    setMixNotice(
+      `Separate channels could not start (${reason}), so the Player went back to normal playback. Nothing was changed in the file.`,
+    )
+    swapAudio(false)
   }
 
   const applyBackstep = s => {
@@ -185,13 +336,40 @@ export default function PlayerTab({ dropHandlerRef, onConvertFiles, openRequest,
     }
   }
 
+  // While a swapped-in element has not loaded, a seek moves the position the
+  // restore will apply (setting currentTime on the new element would be
+  // overwritten by the restore). Like any seek, it clears the Backstep point.
+  const seekPending = time => {
+    const pending = restoreRef.current
+    if (!pending) return false
+    restoreRef.current = { ...pending, time: Math.max(0, time), pausedAt: null }
+    return true
+  }
   const seekBy = delta => {
     const a = audioRef.current
     if (!a) return
+    restoreSeekRef.current = null
+    const pending = restoreRef.current
+    if (pending) {
+      seekPending(Math.min(pending.time + delta, duration || pending.time + delta))
+      return
+    }
     a.currentTime = Math.max(0, Math.min((a.currentTime || 0) + delta, a.duration || 0))
   }
   const seekTo = t => {
+    restoreSeekRef.current = null
+    if (seekPending(t)) return
     if (audioRef.current) audioRef.current.currentTime = t
+  }
+
+  // Play from a transcript line: seek there and play, with no backstep.
+  const playFrom = t => {
+    const a = audioRef.current
+    if (!a || !activeTrack) return
+    setPlaybackError('')
+    pausedAtRef.current = null
+    a.currentTime = t
+    if (a.paused) a.play().catch(e => setPlaybackError(`Couldn't play ${activeTrack.name}: ${e}`))
   }
 
   const applySpeed = s => {
@@ -276,8 +454,37 @@ export default function PlayerTab({ dropHandlerRef, onConvertFiles, openRequest,
   // Keyboard transport. Registered once; reads latest actions/state via a ref.
   const actionsRef = useRef({})
   useEffect(() => {
-    actionsRef.current = { hasTrack: !!activeTrack, toggle, seekBy, skip, cycleSpeed, addBookmark }
+    actionsRef.current = { hasTrack: !!activeTrack, toggle, seekBy, skip, cycleSpeed, addBookmark, backstep }
   })
+
+  // Playback keys while typing elsewhere (Settings): the same actions as the
+  // transport and the in-app keys, read through actionsRef so they always
+  // act on the current track. Present only while the Player is mounted.
+  const setPlaybackKeysTarget = playbackKeys?.setTarget
+  useEffect(() => {
+    if (!setPlaybackKeysTarget) return undefined
+    const isPlaying = () =>
+      restoreRef.current ? restoreRef.current.play : !!audioRef.current && !audioRef.current.paused
+    setPlaybackKeysTarget({
+      get hasTrack() {
+        return actionsRef.current.hasTrack
+      },
+      get backstep() {
+        return actionsRef.current.backstep
+      },
+      isPlaying,
+      toggle: () => actionsRef.current.toggle(),
+      play: () => {
+        if (!isPlaying()) actionsRef.current.toggle()
+      },
+      pause: () => {
+        if (isPlaying()) actionsRef.current.toggle()
+      },
+      seekBy: delta => actionsRef.current.seekBy(delta),
+      cycleSpeed: dir => actionsRef.current.cycleSpeed(dir),
+    })
+    return () => setPlaybackKeysTarget(null)
+  }, [setPlaybackKeysTarget])
   useEffect(() => {
     const onKey = e => {
       if (shouldIgnoreNavigationShortcut(e)) return
@@ -342,6 +549,15 @@ export default function PlayerTab({ dropHandlerRef, onConvertFiles, openRequest,
   useEffect(() => {
     if (activeTrack && audioRef.current) {
       pausedAtRef.current = null
+      restoreRef.current = null
+      restoreSeekRef.current = null
+      mixerRef.current?.resetHeard()
+      // Strips belong to one track. When the previous track's strips had
+      // changes and the mix stays on, the new track starts at 100% and the
+      // Player says so instead of the muted channel coming back unannounced.
+      const dropped = mixOn && mix.path && mix.path !== activeTrack.path && mix.strips.some(stripChanged)
+      setStripsResetPath(dropped ? activeTrack.path : null)
+      if (mix.path && mix.path !== activeTrack.path) setMix({ path: null, strips: [] })
       setPlaying(false)
       setPlaybackError('')
       audioRef.current.load()
@@ -358,10 +574,282 @@ export default function PlayerTab({ dropHandlerRef, onConvertFiles, openRequest,
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeTrack?.path])
 
+  // Channel count of the active file, from the same probe Convert uses.
+  const activePath = activeTrack?.path ?? null
+  useEffect(() => {
+    if (!activePath) return undefined
+    let current = true
+    Promise.resolve()
+      .then(() => invoke('probe_audio_streams_cmd', { path: activePath }))
+      .then(info => {
+        if (current) setProbe({ path: activePath, channels: probedChannelCount(info) })
+      })
+      .catch(() => {
+        if (current) setProbe({ path: activePath, channels: null })
+      })
+    return () => {
+      current = false
+    }
+  }, [activePath])
+  const fileChannels = probe.path === activePath ? probe.channels : null
+  const heardChannels = heard.path === activePath ? heard.count : null
+  // One strip per channel the mix really splits. When the web view turns out
+  // to mix the file down, strips set for the file's channels no longer match
+  // anything the person can see, so they start over (and the Player says so)
+  // instead of a hidden Solo or Mute silencing the mix.
+  const mixLayout = mixChannelCount({ fileChannels, heardChannels })
+  const ownStrips = mix.path === activePath ? mix.strips : NO_STRIPS
+  const strips = useMemo(
+    () => (ownStrips.length === mixLayout ? ownStrips : initialStrips(mixLayout)),
+    [ownStrips, mixLayout],
+  )
+  const stripsCleared = ownStrips.length > mixLayout && ownStrips.some(stripChanged)
+  // Only until the person changes a strip on this track.
+  const stripsFromPreviousCleared = stripsResetPath === activePath && mix.path !== activePath
+  const setStrips = next => setMix({ path: activePath, strips: next })
+
+  const latestRef = useRef({})
+  useEffect(() => {
+    latestRef.current = { volume, strips, mixLayout, activePath, mixFailed }
+  })
+
+  // Build the Web Audio graph for the current element while the mix is on;
+  // close it when the mix goes off, the element is swapped or the tab unmounts.
+  useEffect(() => {
+    const audio = audioRef.current
+    if (!mixOn || !audio) return undefined
+    const latest = latestRef.current
+    let mixer
+    try {
+      mixer = createChannelMixer({
+        audio,
+        channels: latest.mixLayout || 2,
+        probeUrl: CHANNEL_PROBE_URL,
+        onHeardChannels: count => setHeard({ path: latestRef.current.activePath, count }),
+        onProbeUnavailable: () => setProbeAvailable(false),
+      })
+    } catch (error) {
+      const timer = window.setTimeout(() => latest.mixFailed(String(error?.message || error)), 0)
+      return () => window.clearTimeout(timer)
+    }
+    mixerRef.current = mixer
+    mixer.setMaster(latest.volume)
+    mixer.setStrips(latest.strips)
+    mixer.setPlaying(!audio.paused)
+    mixer.resume()
+    return () => {
+      mixer.dispose()
+      if (mixerRef.current === mixer) mixerRef.current = null
+    }
+  }, [mixOn, audioKey])
+
+  useEffect(() => {
+    const mixer = mixerRef.current
+    if (!mixer) return
+    if (mixLayout) mixer.setLayout(mixLayout)
+    mixer.setStrips(strips)
+  }, [strips, mixLayout, mixOn, audioKey])
+
+  // With the mix on, the element plays at full level into Web Audio and the
+  // master gain sets the volume; otherwise the element's own volume does.
+  useEffect(() => {
+    const a = audioRef.current
+    if (a) a.volume = mixOn ? 1 : volume
+    mixerRef.current?.setMaster(volume)
+  }, [volume, mixOn, audioKey, activePath])
+
   const audioSrc = activeTrack ? convertFileSrc(activeTrack.path) : ''
   const trackBookmarks = activeTrack ? bookmarks.filter(b => b.trackPath === activeTrack.path) : []
   const activeColor = colorOf(activeTrack)
   const loopActive = loopA != null && loopB != null && loopB > loopA
+
+  // ── Pane layout ───────────────────────────────────────────────────────────
+  const [layout, setLayout] = useState(initialStorage.layout)
+  const layoutRef = useRef(layout)
+  const [narrow, setNarrow] = useState(() => isNarrow(viewportWidth()))
+  const narrowRef = useRef(narrow)
+  const [drawer, setDrawer] = useState(null) // 'left' | 'right' in a narrow window
+  const [workspaceWidth, setWorkspaceWidth] = useState(() => viewportWidth())
+  const [flagsNode, setFlagsNode] = useState(null)
+  const [clock, setClockState] = useState({ path: null, start: null })
+  const workspaceRef = useRef(null)
+  const drawerButtonRefs = useRef({})
+  const drawerRefs = useRef({})
+  // Where the keyboard goes after the panes change shape: a pane toggle
+  // ('toggle:left'), a drawer's first control ('drawer'), or nowhere.
+  const pendingFocusRef = useRef(null)
+  const paneBaseId = useId()
+  const paneIds = { left: `${paneBaseId}-left`, right: `${paneBaseId}-right` }
+  const setClock = (path, start) =>
+    setClockState(prev => (prev.path === path && prev.start === start ? prev : { path, start }))
+  const clockStart = clock.path === activeTrack?.path ? clock.start : null
+
+  // Crossing the breakpoint (a resize, or zooming in) keeps every pane
+  // mounted (one tree, below), and the keyboard where it was: focus in a side
+  // pane going narrow opens that pane's drawer around it; focus in a drawer
+  // going wide stays in the pane, or moves to the pane's Show button when the
+  // pane is collapsed.
+  useEffect(() => {
+    const onResize = () => {
+      const next = isNarrow(viewportWidth())
+      if (next === narrowRef.current) return
+      narrowRef.current = next
+      const active = document.activeElement
+      const side = ['left', 'right'].find(k => drawerRefs.current[k]?.contains(active))
+      setNarrow(next)
+      if (next) {
+        if (side) setDrawer(side)
+      } else {
+        setDrawer(null)
+        const open = side === 'left' ? layoutRef.current.leftOpen : layoutRef.current.rightOpen
+        if (side && !open) pendingFocusRef.current = `toggle:${side}`
+      }
+    }
+    window.addEventListener('resize', onResize)
+    return () => window.removeEventListener('resize', onResize)
+  }, [])
+
+  // The panes' real width, so the centre keeps the largest share.
+  const hasTracks = tracks.length > 0
+  useLayoutEffect(() => {
+    const el = workspaceRef.current
+    if (!el) return undefined
+    const measure = () => setWorkspaceWidth(el.clientWidth || viewportWidth())
+    measure()
+    if (typeof ResizeObserver !== 'function') return undefined
+    const observer = new ResizeObserver(measure)
+    observer.observe(el)
+    return () => observer.disconnect()
+  }, [narrow, hasTracks])
+
+  const saveLayout = next => {
+    if (!writeLayout(browserStorage(), next)) setStorageError(PLAYER_STORAGE_WARNING)
+  }
+  // The next layout is worked out here, not in a state updater, so saving it
+  // (and the storage warning) happens once, as a plain side effect.
+  const commitLayout = (next, save = true) => {
+    layoutRef.current = next
+    setLayout(next)
+    if (save) saveLayout(next)
+  }
+  const updateLayout = (patch, save = true) => commitLayout({ ...layoutRef.current, ...patch }, save)
+  const resizePane = (side, width, save) =>
+    commitLayout(resizeLayout(layoutRef.current, workspaceWidth, side, width), save)
+
+  const widths = paneWidths(layout, workspaceWidth)
+  const ranges = { left: paneRange(layout, workspaceWidth, 'left'), right: paneRange(layout, workspaceWidth, 'right') }
+  const gridColumns = [
+    `${widths.left}px`,
+    layout.leftOpen ? `${SPLITTER_WIDTH}px` : null,
+    'minmax(0,1fr)',
+    layout.rightOpen ? `${SPLITTER_WIDTH}px` : null,
+    `${widths.right}px`,
+  ]
+    .filter(Boolean)
+    .join(' ')
+
+  const closeDrawer = () => {
+    const open = drawer
+    setDrawer(null)
+    if (open) drawerButtonRefs.current[open]?.focus()
+  }
+  const openDrawer = side => {
+    pendingFocusRef.current = 'drawer'
+    setDrawer(side)
+  }
+  const closeDrawerRef = useRef(closeDrawer)
+  closeDrawerRef.current = closeDrawer
+
+  // Moves the keyboard after the panes change shape: into a drawer the
+  // person opened, or to the button that now stands for a pane they hid or
+  // showed (the one they pressed is gone).
+  useLayoutEffect(() => {
+    const target = pendingFocusRef.current
+    if (!target) return
+    pendingFocusRef.current = null
+    if (target === 'drawer') {
+      if (drawer) drawerRefs.current[drawer]?.querySelector('button, input, select, textarea, [tabindex="0"]')?.focus()
+      return
+    }
+    const side = target.slice('toggle:'.length)
+    document.querySelector(`[data-pane-toggle="${side}"]`)?.focus()
+  }, [drawer, layout.leftOpen, layout.rightOpen, narrow])
+
+  // Esc closes the open drawer from anywhere inside it. A native listener on
+  // the drawer element, because the flags list is rendered into the drawer
+  // through a portal and React would bubble its key events to the Transcript,
+  // not to the drawer.
+  useEffect(() => {
+    if (!narrow || !drawer) return undefined
+    const el = drawerRefs.current[drawer]
+    if (!el) return undefined
+    const onKey = event => {
+      if (event.key !== 'Escape' || event.defaultPrevented) return
+      event.preventDefault()
+      event.stopPropagation()
+      closeDrawerRef.current()
+    }
+    el.addEventListener('keydown', onKey)
+    return () => el.removeEventListener('keydown', onKey)
+  }, [narrow, drawer])
+
+  const iconButton =
+    'h-7 w-7 shrink-0 inline-flex items-center justify-center rounded-md text-[hsl(var(--text2))] transition-colors hover:bg-secondary hover:text-foreground'
+  // The button that hides or shows a side pane (or closes its drawer).
+  const paneToggle = side => {
+    const name = PANE_NAMES[side].toLowerCase()
+    if (narrow) {
+      return (
+        <button
+          type="button"
+          className={iconButton}
+          aria-label={`Close ${name}`}
+          title="Close (Esc)"
+          onClick={closeDrawer}
+        >
+          <X size={14} />
+        </button>
+      )
+    }
+    const open = side === 'left' ? layout.leftOpen : layout.rightOpen
+    const Icon = side === 'left' ? (open ? PanelLeftClose : PanelLeftOpen) : open ? PanelRightClose : PanelRightOpen
+    return (
+      <button
+        type="button"
+        className={iconButton}
+        aria-label={`${open ? 'Hide' : 'Show'} ${name}`}
+        title={`${open ? 'Hide' : 'Show'} ${name}`}
+        aria-expanded={open}
+        aria-controls={paneIds[side]}
+        data-pane-toggle={side}
+        onClick={() => {
+          pendingFocusRef.current = `toggle:${side}`
+          updateLayout(side === 'left' ? { leftOpen: !open } : { rightOpen: !open })
+        }}
+      >
+        <Icon size={15} />
+      </button>
+    )
+  }
+  const drawerButton = side => {
+    const Icon = side === 'left' ? ListMusic : AudioLines
+    const open = drawer === side
+    return (
+      <Button
+        ref={el => {
+          drawerButtonRefs.current[side] = el
+        }}
+        size="sm"
+        variant="outline"
+        className={cn(open && 'bg-secondary text-foreground ring-1 ring-inset ring-foreground')}
+        aria-expanded={open}
+        aria-controls={paneIds[side]}
+        onClick={() => (open ? closeDrawer() : openDrawer(side))}
+      >
+        <Icon size={13} /> {side === 'left' ? 'Playlist and bookmarks' : 'Now playing and flags'}
+      </Button>
+    )
+  }
 
   const speedOptions = SPEED_STEPS.map(s => ({ value: s, label: `${s}×`, title: `${s}× playback speed` }))
 
@@ -442,6 +930,11 @@ export default function PlayerTab({ dropHandlerRef, onConvertFiles, openRequest,
             status="Playback stays on this computer"
             className="mb-4"
           />
+          {playbackKeys?.settings.enabled && (
+            <p role="status" className="mb-3 type-small text-[hsl(var(--sub))]">
+              Playback keys are on, but they do nothing until a recording is loaded here.
+            </p>
+          )}
           <div
             className={cn(
               'grid items-center gap-3 rounded-xl border border-dashed px-4 py-5 transition-colors sm:grid-cols-[auto_minmax(0,1fr)_auto]',
@@ -483,249 +976,445 @@ export default function PlayerTab({ dropHandlerRef, onConvertFiles, openRequest,
     )
   }
 
-  // ── Workspace (Now Playing + playlist rail) over a fixed transport bar ────
-  return (
-    <>
-      <div className="flex-1 overflow-y-auto overflow-x-hidden">
-        <div className="w-full max-w-[1100px] mx-auto px-4 sm:px-6 lg:px-8 py-5 grid gap-4 md:grid-cols-[minmax(0,1fr)_300px]">
-          <WorkspaceHeader
-            eyebrow="Local review"
-            title="Review a recording"
-            description="Use the waveform, playlist, bookmarks, and synced transcript to work through the record."
-            status={`${tracks.length} track${tracks.length === 1 ? '' : 's'} loaded locally`}
-            className="md:col-span-2"
-          />
-          {storageNotice && <div className="md:col-span-2">{storageNotice}</div>}
-          {transcriptStorageNotice && <div className="md:col-span-2">{transcriptStorageNotice}</div>}
-          {convertFirstNotice && <div className="md:col-span-2">{convertFirstNotice}</div>}
+  // Inside a pane, content sits flush: the pane edge is the only frame, and
+  // sections are split by a rule.
+  const paneCard = 'rounded-none border-0 bg-transparent'
 
-          {/* Now Playing — the main surface: a large seekable waveform */}
-          {activeTrack && (
-            <div className="md:order-1 order-2 min-w-0">
-              <Card>
-                <CardHeader>
-                  <CardTitle>Now Playing</CardTitle>
-                </CardHeader>
-                <CardContent className="p-4 flex flex-col gap-3">
-                  <div className="flex items-baseline gap-2 min-w-0">
-                    <span className="w-2 h-2 rounded-full shrink-0 self-center" style={{ background: activeColor }} />
-                    <span className="text-[15px] font-semibold text-foreground truncate">{activeTrack.name}</span>
-                    <span className="text-[12px] tabular-nums text-[hsl(var(--sub))] shrink-0">
-                      · {activeTrack.label}
-                    </span>
-                  </div>
-                  <Waveform
-                    audioPath={activeTrack.path}
-                    color={activeColor}
-                    currentTime={currentTime}
-                    duration={duration}
-                    height={96}
-                    onSeek={seekTo}
-                    markers={trackBookmarks}
-                    loop={loopActive ? { a: loopA, b: loopB } : null}
-                  />
-                  <div className="flex items-center justify-between tabular-nums text-[12px] text-[hsl(var(--sub))]">
-                    <span>{fmtTime(currentTime)}</span>
-                    <span>{fmtTime(duration)}</span>
-                  </div>
-                </CardContent>
-              </Card>
+  // The flags are the output of proofing, so they come straight after the
+  // track and waveform, above the listening mix (which can grow tall).
+  const flagsCard = (
+    <Card className={paneCard}>
+      <CardContent ref={setFlagsNode} className="px-4 py-3" />
+    </Card>
+  )
+
+  const nowPlaying = activeTrack && (
+    <Card className={paneCard}>
+      <CardHeader className="py-2">
+        <CardTitle as="h2">Now Playing</CardTitle>
+        {paneToggle('right')}
+      </CardHeader>
+      <CardContent className="px-4 py-3 flex flex-col gap-2.5">
+        <div className="flex items-baseline gap-2 min-w-0">
+          <span className="w-2 h-2 rounded-full shrink-0 self-center" style={{ background: activeColor }} />
+          <span className="text-[14px] font-semibold text-foreground truncate" title={activeTrack.name}>
+            {activeTrack.name}
+          </span>
+        </div>
+        <span className="-mt-2 text-[12px] tabular-nums text-[hsl(var(--sub))] truncate">{activeTrack.label}</span>
+        <Waveform
+          audioPath={activeTrack.path}
+          color={activeColor}
+          currentTime={currentTime}
+          duration={duration}
+          height={56}
+          onSeek={seekTo}
+          markers={trackBookmarks}
+          loop={loopActive ? { a: loopA, b: loopB } : null}
+        />
+        <div className="flex items-center justify-between tabular-nums text-[12px] text-[hsl(var(--sub))]">
+          <span>{fmtTime(currentTime)}</span>
+          <span>{fmtTime(duration)}</span>
+        </div>
+        {clockStart != null && (
+          <p
+            className="flex items-baseline justify-between gap-2 text-[12px] text-[hsl(var(--text2))]"
+            title="From the recording start time you entered for the transcript"
+          >
+            <span>Time of day</span>
+            <span className="tabular-nums font-medium text-foreground">{fmtClock(clockStart + currentTime)}</span>
+          </p>
+        )}
+      </CardContent>
+    </Card>
+  )
+
+  const listeningMix = activeTrack && (
+    <div className="flex flex-col gap-2 px-4 py-3 [&>section]:border-t-0 [&>section]:pt-0">
+      <h3 className="type-label text-[hsl(var(--text2))]">Listening mix</h3>
+      <ListeningMix
+        volume={volume}
+        onVolume={applyVolume}
+        fileChannels={fileChannels}
+        mixOn={mixOn}
+        onToggleMix={toggleMix}
+        strips={strips}
+        onStrips={setStrips}
+        heardChannels={heardChannels}
+        probeAvailable={probeAvailable}
+        probed={probe.path === activePath}
+        stripsCleared={stripsCleared}
+        stripsFromPreviousCleared={stripsFromPreviousCleared}
+        notice={mixNotice}
+        compact
+      />
+    </div>
+  )
+
+  const leftContent = (
+    <div className="flex flex-col divide-y divide-border/60">
+      <Card className={paneCard}>
+        <CardHeader>
+          <CardTitle>Playlist</CardTitle>
+          <div className="flex items-center gap-1">
+            <Button size="sm" onClick={browseFiles}>
+              <Plus size={12} /> Add
+            </Button>
+            {paneToggle('left')}
+          </div>
+        </CardHeader>
+        <CardContent className="p-1.5">
+          {tracks.map((t, i) => (
+            <div
+              key={t.path}
+              className={cn(
+                'group flex items-center gap-2 px-2 py-1.5 rounded-md transition-colors hover:bg-secondary/50',
+                activeTrack?.path === t.path && 'bg-secondary',
+                dragIdx === i && 'opacity-50',
+              )}
+              draggable
+              onDragStart={() => setDragIdx(i)}
+              onDragOver={e => {
+                e.preventDefault()
+              }}
+              onDrop={e => {
+                e.preventDefault()
+                if (dragIdx !== null && dragIdx !== i) {
+                  setTracks(prev => {
+                    const next = [...prev]
+                    const [moved] = next.splice(dragIdx, 1)
+                    next.splice(i, 0, moved)
+                    tracksRef.current = next
+                    return next
+                  })
+                }
+                setDragIdx(null)
+              }}
+              onDragEnd={() => setDragIdx(null)}
+            >
+              <div className="flex flex-col flex-1 min-w-0">
+                <button
+                  type="button"
+                  className="flex items-center gap-2 min-w-0 text-left rounded"
+                  aria-current={activeTrack?.path === t.path ? 'true' : undefined}
+                  onClick={() => selectTrack(t)}
+                >
+                  <span className="w-2 h-2 rounded-full shrink-0" style={{ background: colorOf(t) }} />
+                  <span className="type-small text-foreground truncate" title={t.name}>
+                    {t.name}
+                  </span>
+                </button>
+                <input
+                  className="text-[12px] text-[hsl(var(--text2))] bg-transparent border-none p-0 tabular-nums w-full focus:text-foreground"
+                  value={t.label}
+                  aria-label={`Track label for ${t.name}`}
+                  placeholder="Track or participant name"
+                  onClick={e => e.stopPropagation()}
+                  onChange={e => {
+                    const label = e.target.value
+                    setTracks(prev => prev.map((tr, j) => (j === i ? { ...tr, label } : tr)))
+                    if (activeTrack?.path === t.path) setActiveTrack(prev => ({ ...prev, label }))
+                  }}
+                />
+              </div>
+              {activeTrack?.path === t.path && playing ? (
+                <Pause size={10} fill="currentColor" className="text-foreground shrink-0" />
+              ) : (
+                <span className="tabular-nums text-[12px] text-[hsl(var(--sub))] shrink-0 group-hover:hidden">
+                  {i + 1}
+                </span>
+              )}
+              <button
+                className="text-[hsl(var(--sub))] opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-opacity hover:text-destructive shrink-0"
+                aria-label={`Remove ${t.name}`}
+                onClick={e => {
+                  e.stopPropagation()
+                  removeTrack(t.path)
+                }}
+              >
+                <X size={11} />
+              </button>
             </div>
-          )}
+          ))}
+        </CardContent>
+      </Card>
 
-          {/* Rail: playlist + bookmarks */}
-          <aside className="md:order-2 order-1 flex flex-col gap-3.5 min-w-0">
-            <Card>
-              <CardHeader>
-                <CardTitle>Playlist</CardTitle>
-                <Button size="sm" onClick={browseFiles}>
-                  <Plus size={12} /> Add
-                </Button>
-              </CardHeader>
-              <CardContent className="p-1.5">
-                {tracks.map((t, i) => (
-                  <div
-                    key={t.path}
-                    className={cn(
-                      'group flex items-center gap-2 px-2 py-1.5 rounded-md transition-colors hover:bg-secondary/50',
-                      activeTrack?.path === t.path && 'bg-secondary',
-                      dragIdx === i && 'opacity-50',
-                    )}
-                    draggable
-                    onDragStart={() => setDragIdx(i)}
-                    onDragOver={e => {
-                      e.preventDefault()
-                    }}
-                    onDrop={e => {
-                      e.preventDefault()
-                      if (dragIdx !== null && dragIdx !== i) {
-                        setTracks(prev => {
-                          const next = [...prev]
-                          const [moved] = next.splice(dragIdx, 1)
-                          next.splice(i, 0, moved)
-                          tracksRef.current = next
-                          return next
-                        })
-                      }
-                      setDragIdx(null)
-                    }}
-                    onDragEnd={() => setDragIdx(null)}
-                  >
-                    <div className="flex flex-col flex-1 min-w-0">
-                      <button
-                        type="button"
-                        className="flex items-center gap-2 min-w-0 text-left rounded"
-                        aria-current={activeTrack?.path === t.path ? 'true' : undefined}
-                        onClick={() => selectTrack(t)}
-                      >
-                        <span className="w-2 h-2 rounded-full shrink-0" style={{ background: colorOf(t) }} />
-                        <span className="type-small text-foreground truncate" title={t.name}>
-                          {t.name}
-                        </span>
-                      </button>
-                      <input
-                        className="text-[12px] text-[hsl(var(--text2))] bg-transparent border-none p-0 tabular-nums w-full focus:text-foreground"
-                        value={t.label}
-                        aria-label={`Track label for ${t.name}`}
-                        placeholder="Track or participant name"
-                        onClick={e => e.stopPropagation()}
-                        onChange={e => {
-                          const label = e.target.value
-                          setTracks(prev => prev.map((tr, j) => (j === i ? { ...tr, label } : tr)))
-                          if (activeTrack?.path === t.path) setActiveTrack(prev => ({ ...prev, label }))
-                        }}
-                      />
-                    </div>
-                    {activeTrack?.path === t.path && playing ? (
-                      <Pause size={10} fill="currentColor" className="text-foreground shrink-0" />
-                    ) : (
-                      <span className="tabular-nums text-[12px] text-[hsl(var(--sub))] shrink-0 group-hover:hidden">
-                        {i + 1}
-                      </span>
-                    )}
-                    <button
-                      className="text-[hsl(var(--sub))] opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-opacity hover:text-destructive shrink-0"
-                      aria-label={`Remove ${t.name}`}
-                      onClick={e => {
-                        e.stopPropagation()
-                        removeTrack(t.path)
-                      }}
-                    >
-                      <X size={11} />
-                    </button>
-                  </div>
-                ))}
-              </CardContent>
-            </Card>
-
-            {/* Bookmarks for the active track */}
-            {activeTrack && (
-              <Card>
-                <CardHeader>
-                  <CardTitle>Bookmarks</CardTitle>
-                  {trackBookmarks.length > 0 && (
+      {/* Bookmarks for the active track */}
+      {activeTrack && (
+        <Card className={paneCard}>
+          <CardHeader>
+            <CardTitle>Bookmarks</CardTitle>
+            {trackBookmarks.length > 0 && (
+              <>
+                <button
+                  onClick={copyBookmarks}
+                  title="Copy bookmarks to clipboard as timestamped lines"
+                  className="flex items-center gap-1 type-small text-[hsl(var(--sub))] hover:text-foreground transition-colors rounded px-1"
+                >
+                  {copied ? (
                     <>
-                      <button
-                        onClick={copyBookmarks}
-                        title="Copy bookmarks to clipboard as timestamped lines"
-                        className="flex items-center gap-1 type-small text-[hsl(var(--sub))] hover:text-foreground transition-colors rounded px-1"
-                      >
-                        {copied ? (
-                          <>
-                            <Check size={11} /> Copied
-                          </>
-                        ) : (
-                          <>
-                            <Copy size={11} /> Copy
-                          </>
-                        )}
-                      </button>
-                      <span role="status" aria-live="polite" className="sr-only">
-                        {copied ? 'Bookmarks copied to clipboard.' : ''}
-                      </span>
+                      <Check size={11} /> Copied
+                    </>
+                  ) : (
+                    <>
+                      <Copy size={11} /> Copy
                     </>
                   )}
-                </CardHeader>
-                <CardContent className="p-2">
-                  {trackBookmarks.length === 0 ? (
-                    <p className="px-1 py-1 type-small text-[hsl(var(--sub))]">
-                      Press <kbd className="tabular-nums">B</kbd> or the bookmark button to mark the current spot.
-                    </p>
-                  ) : (
-                    <div className="flex flex-col gap-0.5">
-                      {trackBookmarks
-                        .slice()
-                        .sort((a, b) => a.time - b.time)
-                        .map(b => (
-                          <div key={`${b.time}-${b.trackPath}`} className="flex items-center gap-2 group px-1">
-                            <button
-                              className="tabular-nums text-[12px] text-[hsl(var(--text2))] hover:text-foreground shrink-0 w-11 text-left rounded"
-                              title="Jump to bookmark"
-                              onClick={() => seekTo(b.time)}
-                            >
-                              {fmtTime(b.time)}
-                            </button>
-                            <input
-                              className="flex-1 min-w-0 bg-transparent border-none p-0 type-small text-foreground"
-                              value={b.label}
-                              placeholder="Add a note…"
-                              onChange={e =>
-                                setBookmarks(prev => prev.map(x => (x === b ? { ...x, label: e.target.value } : x)))
-                              }
-                            />
-                            <button
-                              className="text-[hsl(var(--sub))] opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 hover:text-destructive transition-all shrink-0 rounded"
-                              aria-label="Remove bookmark"
-                              onClick={() => setBookmarks(prev => prev.filter(x => x !== b))}
-                            >
-                              <X size={10} />
-                            </button>
-                          </div>
-                        ))}
-                    </div>
-                  )}
-                </CardContent>
-              </Card>
+                </button>
+                <span role="status" aria-live="polite" className="sr-only">
+                  {copied ? 'Bookmarks copied to clipboard.' : ''}
+                </span>
+              </>
             )}
-          </aside>
+          </CardHeader>
+          <CardContent className="p-2">
+            {trackBookmarks.length === 0 ? (
+              <p className="px-1 py-1 type-small text-[hsl(var(--sub))]">
+                Press <kbd className="tabular-nums">B</kbd> or the bookmark button to mark the current spot.
+              </p>
+            ) : (
+              <div className="flex flex-col gap-0.5">
+                {trackBookmarks
+                  .slice()
+                  .sort((a, b) => a.time - b.time)
+                  .map(b => (
+                    <div key={`${b.time}-${b.trackPath}`} className="flex items-center gap-2 group px-1">
+                      <button
+                        className="tabular-nums text-[12px] text-[hsl(var(--text2))] hover:text-foreground shrink-0 w-11 text-left rounded"
+                        title="Jump to bookmark"
+                        onClick={() => seekTo(b.time)}
+                      >
+                        {fmtTime(b.time)}
+                      </button>
+                      <input
+                        className="flex-1 min-w-0 bg-transparent border-none p-0 type-small text-foreground"
+                        value={b.label}
+                        placeholder="Add a note…"
+                        onChange={e =>
+                          setBookmarks(prev => prev.map(x => (x === b ? { ...x, label: e.target.value } : x)))
+                        }
+                      />
+                      <button
+                        className="-my-0.5 inline-flex h-6 w-6 shrink-0 items-center justify-center rounded text-[hsl(var(--text2))] transition-colors hover:bg-secondary hover:text-destructive"
+                        aria-label={`Remove bookmark at ${fmtTime(b.time)}`}
+                        title="Remove bookmark"
+                        onClick={() => setBookmarks(prev => prev.filter(x => x !== b))}
+                      >
+                        <X size={13} />
+                      </button>
+                    </div>
+                  ))}
+              </div>
+            )}
+          </CardContent>
+        </Card>
+      )}
+    </div>
+  )
 
-          {activeTrack && (
-            <div className="md:order-3 order-3 md:col-span-2 min-w-0">
-              <Transcript
-                key={activeTrack.path}
-                trackPath={activeTrack.path}
-                currentTime={currentTime}
-                playing={playing}
-                onSeek={seekTo}
-                onStorageError={setTranscriptStorageError}
-              />
-            </div>
+  const rightContent = (
+    <div className="flex flex-col divide-y divide-border/60">
+      {nowPlaying}
+      {flagsCard}
+      {listeningMix}
+    </div>
+  )
+
+  const centre = activeTrack && (
+    <Transcript
+      key={activeTrack.path}
+      trackPath={activeTrack.path}
+      currentTime={currentTime}
+      playing={playing}
+      duration={duration}
+      onSeek={seekTo}
+      onPlayFrom={playFrom}
+      onStorageError={setTranscriptStorageError}
+      onClockChange={setClock}
+      flagsContainer={flagsNode}
+      flush
+    />
+  )
+
+  const notices = (storageNotice || transcriptStorageNotice || convertFirstNotice) && (
+    <div className="shrink-0 px-3 pt-3 [&>[role=alert]]:mb-0 flex flex-col gap-2">
+      {storageNotice}
+      {transcriptStorageNotice}
+      {convertFirstNotice}
+    </div>
+  )
+
+  // A side pane. Wide: open (content, scrolling inside itself) or a
+  // collapsed rail with the button that opens it again. Narrow: a drawer
+  // over the transcript, shown while it is the open drawer. The element and
+  // its content stay the same either way, so crossing the breakpoint (or
+  // zooming) never remounts the panes or the transcript.
+  const sidePane = side => {
+    const open = side === 'left' ? layout.leftOpen : layout.rightOpen
+    const showContent = narrow || open
+    return (
+      <aside
+        id={paneIds[side]}
+        ref={el => {
+          drawerRefs.current[side] = el
+        }}
+        aria-label={PANE_NAMES[side]}
+        hidden={narrow && drawer !== side ? true : undefined}
+        data-drawer={narrow ? 'true' : undefined}
+        className={cn(
+          'min-h-0 min-w-0 bg-[hsl(var(--surface))]',
+          // An open pane's edge is drawn by its splitter, so only the rail
+          // and the drawer carry a border of their own.
+          (narrow || !open) && (side === 'left' ? 'border-r border-border/60' : 'border-l border-border/60'),
+          narrow
+            ? cn(
+                'absolute inset-y-0 z-20 w-[min(22rem,88%)] overflow-y-auto overflow-x-hidden shadow-xl',
+                side === 'left' ? 'left-0' : 'right-0',
+              )
+            : open
+              ? 'relative overflow-y-auto overflow-x-hidden'
+              : 'relative flex flex-col items-center py-3',
+        )}
+      >
+        {showContent ? (side === 'left' ? leftContent : rightContent) : paneToggle(side)}
+      </aside>
+    )
+  }
+
+  const splitter = side => (
+    <PaneSplitter
+      side={side}
+      label={side === 'left' ? 'Resize the playlist and bookmarks pane' : 'Resize the now playing and flags pane'}
+      controls={paneIds[side]}
+      value={widths[side]}
+      min={ranges[side].min}
+      max={ranges[side].max}
+      onChange={w => resizePane(side, w, false)}
+      onCommit={w => resizePane(side, w, true)}
+    />
+  )
+
+  // ── Workspace: three panes over a fixed transport bar ─────────────────────
+  // One element tree for both layouts; only the containers' styles change.
+  return (
+    <>
+      <div
+        className="relative flex min-h-0 flex-1 flex-col overflow-hidden"
+        data-testid="player-workspace"
+        data-layout={narrow ? 'narrow' : 'panes'}
+      >
+        {notices}
+        {narrow && (
+          <div
+            className="shrink-0 flex items-center gap-2 border-b border-border/60 px-3 py-1.5"
+            role="toolbar"
+            aria-label="Player panes"
+          >
+            {drawerButton('left')}
+            <span className="flex-1" />
+            {drawerButton('right')}
+          </div>
+        )}
+        <div
+          ref={workspaceRef}
+          className={cn('relative min-h-0 flex-1', !narrow && 'grid')}
+          style={narrow ? undefined : { gridTemplateColumns: gridColumns }}
+          data-testid={narrow ? undefined : 'player-panes'}
+        >
+          {sidePane('left')}
+          {!narrow && layout.leftOpen && splitter('left')}
+          <section
+            aria-label="Transcript"
+            // While a drawer covers it, the transcript is out of reach of
+            // Tab and the pointer, so nothing behind the drawer takes focus.
+            inert={narrow && drawer ? true : undefined}
+            className={cn('relative min-h-0 min-w-0 overflow-y-auto', narrow && 'h-full')}
+            data-testid="player-centre"
+          >
+            {centre}
+          </section>
+          {!narrow && layout.rightOpen && splitter('right')}
+          {sidePane('right')}
+          {narrow && drawer && (
+            // Clicking outside the drawer closes it.
+            <div
+              aria-hidden="true"
+              data-testid="drawer-scrim"
+              className="absolute inset-0 z-10 bg-[hsl(var(--background)/0.6)]"
+              onClick={closeDrawer}
+            />
           )}
         </div>
       </div>
-
       {/* ── Persistent transport bar ─────────────────────────────────────── */}
       {activeTrack && (
         <div className="shrink-0 border-t border-border bg-card px-4 md:px-6 py-2.5">
           <audio
+            key={audioKey}
             ref={audioRef}
             src={audioSrc}
+            // Web Audio outputs silence for a cross-origin element without
+            // CORS; Tauri's asset protocol sends Access-Control-Allow-Origin.
+            crossOrigin={mixOn ? 'anonymous' : undefined}
             preload="metadata"
             onLoadedMetadata={e => {
               setDuration(e.target.duration)
               e.target.playbackRate = speed
+              e.target.volume = mixOn ? 1 : volume
+              if (mixOn) mixLoadedRef.current = true
+              const restore = restoreRef.current
+              restoreRef.current = null
+              if (restore) {
+                if (restore.time > 0) {
+                  restoreSeekRef.current = restore.play ? null : restore.pausedAt
+                  e.target.currentTime = Math.min(restore.time, e.target.duration || restore.time)
+                }
+                if (!restore.play) pausedAtRef.current = restore.pausedAt ?? null
+                if (restore.play) {
+                  mixerRef.current?.resume()
+                  e.target.play().catch(err => setPlaybackError(`Couldn't play ${activeTrack.name}: ${err}`))
+                }
+              }
             }}
-            onPlay={() => setPlaying(true)}
+            onPlay={e => {
+              setPlaying(true)
+              const mixer = mixerRef.current
+              if (!mixer) return
+              mixer.setPlaying(true)
+              // A play from a playback key is not a user gesture. It is heard
+              // because wry turns on autoplay without a gesture (WKWebView:
+              // no media type needs user action; WebView2: the autoplay-policy
+              // flag, added only while tauri.conf.json sets no
+              // additionalBrowserArgs, which a contract test checks). If the
+              // context still does not run, the element would play with no
+              // sound, so the Player goes back to normal playback and says why.
+              const element = e.target
+              mixer.resume().then(running => {
+                if (running || mixerRef.current !== mixer || element.paused) return
+                latestRef.current.mixFailed('the web view kept Web Audio paused, so nothing would be heard')
+              })
+            }}
             onPause={e => {
               setPlaying(false)
+              mixerRef.current?.setPlaying(false)
               // A pause at the end of the track is not a resume point
               pausedAtRef.current = e.target.ended ? null : e.target.currentTime
             }}
             onSeeking={() => {
-              pausedAtRef.current = null
+              pausedAtRef.current = restoreSeekRef.current
+              restoreSeekRef.current = null
             }}
             onError={() => {
               setPlaying(false)
+              restoreSeekRef.current = null
+              // Once the mix has opened a file, an error on another file (a new
+              // or auto-advanced track) is that file's decode error: the mix
+              // stays on for the next track.
+              if (mixOn && !mixLoadedRef.current) {
+                mixFailed('the web view would not open this file for Web Audio')
+                return
+              }
+              restoreRef.current = null
               setPlaybackError(
                 `Couldn't decode ${activeTrack?.name || 'this file'}. Convert the source to a standard audio format and try again.`,
               )
@@ -737,6 +1426,7 @@ export default function PlayerTab({ dropHandlerRef, onConvertFiles, openRequest,
             }}
             onEnded={() => {
               setPlaying(false)
+              mixerRef.current?.setPlaying(false)
               const idx = tracks.findIndex(t => t.path === activeTrack.path)
               if (idx >= 0 && idx < tracks.length - 1) {
                 autoAdvanceRef.current = true

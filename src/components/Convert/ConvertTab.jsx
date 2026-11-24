@@ -188,7 +188,7 @@ export default function ConvertTab({
   // name promises the recording unchanged (Archive) asks first when
   // processing is on: the person keeps it, turns it off, or cancels.
   const [processingQuestion, setProcessingQuestion] = useState(null)
-  const usePreset = preset => {
+  const setPresetNow = preset => {
     setProcessingQuestion(null)
     setChosenPresetId(preset.id)
     const s = preset.settings
@@ -202,7 +202,7 @@ export default function ConvertTab({
       setProcessingQuestion({ preset, options: inUse })
       return
     }
-    usePreset(preset)
+    setPresetNow(preset)
   }
   const currentProcessing = processingFor(mode)
   const [analysis, setAnalysis] = useState(null)
@@ -687,12 +687,12 @@ export default function ConvertTab({
                       size="sm"
                       onClick={() => {
                         turnProcessingOff(processingQuestion.options)
-                        usePreset(processingQuestion.preset)
+                        setPresetNow(processingQuestion.preset)
                       }}
                     >
                       Turn processing off and use this preset
                     </Button>
-                    <Button size="sm" variant="outline" onClick={() => usePreset(processingQuestion.preset)}>
+                    <Button size="sm" variant="outline" onClick={() => setPresetNow(processingQuestion.preset)}>
                       Keep processing on and use this preset
                     </Button>
                     <Button size="sm" variant="ghost" onClick={() => setProcessingQuestion(null)}>
@@ -856,12 +856,11 @@ export default function ConvertTab({
                       formatOut === 'opus'
                         ? 'Opus is always 48 kHz'
                         : formatOut === 'sgmca'
-                          ? 'SGMCA records at 16 kHz'
+                          ? 'SGMCA is encoded at 48 kHz'
                           : ''
                     }
                     onChange={e => setRate(e.target.value)}
                   >
-                    {formatOut === 'sgmca' && <option value="16000">16,000 Hz</option>}
                     <option value="22050">22,050 Hz</option>
                     <option value="44100">44,100 Hz</option>
                     <option value="48000">48,000 Hz</option>

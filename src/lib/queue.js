@@ -107,6 +107,57 @@ export function audioTrackNotice(info) {
   }. The other ${others === 1 ? 'track is' : `${others} tracks are`} not converted.`
 }
 
+// Byte counts in the queue's notices: exact below 1 KB, else one decimal.
+function formatUnreadBytes(bytes) {
+  if (bytes < 1024) return `${bytes} ${bytes === 1 ? 'byte' : 'bytes'}`
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
+  if (bytes < 1024 ** 3) return `${(bytes / 1024 ** 2).toFixed(1)} MB`
+  return `${(bytes / 1024 ** 3).toFixed(1)} GB`
+}
+
+// Why a recording session is not read, as the queue says it.
+function omittedSessionSentence({ number, reason, last }) {
+  const which = last ? `The last session (${number})` : `Session ${number}`
+  if (reason === 'zero-length-header') return `${which} could not be read: its header says 0 bytes.`
+  if (reason === 'no-complete-audio') return `${which} could not be read: it holds no complete audio yet.`
+  if (reason === 'empty') return `${which} holds no audio: its header says 0 bytes.`
+  return `${which} could not be read.`
+}
+
+// Plain notices for an SGMCA (Direct Audio) file, from probe_audio_streams_cmd:
+// how many recording sessions it holds (they are joined in file order), which
+// sessions and how many bytes are not read (a recording still growing, or one
+// that stopped mid-session), and whether it looked still recording or cut
+// short. The same facts go into the export record (source.sgmca.unreadBytes
+// and omittedSegments). No answer means no notice.
+export function recordingSessionNotice(info) {
+  const notices = []
+  const sessions = info?.recordingSessions
+  if (Number.isInteger(sessions) && sessions > 1) {
+    notices.push(
+      `This file holds ${sessions} recording sessions; they are joined in order (gaps between them are not kept).`,
+    )
+  }
+  const omitted = Array.isArray(info?.omittedSessions) ? info.omittedSessions : []
+  for (const session of omitted) notices.push(omittedSessionSentence(session))
+  const cutShort = info?.cutShortSession
+  if (Number.isInteger(cutShort)) {
+    notices.push(`The last session (${cutShort}) is shorter than its header says; only its complete pages are read.`)
+  }
+  const unread = info?.unreadBytes
+  if (Number.isInteger(unread) && unread > 0) {
+    const after =
+      omitted.some(session => session.last) || Number.isInteger(cutShort) ? 'after it' : 'at the end of the file'
+    notices.push(`${formatUnreadBytes(unread)} ${after} ${unread === 1 ? 'was' : 'were'} not read.`)
+  }
+  if (info?.stillRecording === true) {
+    notices.push(
+      'This file looks like it is still being recorded, or it was cut short; only its complete audio is converted.',
+    )
+  }
+  return notices.join(' ')
+}
+
 // HH:MM:SS for a queue notice.
 function clockTime(seconds) {
   const total = Math.max(0, Math.floor(Number(seconds) || 0))

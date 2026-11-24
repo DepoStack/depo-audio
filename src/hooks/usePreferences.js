@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { invoke } from '@tauri-apps/api/core'
+import { DEFAULT_PLAYBACK_KEYS, normalizePlaybackKeys } from '../lib/playbackKeys'
 
 export default function usePreferences() {
   const [mode, setModeState] = useState('stereo')
@@ -28,6 +29,11 @@ export default function usePreferences() {
   const [defaultOutputFormat, setDefaultOutputFormat] = useState('')
   const [defaultOutputMode, setDefaultOutputMode] = useState('')
   const [themePref, setThemePref] = useState('system')
+  // System-wide Player keys: off until the person turns them on in Settings
+  const [playbackKeys, setPlaybackKeysState] = useState(DEFAULT_PLAYBACK_KEYS)
+  const setPlaybackKeys = useCallback(next => {
+    setPlaybackKeysState(current => normalizePlaybackKeys(typeof next === 'function' ? next(current) : next))
+  }, [])
   const [prefsReady, setPrefsReady] = useState(false)
   const [prefsError, setPrefsError] = useState('')
   const modeRef = useRef(mode)
@@ -86,6 +92,7 @@ export default function usePreferences() {
         if (p.maxFileSizeGb != null) setMaxFileSizeGb(p.maxFileSizeGb)
         if (p.defaultOutputFormat !== undefined) setDefaultOutputFormat(p.defaultOutputFormat ?? '')
         if (p.defaultOutputMode !== undefined) setDefaultOutputMode(p.defaultOutputMode ?? '')
+        setPlaybackKeysState(normalizePlaybackKeys(p.playbackKeys))
         setPrefsReady(true)
       })
       .catch(e => {
@@ -132,6 +139,7 @@ export default function usePreferences() {
           maxFileSizeGb,
           defaultOutputFormat,
           defaultOutputMode,
+          playbackKeys,
         },
       }).catch(e => {
         console.error('Preference save failed:', e)
@@ -166,6 +174,7 @@ export default function usePreferences() {
     maxFileSizeGb,
     defaultOutputFormat,
     defaultOutputMode,
+    playbackKeys,
     prefsReady,
     prefsError,
   ])
@@ -219,6 +228,8 @@ export default function usePreferences() {
     setDefaultOutputFormat,
     defaultOutputMode,
     setDefaultOutputMode,
+    playbackKeys,
+    setPlaybackKeys,
     prefsReady,
     prefsError,
   }

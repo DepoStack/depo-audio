@@ -549,8 +549,14 @@ fn run_dir() -> Result<PathBuf, String> {
 /// A new, empty temporary file in this run's folder, named
 /// `<prefix><uuid>.<ext>`. The guard removes it when dropped.
 pub(crate) fn new_temp_file(prefix: &str, ext: &str) -> Result<(TempFile, File), String> {
+    new_temp_file_tagged(prefix, "", ext)
+}
+
+/// Like `new_temp_file`, named `<prefix><uuid><tag>.<ext>`: for a file whose
+/// name carries a value its reader needs (the SGMCA concat script's pre-skip).
+pub(crate) fn new_temp_file_tagged(prefix: &str, tag: &str, ext: &str) -> Result<(TempFile, File), String> {
     let dir = run_dir()?;
-    let path = dir.join(format!("{prefix}{}.{ext}", Uuid::new_v4().simple()));
+    let path = dir.join(format!("{prefix}{}{tag}.{ext}", Uuid::new_v4().simple()));
     let file =
         create_new_private(&path).map_err(|error| format!("Could not create the temporary audio copy: {error}"))?;
     Ok((TempFile::new(path), file))

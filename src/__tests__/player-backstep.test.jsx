@@ -4,6 +4,7 @@ import PlayerTab from '../components/Player/PlayerTab'
 
 vi.mock('@tauri-apps/api/core', () => ({
   convertFileSrc: path => `asset://${path}`,
+  invoke: vi.fn(() => Promise.resolve(null)),
 }))
 
 vi.mock('@tauri-apps/plugin-dialog', () => ({
@@ -196,6 +197,6 @@ describe('Player auto-backstep', () => {
       fireEvent.change(screen.getByRole('combobox', { name: 'Backstep on resume' }), { target: { value: '3' } })
     })
     expect(screen.getByRole('combobox', { name: 'Backstep on resume' })).toHaveValue('3')
-    expect(screen.getByText(/speed and backstep cannot be saved/)).toBeInTheDocument()
+    expect(screen.getByText(/speed, volume, backstep and pane sizes cannot be saved/)).toBeInTheDocument()
   })
 })
