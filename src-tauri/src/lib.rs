@@ -4,6 +4,7 @@ mod catdetect;
 mod clock;
 mod commands;
 mod conversion;
+mod dcr;
 mod dm;
 mod ffmpeg;
 mod helpers;

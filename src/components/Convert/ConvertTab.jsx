@@ -48,6 +48,7 @@ const SCAN_FILE_CAP_MS = 900000 // 15 minutes absolute cap per file
 
 // Human labels for the backend's scan phases
 const SCAN_PHASES = {
+  prepare: 'Reading the recording',
   probe: 'Reading file info',
   loudness: 'Measuring loudness',
   done: 'Finishing up',

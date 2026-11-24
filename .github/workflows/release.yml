@@ -7,6 +7,14 @@ on:
         description: 'Release tag to create (e.g. v0.9.0)'
         required: true
         type: string
+      windows_runner:
+        description: 'Where to build the Windows installer'
+        required: true
+        default: self-hosted
+        type: choice
+        options:
+          - self-hosted
+          - github-hosted
 
 # One release run per tag at a time: overlapping runs for the same tag can
 # split platforms across drafts (each leg looks the release up independently).
@@ -244,13 +252,18 @@ jobs:
           # .app/.dmg). Rust cross-compiles both slices on the hosted macOS
           # runner and `lipo` fuses them, independent of the runner's host CPU.
           - platform: macos-latest
+            runner: '"macos-latest"'
             args: '--target universal-apple-darwin'
             rust-targets: 'aarch64-apple-darwin,x86_64-apple-darwin'
+          # `platform` stays the label the steps below test against; `runner`
+          # picks the machine. A self-hosted Windows runner is the default
+          # for Windows; choose github-hosted when dispatching to fall back.
           - platform: windows-latest
+            runner: ${{ inputs.windows_runner == 'github-hosted' && '"windows-latest"' || '["self-hosted","Windows","X64"]' }}
             args: ''
             rust-targets: 'x86_64-pc-windows-msvc'
 
-    runs-on: ${{ matrix.platform }}
+    runs-on: ${{ fromJSON(matrix.runner) }}
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -385,6 +398,23 @@ jobs:
           foreach ($decoder in @('gsm_ms', 'adpcm_ima_wav', 'adpcm_ms', 'pcm_alaw', 'pcm_mulaw')) {
             if ($decoders -notmatch "\s$decoder\s") { throw "Bundled FFmpeg lacks decoder $decoder" }
           }
+
+      # Liberty / BIS DCR audio (crate::dcr) needs these decoders and the
+      # amerge filter. The macOS build script gates the same list. Presence
+      # only: no DCR is converted with the bundled FFmpeg here.
+      - name: Check DCR decoders and channel merge (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ffmpeg = 'src-tauri/binaries/ffmpeg-x86_64-pc-windows-msvc.exe'
+          $decoders = (& $ffmpeg -hide_banner -decoders) -join "`n"
+          if ($LASTEXITCODE -ne 0) { throw 'Bundled FFmpeg could not list its decoders' }
+          $filters = (& $ffmpeg -hide_banner -filters) -join "`n"
+          if ($LASTEXITCODE -ne 0) { throw 'Bundled FFmpeg could not list its filters' }
+          foreach ($decoder in @('pcm_alaw', 'pcm_mulaw', 'pcm_u8', 'pcm_s24le', 'pcm_s32le', 'adpcm_ima_wav', 'gsm_ms', 'mp3float')) {
+            if ($decoders -notmatch "\s$decoder\s") { throw "Bundled FFmpeg lacks decoder $decoder (DCR)" }
+          }
+          if ($filters -notmatch '\samerge\s') { throw 'Bundled FFmpeg lacks the amerge filter (DCR)' }
 
       - name: Generate synthetic FTR decode fixture (macOS)
         if: runner.os == 'macOS'

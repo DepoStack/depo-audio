@@ -335,7 +335,7 @@ describe('Closed-format guidance', () => {
     )
   })
 
-  it('lists the closed formats in their own section without naming one vendor for .dcr', () => {
+  it('lists the closed formats in their own section and .dcr as experimental court audio', () => {
     render(<FormatTable />)
     fireEvent.click(screen.getByRole('button', { name: /Supported formats/ }))
 
@@ -343,7 +343,12 @@ describe('Closed-format guidance', () => {
     for (const ext of ['.aes', '.dcr', '.ds2', '.arf  .wrf', '.msv  .dvf']) {
       expect(screen.getByText(ext, { normalizer: text => text })).toBeVisible()
     }
-    expect(screen.getByText('Liberty Court Recorder · BIS Digital')).toBeVisible()
+    expect(screen.getByText('Liberty / BIS Digital')).toBeVisible()
+    expect(
+      screen.getByText(
+        'Applies marked redactions; password-protected parts are silent; tested with synthetic files only',
+      ),
+    ).toBeVisible()
     expect(screen.queryByText(/High Criteria/)).not.toBeInTheDocument()
   })
 })

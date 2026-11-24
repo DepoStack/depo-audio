@@ -903,6 +903,14 @@ expect(
   'macOS and Windows sidecars must have the DigitalCAT .dm decoders, and the release smoke must decode synthetic .dm fixtures and the WAVs dm.rs wrote for the committed ones',
 )
 expect(
+  macFfmpegBuild.includes('pcm_alaw pcm_mulaw pcm_u8 pcm_s24le pcm_s32le adpcm_ima_wav gsm_ms mp3float') &&
+    macFfmpegBuild.includes('ebur128 amerge') &&
+    releaseWorkflow.includes('Check DCR decoders and channel merge (Windows)') &&
+    releaseWorkflow.includes("'adpcm_ima_wav', 'gsm_ms', 'mp3float'") &&
+    releaseWorkflow.includes('Bundled FFmpeg lacks the amerge filter (DCR)'),
+  'both bundled FFmpeg builds must keep the decoders and the amerge filter the DCR reader needs',
+)
+expect(
   releaseWorkflow.includes('scripts/windows-webview2-evidence.ps1') &&
     releaseWorkflow.includes('WEBVIEW2-EVIDENCE-windows.json') &&
     releaseWorkflow.includes('WEBVIEW2-SIGNATURE-windows.txt') &&
