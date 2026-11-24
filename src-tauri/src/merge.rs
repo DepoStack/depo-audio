@@ -128,11 +128,7 @@ fn report(progress: &ProgressFn, (stage, percent): (&'static str, u8)) {
 /// Merging progress as a share of its band, 35 to 90.
 fn merging_percent(done: u64, total: u64) -> u8 {
     let span = (STAGE_ENCODING.1 - STAGE_MERGING.1) as u64;
-    let within = if total == 0 {
-        span
-    } else {
-        done.min(total) * span / total
-    };
+    let within = (done.min(total) * span).checked_div(total).unwrap_or(span);
     STAGE_MERGING.1 + within as u8
 }
 
@@ -169,6 +165,7 @@ pub struct MergeJob {
     pub strategy: String,
 }
 
+#[derive(Debug)]
 struct ValidatedMergeJob {
     sources: Vec<PathBuf>,
     out_dir: PathBuf,
@@ -528,7 +525,28 @@ async fn decode_feed_to_mono(
 ) -> Result<TempFile, String> {
     cancel.check()?;
     let tmp = crate::workdir::new_temp_path("depoaudio_merge_", "wav")?;
+    let args = decode_args(feed, rate, max_secs, &tmp);
 
+    let output = sidecar_output_cancellable(
+        app,
+        ffmpeg_bin_name(),
+        args,
+        MERGE_DECODE_TIMEOUT_SECS,
+        Some(&|| cancel.is_cancelled()),
+    )
+    .await;
+    cancel.check()?;
+    let output = output.ok_or_else(|| "Merge decoder timed out or could not start".to_string())?;
+    if !output.success {
+        return Err("Failed to decode audio for merge".into());
+    }
+
+    Ok(tmp)
+}
+
+/// FFmpeg arguments that decode `feed` to a mono float WAV at `rate`, at
+/// most `max_secs` long.
+fn decode_args(feed: &AudioFeed, rate: u32, max_secs: u32, output: &Path) -> Vec<String> {
     let mut args: Vec<String> = vec![
         "-nostdin".into(),
         "-hide_banner".into(),
@@ -551,24 +569,9 @@ async fn decode_feed_to_mono(
         "-acodec".into(),
         "pcm_f32le".into(),
         "-y".into(),
-        tmp.to_string_lossy().to_string(),
+        output.to_string_lossy().to_string(),
     ]);
-
-    let output = sidecar_output_cancellable(
-        app,
-        ffmpeg_bin_name(),
-        args,
-        MERGE_DECODE_TIMEOUT_SECS,
-        Some(&|| cancel.is_cancelled()),
-    )
-    .await;
-    cancel.check()?;
-    let output = output.ok_or_else(|| "Merge decoder timed out or could not start".to_string())?;
-    if !output.success {
-        return Err("Failed to decode audio for merge".into());
-    }
-
-    Ok(tmp)
+    args
 }
 
 fn open_float_wav(path: &Path) -> Result<hound::WavReader<std::io::BufReader<std::fs::File>>, String> {
@@ -1075,6 +1078,173 @@ mod tests {
             "no temporary file is left"
         );
         assert_eq!(std::fs::read(&source).unwrap(), bytes, "the source is only read");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// FFmpeg and ffprobe for the two-recording smoke test: the bundled
+    /// sidecars when the release build sets DEPOAUDIO_MERGE_SMOKE_FFMPEG and
+    /// DEPOAUDIO_MERGE_SMOKE_FFPROBE, otherwise the ones on PATH.
+    fn smoke_tools() -> Option<(String, String)> {
+        let ffmpeg = std::env::var("DEPOAUDIO_MERGE_SMOKE_FFMPEG").ok();
+        let ffprobe = std::env::var("DEPOAUDIO_MERGE_SMOKE_FFPROBE").ok();
+        match (ffmpeg, ffprobe) {
+            (Some(ffmpeg), Some(ffprobe)) => Some((ffmpeg, ffprobe)),
+            (None, None) => system_ffmpeg_available().then(|| ("ffmpeg".to_string(), "ffprobe".to_string())),
+            _ => panic!("set both DEPOAUDIO_MERGE_SMOKE_FFMPEG and DEPOAUDIO_MERGE_SMOKE_FFPROBE"),
+        }
+    }
+
+    /// A speech-like event: bursts of filtered noise 80 to 300 ms long with
+    /// short gaps, from a fixed seed, so two "microphones" share its shape.
+    fn speech_like_event(secs: f64, rate: usize) -> Vec<f32> {
+        let mut seed: u64 = 0x2545_F491_4F6C_DD1D;
+        let mut next = move || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            (seed >> 11) as f64 / (1u64 << 53) as f64
+        };
+        let total = (secs * rate as f64) as usize;
+        let mut out = Vec::with_capacity(total);
+        let mut low = 0.0f64;
+        while out.len() < total {
+            let burst = ((0.08 + 0.22 * next()) * rate as f64) as usize;
+            let gap = ((0.03 + 0.12 * next()) * rate as f64) as usize;
+            let level = 0.2 + 0.5 * next();
+            for _ in 0..burst {
+                low = 0.7 * low + 0.3 * (next() * 2.0 - 1.0);
+                out.push((level * low) as f32);
+            }
+            out.extend(std::iter::repeat_n(0.0, gap));
+        }
+        out.truncate(total);
+        out
+    }
+
+    fn run_tool(tool: &str, args: &[String]) -> String {
+        let run = std::process::Command::new(tool).args(args).output().unwrap();
+        assert!(
+            run.status.success(),
+            "{tool} {args:?}: {}",
+            String::from_utf8_lossy(&run.stderr)
+        );
+        String::from_utf8_lossy(&run.stdout).into_owned()
+    }
+
+    fn probed_duration(ffprobe: &str, path: &Path) -> f64 {
+        let args = [
+            "-v",
+            "error",
+            "-show_entries",
+            "format=duration",
+            "-of",
+            "default=noprint_wrappers=1:nokey=1",
+        ]
+        .iter()
+        .map(|arg| arg.to_string())
+        .chain([path.to_string_lossy().into_owned()])
+        .collect::<Vec<_>>();
+        run_tool(ffprobe, &args).trim().parse().unwrap()
+    }
+
+    /// The release smoke for Merge: two recordings of one event, the second
+    /// starting 1.25 s later, go through the same FFmpeg arguments, sync,
+    /// engine and encoder as a merge in the app, and the offset and output
+    /// length come out as made.
+    #[test]
+    fn two_recordings_merge_at_a_known_offset_through_ffmpeg() {
+        let Some((ffmpeg, ffprobe)) = smoke_tools() else {
+            return;
+        };
+        let rate = MERGE_SAMPLE_RATE as usize;
+        let dir = test_dir("smoke");
+        std::fs::create_dir_all(&dir).unwrap();
+
+        // The reference mic hears 0 to 10 s of the event; the second, quieter
+        // recorder hears 1.25 to 11.25 s.
+        let offset_secs = 1.25;
+        let event = speech_like_event(11.25, rate);
+        let start_b = (offset_secs * rate as f64) as usize;
+        let tracks = [
+            ("reference", event[..10 * rate].to_vec(), "flac"),
+            (
+                "backup",
+                event[start_b..start_b + 10 * rate].iter().map(|v| v * 0.6).collect(),
+                "m4a",
+            ),
+        ];
+        let mut sources = Vec::new();
+        for (name, samples, format) in tracks {
+            let wav = dir.join(format!("{name}.wav"));
+            let mut writer = wav_writer(&wav, MERGE_SAMPLE_RATE).unwrap();
+            for sample in samples {
+                writer.write_sample(sample).unwrap();
+            }
+            writer.finalize().unwrap();
+            let encoded = dir.join(format!("{name}{}", crate::helpers::output_ext(format)));
+            run_tool(&ffmpeg, &encode_args(&wav, format, "48000", &encoded));
+            let duration = probed_duration(&ffprobe, &encoded);
+            merge_engine::check_source_duration(name, Some(duration)).unwrap();
+            sources.push(AudioFeed::plain(encoded));
+        }
+
+        let decode = |feed: &AudioFeed, rate: u32, secs: u32, label: &str| {
+            let out = dir.join(format!("{label}.wav"));
+            run_tool(&ffmpeg, &decode_args(feed, rate, secs, &out));
+            out
+        };
+        let max_sync = SYNC_SAMPLE_RATE as usize * SYNC_DECODE_SECS as usize + 1;
+        let sync_a = read_wav_samples(
+            &decode(&sources[0], SYNC_SAMPLE_RATE, SYNC_DECODE_SECS, "sync_a"),
+            max_sync,
+        )
+        .unwrap();
+        let sync_b = read_wav_samples(
+            &decode(&sources[1], SYNC_SAMPLE_RATE, SYNC_DECODE_SECS, "sync_b"),
+            max_sync,
+        )
+        .unwrap();
+        let sync = merge_engine::detect_sync_samples(&sync_a, &sync_b, SYNC_SAMPLE_RATE as usize).unwrap();
+        assert!(sync.is_same_event, "confidence {}", sync.confidence);
+        assert!(
+            (sync.offset_seconds - offset_secs).abs() < 0.005,
+            "offset {} s, made {offset_secs} s",
+            sync.offset_seconds
+        );
+
+        let mut aligned = Vec::new();
+        for (i, (feed, offset)) in sources.iter().zip([0.0, sync.offset_seconds]).enumerate() {
+            let decoded = decode(
+                feed,
+                MERGE_SAMPLE_RATE,
+                MAX_MERGE_DURATION_SECS + 1,
+                &format!("decoded_{i}"),
+            );
+            let reader = WavSampleReader::open(&decoded).unwrap();
+            let len = reader.len;
+            aligned.push(AlignedSource::new(reader, (offset * rate as f64) as u64, len));
+        }
+        let merged = dir.join("merged_intermediate.wav");
+        let progress: ProgressFn = Arc::new(|_: MergeProgress| {});
+        let written = stream_to_wav(
+            MergeStrategy::Loudest,
+            &mut aligned,
+            &merged,
+            &MergeCancel::default(),
+            &progress,
+        )
+        .unwrap();
+        let expected = offset_secs + 10.0;
+        let written_secs = written as f64 / rate as f64;
+        assert!((written_secs - expected).abs() < 0.03, "merged {written_secs} s");
+
+        let output = dir.join("merged.wav");
+        run_tool(&ffmpeg, &encode_args(&merged, "wav", "48000", &output));
+        let duration = probed_duration(&ffprobe, &output);
+        assert!(
+            (duration - expected).abs() < 0.06,
+            "output {duration} s, expected {expected} s"
+        );
         let _ = std::fs::remove_dir_all(dir);
     }
 }
