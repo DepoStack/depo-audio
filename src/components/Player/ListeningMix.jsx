@@ -17,10 +17,10 @@ import {
 // Every control here is at least 44px high (WCAG 2.5.5, AAA target size).
 const toggleClass = pressed =>
   cn(
-    'h-11 rounded-md border px-3 type-small transition-colors',
+    'h-11 border px-3 type-small transition-colors',
     pressed
-      ? 'border-foreground bg-secondary text-foreground ring-1 ring-inset ring-foreground font-semibold'
-      : 'border-border text-[hsl(var(--text2))] hover:text-foreground hover:bg-secondary',
+      ? 'border-foreground bg-secondary ring-1 ring-inset ring-foreground font-semibold'
+      : 'border-input text-ink-2 hover:text-foreground hover:bg-secondary',
   )
 // A 44px-high range input: the track stays thin, but the whole row takes the
 // pointer.
@@ -104,12 +104,15 @@ export default function ListeningMix({
   const toggleTitle = fileChannels >= 2 ? `Hear each of the ${fileChannels} channels on its own. ` : ''
 
   return (
-    <section aria-label="Listening mix" className="flex flex-col gap-2 border-t border-border pt-3">
-      <p id={noteId} className="type-small text-[hsl(var(--sub))]">
+    <section
+      aria-label="Listening mix"
+      className={cn('flex flex-col gap-2', !compact && 'border-t border-border pt-3')}
+    >
+      <p id={noteId} className="type-small text-ink-2">
         {LISTENING_ONLY_NOTE}
       </p>
       <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
-        <label className="flex min-w-[12rem] flex-1 items-center gap-2 type-small text-[hsl(var(--text2))]">
+        <label className="flex min-w-[12rem] flex-1 items-center gap-2 type-small text-ink-2">
           <Volume2 size={14} aria-hidden="true" className="shrink-0" />
           <span className="shrink-0">Volume</span>
           <input
@@ -144,10 +147,10 @@ export default function ListeningMix({
             type="button"
             aria-disabled={!anyChanged}
             className={cn(
-              'h-11 rounded-md px-3 type-small underline underline-offset-2',
+              'h-11 px-3 type-small underline underline-offset-2',
               anyChanged
-                ? 'text-[hsl(var(--text2))] hover:text-foreground hover:bg-secondary'
-                : 'cursor-default text-[hsl(var(--sub))] no-underline',
+                ? 'text-ink-2 hover:text-foreground hover:bg-secondary'
+                : 'cursor-default text-ink-2 no-underline',
             )}
             onClick={reset}
           >
@@ -174,7 +177,7 @@ export default function ListeningMix({
           aria-label="Channel strips"
           aria-describedby={noteId}
           className={cn(
-            'grid gap-2',
+            'grid gap-x-4',
             compact
               ? 'grid-cols-1'
               : wide
@@ -188,12 +191,12 @@ export default function ListeningMix({
             return (
               <div
                 key={label}
-                className="flex min-w-0 flex-col gap-1 rounded-md border border-border p-2"
+                className="flex min-w-0 flex-col gap-1 border-t border-border py-2"
                 data-testid="channel-strip"
               >
                 <div className="flex flex-wrap items-baseline justify-between gap-x-2">
                   <span className="type-small font-semibold text-foreground">{label}</span>
-                  <span className="type-small text-[hsl(var(--sub))]">{state}</span>
+                  <span className="type-small text-ink-2">{state}</span>
                 </div>
                 <div className={cn('gap-1', wide ? 'flex items-center' : 'grid grid-cols-2')}>
                   <button

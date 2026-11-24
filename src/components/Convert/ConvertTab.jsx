@@ -23,9 +23,8 @@ import {
   processingSummary,
 } from '../../presets'
 import { usePreferencesContext } from '../../hooks/PreferencesContext'
-import { Check, Loader2, Play } from 'lucide-react'
+import { AlertTriangle, Check, Loader2, Lock, Play } from 'lucide-react'
 import { Button } from '../ui/button'
-import { Card, CardHeader, CardTitle, CardContent } from '../ui/card'
 import { Badge } from '../ui/badge'
 import { Input } from '../ui/input'
 import { Label } from '../ui/label'
@@ -491,6 +490,9 @@ export default function ConvertTab({
           : 'Remove unsupported files first. The note for each one says how to export it.'
         : ''
 
+  const warnGlyph = <AlertTriangle aria-hidden="true" size={14} className="mt-0.5 shrink-0 text-warning" />
+  const title = 'type-label text-ink-2'
+
   return (
     <>
       <div className="flex-1 overflow-y-auto overflow-x-hidden scrollbar-thin scrollbar-thumb-border scrollbar-track-transparent">
@@ -503,7 +505,7 @@ export default function ConvertTab({
           />
 
           {/* ── STEPPER (state-driven, purely informational) ─────────────── */}
-          <ol className="conversion-stepper flex items-center gap-2.5 mb-1" aria-label="Conversion progress">
+          <ol className="conversion-stepper flex items-center gap-2" aria-label="Conversion progress">
             {['Add recording', 'Choose settings', 'Convert'].map((label, i) => {
               const n = i + 1
               const done = stepDone(n)
@@ -511,30 +513,26 @@ export default function ConvertTab({
               return (
                 <li
                   key={label}
-                  className="conversion-step flex items-center gap-2.5"
+                  className="conversion-step flex items-center gap-2"
                   aria-current={now ? 'step' : undefined}
                 >
                   <span
                     aria-hidden="true"
-                    className={`w-6 h-6 rounded-full grid place-items-center text-[11px] font-semibold border transition-colors ${
+                    className={`w-6 h-6 rounded-full grid place-items-center type-label tabular-nums border transition-colors ${
                       done
-                        ? 'bg-[hsl(var(--success))] border-[hsl(var(--success))] text-white'
+                        ? 'bg-success border-success text-background'
                         : now
                           ? 'bg-foreground border-foreground text-background'
-                          : 'bg-card border-border text-[hsl(var(--sub))]'
+                          : 'bg-card border-border text-ink-2'
                     }`}
                   >
                     {done ? <Check aria-hidden="true" className="h-3.5 w-3.5" strokeWidth={2.2} /> : n}
                   </span>
-                  <span
-                    className={`text-[12px] ${now ? 'font-semibold text-foreground' : done ? 'text-[hsl(var(--text2))]' : 'text-[hsl(var(--sub))]'}`}
-                  >
-                    {label}
-                  </span>
+                  <span className={`type-small ${now ? 'font-semibold' : 'text-ink-2'}`}>{label}</span>
                   {n < 3 && (
                     <span
                       aria-hidden="true"
-                      className={`conversion-step-line w-9 h-px ${done ? 'bg-[hsl(var(--success))]' : 'bg-border'}`}
+                      className={`conversion-step-line w-8 h-px ${done ? 'bg-success' : 'bg-border'}`}
                     />
                   )}
                 </li>
@@ -545,28 +543,27 @@ export default function ConvertTab({
           {/* ── FILES (drop zone + queue) — the workflow starts here ─────── */}
           <div
             aria-busy={queueLocked}
-            className={`recording-intake grid items-center gap-3 rounded-xl border border-dashed px-4 py-4 transition-colors sm:grid-cols-[auto_minmax(0,1fr)_auto] ${
+            // Dashed marks a live drop target only. Locked: a plain hairline,
+            // ink 2, and the lock glyph in place of the waveform.
+            className={`recording-intake grid items-center gap-4 border p-4 transition-colors sm:grid-cols-[auto_minmax(0,1fr)_auto] ${
               queueLocked
-                ? 'border-border/60 bg-[hsl(var(--surface))] opacity-70'
+                ? 'border-border text-ink-2'
                 : dragOver
-                  ? 'border-foreground bg-secondary'
-                  : 'border-border bg-[hsl(var(--surface))] hover:border-[hsl(var(--text2)/0.55)]'
+                  ? 'border-dashed border-foreground bg-secondary'
+                  : 'border-dashed border-input bg-card'
             }`}
             onDragOver={queueLocked ? undefined : onDragOver}
             onDragLeave={onDragLeave}
             onDrop={queueLocked ? undefined : onDrop}
           >
-            <div
-              aria-hidden="true"
-              className="grid h-11 w-11 place-items-center rounded-lg border border-border/70 bg-card text-foreground"
-            >
-              <WaveformIcon />
-            </div>
+            <span aria-hidden="true" className="grid place-items-center">
+              {queueLocked ? <Lock size={28} strokeWidth={1.6} /> : <WaveformIcon />}
+            </span>
             <div className="min-w-0">
-              <p className="text-[13px] font-semibold text-foreground">
+              <p className="font-semibold">
                 {queueLocked ? 'File queue locked during conversion' : 'Add the recording you need to open or convert'}
               </p>
-              <p className="mt-0.5 type-small leading-relaxed text-[hsl(var(--sub))]">
+              <p className="type-small text-ink-2">
                 {queueLocked
                   ? 'Wait for the current batch to finish before adding or replacing files.'
                   : 'Drop files here, or browse for WAV, MP3, FLAC, SGMCA, TRM, BWF, and supported video containers.'}
@@ -587,19 +584,20 @@ export default function ConvertTab({
           {files.length > 0 && (
             <div className="flex flex-col gap-2">
               <div className="flex items-center justify-between">
-                <span className="tabular-nums text-[12px] text-[hsl(var(--sub))]">
+                <span className="type-small text-ink-2">
                   {files.length} file{files.length !== 1 ? 's' : ''} queued
                 </span>
                 {!converting && (
                   <button
-                    className="type-small text-[hsl(var(--sub))] hover:text-foreground transition-colors cursor-pointer"
+                    className="type-small text-ink-2 hover:text-foreground transition-colors cursor-pointer"
                     onClick={() => clearAll(converting)}
                   >
                     Clear all
                   </button>
                 )}
               </div>
-              <div className="flex flex-col gap-1.5">
+              {/* Top rule only: the next zone's rule closes the list. */}
+              <div className="flex flex-col border-t border-border divide-y divide-border">
                 {files.map(f => (
                   <FileRow
                     key={f.path}
@@ -617,10 +615,7 @@ export default function ConvertTab({
           )}
 
           {unsupportedFiles.length > 0 && (
-            <p
-              role="alert"
-              className="px-3 py-2 rounded-md border border-destructive/30 border-l-[3px] border-l-destructive type-small text-destructive"
-            >
+            <p role="alert" className="notice notice-error">
               Remove{' '}
               {unsupportedFiles.length === 1
                 ? unsupportedFiles[0].name
@@ -636,19 +631,14 @@ export default function ConvertTab({
           )}
 
           {queueNotice && (
-            <p
-              role="status"
-              className="px-3 py-2 rounded-md border border-warning/30 bg-warning/10 type-small text-foreground"
-            >
+            <p role="status" className="notice flex items-start gap-2">
+              {warnGlyph}
               {queueNotice}
             </p>
           )}
 
           {conversionError && (
-            <p
-              role="alert"
-              className="px-3 py-2 rounded-md border border-destructive/30 border-l-[3px] border-l-destructive type-small text-destructive"
-            >
+            <p role="alert" className="notice notice-error">
               {conversionError}
             </p>
           )}
@@ -657,10 +647,10 @@ export default function ConvertTab({
           {/* Each preset is named for where the file is going and states its
               basis. The one the current settings match is highlighted; when
               none matches, the picker says "Custom" and changes nothing. */}
-          <Card className="workflow-section" data-testid="preset-picker">
-            <CardHeader>
-              <CardTitle>Quick setup</CardTitle>
-              <span className="type-small text-[hsl(var(--sub))]" data-testid="preset-status" role="status">
+          <div className="workflow-section zone" data-testid="preset-picker">
+            <div className="zone-head">
+              <h3 className={title}>Quick setup</h3>
+              <span className="type-small text-ink-2" data-testid="preset-status" role="status">
                 {presetStatus}
               </span>
               {currentProcessing.length > 0 && !processingQuestion && (
@@ -673,14 +663,14 @@ export default function ConvertTab({
                   Turn processing off
                 </Button>
               )}
-            </CardHeader>
-            <CardContent>
+            </div>
+            <>
               {processingQuestion && (
                 <div
                   role="group"
                   aria-labelledby="preset-processing-question"
                   data-testid="preset-processing-question"
-                  className="mx-3 mt-3 flex flex-col gap-2 px-3 py-2 rounded-md border border-warning/30 bg-warning/10 type-small text-foreground"
+                  className="notice flex flex-col gap-2"
                 >
                   <p id="preset-processing-question">
                     {`\u201c${processingQuestion.preset.name}\u201d is for keeping the recording as it is, but processing is on: ${processingQuestion.options.map(option => option.name).join(', ')}. With it on, the archive copy is changed. Nothing has changed yet.`}
@@ -704,7 +694,7 @@ export default function ConvertTab({
                   </div>
                 </div>
               )}
-              <div className="grid grid-cols-1 gap-2 p-3 sm:grid-cols-2 lg:grid-cols-3">
+              <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-3">
                 {PRESETS.map(p => {
                   const active = presetInUse?.id === p.id
                   return (
@@ -715,27 +705,23 @@ export default function ConvertTab({
                       aria-pressed={active}
                       aria-labelledby={`preset-name-${p.id}`}
                       aria-describedby={`preset-basis-${p.id} preset-processing-${p.id} preset-tested-${p.id}`}
-                      className={`relative flex flex-col items-start gap-0.5 px-3 py-2.5 rounded-lg border text-left transition-all cursor-pointer focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring ${
-                        active
-                          ? 'border-foreground bg-secondary'
-                          : 'border-border bg-card hover:border-[hsl(var(--sub))]'
-                      }`}
+                      className="choice"
                       onClick={() => applyPreset(p)}
                     >
-                      <span id={`preset-name-${p.id}`} className="text-[12.5px] font-semibold text-foreground pr-5">
+                      <span id={`preset-name-${p.id}`} className="type-small font-semibold pr-5">
                         {p.name}
                       </span>
-                      <span id={`preset-basis-${p.id}`} className="type-small text-[hsl(var(--text2))] leading-snug">
+                      <span id={`preset-basis-${p.id}`} className="type-small text-ink-2">
                         {p.basis}
                       </span>
                       <span
                         id={`preset-processing-${p.id}`}
                         data-testid="preset-processing"
-                        className="type-small text-[hsl(var(--text2))]"
+                        className="type-small text-ink-2"
                       >
                         {processingLine}
                       </span>
-                      <span id={`preset-tested-${p.id}`} className="type-small text-[hsl(var(--sub))]">
+                      <span id={`preset-tested-${p.id}`} className="type-small text-ink-2">
                         {NOT_TESTED_NOTE}
                       </span>
                       {active && (
@@ -747,14 +733,14 @@ export default function ConvertTab({
                   )
                 })}
               </div>
-              <p className="px-3 pb-3 type-small text-[hsl(var(--sub))]">
+              <p className="type-small text-ink-2">
                 Format notes come from Stenograph&rsquo;s Solution Center articles{' '}
                 {STENOGRAPH_SOURCES.map((source, index) => (
                   <span key={source.url}>
                     {index > 0 && ' and '}
                     <button
                       type="button"
-                      className="underline underline-offset-2 text-[hsl(var(--text2))] hover:text-foreground focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring rounded-sm cursor-pointer"
+                      className="underline underline-offset-2 hover:text-foreground cursor-pointer"
                       aria-label={`${source.title} (Stenograph Solution Center, opens in your browser)`}
                       onClick={() => openSource(source)}
                     >
@@ -766,66 +752,60 @@ export default function ConvertTab({
                 the sample rate.
               </p>
               {sourceLinkError && (
-                <p
-                  role="alert"
-                  className="mx-3 mb-3 px-3 py-2 rounded-md border border-destructive/30 border-l-[3px] border-l-destructive type-small text-destructive"
-                >
+                <p role="alert" className="notice notice-error">
                   {sourceLinkError}
                 </p>
               )}
-            </CardContent>
-          </Card>
+            </>
+          </div>
 
           {/* ── OUTPUT MODE (segmented) ──────────────────────────────────── */}
-          <Card className="workflow-section">
-            <CardHeader>
-              <CardTitle>Output mode</CardTitle>
-            </CardHeader>
-            <CardContent>
-              <div className="output-mode-grid grid grid-cols-1 gap-1.5 bg-secondary/45 p-2 sm:grid-cols-3">
-                {MODES.map(m => (
-                  <button
-                    key={m.id}
-                    aria-pressed={mode === m.id}
-                    className={`flex items-center gap-3 rounded-md border p-2.5 text-left transition-[color,background-color,border-color,transform] duration-150 active:translate-y-px ${mode === m.id ? 'border-foreground bg-card' : 'border-transparent hover:border-border hover:bg-card/55'}`}
-                    onClick={() => handleModeChange(m.id)}
-                  >
-                    <ModeIcon id={m.id} active={mode === m.id} />
-                    <div className="flex flex-col items-start">
-                      <span className="text-[12px] font-semibold text-foreground">{m.label}</span>
-                      <span className="type-small text-[hsl(var(--text2))] leading-tight">{m.desc}</span>
-                    </div>
-                  </button>
-                ))}
-              </div>
-            </CardContent>
-          </Card>
+          <div className="workflow-section zone">
+            <div className="zone-head">
+              <h3 className={title}>Output mode</h3>
+            </div>
+            <div className="output-mode-grid grid grid-cols-1 gap-2 sm:grid-cols-3">
+              {MODES.map(m => (
+                <button
+                  key={m.id}
+                  aria-pressed={mode === m.id}
+                  className="choice flex-row items-center gap-3 pr-8"
+                  onClick={() => handleModeChange(m.id)}
+                >
+                  <ModeIcon id={m.id} active={mode === m.id} />
+                  <div className="flex flex-col items-start">
+                    <span className="type-small font-semibold">{m.label}</span>
+                    <span className="type-small text-ink-2">{m.desc}</span>
+                  </div>
+                  {mode === m.id && (
+                    <span aria-hidden="true" className="absolute top-2 right-2">
+                      <Check aria-hidden="true" className="h-3.5 w-3.5" strokeWidth={2.2} />
+                    </span>
+                  )}
+                </button>
+              ))}
+            </div>
+          </div>
 
           {/* ── FORMAT (tiles with plain-English trade-offs) ─────────────── */}
-          <Card className="workflow-section">
-            <CardHeader>
-              <CardTitle>Format</CardTitle>
-            </CardHeader>
-            <CardContent>
-              <div className="format-output-grid grid grid-cols-1 gap-2 p-3 min-[420px]:grid-cols-2 sm:grid-cols-3 lg:grid-cols-5">
+          <div className="workflow-section zone">
+            <div className="zone-head">
+              <h3 className={title}>Format</h3>
+            </div>
+            <>
+              <div className="format-output-grid grid grid-cols-1 gap-2 min-[420px]:grid-cols-2 sm:grid-cols-3 lg:grid-cols-5">
                 {FORMATS_OUT.map(f => (
                   <button
                     key={f.id}
                     aria-pressed={formatOut === f.id}
-                    className={`relative flex flex-col items-start gap-0.5 px-3 py-2.5 rounded-lg border text-left transition-all cursor-pointer focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring ${
-                      formatOut === f.id
-                        ? 'border-foreground bg-secondary'
-                        : 'border-border bg-card hover:border-[hsl(var(--sub))]'
-                    }`}
+                    className="choice"
                     onClick={() => setFormatOut(f.id)}
                   >
-                    <span className="text-[13px] font-bold text-foreground">{f.label}</span>
-                    <span className="type-small text-[hsl(var(--text2))] leading-tight">{f.desc}</span>
-                    {f.preview && (
-                      <span className="type-small font-semibold text-warning leading-tight">{f.preview}</span>
-                    )}
+                    <span className="type-small font-semibold">{f.label}</span>
+                    <span className="type-small text-ink-2">{f.desc}</span>
+                    {f.preview && <span className="type-small font-semibold text-warning">{f.preview}</span>}
                     {formatOut === f.id && (
-                      <span aria-hidden="true" className="absolute top-1.5 right-2 text-foreground type-small">
+                      <span aria-hidden="true" className="absolute top-2 right-2">
                         <Check aria-hidden="true" className="h-3.5 w-3.5" strokeWidth={2.2} />
                       </span>
                     )}
@@ -833,29 +813,23 @@ export default function ConvertTab({
                 ))}
               </div>
               {formatOut === 'opus' && (
-                <p
-                  data-testid="opus-catalyst-note"
-                  className="mx-3 mb-3 px-3 py-2 rounded-md border border-warning/30 bg-warning/10 type-small text-foreground"
-                >
+                <p data-testid="opus-catalyst-note" className="notice flex items-start gap-2">
+                  {warnGlyph}
                   {OPUS_CATALYST_NOTE}
                 </p>
               )}
               {mode === 'keep' && KEEP_STEREO_ONLY_FORMATS.includes(formatOut) && (
-                <p
-                  data-testid="keep-stereo-only-note"
-                  className="mx-3 mb-3 px-3 py-2 rounded-md border border-warning/30 bg-warning/10 type-small text-foreground"
-                >
+                <p data-testid="keep-stereo-only-note" className="notice flex items-start gap-2">
+                  {warnGlyph}
                   {KEEP_STEREO_ONLY_NOTE}
                 </p>
               )}
-              <div className="flex items-end gap-3 flex-wrap px-3 pb-3">
-                <div className="min-w-[130px]">
-                  <Label className="mb-1 block" htmlFor="sample-rate">
-                    Sample rate
-                  </Label>
+              <div className="flex items-end gap-3 flex-wrap">
+                <div className="flex min-w-[130px] flex-col gap-1">
+                  <Label htmlFor="sample-rate">Sample rate</Label>
                   <select
                     id="sample-rate"
-                    className="flex h-8 w-full rounded-lg border border-border bg-card px-2.5 py-1.5 type-small text-foreground transition-colors focus:border-ring cursor-pointer"
+                    className="h-8 w-full border border-input bg-card px-2 type-small cursor-pointer disabled:border-dashed disabled:text-ink-2"
                     value={effectiveOutputRate(formatOut, rate)}
                     disabled={formatOut in FIXED_OUTPUT_RATES}
                     title={
@@ -873,15 +847,15 @@ export default function ConvertTab({
                   </select>
                 </div>
                 {formatOut === 'mp3' && (
-                  <div>
-                    <Label className="mb-1 block">MP3 bitrate</Label>
-                    <div className="flex gap-px bg-secondary rounded-md p-0.5">
+                  <div className="flex flex-col gap-1">
+                    <Label>MP3 bitrate</Label>
+                    <div className="flex gap-0.5 bg-secondary p-0.5">
                       {MP3_BITRATES.map(b => (
                         <button
                           key={b.value}
                           title={b.desc}
                           aria-pressed={mp3Bitrate === b.value}
-                          className={`px-2.5 py-1.5 type-label rounded-md transition-colors cursor-pointer ${mp3Bitrate === b.value ? 'bg-card text-foreground ring-1 ring-inset ring-foreground' : 'text-[hsl(var(--sub))] hover:text-[hsl(var(--text2))]'}`}
+                          className={`h-7 px-3 type-label cursor-pointer ${mp3Bitrate === b.value ? 'bg-card ring-1 ring-inset ring-foreground' : 'text-ink-2 hover:text-foreground'}`}
                           onClick={() => setMp3Bitrate(b.value)}
                         >
                           {b.label}
@@ -891,32 +865,32 @@ export default function ConvertTab({
                   </div>
                 )}
               </div>
-              {wavEstimate && <p className="px-3 pb-3 type-small text-[hsl(var(--text2))]">{wavEstimate}</p>}
-            </CardContent>
-          </Card>
+              {wavEstimate && <p className="type-small text-ink-2">{wavEstimate}</p>}
+            </>
+          </div>
 
           {/* ── CHANNELS (labels + mix) ────────────────────────────────── */}
           {/* Only meaningful once files are queued, and not in keep mode —
               keep mode preserves channels untouched and ignores labels */}
           {files.length > 0 && mode !== 'keep' && (
-            <Card className="workflow-section">
-              <CardHeader>
-                <CardTitle>Channels</CardTitle>
-                <span className="type-small text-[hsl(var(--sub))]">
+            <div className="workflow-section zone">
+              <div className="zone-head">
+                <h3 className={title}>Channels</h3>
+                <span className="type-small text-ink-2">
                   {mode === 'stereo' && autoLevel && 'Name channels — volume managed by auto-level'}
                   {mode === 'stereo' && !autoLevel && 'Name channels and adjust mix volumes'}
                   {mode === 'split' && 'Channel names used as output filenames'}
                 </span>
-              </CardHeader>
-              <CardContent>
-                <div className="flex flex-col gap-1 p-3">
+              </div>
+              <>
+                <div className="flex flex-col gap-1">
                   {labels.map((l, i) => (
                     <div key={i} className="channel-row flex items-center gap-2">
                       <span
                         className="w-2 h-2 rounded-full shrink-0"
                         style={{ background: CH_COLORS[i % CH_COLORS.length] }}
                       />
-                      <span className="tabular-nums text-[12px] text-[hsl(var(--sub))] shrink-0 w-7">CH {i + 1}</span>
+                      <span className="type-min tabular-nums text-ink-2 shrink-0 w-8">CH {i + 1}</span>
                       <Input
                         className="h-7 type-small w-32 shrink-0"
                         value={l}
@@ -933,14 +907,15 @@ export default function ConvertTab({
                             step="0.05"
                             value={autoLevel ? 1.0 : chanVols[i]}
                             aria-label={`Mix volume for channel ${i + 1}`}
-                            className={`flex-1 h-1 accent-primary cursor-pointer ${autoLevel ? 'opacity-40' : ''}`}
+                            className={`mix-range h-7 min-w-0 flex-1 ${autoLevel ? '' : 'cursor-pointer'}`}
+                            style={{ '--mix-fill': `${((autoLevel ? 1 : chanVols[i]) / 2) * 100}%` }}
                             disabled={autoLevel}
                             onChange={e =>
                               setChanVols(p => p.map((x, j) => (j === i ? parseFloat(e.target.value) : x)))
                             }
                           />
                           <span
-                            className={`tabular-nums text-[12px] w-8 text-right shrink-0 ${autoLevel ? 'text-foreground' : 'text-[hsl(var(--sub))]'}`}
+                            className={`type-min tabular-nums w-8 text-right shrink-0 ${autoLevel ? '' : 'text-ink-2'}`}
                           >
                             {autoLevel ? 'auto' : chanVols[i] === 0 ? 'mute' : chanVols[i].toFixed(2)}
                           </span>
@@ -949,37 +924,35 @@ export default function ConvertTab({
                     </div>
                   ))}
                 </div>
-              </CardContent>
-            </Card>
+              </>
+            </div>
           )}
 
           {/* ── AUDIO PROCESSING (unified panel) ─────────────────────────── */}
-          <Card className="workflow-section">
-            <CardHeader>
-              <CardTitle>Audio processing</CardTitle>
+          <div className="workflow-section zone">
+            <div className="zone-head">
+              <h3 className={title}>Audio processing</h3>
               <Button variant="scan" size="sm" onClick={handleScan} disabled={!files.length || scanning || converting}>
                 {scanning
                   ? `Scanning${files.length > 1 ? ` (${files.length} files)` : ''}…`
                   : `Scan${files.length > 1 ? ` All (${files.length})` : ''}`}
               </Button>
-            </CardHeader>
-            <CardContent>
+            </div>
+            <div>
               {!analysis && !scanning && !scanError && (
-                <p className="px-4 py-2.5 type-small text-[hsl(var(--sub))]">
+                <p className="pb-2 type-small text-ink-2">
                   Drop files and click <strong className="text-foreground">Scan</strong> to check for level differences
                   and clipping. {SCAN_SAMPLE_NOTE} Scan suggests fixes; nothing changes until you apply them.
                 </p>
               )}
 
               {analysis && !scanning && (
-                <p className="px-4 pt-2.5 pb-1 type-small text-[hsl(var(--sub))]">
-                  {SCAN_SAMPLE_NOTE} Anything after that is not measured.
-                </p>
+                <p className="pb-2 type-small text-ink-2">{SCAN_SAMPLE_NOTE} Anything after that is not measured.</p>
               )}
 
               {analysis && !scanning && pendingSuggestions.length > 0 && (
-                <div className="flex flex-wrap items-center justify-between gap-2 px-4 py-2.5 border-b border-border/60">
-                  <p className="type-small text-[hsl(var(--text2))]">
+                <div className="flex flex-wrap items-center justify-between gap-2 pb-2">
+                  <p className="type-small text-ink-2">
                     Scan suggests {pendingSuggestions.map(s => s.label).join(' and ')}. Nothing is switched on until you
                     apply {pendingSuggestions.length === 1 ? 'it' : 'them'}.
                   </p>
@@ -990,20 +963,21 @@ export default function ConvertTab({
               )}
 
               {scanError && !scanning && (
-                <p role="alert" className="px-4 py-2.5 type-small text-[hsl(var(--warning))]">
+                <p role="alert" className="notice mb-2 flex items-start gap-2">
+                  {warnGlyph}
                   {scanError}
                 </p>
               )}
 
               {scanning && (
-                <div className="px-4 py-2.5">
-                  <div className="flex items-center justify-between gap-2 mb-1.5">
+                <div className="pb-2">
+                  <div className="flex items-center justify-between gap-2 mb-1">
                     <p
                       role="status"
                       aria-label="Recording scan status"
                       aria-live="polite"
                       aria-atomic="true"
-                      className="type-small text-[hsl(var(--sub))] flex items-center gap-1.5 min-w-0"
+                      className="type-small text-ink-2 flex items-center gap-1.5 min-w-0"
                     >
                       <Loader2
                         aria-hidden="true"
@@ -1013,18 +987,16 @@ export default function ConvertTab({
                         Scanning {Math.min(scanProgress.current + 1, scanProgress.total)} of {scanProgress.total}
                       </span>
                       {scanProgress.fileName && (
-                        <span className="text-[hsl(var(--text2))] truncate max-w-[180px]">
-                          — {scanProgress.fileName}
-                        </span>
+                        <span className="text-ink-2 truncate max-w-[180px]">— {scanProgress.fileName}</span>
                       )}
                       {scanProgress.phase && (
-                        <span className="text-[hsl(var(--sub))] truncate hidden sm:inline">
+                        <span className="text-ink-2 truncate hidden sm:inline">
                           · {SCAN_PHASES[scanProgress.phase] || scanProgress.phase}
                         </span>
                       )}
                     </p>
                     <button
-                      className="type-small text-[hsl(var(--sub))] hover:text-foreground transition-colors cursor-pointer shrink-0"
+                      className="type-small text-ink-2 hover:text-foreground transition-colors cursor-pointer shrink-0"
                       onClick={cancelScan}
                       disabled={scanCancelling}
                     >
@@ -1032,7 +1004,8 @@ export default function ConvertTab({
                     </button>
                   </div>
                   {scanError && (
-                    <p role="alert" className="mb-1.5 type-small text-[hsl(var(--warning))]">
+                    <p role="alert" className="notice mb-1 flex items-start gap-2">
+                      {warnGlyph}
                       {scanError}
                     </p>
                   )}
@@ -1056,9 +1029,7 @@ export default function ConvertTab({
 
               {/* ── Every processing option, always shown and off until the
                   person turns it on. A scan only marks what it recommends. ── */}
-              <div className="px-4 py-1.5 bg-secondary/50">
-                <span className="type-label text-[hsl(var(--sub))]">Signal repair</span>
-              </div>
+              <p className={`border-t border-border pt-4 pb-1 ${title}`}>Signal repair</p>
 
               <ProcessingToggle
                 smart
@@ -1087,9 +1058,7 @@ export default function ConvertTab({
                 detected={analysis?.hasClipping ? 'Clipping found' : null}
               />
 
-              <div className="px-4 py-1.5 bg-secondary/50">
-                <span className="type-label text-[hsl(var(--sub))]">Fine-tune</span>
-              </div>
+              <p className={`pt-4 pb-1 ${title}`}>Fine-tune</p>
 
               <ProcessingToggle
                 name={PROCESSING.hpf.name}
@@ -1123,85 +1092,80 @@ export default function ConvertTab({
                 onChange={setFade}
                 extra={
                   fade && (
-                    <span className="inline-flex items-center gap-1 mt-0.5" onClick={e => e.preventDefault()}>
-                      <span className="text-[hsl(var(--sub))]">—</span>
+                    <span className="inline-flex items-center gap-1" onClick={e => e.preventDefault()}>
                       <input
                         type="number"
-                        className="w-[42px] bg-secondary border border-border rounded px-1 py-px tabular-nums text-[12px] text-foreground text-center focus:border-ring outline-hidden"
+                        className="h-7 w-12 bg-transparent border border-input px-1 type-small tabular-nums text-center"
                         min="0.1"
                         max="5"
                         step="0.1"
                         value={fadeDur}
                         onChange={e => setFadeDur(Math.max(0.1, parseFloat(e.target.value) || 0.5))}
                       />
-                      <span className="type-small text-[hsl(var(--sub))]">s</span>
+                      <span className="type-small text-ink-2">s</span>
                     </span>
                   )
                 }
               />
 
               {/* Processing chain preview */}
-              <div className="flex items-center gap-2 px-4 py-2.5 border-t border-border/60 bg-secondary/30">
-                <span className="type-label text-[hsl(var(--sub))] shrink-0">Chain</span>
+              <div className="flex items-center gap-2 pr-3 py-2 border-b border-border">
+                <span className={`shrink-0 ${title}`}>Chain</span>
                 {anyProcessing ? (
                   <div className="flex items-center gap-1 flex-wrap">
                     {/* Leading trim runs first, at the recording's own rate. */}
                     {trimEffective && (
                       <>
                         <Badge variant="default">Leading trim</Badge>
-                        <span className="type-small text-[hsl(var(--sub))]">→</span>
+                        <span className="type-small text-ink-2">→</span>
                       </>
                     )}
                     {declip && (
                       <>
                         <Badge variant="info">De-clip</Badge>
-                        <span className="type-small text-[hsl(var(--sub))]">→</span>
+                        <span className="type-small text-ink-2">→</span>
                       </>
                     )}
                     {hpf && (
                       <>
                         <Badge variant="default">HPF</Badge>
-                        <span className="type-small text-[hsl(var(--sub))]">→</span>
+                        <span className="type-small text-ink-2">→</span>
                       </>
                     )}
                     {autoLevelEffective && (
                       <>
                         <Badge variant="info">Auto-Level</Badge>
-                        <span className="type-small text-[hsl(var(--sub))]">→</span>
+                        <span className="type-small text-ink-2">→</span>
                       </>
                     )}
                     {normalize && (
                       <>
                         <Badge variant="default">Normalize</Badge>
-                        <span className="type-small text-[hsl(var(--sub))]">→</span>
+                        <span className="type-small text-ink-2">→</span>
                       </>
                     )}
                     {fade && <Badge variant="default">Fade {fadeDur}s</Badge>}
                   </div>
                 ) : (
-                  <span className="type-small text-[hsl(var(--sub))] italic">
-                    No processing — direct transcode only
-                  </span>
+                  <span className="type-small text-ink-2 italic">No processing — direct transcode only</span>
                 )}
               </div>
 
-              <p className="px-4 py-2 type-small text-[hsl(var(--sub))] border-t border-border/60">
+              <p className="pt-2 type-small text-ink-2">
                 All processing runs on your machine — nothing is uploaded or sent anywhere.
               </p>
-            </CardContent>
-          </Card>
+            </div>
+          </div>
 
           {/* ── DESTINATION ──────────────────────────────────────────────── */}
-          <Card className="workflow-section">
-            <CardHeader>
-              <CardTitle>Destination</CardTitle>
-            </CardHeader>
-            <CardContent>
-              <div className="flex items-end gap-3 flex-wrap p-3">
-                <div className="flex-1 min-w-[200px]">
-                  <Label className="mb-1 block" htmlFor="case-name">
-                    Case name
-                  </Label>
+          <div className="workflow-section zone">
+            <div className="zone-head">
+              <h3 className={title}>Destination</h3>
+            </div>
+            <>
+              <div className="flex items-end gap-3 flex-wrap">
+                <div className="flex flex-1 min-w-[200px] flex-col gap-1">
+                  <Label htmlFor="case-name">Case name</Label>
                   <Input
                     id="case-name"
                     value={caseName}
@@ -1209,11 +1173,9 @@ export default function ConvertTab({
                     onChange={e => setCaseName(e.target.value)}
                   />
                 </div>
-                <div className="flex-1 min-w-[200px]">
-                  <Label className="mb-1 block" htmlFor="out-dir">
-                    Output folder
-                  </Label>
-                  <div className="flex gap-1.5">
+                <div className="flex flex-1 min-w-[200px] flex-col gap-1">
+                  <Label htmlFor="out-dir">Output folder</Label>
+                  <div className="flex gap-2">
                     <Input
                       id="out-dir"
                       className="flex-1"
@@ -1221,20 +1183,20 @@ export default function ConvertTab({
                       placeholder="Default: same folder as source"
                       onChange={e => setOutDir(e.target.value)}
                     />
-                    <Button variant="default" size="sm" onClick={() => browseOutDir(setOutDir)}>
+                    <Button variant="default" onClick={() => browseOutDir(setOutDir)}>
                       Browse
                     </Button>
                   </div>
                 </div>
               </div>
-            </CardContent>
-          </Card>
+            </>
+          </div>
 
           <FormatTable />
         </div>
       </div>
 
-      <footer className="conversion-footer flex shrink-0 items-center justify-between gap-4 border-t border-border/60 bg-card px-4 py-3 sm:px-6 lg:px-7">
+      <footer className="conversion-footer flex shrink-0 items-center justify-between gap-4 border-t border-border bg-card px-4 py-3 sm:px-6 lg:px-[max(2rem,calc((100%-1100px)/2+2rem))]">
         <div
           role="status"
           aria-label="Conversion status"
@@ -1253,13 +1215,13 @@ export default function ConvertTab({
           )}
           {!converting && resultCount > 0 && <Badge variant={resultVariant}>{resultParts.join(', ')}</Badge>}
           {!converting && resultCount === 0 && files.length === 0 && (
-            <p className="type-small text-[hsl(var(--sub))]">Add a recording to choose an output and convert.</p>
+            <p className="type-small text-ink-2">Add a recording to choose an output and convert.</p>
           )}
           {!converting && resultCount === 0 && unsupportedFiles.length > 0 && (
             <p className="type-small text-warning">{convertDisabledReason}</p>
           )}
           {!converting && resultCount === 0 && files.length > 0 && unsupportedFiles.length === 0 && (
-            <p className="text-[12px] text-[hsl(var(--sub))] truncate">
+            <p className="type-small text-ink-2 truncate">
               Ready:{' '}
               <span className="font-semibold text-foreground">
                 {formatLabel} · {modeLabel.toLowerCase()}

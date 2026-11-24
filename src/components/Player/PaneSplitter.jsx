@@ -80,10 +80,9 @@ export default function PaneSplitter({ side, label, controls, value, min, max, o
       data-fixed={fixed ? 'true' : undefined}
       className={cn(
         // The pointer target reaches 4px past each side of the 6px column.
-        'group relative z-10 min-h-0 touch-none select-none bg-transparent',
+        'group relative z-10 min-h-0 touch-none select-none',
         "before:absolute before:inset-y-0 before:-left-1 before:-right-1 before:content-['']",
         fixed ? 'cursor-default' : 'cursor-col-resize',
-        'focus-visible:outline focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-foreground',
       )}
     >
       <span
@@ -97,11 +96,11 @@ export default function PaneSplitter({ side, label, controls, value, min, max, o
       {!fixed && (
         <span
           aria-hidden="true"
-          className="absolute left-1/2 top-1/2 flex h-9 w-2.5 -translate-x-1/2 -translate-y-1/2 flex-col items-center justify-center gap-1 rounded-full border border-foreground bg-card opacity-0 transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100"
+          className="absolute left-1/2 top-1/2 flex h-9 w-2 -translate-x-1/2 -translate-y-1/2 flex-col items-center justify-center gap-1 border border-foreground bg-card opacity-0 transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100"
         >
-          <span className="h-0.5 w-0.5 rounded-full bg-foreground" />
-          <span className="h-0.5 w-0.5 rounded-full bg-foreground" />
-          <span className="h-0.5 w-0.5 rounded-full bg-foreground" />
+          <span className="h-0.5 w-0.5 bg-foreground" />
+          <span className="h-0.5 w-0.5 bg-foreground" />
+          <span className="h-0.5 w-0.5 bg-foreground" />
         </span>
       )}
     </div>

@@ -9,31 +9,29 @@ export default function ProcessingToggle({ name, desc, checked, onChange, smart,
   return (
     <div
       className={cn(
-        'flex items-center justify-between gap-4 px-4 py-2.5',
-        'border-b border-border/60 last:border-b-0 hover:bg-secondary/50 transition-colors',
-        disabled ? 'cursor-not-allowed opacity-60' : 'cursor-pointer',
-        smart && 'border-l-2 border-l-[hsl(var(--blue)/0.2)] pl-3.5',
+        'flex items-center justify-between gap-4 pr-3 py-2 border-b border-border hover:bg-secondary/50 transition-colors',
+        // Unavailable rows are drawn in ink 2, never faded.
+        disabled ? 'cursor-not-allowed text-ink-2' : 'cursor-pointer',
+        // Text stays on the zone edge; the recommended-group rule hangs in the gutter.
+        smart && '-ml-3 border-l-2 border-l-[hsl(var(--blue)/0.2)] pl-2.5',
       )}
     >
       <div className="flex flex-col gap-0.5">
         <Label
           htmlFor={id}
           className={cn(
-            'text-[13px] font-semibold text-foreground flex items-center gap-1.5 flex-wrap',
-            disabled ? 'cursor-not-allowed' : 'cursor-pointer',
+            'type-small font-semibold flex items-center gap-1.5 flex-wrap',
+            disabled ? 'cursor-not-allowed' : 'cursor-pointer text-foreground',
           )}
         >
           {name}
           {detected && (
-            <span
-              className="type-label px-1.5 py-px text-[hsl(var(--success))] bg-[hsl(var(--success)/0.12)]"
-              title={detected}
-            >
+            <span className="type-label px-1.5 border border-success text-success" title={detected}>
               Recommended — {detected}
             </span>
           )}
         </Label>
-        <span id={descriptionId} className="type-small text-[hsl(var(--sub))] leading-snug">
+        <span id={descriptionId} className="type-small text-ink-2">
           {desc}
         </span>
         {extra}

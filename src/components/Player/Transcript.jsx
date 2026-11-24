@@ -2,7 +2,7 @@ import { useState, useRef, useEffect, useLayoutEffect, useMemo, useId } from 're
 import { createPortal } from 'react-dom'
 import { open, save } from '@tauri-apps/plugin-dialog'
 import { readTextFile, writeTextFile } from '@tauri-apps/plugin-fs'
-import { Upload, Copy, Check, Flag, Locate, Trash2, Download, X, ChevronDown } from 'lucide-react'
+import { Upload, Copy, Check, Flag, Locate, Trash2, Download, X, ChevronDown, AlertTriangle } from 'lucide-react'
 import { cn } from '../../lib/utils'
 import { basename } from '../../utils'
 import {
@@ -31,7 +31,7 @@ import {
   toggleFlag,
   transcriptText,
 } from '../../lib/transcript'
-import { Card, CardHeader, CardTitle } from '../ui/card'
+import { Card } from '../ui/card'
 import { Button } from '../ui/button'
 import { ConfirmDialog } from '../ui/confirm-dialog'
 
@@ -463,14 +463,15 @@ export default function Transcript({
 
   const pill = on =>
     cn(
-      'inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[12px] transition-colors',
-      on
-        ? 'bg-secondary text-foreground ring-1 ring-inset ring-foreground'
-        : 'text-[hsl(var(--sub))] hover:text-foreground',
+      'inline-flex h-7 items-center gap-1 px-2 type-small transition-colors',
+      on ? 'bg-secondary text-foreground ring-1 ring-inset ring-foreground' : 'text-ink-2 hover:text-foreground',
     )
-  const gutter = 'w-10 shrink-0 text-right text-[12px] tabular-nums text-[hsl(var(--text2))]'
+  const gutter = 'w-10 shrink-0 text-right type-min tabular-nums text-ink-2'
+  // Unavailable is a hidden (dashed) line in ink 2, never faded; it also drops
+  // to regular weight, so it differs from the semibold live buttons in dark too.
   const smallButton =
-    'inline-flex items-center gap-1 rounded border border-border px-1.5 py-0.5 text-[12px] tabular-nums text-foreground hover:bg-secondary disabled:opacity-45'
+    'inline-flex h-7 items-center gap-1 border border-input px-2 font-semibold tabular-nums hover:bg-secondary disabled:border-dashed disabled:font-normal disabled:text-ink-2 disabled:hover:bg-transparent'
+  const title = 'type-label text-ink-2'
 
   const status = copied ? 'Lines and times copied to the clipboard.' : message
 
@@ -480,39 +481,47 @@ export default function Transcript({
   const flagsPanel = (
     <section
       aria-label="Flags for review"
-      className={cn(inPane ? 'flex flex-col gap-1.5' : 'shrink-0 border-t border-border/60 px-3 py-1')}
+      className={cn('flex flex-col', !inPane && 'shrink-0 border-t border-border px-4 pb-2')}
     >
-      <div className="flex flex-wrap items-center justify-between gap-x-2 gap-y-1">
-        <h3 className="shrink-0 text-[12px] font-medium text-[hsl(var(--text2))]">
+      {/* The title holds its own 40px head line, as the Listening mix does; in
+          a narrow pane the action wraps under it, its text on the same edge. */}
+      <div className={cn('flex flex-wrap items-center justify-between gap-x-2', !inPane && 'min-h-10')}>
+        <h3 className={cn('shrink-0', inPane && 'flex min-h-10 items-center', title)}>
           Flags for review{flags.length ? ` (${flags.length})` : ''}
           {!inPane && flags.length > FLAG_ROWS_SHOWN && (
             <span className="font-normal"> · scroll for {flags.length - FLAG_ROWS_SHOWN} more</span>
           )}
         </h3>
         {flags.length > 0 && (
-          <Button size="sm" variant="ghost" className="h-6" onClick={exportFlags} title="Save flags as CSV or text">
+          <Button
+            size="sm"
+            variant="ghost"
+            className={cn('shrink-0', inPane && '-mx-2.5 mb-1')}
+            onClick={exportFlags}
+            title="Save flags as CSV or text"
+          >
             <Download size={12} /> Export flags
           </Button>
         )}
       </div>
       {!hasLines ? (
-        <p className="type-small text-[hsl(var(--sub))]">
+        <p className="type-small text-ink-2">
           Open a transcript to flag lines for review. Flags never change the transcript.
         </p>
       ) : flags.length === 0 ? (
-        <p className="type-small text-[hsl(var(--sub))]">
+        <p className="type-small text-ink-2">
           Press <kbd className="tabular-nums">F</kbd> on a line, or click its flag, to mark it for review. Flags never
           change the transcript.
         </p>
       ) : (
         <ul
-          className={cn('flex flex-col', inPane ? 'gap-2' : 'mt-0.5 gap-1 overflow-y-auto')}
+          className={cn('flex flex-col', inPane ? 'gap-3' : 'gap-1 overflow-y-auto')}
           style={inPane ? undefined : { maxHeight: `${FLAG_ROWS_SHOWN * 1.625}rem` }}
         >
           {flags.map(f => {
             const jump = (
               <button
-                className="w-14 shrink-0 text-left tabular-nums text-[hsl(var(--text2))] hover:text-foreground"
+                className="w-14 shrink-0 text-left tabular-nums text-ink-2 hover:text-foreground"
                 onClick={() => playLine(f.index)}
                 aria-label={`Play from ${f.name}, ${fmtElapsed(f.audioTime)}`}
               >
@@ -528,18 +537,18 @@ export default function Transcript({
             }
             const note = inPane ? (
               <FlagNote
-                className="min-h-6 min-w-0 flex-1 rounded-none border-0 border-b border-[hsl(var(--sub))] bg-transparent px-0.5 py-0.5 text-[14px] leading-[1.45] text-foreground placeholder:text-[hsl(var(--sub))] focus:border-foreground"
+                className="min-h-6 min-w-0 flex-1 border-b border-input bg-transparent py-0.5 placeholder:italic placeholder:text-ink-2 focus:border-foreground"
                 {...noteProps}
               />
             ) : (
               <input
-                className="h-6 min-w-0 flex-1 rounded-none border-0 border-b border-[hsl(var(--sub))] bg-transparent px-0.5 text-[12px] text-foreground placeholder:text-[hsl(var(--sub))] focus:border-foreground"
+                className="h-6 min-w-0 flex-1 border-b border-input bg-transparent px-0.5 type-small placeholder:italic placeholder:text-ink-2 focus:border-foreground"
                 {...noteProps}
               />
             )
             const remove = (
               <button
-                className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded text-[hsl(var(--text2))] transition-colors hover:bg-secondary hover:text-destructive"
+                className="inline-flex h-6 w-6 shrink-0 items-center justify-center text-ink-2 transition-colors hover:bg-secondary hover:text-destructive"
                 aria-label={`Remove flag from ${f.name}`}
                 title="Remove flag"
                 onClick={() => flagLine(f.index)}
@@ -553,20 +562,24 @@ export default function Transcript({
               </span>
             )
             return inPane ? (
-              <li key={f.id} className="group flex flex-col gap-0.5 text-[12px]">
-                <div className="flex items-center gap-2 min-w-0">
-                  {ref}
+              // Ref, excerpt and note share one left edge; the excerpt and
+              // note are transcript text, so they keep the 14px body size.
+              <li key={f.id} className="group flex flex-col gap-1">
+                <div className="flex items-center gap-2 min-w-0 type-min">
+                  <span aria-hidden="true" className="shrink-0 tabular-nums text-ink-2">
+                    {lineRef(segments[f.index], f.index)}
+                  </span>
                   {jump}
                   <span className="flex-1" />
                   {remove}
                 </div>
-                <span className="text-[14px] leading-[1.45] text-foreground line-clamp-2 break-words" title={f.excerpt}>
+                <span className="line-clamp-2 break-words" title={f.excerpt}>
                   {f.excerpt}
                 </span>
                 <div className="flex">{note}</div>
               </li>
             ) : (
-              <li key={f.id} className="group flex items-center gap-2 text-[12px]">
+              <li key={f.id} className="group flex items-center gap-2 type-min">
                 {ref}
                 {jump}
                 <span className="w-2/5 min-w-0 shrink truncate text-foreground" title={f.excerpt}>
@@ -583,13 +596,13 @@ export default function Transcript({
   )
 
   return (
-    <Card className={cn('@container flex h-full min-h-0 flex-col', flush && 'rounded-none border-0 bg-transparent')}>
-      <CardHeader className="shrink-0 py-2">
+    <Card className={cn('@container flex h-full min-h-0 flex-col', flush && 'border-0 bg-transparent')}>
+      <div className="pane-head shrink-0">
         {/* The title gives way (truncates) before the actions wrap. */}
-        <CardTitle as="h2" className="min-w-[5rem] shrink-[4] truncate" title="Transcript proofing">
+        <h2 className={cn('min-w-[5rem] shrink-[4] truncate', title)} title="Transcript proofing">
           Transcript proofing
-        </CardTitle>
-        <div className="flex min-w-0 flex-wrap items-center justify-end gap-1.5">
+        </h2>
+        <div className="flex min-w-0 flex-wrap items-center justify-end gap-1">
           {segments.length > 0 && hasTimes && (
             <button
               onClick={held ? goToPlaying : () => setFollow(f => !f)}
@@ -630,7 +643,7 @@ export default function Transcript({
             </>
           )}
         </div>
-      </CardHeader>
+      </div>
 
       <ConfirmDialog
         open={confirmDelete}
@@ -653,19 +666,14 @@ export default function Transcript({
       />
 
       {storageError && !onStorageError && (
-        <p
-          role="alert"
-          className="mx-3 mt-2 rounded-md border border-warning/40 bg-warning/10 px-3 py-1.5 type-small text-foreground"
-        >
+        <p role="alert" className="notice mx-4 mb-2 flex items-start gap-2">
+          <AlertTriangle aria-hidden="true" size={14} className="mt-0.5 shrink-0 text-warning" />
           {storageError}
         </p>
       )}
 
       {operationError && (
-        <p
-          role="alert"
-          className="mx-3 mt-2 rounded-md border border-destructive/30 border-l-[3px] border-l-destructive px-3 py-1.5 type-small text-destructive"
-        >
+        <p role="alert" className="notice notice-error mx-4 mb-2">
           {operationError}
         </p>
       )}
@@ -674,7 +682,7 @@ export default function Transcript({
         <div className="flex min-h-0 flex-1 overflow-y-auto">
           <div className="m-auto flex w-full max-w-[34rem] flex-col items-start gap-4 px-6 py-8">
             <p className="type-h3 text-foreground">Proof a transcript against this recording</p>
-            <p className="type-small leading-relaxed text-[hsl(var(--text2))]">
+            <p className="type-small text-ink-2">
               Open the transcript of this recording. The line at the playhead is highlighted as the audio plays, you can
               play from any line, and you can flag lines to check. DepoAudio does not change the transcript; make
               corrections in your CAT software.
@@ -683,11 +691,11 @@ export default function Transcript({
               <Upload size={14} /> Open transcript
             </Button>
             <div className="w-full">
-              <p className="type-label text-[hsl(var(--text2))]">Formats you can open</p>
+              <p className={title}>Formats you can open</p>
               <ul className="mt-1.5 flex flex-col gap-1 type-small text-foreground">
                 {SUPPORTED_FORMATS.map(([label, ext]) => (
                   <li key={ext} className="flex items-baseline gap-2">
-                    <span className="w-28 shrink-0 tabular-nums text-[hsl(var(--text2))]">{ext}</span>
+                    <span className="w-28 shrink-0 tabular-nums text-ink-2">{ext}</span>
                     <span>{label}</span>
                   </li>
                 ))}
@@ -701,7 +709,7 @@ export default function Transcript({
               disclosure. The disclosure stays open while the recording start
               time is still needed, so the lines are never out of step
               without the person seeing why. */}
-          <div className="flex flex-wrap items-center gap-x-3 gap-y-1 border-b border-border/60 px-3 py-1 text-[12px] text-[hsl(var(--text2))]">
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-1 border-b border-border px-4 py-1 type-small text-ink-2">
             <span className="min-w-0">
               {detection
                 ? `${detection.name}: ${describeDetection(detection)}`
@@ -740,7 +748,7 @@ export default function Transcript({
               id={timingId}
               role="group"
               aria-label="Timing and sync"
-              className="flex flex-col gap-1 border-b border-border/60 px-3 py-1.5 text-[12px] text-[hsl(var(--text2))]"
+              className="flex flex-col gap-2 border-b border-border px-4 py-2 type-small text-ink-2"
             >
               <span className="inline-flex flex-wrap items-center gap-1" role="group" aria-label="What the times mean">
                 <span>Times are</span>
@@ -768,7 +776,7 @@ export default function Transcript({
                   )}
                   <input
                     id={startId}
-                    className="h-6 w-28 rounded border border-border bg-transparent px-1.5 tabular-nums text-foreground placeholder:text-[hsl(var(--sub))]"
+                    className="h-7 w-28 border border-input bg-transparent px-1.5 tabular-nums placeholder:text-ink-2"
                     placeholder={sync.recordingStart != null ? 'change' : 'HH:MM:SS'}
                     value={startDraft}
                     onChange={e => setStartDraft(e.target.value)}
@@ -830,7 +838,7 @@ export default function Transcript({
             ref={listRef}
             role="listbox"
             aria-label="Transcript lines. Enter plays a line, F flags it, period goes to the playing line."
-            className="relative min-h-[124px] flex-1 overflow-y-auto px-1.5 py-1"
+            className="relative min-h-[124px] flex-1 overflow-y-auto p-2"
           >
             {segments.map((s, index) => {
               const active = index === activeIndex
@@ -850,23 +858,21 @@ export default function Transcript({
                   onKeyDown={e => onRowKey(e, index)}
                   title={at == null ? undefined : `Plays from ${fmtElapsed(at)} in the audio`}
                   className={cn(
-                    // Line text is body copy (14px); the gutter and time are labels (12px).
-                    'group flex cursor-pointer items-baseline gap-2 rounded px-1.5 py-0.5 text-[14px] leading-[1.45] focus-visible:outline focus-visible:outline-2 focus-visible:outline-foreground',
-                    active
-                      ? 'bg-secondary border-l-2 border-l-foreground'
-                      : 'border-l-2 border-l-transparent hover:bg-secondary/40',
+                    // Line text is body copy (14px); the gutter and time are record numbers (type-min).
+                    'inset-focus group flex cursor-pointer items-baseline gap-2 border-l-2 py-0.5 pl-1.5 pr-2',
+                    active ? 'bg-secondary border-l-foreground' : 'border-l-transparent hover:bg-secondary/50',
                   )}
                 >
                   <span className="sr-only">{name}: </span>
                   <span aria-hidden="true" className={gutter}>
                     {lineRef(s, index)}
                   </span>
-                  <span className="w-16 shrink-0 text-[12px] tabular-nums text-[hsl(var(--text2))]">
+                  <span className="w-16 shrink-0 type-min tabular-nums text-ink-2">
                     {s.start == null ? '' : sync.timeKind === 'time-of-day' ? fmtClock(s.start) : fmtElapsed(s.start)}
                   </span>
-                  {s.speaker && <span className="shrink-0 font-medium text-[hsl(var(--text2))]">{s.speaker}:</span>}
+                  {s.speaker && <span className="shrink-0 font-medium text-ink-2">{s.speaker}:</span>}
                   {/* A readable measure at any width; the flag sits right after the text. */}
-                  <span className="min-w-0 max-w-[80ch] whitespace-pre-wrap break-words text-foreground">{s.text}</span>
+                  <span className="min-w-0 max-w-[80ch] whitespace-pre-wrap break-words">{s.text}</span>
                   {s.flag && <span className="sr-only">, flagged</span>}
                   {/* Mouse only: the keyboard uses F, and the state is read above. */}
                   <span
@@ -877,10 +883,10 @@ export default function Transcript({
                     }}
                     title={s.flag ? 'Remove flag (F)' : 'Flag for review (F)'}
                     className={cn(
-                      '-my-0.5 inline-flex h-6 w-6 shrink-0 items-center justify-center self-start rounded transition-opacity',
+                      '-my-0.5 inline-flex h-6 w-6 shrink-0 items-center justify-center self-start transition-opacity',
                       s.flag
                         ? 'text-foreground'
-                        : 'text-[hsl(var(--sub))] opacity-0 group-hover:opacity-100 group-focus:opacity-100 hover:text-foreground',
+                        : 'text-ink-2 opacity-0 group-hover:opacity-100 group-focus:opacity-100 hover:text-foreground',
                     )}
                   >
                     <Flag size={13} fill={s.flag ? 'currentColor' : 'none'} />
