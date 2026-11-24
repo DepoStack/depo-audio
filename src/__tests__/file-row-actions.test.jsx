@@ -183,6 +183,37 @@ describe('Queued FTR recordings', () => {
   })
 })
 
+describe('Queued SGMCA rows', () => {
+  afterEach(cleanup)
+
+  const recording = { path: '/case/hearing.sgmca', name: 'hearing.sgmca', fmt: null }
+  const sgmca = (recordingSessions, stillRecording) => ({
+    convertedIndex: 0,
+    streams: [{ channels: 4, sampleRate: 48000, language: null, title: null }],
+    durationSecs: 3600,
+    recordingSessions,
+    stillRecording,
+  })
+
+  it('says how many recording sessions are joined', () => {
+    render(<FileRow file={recording} streams={sgmca(3, false)} onRemove={vi.fn()} converting={false} />)
+    expect(
+      screen.getByText(
+        'This file holds 3 recording sessions; they are joined in order (gaps between them are not kept).',
+      ),
+    ).toBeTruthy()
+    expect(screen.queryByText(/audio tracks/)).toBeNull()
+  })
+
+  it('says when a single session looks still recording, and nothing otherwise', () => {
+    render(<FileRow file={recording} streams={sgmca(1, true)} onRemove={vi.fn()} converting={false} />)
+    expect(screen.getByText(/still being recorded, or it was cut short/)).toBeTruthy()
+    cleanup()
+    render(<FileRow file={recording} streams={sgmca(1, false)} onRemove={vi.fn()} converting={false} />)
+    expect(screen.queryByText(/recording sessions|still being recorded/)).toBeNull()
+  })
+})
+
 describe('Compare with original', () => {
   beforeEach(() => {
     invoke.mockReset()

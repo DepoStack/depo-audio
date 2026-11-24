@@ -13,7 +13,13 @@ import {
   compareTarget,
   isPlayerPlayable,
 } from '../../lib/player'
-import { audioTrackNotice, dcrQueueNotices, dmNotice, trmRecordingNotice } from '../../lib/queue'
+import {
+  audioTrackNotice,
+  dcrQueueNotices,
+  dmNotice,
+  recordingSessionNotice,
+  trmRecordingNotice,
+} from '../../lib/queue'
 
 export default function FileRow({ file, streams, sessionNotice = '', job, onRemove, converting, onOpenInPlayer }) {
   const [expanded, setExpanded] = useState(false)
@@ -25,6 +31,7 @@ export default function FileRow({ file, streams, sessionNotice = '', job, onRemo
   const isRej = file.fmt?.status === 'unsupported'
   const trackNotice = isRej ? '' : audioTrackNotice(streams)
   const recordingNotice = isRej ? '' : trmRecordingNotice(streams)
+  const sessionsNotice = isRej ? '' : recordingSessionNotice(streams)
   const dcrNotices = isRej ? [] : dcrQueueNotices(streams)
   const dmRowNotice = isRej ? '' : dmNotice(streams)
 
@@ -63,7 +70,7 @@ export default function FileRow({ file, streams, sessionNotice = '', job, onRemo
             )}
           </div>
           <span className="type-small text-[hsl(var(--sub))] truncate block">{file.path}</span>
-          {[trackNotice, recordingNotice, sessionNotice, ...dcrNotices, dmRowNotice]
+          {[trackNotice, sessionsNotice, recordingNotice, sessionNotice, ...dcrNotices, dmRowNotice]
             .filter(Boolean)
             .map((notice, index) => (
               // Two DCR changes in the same second give the same text, so the

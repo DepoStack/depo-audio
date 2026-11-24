@@ -177,10 +177,11 @@ fn validate_merge_job(job: &MergeJob) -> Result<ValidatedMergeJob, String> {
     })
 }
 
-/// Strip an SGMCA vendor prefix (or read a `.dm` or `.dcr`, or split an FTR
-/// recording's channels) once and keep the temporary feed alive for the
-/// whole merge. Reusing it avoids copying a potentially large recording for
-/// duration probing, sync detection, and final decoding independently.
+/// Read an SGMCA's layout (or a `.dm`'s blocks, or a `.dcr`, or split an
+/// FTR recording's channels) once and keep its temporary feed alive for the
+/// whole merge. Reusing it avoids reading every page of a potentially large
+/// recording again for duration probing, sync detection, and decoding for
+/// the merge.
 async fn prepare_merge_source(app: &AppHandle, path: PathBuf, cancel: &MergeCancel) -> Result<AudioFeed, String> {
     cancel.check()?;
     let options = crate::ffmpeg::feed_options(app, &path).await;
@@ -921,21 +922,22 @@ mod tests {
         assert!(cancel.check().is_ok());
         assert!(!(cancel.predicate())());
 
-        // A prefixed SGMCA needs a temporary copy; with the flag set before
-        // the merge reaches it, no copy is made and the merge stops.
+        // A Direct Audio SGMCA needs a temporary concat script over its
+        // sessions; with the flag set before the merge reaches it, no script
+        // is written and the merge stops.
         let dir = test_dir("cancel");
         std::fs::create_dir_all(&dir).unwrap();
-        let source = dir.join("prefixed.sgmca");
-        let mut bytes = b"vendor-prefix".to_vec();
-        bytes.extend_from_slice(&crate::sgmca::fixtures::synthetic(5, 312, 0, |_| 30));
+        let source = dir.join("session.sgmca");
+        let bytes = crate::sgmca::fixtures::synthetic_direct(5, 312, 0, |_| 30);
         std::fs::write(&source, &bytes).unwrap();
 
         let options = crate::helpers::FeedOptions::default();
         let prepared = tauri::async_runtime::block_on(prepare_merge_feed(source.clone(), options, &cancel)).unwrap();
-        let copy = prepared.path().to_path_buf();
-        assert_ne!(copy, source, "uncancelled: the copy is made");
+        let script = prepared.path().to_path_buf();
+        assert_ne!(script, source, "uncancelled: the script is written");
+        assert!(script.starts_with(crate::workdir::tests::test_root()));
         drop(prepared);
-        assert!(!copy.exists(), "the copy goes with its guard");
+        assert!(!script.exists(), "the script goes with its guard");
 
         held_by_command.cancel();
         assert!(cancel.is_cancelled());
@@ -947,17 +949,15 @@ mod tests {
     }
 
     #[test]
-    fn a_cancel_during_the_copy_removes_the_partial_copy() {
+    fn a_cancel_while_reading_the_sessions_leaves_no_temporary_file() {
         let cancel = MergeCancel::default();
         let dir = test_dir("cancel_copy");
         std::fs::create_dir_all(&dir).unwrap();
         let source = dir.join("large.sgmca");
-        let mut bytes = b"vendor-prefix".to_vec();
-        bytes.extend_from_slice(&crate::sgmca::fixtures::synthetic(5, 312, 0, |_| 30));
-        bytes.resize(4 * 1024 * 1024, 7);
+        let bytes = crate::sgmca::fixtures::synthetic_direct(20_000, 312, 0, |_| 30);
         std::fs::write(&source, &bytes).unwrap();
-        // The copy runs on a blocking worker; set the flag from its predicate
-        // after a few chunks so the cancel lands mid-copy.
+        // The page walk runs on a blocking worker; set the flag from its
+        // predicate after a few checks so the cancel lands mid-walk.
         let checks = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let counter = checks.clone();
         let flag = cancel.clone();
@@ -972,12 +972,13 @@ mod tests {
             crate::helpers::FeedOptions::default(),
             Some(predicate.as_ref()),
         );
-        assert!(feed.is_err(), "the copy was cancelled");
+        assert!(feed.is_err(), "the preparation was cancelled");
         assert!(cancel.is_cancelled());
         assert!(
             crate::workdir::tests::thread_run_files().is_empty(),
-            "the partial copy is removed"
+            "no temporary file is left"
         );
+        assert_eq!(std::fs::read(&source).unwrap(), bytes, "the source is only read");
         let _ = std::fs::remove_dir_all(dir);
     }
 }

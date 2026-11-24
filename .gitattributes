@@ -46,6 +46,7 @@ scripts/fixtures/trm/vendor-notes-samples/*.txt text eol=lf
 *.jpg binary
 *.onnx binary
 *.png binary
+*.sgmca binary
 *.tgz binary
 *.trm binary
 *.wav binary

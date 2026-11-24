@@ -23,7 +23,7 @@ DepoAudio handles the audio side of a deposition or hearing, end to end:
 
 - 🎧 **Convert** proprietary court formats (Stenograph SGMCA, FTR `.trm`/`.tll`, CourtSmart BWF) and standard audio to WAV, MP3, FLAC, Opus, M4A, or SGMCA (Direct Audio) — mix to stereo, keep the channel layout, or split one file per source channel and name it by role.
 - **Improve** audio with local, non-learned controls for microphone-channel leveling, clipped peaks, high-pass filtering, normalization, silence trim, and fades.
-- ▶️ **Play & review** in a built-in player — color-coded audio tracks, 0.5×–2× speed, A-B loop, bookmarks, and a synced transcript editor.
+- ▶️ **Play & review** in a built-in player — color-coded audio tracks, 0.5×–2× speed, A-B loop, bookmarks, and transcript proofing: open an existing transcript and follow it against the audio.
 - 🗂️ **Organize** every conversion into an auto-filed case library, and pull recordings straight from installed court software.
 
 > **Recordings stay local.** Conversion, playback, analysis, and cleanup run on your machine; audio is not uploaded. Optional update checks may use the network. No account or subscription is required. Unpublished v1.1.0 does not install or download learned-model files.
@@ -82,7 +82,7 @@ Scanning is a bounded, cancellable local analysis pass. FFmpeg performs the sele
 
 - Color-coded tracks, **0.5×–2× speed**, **auto-backstep** on resume, **A-B loop**, editable **bookmarks**
 - Full keyboard transport
-- **Synced transcript editor** — import SRT, VTT, or TXT, follow the playhead, stamp and edit cues, then export SRT or TXT
+- **Proof a transcript against this recording** — open an existing SRT, WebVTT or timestamped text transcript (for example an ASCII export from your CAT software). The line at the playhead is highlighted and followed; click a line or press Enter to play from it. Adjust the sync if the transcript is ahead or behind, enter the recording's start time for time-of-day stamps, and press F to flag a line for review with a note. Flags export as CSV or text. DepoAudio does not edit transcripts; make corrections in your CAT software
 
 ### 🗂️ Library & detection
 
@@ -127,6 +127,14 @@ chunks are never copied, only noted as present. This has been checked with
 synthetic files and with one sample made by the owner's rebuild tool
 (`scripts/fixtures/trm/vendor-notes-samples/`), not with a recording made by
 FTR.
+
+An SGMCA (Direct Audio) file can hold several recording sessions; DepoAudio
+reads every one and joins them in order (the gaps between them are not
+kept), and SGMCA files it writes carry the Direct Audio file and segment
+headers with each session's start time. That layout comes from
+owner-supplied interoperability notes and has not yet been confirmed
+against a file CATalyst wrote, nor has CATalyst been shown to open a file
+DepoAudio wrote. See [`docs/SGMCA.md`](docs/SGMCA.md).
 
 DCR support reads Liberty / BIS Digital recordings and has been tested with
 synthetic files only, including two synthetic tones the owner made with a

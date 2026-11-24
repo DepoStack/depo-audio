@@ -379,6 +379,24 @@ pub struct Prefs {
     /// Startup output mode; empty string means "remember last used".
     #[serde(default)]
     pub default_output_mode: String,
+    /// System-wide Player keys ("Playback keys while typing elsewhere").
+    /// Off by default; a preferences file from an earlier version loads off.
+    #[serde(default)]
+    pub playback_keys: PlaybackKeysPrefs,
+}
+
+/// Which keys control the Player while another app has focus. The frontend
+/// validates keys before saving and again after loading; this side only keeps
+/// the shape, so an old or hand-edited file can never turn the keys on by
+/// accident (missing or non-true `enabled` stays off).
+#[derive(Debug, Serialize, Deserialize, Clone, Default, PartialEq)]
+#[serde(rename_all = "camelCase", default)]
+pub struct PlaybackKeysPrefs {
+    pub enabled: bool,
+    pub hold_to_play: bool,
+    /// Action id ("back", "playPause", "forward", "slower", "faster") to a
+    /// global-shortcut accelerator such as "F14" or "Control+Alt+KeyP".
+    pub bindings: std::collections::BTreeMap<String, String>,
 }
 
 impl Default for Prefs {
@@ -418,6 +436,7 @@ impl Default for Prefs {
             max_file_size_gb: 2.0,
             default_output_format: "".into(),
             default_output_mode: "".into(),
+            playback_keys: PlaybackKeysPrefs::default(),
         }
     }
 }

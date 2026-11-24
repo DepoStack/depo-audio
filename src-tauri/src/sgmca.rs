@@ -1,12 +1,27 @@
 //! Stenograph SGMCA ("Direct Audio") recordings: reading, checking, slicing
 //! and writing.
 //!
-//! An SGMCA recording is an ordinary Ogg stream (RFC 3533) carrying one Opus
-//! logical bitstream (RFC 7845) that uses channel mapping family 255: every
-//! court channel is its own uncoupled mono Opus stream, so `stream_count`
-//! equals the channel count, `coupled_count` is zero and the mapping table is
-//! the identity. Nothing in the file is encrypted or vendor-specific beyond
-//! the extension, so this module works only from those public specifications:
+//! The layout below comes from owner-supplied interoperability notes and has
+//! not yet been confirmed against a file CATalyst wrote (see docs/SGMCA.md).
+//! All integers are little-endian.
+//!
+//! * A 40-byte file header: its own size (40), a format version (1), a
+//!   16-byte recording identifier and 16 reserved bytes.
+//! * Then one or more segments, one per recording session, in the order they
+//!   were recorded. Each is a 56-byte segment header (its own size 56,
+//!   version 1, record kind 2 for audio, a reserved word, the local
+//!   wall-clock start as 32 NUL-padded ASCII bytes `YYYY-MM-DDTHH:MM:SS±hhmm`,
+//!   and the byte length of the payload as a u64), followed by the payload:
+//!   a complete, independent Ogg stream (RFC 3533) carrying one Opus stream
+//!   (RFC 7845).
+//!
+//! A live recording uses Opus channel mapping family 255 with one uncoupled
+//! mono stream per court channel; an imported file is said to use family 1
+//! with the same layout. Earlier DepoAudio builds wrote, and read, a bare Ogg
+//! Opus stream with no headers at all; such a file is still read, and named
+//! as that older layout.
+//!
+//! This module works from those notes and the public specifications only:
 //!
 //! * the Ogg page layout and its CRC-32 (polynomial 0x04C11DB7, MSB first,
 //!   initial value 0, no final XOR, CRC field zeroed while it is computed);
@@ -16,9 +31,10 @@
 //!
 //! Decoding to PCM stays with FFmpeg, which handles multistream Opus. What
 //! this module adds is everything FFmpeg cannot tell us cheaply or exactly:
-//! where the stream starts, whether its headers are sound, the exact duration
-//! (final granule position minus pre-skip), the true channel layout, and a
-//! sample-accurate slice that copies Opus packets without re-encoding them.
+//! where each session's stream is, whether its headers are sound, the exact
+//! duration of each session (last granule position minus pre-skip), the
+//! true channel layout, and a sample-exact slice that copies Opus packets
+//! without re-encoding them.
 //!
 //! Granule positions and pre-skip are always counted at 48 kHz, whatever the
 //! informational input sample rate in `OpusHead` says.
@@ -33,9 +49,23 @@ use serde::Serialize;
 /// Opus timestamps (granule positions, pre-skip) always run at 48 kHz.
 pub(crate) const OPUS_RATE: u64 = 48_000;
 
-/// How far into a file the Ogg stream may start. Some exports carry a short
-/// prefix before the first page; real streams start well inside this window.
-pub(crate) const HEADER_SCAN: usize = 8192;
+/// Size of the Direct Audio file header.
+pub(crate) const FILE_HEADER_LEN: u64 = 40;
+
+/// Size of each segment header.
+pub(crate) const SEGMENT_HEADER_LEN: u64 = 56;
+
+/// The only file and segment header version the notes describe. CATalyst is
+/// said to refuse a file version above 1 and to find no playback position
+/// unless it is exactly 1.
+const FORMAT_VERSION: u32 = 1;
+const SEGMENT_VERSION: u32 = 1;
+
+/// Segment record kind for audio (the only kind the notes describe).
+const SEGMENT_KIND_AUDIO: u32 = 2;
+
+/// Bytes of the start-time text field in a segment header.
+const START_TEXT_LEN: usize = 32;
 
 /// Decoder pre-roll kept in front of a slice's first sample (80 ms), as RFC
 /// 7845 section 4.6 recommends, so the decoder has converged by the cut.
@@ -49,9 +79,6 @@ const FLAG_EOS: u8 = 0x04;
 /// The fixed part of an Ogg page header, before the segment table.
 const PAGE_HEADER_LEN: usize = 27;
 
-/// The largest possible Ogg page: header, 255 lacing values, 255 * 255 bytes.
-const MAX_PAGE_LEN: usize = PAGE_HEADER_LEN + 255 + 255 * 255;
-
 /// A granule position of all ones means "no packet finishes on this page".
 const NO_GRANULE: u64 = u64::MAX;
 
@@ -61,10 +88,11 @@ const NO_GRANULE: u64 = u64::MAX;
 const TARGET_PAGE_BODY: usize = 8192;
 const TARGET_PAGE_PACKETS: usize = 50;
 
-type CancelCheck<'a> = Option<&'a (dyn Fn() -> bool + Send + Sync)>;
+pub(crate) type CancelCheck<'a> = Option<&'a (dyn Fn() -> bool + Send + Sync)>;
 
 pub(crate) const SLICE_CANCELLED_MESSAGE: &str = "SGMCA slicing cancelled";
 pub(crate) const INSPECT_CANCELLED_MESSAGE: &str = "SGMCA inspection cancelled";
+pub(crate) const WRITE_CANCELLED_MESSAGE: &str = "SGMCA writing cancelled";
 
 // ── CRC-32 ───────────────────────────────────────────────────────────────────
 
@@ -130,39 +158,6 @@ impl Page {
     }
 }
 
-/// Parse one page from the start of `bytes`. Returns the page and its length,
-/// or None when `bytes` does not start with a complete, CRC-correct page.
-fn parse_page_at(bytes: &[u8], offset: u64) -> Option<(Page, usize)> {
-    if bytes.len() < PAGE_HEADER_LEN || &bytes[..4] != b"OggS" || bytes[4] != 0 {
-        return None;
-    }
-    let segments = bytes[26] as usize;
-    let lacing_end = PAGE_HEADER_LEN + segments;
-    let lacing = bytes.get(PAGE_HEADER_LEN..lacing_end)?;
-    let body_len: usize = lacing.iter().map(|&value| value as usize).sum();
-    let total = lacing_end + body_len;
-    let page_bytes = bytes.get(..total)?;
-    let stored = u32::from_le_bytes(page_bytes[22..26].try_into().ok()?);
-    let mut crc = crc_update(0, &page_bytes[..22]);
-    crc = crc_update(crc, &[0; 4]);
-    crc = crc_update(crc, &page_bytes[26..]);
-    if crc != stored {
-        return None;
-    }
-    Some((
-        Page {
-            header_type: page_bytes[5],
-            granule: u64::from_le_bytes(page_bytes[6..14].try_into().ok()?),
-            serial: u32::from_le_bytes(page_bytes[14..18].try_into().ok()?),
-            sequence: u32::from_le_bytes(page_bytes[18..22].try_into().ok()?),
-            lacing: lacing.to_vec(),
-            body: page_bytes[lacing_end..].to_vec(),
-            offset,
-        },
-        total,
-    ))
-}
-
 /// Read exactly `buf.len()` bytes, or fewer only at end of file.
 fn read_fully<R: Read>(reader: &mut R, buf: &mut [u8]) -> Result<usize, String> {
     let mut filled = 0;
@@ -183,6 +178,8 @@ pub(crate) struct PageReader<R: Read> {
     inner: R,
     offset: u64,
     index: u64,
+    /// The input ended partway through a page.
+    truncated: bool,
 }
 
 impl<R: Read> PageReader<R> {
@@ -191,7 +188,13 @@ impl<R: Read> PageReader<R> {
             inner,
             offset,
             index: 0,
+            truncated: false,
         }
+    }
+
+    /// Byte offset just past the last complete page read.
+    pub(crate) fn position(&self) -> u64 {
+        self.offset
     }
 
     pub(crate) fn next_page(&mut self) -> Result<Option<Page>, String> {
@@ -203,6 +206,7 @@ impl<R: Read> PageReader<R> {
             return Ok(None);
         }
         if read < PAGE_HEADER_LEN {
+            self.truncated = true;
             return Err(format!(
                 "The recording ends partway through Ogg page {page_number} (byte {at}); the file looks truncated."
             ));
@@ -220,6 +224,7 @@ impl<R: Read> PageReader<R> {
         }
         let mut lacing = vec![0u8; header[26] as usize];
         if read_fully(&mut self.inner, &mut lacing)? < lacing.len() {
+            self.truncated = true;
             return Err(format!(
                 "The recording ends partway through Ogg page {page_number} (byte {at}); the file looks truncated."
             ));
@@ -227,6 +232,7 @@ impl<R: Read> PageReader<R> {
         let body_len: usize = lacing.iter().map(|&value| value as usize).sum();
         let mut body = vec![0u8; body_len];
         if read_fully(&mut self.inner, &mut body)? < body_len {
+            self.truncated = true;
             return Err(format!(
                 "The recording ends partway through Ogg page {page_number} (byte {at}); the file looks truncated."
             ));
@@ -262,12 +268,16 @@ pub(crate) struct PagePackets {
     pub packets: Vec<Vec<u8>>,
     pub granule: Option<u64>,
     pub eos: bool,
+    /// Byte offset of the page in the file, for error messages.
+    pub offset: u64,
 }
 
 /// Reassembles the packets of the first logical stream from its pages,
-/// following lacing values across page boundaries. Pages of any other
-/// logical stream are skipped; reading stops at the stream's end-of-stream
-/// page, so a chained recording yields only its first link.
+/// following lacing values across page boundaries. A page of any other
+/// logical stream before the first stream's end-of-stream page is refused:
+/// a Direct Audio session holds one stream, and skipping a second one would
+/// leave audio out without saying so. Reading stops at the end-of-stream
+/// page; whatever follows it is the caller's to check.
 pub(crate) struct PacketReader<R: Read> {
     pages: PageReader<R>,
     serial: Option<u32>,
@@ -275,6 +285,9 @@ pub(crate) struct PacketReader<R: Read> {
     partial_open: bool,
     next_sequence: Option<u32>,
     finished: bool,
+    saw_eos: bool,
+    /// The input ended inside a packet that never finished.
+    ended_mid_packet: bool,
     pub pages_read: u64,
 }
 
@@ -287,12 +300,26 @@ impl<R: Read> PacketReader<R> {
             partial_open: false,
             next_sequence: None,
             finished: false,
+            saw_eos: false,
+            ended_mid_packet: false,
             pages_read: 0,
         }
     }
 
-    pub(crate) fn serial(&self) -> Option<u32> {
-        self.serial
+    /// Byte offset just past the last complete page read.
+    pub(crate) fn position(&self) -> u64 {
+        self.pages.position()
+    }
+
+    /// The stream's end-of-stream page was read.
+    pub(crate) fn saw_eos(&self) -> bool {
+        self.saw_eos
+    }
+
+    /// The input ended partway through a page or a packet, as a file that is
+    /// still being written (or was cut short) does.
+    pub(crate) fn truncated(&self) -> bool {
+        self.pages.truncated || self.ended_mid_packet
     }
 
     /// The next page of the stream that finishes at least one packet, or None
@@ -305,6 +332,7 @@ impl<R: Read> PacketReader<R> {
             let Some(page) = self.pages.next_page()? else {
                 self.finished = true;
                 if self.partial_open {
+                    self.ended_mid_packet = true;
                     return Err(
                         "The recording ends in the middle of an audio packet; the file looks truncated.".into(),
                     );
@@ -321,7 +349,12 @@ impl<R: Read> PacketReader<R> {
                     }
                     self.serial = Some(page.serial);
                 }
-                Some(serial) if serial != page.serial => continue,
+                Some(serial) if serial != page.serial => {
+                    return Err(format!(
+                        "The Ogg page at byte {} belongs to a second logical stream (serial {:#010x}) inside this session, before its first stream (serial {serial:#010x}) has ended. A Direct Audio session holds one Ogg stream; DepoAudio does not read this file rather than leave the second stream's audio out.",
+                        page.offset, page.serial
+                    ));
+                }
                 Some(_) => {}
             }
             self.pages_read += 1;
@@ -364,6 +397,7 @@ impl<R: Read> PacketReader<R> {
             }
             if page.is_eos() {
                 self.finished = true;
+                self.saw_eos = true;
                 if self.partial_open {
                     return Err("The final Ogg page ends in the middle of an audio packet.".into());
                 }
@@ -378,6 +412,7 @@ impl<R: Read> PacketReader<R> {
                 packets,
                 granule: page.granule(),
                 eos: page.is_eos(),
+                offset: page.offset,
             }));
         }
     }
@@ -500,6 +535,7 @@ impl<W: Write> OggWriter<W> {
         Ok(())
     }
 
+    #[cfg(test)]
     pub(crate) fn into_inner(self) -> W {
         self.out
     }
@@ -689,13 +725,663 @@ pub(crate) fn packet_samples(packet: &[u8]) -> Result<u64, String> {
     Ok(samples)
 }
 
-// ── Locating the stream ──────────────────────────────────────────────────────
+// ── Segment start times ──────────────────────────────────────────────────────
 
-/// What sits at the start of a candidate Ogg stream.
+/// A segment's start as its header stores it, and as read.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct SegmentStart {
+    /// The header text up to its first NUL. A byte that is not printable
+    /// ASCII is shown as `?`.
+    pub text: String,
+    /// The local wall-clock time `YYYY-MM-DDTHH:MM:SS`, when the text parses.
+    pub local: Option<String>,
+    /// The stored UTC offset as `+HH:MM` or `-HH:MM`, when the text parses.
+    /// CATalyst is said to read it but not apply it.
+    pub utc_offset: Option<String>,
+}
+
+/// Parse `YYYY-MM-DDTHH:MM:SS±hhmm` (24 characters, the strftime pattern
+/// `%Y-%m-%dT%H:%M:%S%z`) into a local date-time and an offset in minutes.
+/// Anything else, or an impossible date or time, is None.
+pub(crate) fn parse_start_text(text: &str) -> Option<(time::PrimitiveDateTime, i32)> {
+    let bytes = text.as_bytes();
+    if bytes.len() != 24 {
+        return None;
+    }
+    let digits = |from: usize, to: usize| -> Option<u32> {
+        let part = text.get(from..to)?;
+        if !part.bytes().all(|byte| byte.is_ascii_digit()) {
+            return None;
+        }
+        part.parse().ok()
+    };
+    if bytes[4] != b'-' || bytes[7] != b'-' || bytes[10] != b'T' || bytes[13] != b':' || bytes[16] != b':' {
+        return None;
+    }
+    let sign = match bytes[19] {
+        b'+' => 1,
+        b'-' => -1,
+        _ => return None,
+    };
+    let (offset_hours, offset_minutes) = (digits(20, 22)?, digits(22, 24)?);
+    if offset_hours > 23 || offset_minutes > 59 {
+        return None;
+    }
+    let month = time::Month::try_from(u8::try_from(digits(5, 7)?).ok()?).ok()?;
+    let date = time::Date::from_calendar_date(
+        i32::try_from(digits(0, 4)?).ok()?,
+        month,
+        u8::try_from(digits(8, 10)?).ok()?,
+    )
+    .ok()?;
+    let clock = time::Time::from_hms(
+        u8::try_from(digits(11, 13)?).ok()?,
+        u8::try_from(digits(14, 16)?).ok()?,
+        u8::try_from(digits(17, 19)?).ok()?,
+    )
+    .ok()?;
+    let offset = sign * i32::try_from(offset_hours * 60 + offset_minutes).ok()?;
+    Some((time::PrimitiveDateTime::new(date, clock), offset))
+}
+
+/// `samples` of a second at `rate` samples per second, in milliseconds to
+/// the microsecond: how far a first sample falls after the whole second a
+/// segment header can hold.
+pub(crate) fn offset_ms(samples: u64, rate: u64) -> f64 {
+    if rate == 0 {
+        return 0.0;
+    }
+    (samples as f64 * 1_000_000.0 / rate as f64).round() / 1_000.0
+}
+
+/// The export-record sentence for a start that falls `offset_ms` after the
+/// whole second written: "CATalyst stores whole seconds; this recording's
+/// first sample is 0.42 s after the time written."
+pub(crate) fn whole_second_note(offset_ms: f64) -> String {
+    let seconds = format!("{:.6}", offset_ms / 1_000.0);
+    let seconds = seconds.trim_end_matches('0').trim_end_matches('.');
+    format!("CATalyst stores whole seconds; this recording's first sample is {seconds} s after the time written.")
+}
+
+/// `YYYY-MM-DDTHH:MM:SS±hhmm` for a local wall-clock time and its offset in
+/// minutes. None when the year does not fit in four digits or the offset is
+/// a day or more, because the text would then not be 24 characters.
+pub(crate) fn format_start_text(local: time::PrimitiveDateTime, offset_minutes: i32) -> Option<String> {
+    if !(0..=9999).contains(&local.year()) || offset_minutes.unsigned_abs() >= 24 * 60 {
+        return None;
+    }
+    let sign = if offset_minutes < 0 { '-' } else { '+' };
+    let minutes = offset_minutes.unsigned_abs();
+    Some(format!(
+        "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}{sign}{:02}{:02}",
+        local.year(),
+        u8::from(local.month()),
+        local.day(),
+        local.hour(),
+        local.minute(),
+        local.second(),
+        minutes / 60,
+        minutes % 60
+    ))
+}
+
+impl SegmentStart {
+    pub(crate) fn from_text(text: String) -> Self {
+        let parsed = parse_start_text(&text);
+        Self {
+            local: parsed.map(|(local, _)| {
+                format!(
+                    "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}",
+                    local.year(),
+                    u8::from(local.month()),
+                    local.day(),
+                    local.hour(),
+                    local.minute(),
+                    local.second()
+                )
+            }),
+            utc_offset: parsed.map(|(_, offset)| {
+                let sign = if offset < 0 { '-' } else { '+' };
+                let minutes = offset.unsigned_abs();
+                format!("{sign}{:02}:{:02}", minutes / 60, minutes % 60)
+            }),
+            text,
+        }
+    }
+
+    /// The start text moved later by whole seconds, keeping the stored offset.
+    /// None when the text does not parse.
+    pub(crate) fn shifted_text(&self, seconds: u64) -> Option<String> {
+        let (local, offset) = parse_start_text(&self.text)?;
+        let moved = local.checked_add(time::Duration::seconds(i64::try_from(seconds).ok()?))?;
+        format_start_text(moved, offset)
+    }
+}
+
+fn start_text_from_field(field: &[u8]) -> String {
+    let end = field.iter().position(|&byte| byte == 0).unwrap_or(field.len());
+    field[..end]
+        .iter()
+        .map(|&byte| {
+            if (0x20..0x7f).contains(&byte) {
+                byte as char
+            } else {
+                '?'
+            }
+        })
+        .collect()
+}
+
+// ── File and segment headers ─────────────────────────────────────────────────
+
+fn u32_at(bytes: &[u8], at: usize) -> u32 {
+    u32::from_le_bytes(bytes[at..at + 4].try_into().unwrap())
+}
+
+fn u64_at(bytes: &[u8], at: usize) -> u64 {
+    u64::from_le_bytes(bytes[at..at + 8].try_into().unwrap())
+}
+
+/// The 40-byte file header: size, version, identifier, 16 reserved zeros.
+/// `guid` is in the Windows byte layout (first three fields little-endian),
+/// which is what `uuid::Uuid::to_bytes_le` gives.
+pub(crate) fn file_header(guid: [u8; 16]) -> [u8; FILE_HEADER_LEN as usize] {
+    let mut header = [0u8; FILE_HEADER_LEN as usize];
+    header[0..4].copy_from_slice(&(FILE_HEADER_LEN as u32).to_le_bytes());
+    header[4..8].copy_from_slice(&FORMAT_VERSION.to_le_bytes());
+    header[8..24].copy_from_slice(&guid);
+    header
+}
+
+/// The 56-byte segment header for a payload of `payload_len` bytes that
+/// starts at `start_text` (printable ASCII, at most 32 bytes).
+pub(crate) fn segment_header(start_text: &str, payload_len: u64) -> Result<[u8; SEGMENT_HEADER_LEN as usize], String> {
+    if start_text.len() > START_TEXT_LEN || !start_text.bytes().all(|byte| (0x20..0x7f).contains(&byte)) {
+        return Err(format!(
+            "The segment start time {start_text:?} cannot be stored in a Direct Audio header."
+        ));
+    }
+    let mut header = [0u8; SEGMENT_HEADER_LEN as usize];
+    header[0..4].copy_from_slice(&(SEGMENT_HEADER_LEN as u32).to_le_bytes());
+    header[4..8].copy_from_slice(&SEGMENT_VERSION.to_le_bytes());
+    header[8..12].copy_from_slice(&SEGMENT_KIND_AUDIO.to_le_bytes());
+    header[16..16 + start_text.len()].copy_from_slice(start_text.as_bytes());
+    header[48..56].copy_from_slice(&payload_len.to_le_bytes());
+    Ok(header)
+}
+
+/// How the file is laid out.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub(crate) enum Container {
+    /// File header plus segments, as the notes describe.
+    DirectAudio,
+    /// A bare Ogg Opus stream from byte 0 (what earlier DepoAudio builds wrote).
+    BareOgg,
+}
+
+/// Where one segment's Ogg stream lies, from the headers alone.
+#[derive(Debug, Clone)]
+struct Place {
+    /// 1-based position of the segment header in the file.
+    number: usize,
+    header_offset: Option<u64>,
+    data_offset: u64,
+    declared_length: u64,
+    /// Bytes of the payload present in the file (less than declared when the
+    /// file was cut short).
+    readable_length: u64,
+    start: Option<SegmentStart>,
+}
+
+#[derive(Debug)]
+struct Layout {
+    container: Container,
+    file_version: Option<u32>,
+    guid_present: bool,
+    places: Vec<Place>,
+    /// Bytes after the last complete segment that belong to no segment.
+    unread_tail: u64,
+    /// The last segment's payload is shorter than its header says.
+    cut_short: bool,
+    /// A last segment header that counts no bytes yet.
+    empty_last_header: Option<EmptyHeader>,
+    /// Segments before the last whose header counts no bytes and is
+    /// followed straight away by the next segment header: sessions with no
+    /// audio.
+    empty_segments: Vec<usize>,
+    notes: Vec<String>,
+}
+
+/// A segment header whose length is 0.
+#[derive(Debug, Clone, Copy)]
+struct EmptyHeader {
+    number: usize,
+    header_offset: u64,
+    data_offset: u64,
+}
+
+const BARE_OGG_NOTE: &str = "This file has no Direct Audio header: it is a bare Ogg Opus stream, the layout earlier DepoAudio builds wrote. It is read as one recording session with no start time. CATalyst is not expected to open it.";
+
+/// Walk the Ogg pages that start at `from`, whatever their stream, and say
+/// where a segment header follows the last of them, if one does: a header
+/// size of at least 56 and either a start time in the notes' form or an Ogg
+/// page right after the header. None when the pages run to the end of the
+/// file or are followed by anything else.
+fn later_segment_header(file: &mut fs::File, from: u64, file_len: u64) -> Result<Option<u64>, String> {
+    file.seek(SeekFrom::Start(from)).map_err(|error| error.to_string())?;
+    let mut pages = PageReader::new(
+        BufReader::with_capacity(1 << 16, (&mut *file).take(file_len.saturating_sub(from))),
+        from,
+    );
+    while let Ok(Some(_)) = pages.next_page() {}
+    let at = pages.position();
+    drop(pages);
+    if at + SEGMENT_HEADER_LEN > file_len {
+        return Ok(None);
+    }
+    file.seek(SeekFrom::Start(at)).map_err(|error| error.to_string())?;
+    let mut header = [0u8; SEGMENT_HEADER_LEN as usize];
+    if read_fully(file, &mut header)? < header.len() {
+        return Ok(None);
+    }
+    let size = u64::from(u32_at(&header, 0));
+    if size < SEGMENT_HEADER_LEN {
+        return Ok(None);
+    }
+    if parse_start_text(&start_text_from_field(&header[16..48])).is_some() {
+        return Ok(Some(at));
+    }
+    file.seek(SeekFrom::Start(at + size))
+        .map_err(|error| error.to_string())?;
+    let mut capture = [0u8; 4];
+    Ok((read_fully(file, &mut capture)? == 4 && &capture == b"OggS").then_some(at))
+}
+
+/// The message for a file whose segment lengths stop short of a later
+/// session: reading on from the headers would leave sessions out.
+fn lengths_disagree(segment: usize, uncounted_from: u64, later: u64) -> String {
+    format!(
+        "Segment {segment}'s length in its header does not cover all of its audio: Ogg pages from byte {uncounted_from} are counted by no header, and another recording session's header follows them at byte {later}. The recorder may have stopped between writing audio and updating the length, and then recorded again. DepoAudio cannot tell where each session's audio ends, so it does not read this file rather than leave sessions out."
+    )
+}
+
+fn read_layout(file: &mut fs::File, file_len: u64) -> Result<Layout, String> {
+    if file_len == 0 {
+        return Err("This SGMCA file is empty.".into());
+    }
+    file.seek(SeekFrom::Start(0)).map_err(|error| error.to_string())?;
+    let mut head = [0u8; FILE_HEADER_LEN as usize];
+    let read = read_fully(file, &mut head)?;
+    if read >= 4 && &head[..4] == b"OggS" {
+        return Ok(Layout {
+            container: Container::BareOgg,
+            file_version: None,
+            guid_present: false,
+            places: vec![Place {
+                number: 1,
+                header_offset: None,
+                data_offset: 0,
+                declared_length: file_len,
+                readable_length: file_len,
+                start: None,
+            }],
+            unread_tail: 0,
+            cut_short: false,
+            empty_last_header: None,
+            empty_segments: Vec::new(),
+            notes: vec![BARE_OGG_NOTE.into()],
+        });
+    }
+    if read < head.len() {
+        return Err("This SGMCA file is shorter than the 40-byte Direct Audio file header.".into());
+    }
+    let size = u32_at(&head, 0);
+    if u64::from(size) != FILE_HEADER_LEN {
+        return Err(format!(
+            "This SGMCA file's header says it is {size} bytes long, but a Direct Audio file header is 40 bytes, so this is not a Direct Audio file DepoAudio can read."
+        ));
+    }
+    let version = u32_at(&head, 4);
+    if version != FORMAT_VERSION {
+        return Err(format!(
+            "This SGMCA file uses Direct Audio format version {version}; DepoAudio reads only version 1."
+        ));
+    }
+    let guid_present = head[8..24].iter().any(|&byte| byte != 0);
+    let mut notes = Vec::new();
+    if head[24..40].iter().any(|&byte| byte != 0) {
+        notes.push("The file header's 16 reserved bytes are not all zero; they were ignored.".into());
+    }
+
+    let mut places: Vec<Place> = Vec::new();
+    let mut at = FILE_HEADER_LEN;
+    let mut unread_tail = 0;
+    let mut cut_short = false;
+    let mut empty_last_header = None;
+    let mut empty_segments = Vec::new();
+    let mut index = 0;
+    while at < file_len {
+        index += 1;
+        file.seek(SeekFrom::Start(at)).map_err(|error| error.to_string())?;
+        let mut header = [0u8; SEGMENT_HEADER_LEN as usize];
+        let read = read_fully(file, &mut header)?;
+        let remaining = file_len - at;
+        // Ogg pages after the last segment: the recorder appends a page and
+        // only then rewrites the segment's length, so a copy taken between
+        // the two has pages its header does not count yet. That is only the
+        // end of the file if no later session follows those pages.
+        if !places.is_empty() && read >= 4 && &header[..4] == b"OggS" {
+            if let Some(later) = later_segment_header(file, at, file_len)? {
+                return Err(lengths_disagree(
+                    places.last().map_or(index - 1, |place| place.number),
+                    at,
+                    later,
+                ));
+            }
+            unread_tail = remaining;
+            break;
+        }
+        if read < header.len() {
+            if places.is_empty() {
+                return Err("This SGMCA file ends inside its first segment header; it holds no audio yet.".into());
+            }
+            unread_tail = remaining;
+            break;
+        }
+        // The notes say CATalyst reads a segment header's size, then the
+        // rest of the header, and finds the audio right after it; the
+        // version, kind and reserved fields are written but not checked.
+        let header_size = u32_at(&header, 0);
+        if u64::from(header_size) < SEGMENT_HEADER_LEN {
+            return Err(format!(
+                "Segment {index}'s header (byte {at}) says it is {header_size} bytes long, but a segment header needs 56 bytes for its start time and length; the file is damaged there."
+            ));
+        }
+        if u64::from(header_size) != SEGMENT_HEADER_LEN {
+            notes.push(format!(
+                "Segment {index}'s header (byte {at}) says it is {header_size} bytes long where the notes give 56; its audio was read from the end of that header."
+            ));
+        }
+        let segment_version = u32_at(&header, 4);
+        let kind = u32_at(&header, 8);
+        if segment_version != SEGMENT_VERSION || kind != SEGMENT_KIND_AUDIO {
+            notes.push(format!(
+                "Segment {index}'s header (byte {at}) has version {segment_version} and record kind {kind} where the notes give version 1 and kind 2 (audio). CATalyst is said not to check these, so the segment was read as audio."
+            ));
+        }
+        let start = SegmentStart::from_text(start_text_from_field(&header[16..48]));
+        let declared = u64_at(&header, 48);
+        let data_offset = at + u64::from(header_size);
+        // The file may have grown since its length was taken; never count
+        // more than that length.
+        let available = file_len.saturating_sub(data_offset);
+        if declared == 0 {
+            // A header whose length was not updated yet. If another
+            // session's header follows straight after it, this session
+            // simply holds nothing (CATalyst would find the next header
+            // there too); if one follows after uncounted pages, the lengths
+            // do not describe the file.
+            match later_segment_header(file, data_offset, file_len)? {
+                Some(later) if later == data_offset => {
+                    notes.push(format!(
+                        "Segment {index} (byte {at}) has a length of 0, so it holds no audio; the sessions after it were read."
+                    ));
+                    empty_segments.push(index);
+                    at = data_offset;
+                    continue;
+                }
+                Some(later) => return Err(lengths_disagree(index, data_offset, later)),
+                None => {}
+            }
+            unread_tail = available;
+            empty_last_header = Some(EmptyHeader {
+                number: index,
+                header_offset: at,
+                data_offset,
+            });
+            break;
+        }
+        let readable = declared.min(available);
+        places.push(Place {
+            number: index,
+            header_offset: Some(at),
+            data_offset,
+            declared_length: declared,
+            readable_length: readable,
+            start: Some(start),
+        });
+        if declared > available {
+            cut_short = true;
+            break;
+        }
+        at = data_offset + declared;
+    }
+    if places.is_empty() {
+        return Err(
+            "This SGMCA file has a Direct Audio header but no recorded audio yet; it may still be recording.".into(),
+        );
+    }
+    Ok(Layout {
+        container: Container::DirectAudio,
+        file_version: Some(version),
+        guid_present,
+        places,
+        unread_tail,
+        cut_short,
+        empty_last_header,
+        empty_segments,
+        notes,
+    })
+}
+
+// ── Inspection ───────────────────────────────────────────────────────────────
+
+/// One recording session (segment) of an SGMCA file.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct SegmentInfo {
+    /// 1-based, in file order.
+    pub number: u32,
+    /// Byte offset of the segment header; None for a bare Ogg file.
+    pub header_offset: Option<u64>,
+    /// Byte offset of the segment's Ogg stream.
+    pub data_offset: u64,
+    /// Payload length from the segment header (the file length for a bare
+    /// Ogg file).
+    pub payload_length: u64,
+    /// Bytes of the Ogg stream read: up to the end of its last complete page.
+    pub bytes_read: u64,
+    /// Start time from the segment header; None for a bare Ogg file.
+    pub start: Option<SegmentStart>,
+    pub head: OpusHead,
+    pub tags: OpusTags,
+    pub pages: u64,
+    pub audio_packets: u64,
+    pub start_granule: u64,
+    pub final_granule: u64,
+    /// Where this session's first sample lands when the sessions are joined
+    /// in file order, in 48 kHz samples.
+    pub start_sample: u64,
+    /// Playable samples at 48 kHz: last granule minus start and pre-skip.
+    pub samples: u64,
+    pub duration_seconds: f64,
+    /// The stream has its end-of-stream page.
+    pub end_of_stream: bool,
+    /// False when the file ends partway through this segment.
+    pub complete: bool,
+}
+
+/// What an SGMCA recording holds, from its headers and a full walk of every
+/// segment's pages. Every CRC is checked and every packet's duration is read.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct SgmcaInfo {
+    pub container: Container,
+    /// The file header's format version; None for a bare Ogg file.
+    pub file_version: Option<u32>,
+    /// The file header carries a non-zero recording identifier. The
+    /// identifier itself is not reported (see docs/SGMCA.md).
+    pub guid_present: bool,
+    /// Byte offset of the first segment's Ogg stream.
+    pub stream_offset: u64,
+    /// The first segment's headers.
+    pub head: OpusHead,
+    pub tags: OpusTags,
+    /// Every segment uses family 255 with one uncoupled mono stream per
+    /// channel and an identity mapping.
+    pub sgmca_layout: bool,
+    pub segments: Vec<SegmentInfo>,
+    /// The file looks still recording or cut short: the last segment is
+    /// shorter than its header says, or bytes after the last segment belong
+    /// to none.
+    pub growing: bool,
+    /// Bytes of the file after the last complete Ogg page that was read,
+    /// not counting the segment headers of sessions left out (those were
+    /// read): a last session's pages cut off partway, a session left out,
+    /// and bytes no header counts. Nothing in them is converted.
+    pub unread_bytes: u64,
+    /// Recording sessions in the file that are not in `segments`, in file
+    /// order, and why.
+    pub omitted_segments: Vec<OmittedSegment>,
+    /// The number of a last session that is shorter than its header says,
+    /// so only its complete pages were read.
+    pub cut_short_segment: Option<u32>,
+    pub pages: u64,
+    pub audio_packets: u64,
+    /// First segment's first audio granule and last segment's last granule.
+    pub start_granule: u64,
+    pub final_granule: u64,
+    /// Playable samples at 48 kHz across every segment.
+    pub samples: u64,
+    pub duration_seconds: f64,
+    /// Plain-language remarks about the file (older layout, still recording,
+    /// ignored bytes).
+    pub notes: Vec<String>,
+}
+
+/// Why a recording session in the file is not read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub(crate) enum OmitReason {
+    /// The last segment header's length is 0: written, not yet updated.
+    ZeroLengthHeader,
+    /// The last session ends before its Opus headers, or holds them and no
+    /// audio page or end-of-stream page.
+    NoCompleteAudio,
+    /// A segment before the last whose length is 0 and which the next
+    /// segment header follows straight away: it holds nothing.
+    Empty,
+}
+
+impl OmitReason {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::ZeroLengthHeader => "zero-length-header",
+            Self::NoCompleteAudio => "no-complete-audio",
+            Self::Empty => "empty",
+        }
+    }
+}
+
+/// A recording session that is in the file but not read.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct OmittedSegment {
+    /// 1-based position of the segment header in the file.
+    pub number: u32,
+    pub reason: OmitReason,
+    /// It is the file's last segment.
+    pub last: bool,
+}
+
+/// Why opening a stream failed, and whether the cause is the data ending.
+struct StreamError {
+    message: String,
+    /// The data ended partway through a page or packet.
+    truncated: bool,
+    /// The data ended cleanly, on a page boundary, before both header
+    /// packets were read: a session whose recorder has written its first
+    /// page or two and nothing more.
+    ended: bool,
+}
+
+/// The two header packets and the stream's position, read once.
+pub(crate) struct OpenStream {
+    head: OpusHead,
+    tags: OpusTags,
+    tags_raw: Vec<u8>,
+    packets: PacketReader<BufReader<std::io::Take<fs::File>>>,
+    /// Audio packets already read with the tags page, if any (rare).
+    pending: Option<PagePackets>,
+}
+
+fn open_stream(path: &Path, offset: u64, length: u64) -> Result<OpenStream, StreamError> {
+    let damaged = |message: String| StreamError {
+        message,
+        truncated: false,
+        ended: false,
+    };
+    let mut file = fs::File::open(path).map_err(|error| damaged(format!("Could not open the recording: {error}")))?;
+    file.seek(SeekFrom::Start(offset))
+        .map_err(|error| damaged(error.to_string()))?;
+    let mut packets = PacketReader::new(BufReader::with_capacity(1 << 16, file.take(length)), offset);
+    let fail = |packets: &PacketReader<_>, message: String| StreamError {
+        truncated: packets.truncated(),
+        ended: false,
+        message,
+    };
+    let ended = |message: &str| StreamError {
+        message: message.into(),
+        truncated: false,
+        ended: true,
+    };
+    let first = match packets.next() {
+        Ok(Some(first)) => first,
+        Ok(None) => return Err(ended("The Opus stream has no identification header.")),
+        Err(message) => return Err(fail(&packets, message)),
+    };
+    if !first.packets[0].starts_with(b"OpusHead") {
+        let codec = codec_of(&first.packets[0]);
+        return Err(damaged(format!(
+            "This stream holds {codec} audio rather than Opus, so it is not Direct Audio."
+        )));
+    }
+    if first.packets.len() != 1 {
+        return Err(damaged(
+            "The Opus identification header must be alone on the first Ogg page.".into(),
+        ));
+    }
+    let head = OpusHead::parse(&first.packets[0]).map_err(damaged)?;
+
+    let second = match packets.next() {
+        Ok(Some(second)) => second,
+        Ok(None) => return Err(ended("The Opus stream has no comment header.")),
+        Err(message) => return Err(fail(&packets, message)),
+    };
+    let mut iter = second.packets.into_iter();
+    let tags_raw = iter.next().unwrap();
+    let tags = OpusTags::parse(&tags_raw).map_err(damaged)?;
+    let rest: Vec<Vec<u8>> = iter.collect();
+    let pending = (!rest.is_empty()).then_some(PagePackets {
+        packets: rest,
+        granule: second.granule,
+        eos: second.eos,
+        offset: second.offset,
+    });
+    Ok(OpenStream {
+        head,
+        tags,
+        tags_raw,
+        packets,
+        pending,
+    })
+}
+
+/// What the stream starts with, for the message when it is not Opus.
 fn codec_of(first_packet: &[u8]) -> &'static str {
-    if first_packet.starts_with(b"OpusHead") {
-        "Opus"
-    } else if first_packet.starts_with(b"\x01vorbis") {
+    if first_packet.starts_with(b"\x01vorbis") {
         "Vorbis"
     } else if first_packet.starts_with(b"\x7fFLAC") {
         "FLAC"
@@ -704,294 +1390,6 @@ fn codec_of(first_packet: &[u8]) -> &'static str {
     } else {
         "an unknown codec"
     }
-}
-
-/// Find the Opus stream in an SGMCA file: the first offset inside the header
-/// window where a CRC-correct beginning-of-stream page carries `OpusHead`.
-/// Stray "OggS" bytes in a prefix are not mistaken for the stream.
-pub(crate) fn locate_stream<R: Read + Seek>(file: &mut R) -> Result<u64, String> {
-    file.seek(SeekFrom::Start(0)).map_err(|error| error.to_string())?;
-    // A beginning-of-stream page may start anywhere in the window and is
-    // usually tiny, but read enough for one whole page past the window.
-    let mut window = vec![0u8; HEADER_SCAN + MAX_PAGE_LEN];
-    let read = read_fully(file, &mut window)?;
-    window.truncate(read);
-    if window.is_empty() {
-        return Err("This SGMCA file is empty.".into());
-    }
-    let scan_end = window.len().min(HEADER_SCAN);
-    let mut saw_marker = false;
-    let mut other_codec: Option<&'static str> = None;
-    for start in 0..scan_end {
-        if window.len() - start < 4 || &window[start..start + 4] != b"OggS" {
-            continue;
-        }
-        saw_marker = true;
-        let Some((page, _)) = parse_page_at(&window[start..], start as u64) else {
-            continue;
-        };
-        if !page.is_bos() || page.is_continued() {
-            continue;
-        }
-        let first = page.lacing.iter().position(|&lace| lace < 255).map(|last| {
-            let len: usize = page.lacing[..=last].iter().map(|&lace| lace as usize).sum();
-            &page.body[..len]
-        });
-        let Some(first) = first else { continue };
-        if first.starts_with(b"OpusHead") {
-            OpusHead::parse(first)?;
-            return Ok(start as u64);
-        }
-        other_codec.get_or_insert(codec_of(first));
-    }
-    Err(match (other_codec, saw_marker) {
-        (Some(codec), _) => format!(
-            "This SGMCA file holds {codec} audio rather than Opus, so it is not a Direct Audio recording."
-        ),
-        (None, true) => "This SGMCA file has an Ogg marker but no readable Opus stream header in its first 8 KiB; the file may be damaged. Export it to WAV in Case CATalyst first.".into(),
-        (None, false) => "This SGMCA file does not contain an Ogg audio stream in its supported header region; export it to WAV in Case CATalyst first".into(),
-    })
-}
-
-// ── Recording sessions ───────────────────────────────────────────────────────
-
-/// One Opus stream found in an SGMCA file. A file that holds several is a
-/// recording in several sessions, each with its own Ogg stream.
-#[derive(Debug, Clone, PartialEq)]
-pub(crate) struct StreamSession {
-    /// Byte offset of the stream's beginning-of-stream page.
-    pub offset: u64,
-    pub channels: u8,
-    /// Last granule position of the stream minus its pre-skip, in seconds,
-    /// when any of its pages carries a granule position.
-    pub duration_seconds: Option<f64>,
-    /// The start text of a segment header right in front of the stream,
-    /// when one is there (see `segment_start_label`).
-    pub start_label: Option<String>,
-}
-
-/// Bytes read at a time while looking for sessions.
-const SESSION_SCAN_CHUNK: usize = 1 << 20;
-
-/// Length of the segment header that some SGMCA files carry in front of each
-/// session's Ogg stream: a little-endian u32 size (56), version, kind and a
-/// reserved word, a 32-byte NUL-padded start text, then the payload size.
-const SEGMENT_HEADER_LEN: usize = 56;
-
-/// The start text of a segment header ending at `offset`, if the 56 bytes
-/// before it look like one: size field 56 and a printable ASCII start text.
-/// It is only shown to the person, never used to place audio.
-fn segment_start_label<R: Read + Seek>(file: &mut R, offset: u64) -> Option<String> {
-    let start = offset.checked_sub(SEGMENT_HEADER_LEN as u64)?;
-    file.seek(SeekFrom::Start(start)).ok()?;
-    let mut header = [0u8; SEGMENT_HEADER_LEN];
-    if read_fully(file, &mut header).ok()? != SEGMENT_HEADER_LEN {
-        return None;
-    }
-    if u32::from_le_bytes(header[..4].try_into().ok()?) as usize != SEGMENT_HEADER_LEN {
-        return None;
-    }
-    let text = &header[16..48];
-    let end = text.iter().position(|&byte| byte == 0).unwrap_or(text.len());
-    let text = &text[..end];
-    if text.is_empty() || text.len() < 8 || !text.iter().all(|byte| byte.is_ascii_graphic()) {
-        return None;
-    }
-    if header[16 + end..48].iter().any(|&byte| byte != 0) {
-        return None;
-    }
-    Some(String::from_utf8_lossy(text).into_owned())
-}
-
-/// Every Opus stream in the file from `first` (the offset `locate_stream`
-/// found) to the end: each CRC-correct beginning-of-stream page carrying an
-/// `OpusHead` is one session. Pages are skipped whole once their CRC checks,
-/// and anything between pages (a segment header, damage) is searched for the
-/// next `OggS`, so a later session is found wherever it starts.
-pub(crate) fn find_sessions<R: Read + Seek>(
-    file: &mut R,
-    first: u64,
-    cancelled: CancelCheck<'_>,
-) -> Result<Vec<StreamSession>, String> {
-    file.seek(SeekFrom::Start(first)).map_err(|error| error.to_string())?;
-    let mut found: Vec<(u64, u32, OpusHead)> = Vec::new();
-    let mut last_granule: Vec<Option<u64>> = Vec::new();
-    let mut buffer: Vec<u8> = Vec::with_capacity(SESSION_SCAN_CHUNK + MAX_PAGE_LEN);
-    let mut base = first;
-    let mut cursor = 0usize;
-    let mut at_end = false;
-    let mut chunk = vec![0u8; SESSION_SCAN_CHUNK];
-    loop {
-        if !at_end && buffer.len() - cursor < MAX_PAGE_LEN {
-            if cancelled.is_some_and(|check| check()) {
-                return Err(INSPECT_CANCELLED_MESSAGE.into());
-            }
-            buffer.drain(..cursor);
-            base += cursor as u64;
-            cursor = 0;
-            let read = read_fully(file, &mut chunk)?;
-            buffer.extend_from_slice(&chunk[..read]);
-            at_end = read < chunk.len();
-            continue;
-        }
-        if buffer.len() - cursor < 4 {
-            break;
-        }
-        let rest = &buffer[cursor..];
-        if rest.starts_with(b"OggS") {
-            if let Some((page, length)) = parse_page_at(rest, base + cursor as u64) {
-                if page.is_bos() && !page.is_continued() {
-                    let first_packet = page.lacing.iter().position(|&lace| lace < 255).map(|last| {
-                        let len: usize = page.lacing[..=last].iter().map(|&lace| lace as usize).sum();
-                        &page.body[..len]
-                    });
-                    if let Some(head) = first_packet
-                        .filter(|packet| packet.starts_with(b"OpusHead"))
-                        .and_then(|packet| OpusHead::parse(packet).ok())
-                    {
-                        found.push((page.offset, page.serial, head));
-                        last_granule.push(None);
-                    }
-                }
-                // The latest stream with this serial owns the page.
-                if let Some(index) = found.iter().rposition(|(_, serial, _)| *serial == page.serial) {
-                    if let Some(granule) = page.granule() {
-                        last_granule[index] = Some(granule);
-                    }
-                }
-                cursor += length;
-                continue;
-            }
-        }
-        // Not a page here: look for the next capture pattern.
-        match buffer[cursor + 1..].windows(4).position(|window| window == b"OggS") {
-            Some(index) => cursor += 1 + index,
-            None => cursor = (buffer.len() - 3).max(cursor + 1),
-        }
-    }
-    let mut sessions = Vec::with_capacity(found.len());
-    for ((offset, _, head), granule) in found.into_iter().zip(last_granule) {
-        let duration_seconds =
-            granule.map(|granule| granule.saturating_sub(u64::from(head.pre_skip)) as f64 / OPUS_RATE as f64);
-        sessions.push(StreamSession {
-            offset,
-            channels: head.channels,
-            duration_seconds,
-            start_label: segment_start_label(file, offset),
-        });
-    }
-    Ok(sessions)
-}
-
-/// Why a file with several sessions is not read as one recording, naming each
-/// session with its start text (when the file has one) and length.
-pub(crate) fn multiple_sessions_message(sessions: &[StreamSession]) -> String {
-    let described: Vec<String> = sessions
-        .iter()
-        .enumerate()
-        .map(|(index, session)| {
-            let mut parts = Vec::new();
-            if let Some(start) = &session.start_label {
-                parts.push(format!("segment header start {start}"));
-            }
-            if let Some(seconds) = session.duration_seconds {
-                parts.push(format!("{seconds:.3} s"));
-            }
-            parts.push(format!("{} channels", session.channels));
-            format!("session {} ({})", index + 1, parts.join(", "))
-        })
-        .collect();
-    format!(
-        "This SGMCA file holds {} recording sessions: {}. DepoAudio reads an SGMCA file as one continuous stream, so each later session would follow the one before it with the time between them removed, and its audio would sit at the wrong time in the output. DepoAudio cannot yet handle the sessions separately, so it does not open this file. Export each session to WAV in Case CATalyst first.",
-        sessions.len(),
-        described.join("; ")
-    )
-}
-
-/// Refuse a file with more than one session (see `multiple_sessions_message`).
-pub(crate) fn ensure_single_session<R: Read + Seek>(
-    file: &mut R,
-    first: u64,
-    cancelled: CancelCheck<'_>,
-) -> Result<(), String> {
-    let sessions = find_sessions(file, first, cancelled)?;
-    if sessions.len() > 1 {
-        return Err(multiple_sessions_message(&sessions));
-    }
-    Ok(())
-}
-
-// ── Inspection ───────────────────────────────────────────────────────────────
-
-/// What an SGMCA (or any Ogg Opus) recording holds, from a full walk of its
-/// pages. Every CRC is checked and every packet's duration is read.
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct SgmcaInfo {
-    /// Bytes before the Ogg stream (0 for a plain file).
-    pub stream_offset: u64,
-    pub head: OpusHead,
-    pub tags: OpusTags,
-    /// Family 255, one uncoupled mono stream per channel, identity mapping.
-    pub sgmca_layout: bool,
-    pub pages: u64,
-    pub audio_packets: u64,
-    /// Granule position of the first audio sample (normally 0).
-    pub start_granule: u64,
-    /// Granule position of the last page.
-    pub final_granule: u64,
-    /// Playable samples at 48 kHz: final granule minus start and pre-skip.
-    pub samples: u64,
-    pub duration_seconds: f64,
-}
-
-/// The two header packets and the stream's position, read once.
-struct OpenStream {
-    offset: u64,
-    head: OpusHead,
-    tags: OpusTags,
-    tags_raw: Vec<u8>,
-    serial: u32,
-    packets: PacketReader<BufReader<fs::File>>,
-    /// Audio packets already read with the tags page, if any (rare).
-    pending: Option<PagePackets>,
-}
-
-fn open_stream(path: &Path, cancelled: CancelCheck<'_>) -> Result<OpenStream, String> {
-    let mut file = fs::File::open(path).map_err(|error| format!("Could not open the recording: {error}"))?;
-    let offset = locate_stream(&mut file)?;
-    // The reader below follows the first stream only, so a file with a
-    // second session would be described (or sliced) as its first alone.
-    ensure_single_session(&mut file, offset, cancelled)?;
-    file.seek(SeekFrom::Start(offset)).map_err(|error| error.to_string())?;
-    let mut packets = PacketReader::new(BufReader::with_capacity(1 << 16, file), offset);
-
-    let first = packets.next()?.ok_or("The Opus stream has no identification header.")?;
-    if first.packets.len() != 1 {
-        return Err("The Opus identification header must be alone on the first Ogg page.".into());
-    }
-    let head = OpusHead::parse(&first.packets[0])?;
-
-    let second = packets.next()?.ok_or("The Opus stream has no comment header.")?;
-    let mut iter = second.packets.into_iter();
-    let tags_raw = iter.next().unwrap();
-    let tags = OpusTags::parse(&tags_raw)?;
-    let rest: Vec<Vec<u8>> = iter.collect();
-    let pending = (!rest.is_empty()).then_some(PagePackets {
-        packets: rest,
-        granule: second.granule,
-        eos: second.eos,
-    });
-    let serial = packets.serial().unwrap_or(0);
-    Ok(OpenStream {
-        offset,
-        head,
-        tags,
-        tags_raw,
-        serial,
-        packets,
-        pending,
-    })
 }
 
 /// One audio packet with its place on the 48 kHz timeline.
@@ -1011,6 +1409,15 @@ struct Timeline {
 impl Timeline {
     /// Time the packets of one page (plus any held from earlier pages).
     fn place(&mut self, page: PagePackets, buffered: &mut Vec<Vec<u8>>) -> Result<Vec<TimedPacket>, String> {
+        // Opus granule positions are signed 64-bit counts (RFC 7845 4); a
+        // value past the signed range is not a timestamp, and bounding it
+        // keeps the sums below from overflowing.
+        if page.granule.is_some_and(|granule| granule > i64::MAX as u64) {
+            return Err(format!(
+                "The Ogg page at byte {} carries an impossible timestamp; the recording is damaged.",
+                page.offset
+            ));
+        }
         let mut data: Vec<Vec<u8>> = std::mem::take(buffered);
         data.extend(page.packets);
         let durations: Vec<u64> = data
@@ -1032,37 +1439,105 @@ impl Timeline {
                 return Ok(Vec::new());
             }
         };
+        let overflow = || {
+            format!(
+                "The Ogg page at byte {} carries timestamps past what Ogg can count; the recording is damaged.",
+                page.offset
+            )
+        };
         let mut timed = Vec::with_capacity(data.len());
         let mut cursor = start;
         for (packet, duration) in data.into_iter().zip(durations) {
+            let end = cursor
+                .checked_add(duration)
+                .filter(|&end| end <= i64::MAX as u64)
+                .ok_or_else(overflow)?;
             timed.push(TimedPacket {
                 data: packet,
                 start: cursor,
-                end: cursor + duration,
+                end,
             });
-            cursor += duration;
+            cursor = end;
+        }
+        // A page's granule position is where its last finished packet ends
+        // (RFC 7845 4). A granule past that means audio is missing, or the
+        // timestamps are damaged, and the length they give cannot be
+        // trusted.
+        if let Some(granule) = page.granule.filter(|&granule| granule > cursor) {
+            return Err(format!(
+                "The Ogg page at byte {} says the audio reaches sample {granule}, but its packets end at sample {cursor}; part of the recording is missing or its timestamps are damaged.",
+                page.offset
+            ));
+        }
+        // Only the end-of-stream page may end before its packets do, to trim
+        // the end of the stream (RFC 7845 4.5). FFmpeg trims nothing at any
+        // other page and decodes every sample of its packets, so a short
+        // granule there would make the counts here disagree with the audio
+        // FFmpeg plays: every later session would be late by the difference
+        // and the end of the recording would be lost, with the sample counts
+        // still matching.
+        if let Some(granule) = page.granule.filter(|&granule| granule < cursor && !page.eos) {
+            return Err(format!(
+                "The Ogg page at byte {} says the audio ends at sample {granule}, but its packets reach sample {cursor}, and it is not the stream's last page. Only the last page may end the audio early, so the timestamps are damaged and the place of the audio after it cannot be trusted.",
+                page.offset
+            ));
         }
         self.next_start = Some(cursor);
         Ok(timed)
     }
 }
 
-/// Walk the whole recording, checking every page and packet.
-pub(crate) fn inspect(path: &Path, cancelled: CancelCheck<'_>) -> Result<SgmcaInfo, String> {
-    let mut stream = open_stream(path, cancelled)?;
+/// One segment's stream, walked.
+struct SegmentScan {
+    head: OpusHead,
+    tags: OpusTags,
+    pages: u64,
+    audio_packets: u64,
+    start_granule: u64,
+    final_granule: u64,
+    samples: u64,
+    end_of_stream: bool,
+    bytes_read: u64,
+    cut: bool,
+}
+
+/// Walk one segment's Ogg stream. With `tolerant` (the last segment of a
+/// file that ends early) the walk stops at the last complete page instead of
+/// failing. The `last` segment of a file may be a session still being
+/// recorded: when its stream ends before both Opus headers, or holds no
+/// audio packet yet and no end-of-stream page, it gives None (no complete
+/// audio yet) rather than an error.
+fn scan_segment(
+    path: &Path,
+    place: &Place,
+    tolerant: bool,
+    last: bool,
+    cancelled: CancelCheck<'_>,
+) -> Result<Option<SegmentScan>, String> {
+    let mut stream = match open_stream(path, place.data_offset, place.readable_length) {
+        Ok(stream) => stream,
+        Err(error) if (tolerant && error.truncated) || (last && error.ended) => return Ok(None),
+        Err(error) => return Err(error.message),
+    };
     let mut timeline = Timeline { next_start: None };
     let mut buffered = Vec::new();
     let mut audio_packets = 0u64;
     let mut start_granule: Option<u64> = None;
     let mut final_granule = 0u64;
     let mut checked = 0u64;
+    let mut cut = false;
     let mut next = stream.pending.take();
     loop {
         let page = match next.take() {
             Some(page) => page,
-            None => match stream.packets.next()? {
-                Some(page) => page,
-                None => break,
+            None => match stream.packets.next() {
+                Ok(Some(page)) => page,
+                Ok(None) => break,
+                Err(_) if tolerant && stream.packets.truncated() => {
+                    cut = true;
+                    break;
+                }
+                Err(message) => return Err(message),
             },
         };
         checked += 1;
@@ -1082,16 +1557,26 @@ pub(crate) fn inspect(path: &Path, cancelled: CancelCheck<'_>) -> Result<SgmcaIn
             final_granule = granule;
         }
     }
-    if !buffered.is_empty() {
+    if !buffered.is_empty() && !cut {
         return Err("The recording's audio pages carry no timestamps.".into());
+    }
+    let end_of_stream = stream.packets.saw_eos();
+    let bytes_read = stream.packets.position() - place.data_offset;
+    if !cut && bytes_read < place.readable_length {
+        return Err(format!(
+            "The stream has {} bytes after its end-of-stream page (byte {}); the file is damaged there.",
+            place.readable_length - bytes_read,
+            place.data_offset + bytes_read
+        ));
+    }
+    if audio_packets == 0 && (cut || (last && !end_of_stream)) {
+        return Ok(None);
     }
     let start_granule = start_granule.unwrap_or(0);
     let samples = final_granule
         .saturating_sub(start_granule)
         .saturating_sub(stream.head.pre_skip as u64);
-    Ok(SgmcaInfo {
-        stream_offset: stream.offset,
-        sgmca_layout: stream.head.is_sgmca_layout(),
+    Ok(Some(SegmentScan {
         head: stream.head,
         tags: stream.tags,
         pages: stream.packets.pages_read,
@@ -1099,8 +1584,264 @@ pub(crate) fn inspect(path: &Path, cancelled: CancelCheck<'_>) -> Result<SgmcaIn
         start_granule,
         final_granule,
         samples,
+        end_of_stream,
+        bytes_read,
+        cut,
+    }))
+}
+
+/// The Opus layouts an SGMCA file is read with: family 255 or 1 with one
+/// uncoupled stream per channel and an identity mapping (what the notes say
+/// CATalyst writes), or family 0 (plain mono or stereo).
+fn check_readable_layout(head: &OpusHead, number: usize) -> Result<(), String> {
+    let identity = head
+        .mapping
+        .iter()
+        .enumerate()
+        .all(|(index, &entry)| entry as usize == index);
+    let readable = match head.mapping_family {
+        0 => true,
+        1 | 255 => head.stream_count == head.channels && head.coupled_count == 0 && identity,
+        _ => false,
+    };
+    if readable {
+        Ok(())
+    } else {
+        Err(format!(
+            "Segment {number} uses Opus channel mapping family {} with {} streams ({} coupled) for {} channels. Direct Audio carries one uncoupled mono stream per channel (family 255 or 1) or plain mono or stereo (family 0); DepoAudio does not read other layouts from an SGMCA file.",
+            head.mapping_family, head.stream_count, head.coupled_count, head.channels
+        ))
+    }
+}
+
+/// Segments are joined into one recording, so they must decode the same way:
+/// the same channel count (CATalyst itself refuses to append a different
+/// one) and the same Opus stream layout. A different output gain is not
+/// refused, since nothing in the notes rules it out, but it is named: the
+/// sessions are decoded as one feed, and which gain applies to the later
+/// session has not been checked.
+fn check_joinable(first: &OpusHead, other: &OpusHead, number: usize) -> Result<Option<String>, String> {
+    if first.channels != other.channels {
+        return Err(format!(
+            "Segment {number} has {} channels but segment 1 has {}. DepoAudio joins the recording sessions of one file into one recording, so it cannot read a file whose sessions have different channel counts.",
+            other.channels, first.channels
+        ));
+    }
+    if (first.stream_count, first.coupled_count, &first.mapping)
+        != (other.stream_count, other.coupled_count, &other.mapping)
+    {
+        return Err(format!(
+            "Segment {number} lays out its {} channels in Opus differently from segment 1 ({} streams, {} coupled, against {} and {}), so the recording sessions cannot be joined.",
+            other.channels, other.stream_count, other.coupled_count, first.stream_count, first.coupled_count
+        ));
+    }
+    if first.output_gain != other.output_gain {
+        return Ok(Some(format!(
+            "Segment {number} asks for an Opus output gain of {:.2} dB where segment 1 asks for {:.2} dB. DepoAudio decodes the sessions as one joined recording and has not checked which of the two gains is applied to segment {number}, so its level may differ from what CATalyst plays.",
+            f64::from(other.output_gain) / 256.0,
+            f64::from(first.output_gain) / 256.0
+        )));
+    }
+    Ok(None)
+}
+
+/// Read an SGMCA file: its headers, then every segment's pages.
+pub(crate) fn inspect(path: &Path, cancelled: CancelCheck<'_>) -> Result<SgmcaInfo, String> {
+    let mut file = fs::File::open(path).map_err(|error| format!("Could not open the recording: {error}"))?;
+    let file_len = file
+        .metadata()
+        .map_err(|error| format!("Could not read the recording: {error}"))?
+        .len();
+    let layout = read_layout(&mut file, file_len)?;
+    drop(file);
+
+    let mut notes = layout.notes;
+    let count = layout.places.len();
+    let mut segments: Vec<SegmentInfo> = Vec::with_capacity(count);
+    let mut start_sample = 0u64;
+    let mut dropped_last: Option<&Place> = None;
+    for (index, place) in layout.places.iter().enumerate() {
+        let number = place.number;
+        let last = index + 1 == count;
+        let tolerant = last && layout.cut_short;
+        let label = |message: String| match layout.container {
+            Container::DirectAudio if message != INSPECT_CANCELLED_MESSAGE => format!("Segment {number}: {message}"),
+            _ => message,
+        };
+        let Some(scan) = scan_segment(path, place, tolerant, last, cancelled).map_err(label)? else {
+            dropped_last = Some(place);
+            continue;
+        };
+        check_readable_layout(&scan.head, number)?;
+        if let Some(first) = segments.first() {
+            notes.extend(check_joinable(&first.head, &scan.head, number)?);
+        }
+        segments.push(SegmentInfo {
+            number: number as u32,
+            header_offset: place.header_offset,
+            data_offset: place.data_offset,
+            payload_length: place.declared_length,
+            bytes_read: scan.bytes_read,
+            start: place.start.clone(),
+            head: scan.head,
+            tags: scan.tags,
+            pages: scan.pages,
+            audio_packets: scan.audio_packets,
+            start_granule: scan.start_granule,
+            final_granule: scan.final_granule,
+            start_sample,
+            samples: scan.samples,
+            duration_seconds: scan.samples as f64 / OPUS_RATE as f64,
+            end_of_stream: scan.end_of_stream,
+            complete: !scan.cut,
+        });
+        start_sample += scan.samples;
+    }
+    if segments.is_empty() {
+        return Err("This SGMCA file has no complete audio yet; it may still be recording.".into());
+    }
+    if segments.iter().all(|segment| segment.samples == 0) {
+        return Err(
+            "None of this SGMCA file's recording sessions holds any audio samples (only Opus headers and pre-skip), so there is nothing to play or convert."
+                .into(),
+        );
+    }
+    let growing =
+        layout.cut_short || layout.unread_tail > 0 || layout.empty_last_header.is_some() || dropped_last.is_some();
+    let last_number = layout.places.last().map_or(count, |place| place.number);
+    // Every byte after the last complete page read, less the headers of the
+    // sessions left out (those were read).
+    let read_to = segments
+        .last()
+        .map_or(0, |segment| segment.data_offset + segment.bytes_read);
+    let omitted_headers = dropped_last.map_or(0, |place| {
+        place.data_offset - place.header_offset.unwrap_or(place.data_offset)
+    }) + layout
+        .empty_last_header
+        .map_or(0, |empty| empty.data_offset - empty.header_offset);
+    let unread_bytes = file_len.saturating_sub(read_to).saturating_sub(omitted_headers);
+    let mut omitted_segments: Vec<OmittedSegment> = layout
+        .empty_segments
+        .iter()
+        .map(|&number| OmittedSegment {
+            number: number as u32,
+            reason: OmitReason::Empty,
+            last: false,
+        })
+        .collect();
+    if let Some(place) = dropped_last {
+        omitted_segments.push(OmittedSegment {
+            number: place.number as u32,
+            reason: OmitReason::NoCompleteAudio,
+            last: layout.empty_last_header.is_none(),
+        });
+    }
+    if let Some(empty) = layout.empty_last_header {
+        omitted_segments.push(OmittedSegment {
+            number: empty.number as u32,
+            reason: OmitReason::ZeroLengthHeader,
+            last: true,
+        });
+    }
+    omitted_segments.sort_by_key(|omitted| omitted.number);
+    let cut_short_segment = (layout.cut_short && dropped_last.is_none())
+        .then(|| segments.last().map(|segment| segment.number))
+        .flatten();
+    if dropped_last.is_some() {
+        notes.push(format!(
+            "Segment {last_number} has no complete audio yet, so it was not read. The file may still be recording, or it was cut short."
+        ));
+    } else if layout.cut_short {
+        notes.push(format!(
+            "Segment {last_number} is shorter than its header says, so only its complete Ogg pages were read. The file may still be recording, or it was cut short."
+        ));
+    }
+    if let Some(EmptyHeader { number, .. }) = layout.empty_last_header {
+        notes.push(format!(
+            "Segment {number} has a header but its length is not written yet, so it was not read. The file may still be recording, or it was cut short."
+        ));
+    }
+    if layout.unread_tail > 0 {
+        notes.push(format!(
+            "The last {} bytes of the file are not counted by any segment header and were not read. The file may still be recording, or it was cut short.",
+            layout.unread_tail
+        ));
+    }
+    for segment in &segments {
+        if let Some(start) = &segment.start {
+            if start.local.is_none() {
+                let shown = if start.text.contains('?') {
+                    " (bytes that are not printable ASCII are shown as ?)"
+                } else {
+                    ""
+                };
+                notes.push(format!(
+                    "Segment {}'s start time {:?}{shown} is not in the YYYY-MM-DDTHH:MM:SS±hhmm form, so it could not be read.",
+                    segment.number, start.text
+                ));
+            }
+        }
+        if !segment.end_of_stream && segment.complete {
+            notes.push(format!(
+                "Segment {}'s Ogg stream has no end-of-stream page.",
+                segment.number
+            ));
+        }
+    }
+    let first = &segments[0];
+    let samples: u64 = segments.iter().map(|segment| segment.samples).sum();
+    Ok(SgmcaInfo {
+        container: layout.container,
+        file_version: layout.file_version,
+        guid_present: layout.guid_present,
+        stream_offset: first.data_offset,
+        head: first.head.clone(),
+        tags: first.tags.clone(),
+        sgmca_layout: segments.iter().all(|segment| segment.head.is_sgmca_layout()),
+        growing,
+        unread_bytes,
+        omitted_segments,
+        cut_short_segment,
+        pages: segments.iter().map(|segment| segment.pages).sum(),
+        audio_packets: segments.iter().map(|segment| segment.audio_packets).sum(),
+        start_granule: first.start_granule,
+        final_granule: segments.last().map_or(0, |segment| segment.final_granule),
+        samples,
         duration_seconds: samples as f64 / OPUS_RATE as f64,
+        segments,
+        notes,
     })
+}
+
+// ── FFmpeg input ─────────────────────────────────────────────────────────────
+
+/// An FFmpeg concat-demuxer script that plays every segment's Ogg stream in
+/// file order, each read in place from the original file through FFmpeg's
+/// `subfile` protocol (no copy of the audio is made). Each entry carries its
+/// exact duration, so ffprobe reports the joined length. Needs
+/// `-f concat -safe 0 -protocol_whitelist file,subfile` before `-i`.
+pub(crate) fn concat_script(path: &Path, info: &SgmcaInfo) -> Result<String, String> {
+    let absolute =
+        std::path::absolute(path).map_err(|error| format!("Could not resolve the recording's path: {error}"))?;
+    let text = absolute
+        .to_str()
+        .ok_or("The recording's path is not valid Unicode, so FFmpeg cannot be pointed at its sessions.")?;
+    if text.contains(['\n', '\r']) {
+        return Err("The recording's path contains a line break, so FFmpeg cannot be pointed at its sessions.".into());
+    }
+    // ffconcat single quotes take everything literally; a quote is written
+    // by closing the quote, escaping one, and reopening.
+    let quoted = text.replace('\'', "'\\''");
+    let mut script = String::from("ffconcat version 1.0\n");
+    for segment in info.segments.iter().filter(|segment| segment.samples > 0) {
+        script.push_str(&format!(
+            "file 'subfile,,start,{},end,{},,:file:{quoted}'\nduration {:.6}\n",
+            segment.data_offset,
+            segment.data_offset + segment.bytes_read,
+            segment.duration_seconds
+        ));
+    }
+    Ok(script)
 }
 
 // ── Slicing ──────────────────────────────────────────────────────────────────
@@ -1110,9 +1851,19 @@ pub(crate) fn inspect(path: &Path, cancelled: CancelCheck<'_>) -> Result<SgmcaIn
 #[serde(rename_all = "camelCase")]
 pub(crate) struct SliceReport {
     pub channels: u8,
-    /// Requested start and the end actually reached, in seconds.
+    /// The requested start, where the cut was made, and the end reached, in
+    /// seconds of the joined recording.
     pub start_seconds: f64,
     pub end_seconds: f64,
+    /// The new segment's start text.
+    pub start_text: String,
+    /// How far the slice's first sample falls after the whole second in
+    /// `start_text`, in milliseconds (the header holds whole seconds only).
+    /// None when the session had no readable start, so the text is the time
+    /// of slicing.
+    pub start_offset_ms: Option<f64>,
+    /// What the start text means for this slice.
+    pub start_note: String,
     /// Playable samples at 48 kHz in the new file.
     pub samples: u64,
     pub pre_skip: u16,
@@ -1124,57 +1875,31 @@ fn seconds_to_samples(seconds: f64) -> u64 {
     (seconds * OPUS_RATE as f64).round() as u64
 }
 
-/// Copy the part of `src` from `start_seconds` to `end_seconds` (or to the
-/// end) into a new Ogg Opus file at `dst`, without re-encoding.
+/// What `copy_range` copied.
+struct CopiedRange {
+    samples: u64,
+    pre_skip: u16,
+    audio_packets: u64,
+    pages: u64,
+}
+
+/// Copy the part of one Ogg Opus stream from `start` to `end` playable
+/// samples (or to the end) into `writer`, without re-encoding.
 ///
 /// Whole Opus packets are copied, starting 80 ms before the cut so the
-/// decoder converges, and the new file's pre-skip discards exactly the
+/// decoder converges, and the new stream's pre-skip discards exactly the
 /// samples before the requested start. The last page's granule position
 /// trims the end to the requested sample (RFC 7845 section 4.5). Granule
 /// positions are rebased to start at zero and every page is re-framed with
-/// fresh sequence numbers and CRCs. `dst` must not exist yet.
-///
-/// Not yet offered in the app: a slice is a new output, and every output
-/// needs its export record and a way to choose the range on screen.
-#[allow(dead_code)]
-pub(crate) fn slice(
-    src: &Path,
-    dst: &Path,
-    start_seconds: f64,
-    end_seconds: Option<f64>,
+/// fresh sequence numbers and CRCs.
+fn copy_range<W: Write>(
+    mut stream: OpenStream,
+    writer: &mut OggWriter<W>,
+    start: u64,
+    end: Option<u64>,
     cancelled: CancelCheck<'_>,
-) -> Result<SliceReport, String> {
-    if !start_seconds.is_finite() || start_seconds < 0.0 {
-        return Err("The slice start must be zero or more seconds.".into());
-    }
-    if let Some(end) = end_seconds {
-        if !end.is_finite() || end <= start_seconds {
-            return Err("The slice end must come after its start.".into());
-        }
-    }
-    let out = fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(dst)
-        .map_err(|error| format!("Could not create {}: {error}", dst.display()))?;
-    let result = write_slice(src, out, start_seconds, end_seconds, cancelled);
-    if result.is_err() {
-        let _ = fs::remove_file(dst);
-    }
-    result
-}
-
-fn write_slice(
-    src: &Path,
-    out: fs::File,
-    start_seconds: f64,
-    end_seconds: Option<f64>,
-    cancelled: CancelCheck<'_>,
-) -> Result<SliceReport, String> {
-    let mut stream = open_stream(src, cancelled)?;
+) -> Result<CopiedRange, String> {
     let pre_skip = stream.head.pre_skip as u64;
-    let mut writer = OggWriter::new(BufWriter::with_capacity(1 << 16, out), stream.serial);
-
     let mut timeline = Timeline { next_start: None };
     let mut buffered = Vec::new();
     // Absolute granule targets, known once the stream's start is known.
@@ -1204,11 +1929,8 @@ fn write_slice(
         let timed = timeline.place(page, &mut buffered)?;
         for packet in timed {
             let (cut_start, cut_end) = *targets.get_or_insert_with(|| {
-                let base = packet.start + pre_skip;
-                (
-                    base + seconds_to_samples(start_seconds),
-                    end_seconds.map(|end| base + seconds_to_samples(end)),
-                )
+                let base = packet.start.saturating_add(pre_skip);
+                (base.saturating_add(start), end.map(|end| base.saturating_add(end)))
             });
             // A final page may trim its last packets (RFC 7845 4.5).
             let stream_end = eos_granule.unwrap_or(u64::MAX);
@@ -1240,12 +1962,11 @@ fn write_slice(
                 copied += 1;
                 writer.maybe_flush()?;
             }
-            if packet.end >= limit {
+            held = Some(packet);
+            if held.as_ref().is_some_and(|packet| packet.end >= limit) {
                 end_reached = Some(limit);
-                held = Some(packet);
                 break 'pages;
             }
-            held = Some(packet);
         }
     }
     if !buffered.is_empty() {
@@ -1260,78 +1981,363 @@ fn write_slice(
     writer.write_packet(&last.data, final_granule - base)?;
     copied += 1;
     writer.flush(true)?;
-    let pages = writer.pages_written;
-    let mut out = writer.into_inner();
-    out.flush()
-        .map_err(|error| format!("Could not write the recording: {error}"))?;
-    out.into_inner()
-        .map_err(|error| format!("Could not write the recording: {error}"))?
-        .sync_all()
-        .map_err(|error| format!("Could not write the recording: {error}"))?;
-
-    let samples = (final_granule - base).saturating_sub(new_pre_skip as u64);
-    Ok(SliceReport {
-        channels: stream.head.channels,
-        start_seconds,
-        end_seconds: start_seconds + samples as f64 / OPUS_RATE as f64,
-        samples,
+    Ok(CopiedRange {
+        samples: (final_granule - base).saturating_sub(new_pre_skip as u64),
         pre_skip: new_pre_skip,
         audio_packets: copied,
-        pages,
+        pages: writer.pages_written,
     })
+}
+
+/// A fresh random Ogg serial number for a new logical stream.
+fn fresh_serial() -> u32 {
+    let bytes = uuid::Uuid::new_v4().into_bytes();
+    u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]])
+}
+
+/// Writes a Direct Audio file: the file header, then segments whose payload
+/// length is patched once each payload is complete. `dst` must not exist.
+struct DirectAudioWriter {
+    out: BufWriter<fs::File>,
+    open_segment: Option<(u64, String)>,
+}
+
+impl DirectAudioWriter {
+    fn create(dst: &Path) -> Result<Self, String> {
+        let file = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(dst)
+            .map_err(|error| format!("Could not create {}: {error}", dst.display()))?;
+        let mut out = BufWriter::with_capacity(1 << 16, file);
+        out.write_all(&file_header(uuid::Uuid::new_v4().to_bytes_le()))
+            .map_err(write_error)?;
+        Ok(Self {
+            out,
+            open_segment: None,
+        })
+    }
+
+    fn begin_segment(&mut self, start_text: &str) -> Result<(), String> {
+        let at = self.out.stream_position().map_err(write_error)?;
+        self.out
+            .write_all(&segment_header(start_text, 0)?)
+            .map_err(write_error)?;
+        self.open_segment = Some((at, start_text.to_string()));
+        Ok(())
+    }
+
+    fn end_segment(&mut self) -> Result<u64, String> {
+        let (at, start_text) = self.open_segment.take().ok_or("No segment is open.")?;
+        let end = self.out.stream_position().map_err(write_error)?;
+        let length = end - at - SEGMENT_HEADER_LEN;
+        if length == 0 {
+            return Err("A segment of the SGMCA output holds no audio.".into());
+        }
+        self.out.seek(SeekFrom::Start(at)).map_err(write_error)?;
+        self.out
+            .write_all(&segment_header(&start_text, length)?)
+            .map_err(write_error)?;
+        self.out.seek(SeekFrom::Start(end)).map_err(write_error)?;
+        Ok(length)
+    }
+
+    fn finish(self) -> Result<(), String> {
+        if self.open_segment.is_some() {
+            return Err("A segment of the SGMCA output was left open.".into());
+        }
+        self.out
+            .into_inner()
+            .map_err(|error| write_error(error.into_error()))?
+            .sync_all()
+            .map_err(write_error)
+    }
+}
+
+fn write_error(error: std::io::Error) -> String {
+    format!("Could not write the recording: {error}")
+}
+
+/// Copy the part of `src` from `start_seconds` to `end_seconds` (or to the
+/// end) into a new Direct Audio file at `dst`, without re-encoding (see
+/// `copy_range`). The cut must stay inside one recording session: a range
+/// that runs into the next session is refused, because the sessions are
+/// separate streams with a gap of unknown length between them. The cut is
+/// made exactly at `start_seconds`; no audio is left out to make the start
+/// round. The segment header holds whole seconds only, so the new segment's
+/// start is the session's start plus the whole seconds skipped (the second
+/// at or before the first sample), and the report gives the fraction left
+/// over (`start_offset_ms`) and says so. A session with no readable start
+/// time gets the time of slicing. `dst` must not exist yet.
+///
+/// Not yet offered in the app: a slice is a new output, and every output
+/// needs its export record and a way to choose the range on screen.
+#[allow(dead_code)]
+pub(crate) fn slice(
+    src: &Path,
+    dst: &Path,
+    start_seconds: f64,
+    end_seconds: Option<f64>,
+    cancelled: CancelCheck<'_>,
+) -> Result<SliceReport, String> {
+    if !start_seconds.is_finite() || start_seconds < 0.0 {
+        return Err("The slice start must be zero or more seconds.".into());
+    }
+    if let Some(end) = end_seconds {
+        if !end.is_finite() || end <= start_seconds {
+            return Err("The slice end must come after its start.".into());
+        }
+    }
+    if dst.exists() {
+        return Err(format!(
+            "{} already exists; a slice never replaces a file.",
+            dst.display()
+        ));
+    }
+    let info = inspect(src, cancelled)?;
+    let start = seconds_to_samples(start_seconds);
+    let segment = info
+        .segments
+        .iter()
+        .find(|segment| start < segment.start_sample + segment.samples)
+        .ok_or("The slice start is past the end of the recording.")?;
+    let segment_end = segment.start_sample + segment.samples;
+    let is_last = segment.number == info.segments.last().map_or(0, |last| last.number);
+    let end = end_seconds.map(seconds_to_samples);
+    if end.is_some_and(|end| end > segment_end) && !is_last {
+        return Err(format!(
+            "The slice runs from recording session {} into the next one. DepoAudio cannot cut across sessions yet; slice each session on its own.",
+            segment.number
+        ));
+    }
+    let skipped = start - segment.start_sample;
+    let (start_text, start_offset_ms, start_note) = match segment
+        .start
+        .as_ref()
+        .and_then(|start| start.shifted_text(skipped / OPUS_RATE))
+    {
+        Some(text) => {
+            let offset = offset_ms(skipped % OPUS_RATE, OPUS_RATE);
+            let note = if offset == 0.0 {
+                "The slice starts on a whole second of the session's start time.".to_string()
+            } else {
+                format!(
+                    "{} The slice starts exactly where it was asked to; no audio was left out.",
+                    whole_second_note(offset)
+                )
+            };
+            (text, Some(offset), note)
+        }
+        None => (
+            crate::clock::local_start_text_now().ok_or("The slice's start time could not be written.")?,
+            None,
+            "The recording session has no readable start time, so the slice's start is the time of slicing, which is not when the recording was made.".to_string(),
+        ),
+    };
+    let stream = open_stream(src, segment.data_offset, segment.bytes_read).map_err(|error| error.message)?;
+    let channels = stream.head.channels;
+
+    let mut out = DirectAudioWriter::create(dst)?;
+    let result = (|| {
+        out.begin_segment(&start_text)?;
+        let mut writer = OggWriter::new(&mut out.out, fresh_serial());
+        let copied = copy_range(
+            stream,
+            &mut writer,
+            skipped,
+            end.map(|end| end.min(segment_end) - segment.start_sample),
+            cancelled,
+        )?;
+        out.end_segment()?;
+        Ok::<_, String>(copied)
+    })();
+    let result = result.and_then(|copied| out.finish().map(|()| copied));
+    let copied = match result {
+        Ok(copied) => copied,
+        Err(error) => {
+            let _ = fs::remove_file(dst);
+            return Err(error);
+        }
+    };
+    let start_seconds = start as f64 / OPUS_RATE as f64;
+    Ok(SliceReport {
+        channels,
+        start_seconds,
+        end_seconds: start_seconds + copied.samples as f64 / OPUS_RATE as f64,
+        start_text,
+        start_offset_ms,
+        start_note,
+        samples: copied.samples,
+        pre_skip: copied.pre_skip,
+        audio_packets: copied.audio_packets,
+        pages: copied.pages,
+    })
+}
+
+// ── Writing ──────────────────────────────────────────────────────────────────
+
+/// One segment of an SGMCA output: its start text and where it begins on
+/// the output's playable timeline, in 48 kHz samples.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct PlannedSegment {
+    pub start_text: String,
+    pub start_sample: u64,
+}
+
+/// Turn the bare Ogg Opus stream FFmpeg wrote (`ogg`) into a new Direct
+/// Audio file at `dst`: the file header with a fresh random identifier, then
+/// one segment per planned segment. With one segment the Ogg bytes are
+/// copied unchanged. With more, each segment is that part of the stream cut
+/// out without re-encoding (see `copy_range`), as its own Ogg stream with a
+/// new serial number. The first segment must start at sample 0, so no
+/// encoded audio is ever left out. `dst` must not exist; on any failure it
+/// is removed.
+pub(crate) fn write_direct_audio(
+    ogg: &Path,
+    dst: &Path,
+    segments: &[PlannedSegment],
+    cancelled: CancelCheck<'_>,
+) -> Result<(), String> {
+    if segments.first().is_some_and(|first| first.start_sample != 0) {
+        return Err(
+            "The SGMCA output's first segment does not start at the first sample, so audio would be left out.".into(),
+        );
+    }
+    if segments.is_empty()
+        || segments
+            .windows(2)
+            .any(|pair| pair[1].start_sample <= pair[0].start_sample)
+    {
+        return Err("The SGMCA output's segments are not in order.".into());
+    }
+    let mut out = DirectAudioWriter::create(dst)?;
+    let result = fill_direct_audio(ogg, &mut out, segments, cancelled).and_then(|()| out.finish());
+    if result.is_err() {
+        let _ = fs::remove_file(dst);
+    }
+    result
+}
+
+fn fill_direct_audio(
+    ogg: &Path,
+    out: &mut DirectAudioWriter,
+    segments: &[PlannedSegment],
+    cancelled: CancelCheck<'_>,
+) -> Result<(), String> {
+    let length = fs::metadata(ogg)
+        .map_err(|error| format!("Could not read the encoded audio: {error}"))?
+        .len();
+    if let [only] = segments {
+        out.begin_segment(&only.start_text)?;
+        let mut input = fs::File::open(ogg).map_err(|error| format!("Could not read the encoded audio: {error}"))?;
+        let mut chunk = vec![0u8; 1 << 16];
+        loop {
+            if cancelled.is_some_and(|check| check()) {
+                return Err(WRITE_CANCELLED_MESSAGE.into());
+            }
+            let read = input
+                .read(&mut chunk)
+                .map_err(|error| format!("Could not read the encoded audio: {error}"))?;
+            if read == 0 {
+                break;
+            }
+            out.out.write_all(&chunk[..read]).map_err(write_error)?;
+        }
+        if out.end_segment()? != length {
+            return Err("The encoded audio changed while it was being copied.".into());
+        }
+        return Ok(());
+    }
+    for (index, segment) in segments.iter().enumerate() {
+        let end = segments.get(index + 1).map(|next| next.start_sample);
+        let stream = open_stream(ogg, 0, length).map_err(|error| error.message)?;
+        out.begin_segment(&segment.start_text)?;
+        let mut writer = OggWriter::new(&mut out.out, fresh_serial());
+        copy_range(stream, &mut writer, segment.start_sample, end, cancelled).map_err(|error| {
+            format!(
+                "Recording session {} could not be cut from the encoded audio: {error}",
+                index + 1
+            )
+        })?;
+        out.end_segment()?;
+    }
+    Ok(())
 }
 
 // ── Writer check ─────────────────────────────────────────────────────────────
 
 /// Confirm that a file DepoAudio wrote as SGMCA really has the Direct Audio
-/// layout: a sound Ogg Opus stream with mapping family 255, one uncoupled
-/// mono stream per channel, identity mapping, and no prefix.
-pub(crate) fn verify_written(path: &Path, cancelled: CancelCheck<'_>) -> Result<SgmcaInfo, String> {
+/// layout: the 40-byte file header (version 1, an identifier), complete
+/// segments, each a sound Ogg Opus stream in mapping family 255 with one
+/// uncoupled mono stream per channel and an identity mapping, and, when
+/// `expected_starts` is given, exactly those segment start texts in order.
+pub(crate) fn verify_written(
+    path: &Path,
+    expected_starts: Option<&[String]>,
+    cancelled: CancelCheck<'_>,
+) -> Result<SgmcaInfo, String> {
     let info = inspect(path, cancelled)?;
-    if info.stream_offset != 0 {
-        return Err("The SGMCA output does not start with its Ogg stream.".into());
+    if info.container != Container::DirectAudio {
+        return Err("The SGMCA output has no Direct Audio file header.".into());
     }
-    if !info.sgmca_layout {
+    if !info.guid_present {
+        return Err("The SGMCA output's file header has no recording identifier.".into());
+    }
+    if info.growing
+        || info
+            .segments
+            .iter()
+            .any(|segment| !segment.complete || !segment.end_of_stream)
+    {
+        return Err("The SGMCA output is incomplete.".into());
+    }
+    if let Some(bad) = info.segments.iter().find(|segment| !segment.head.is_sgmca_layout()) {
         return Err(format!(
             "The SGMCA output uses Opus mapping family {} with {} streams ({} coupled) for {} channels, not one mono stream per channel.",
-            info.head.mapping_family, info.head.stream_count, info.head.coupled_count, info.head.channels
+            bad.head.mapping_family, bad.head.stream_count, bad.head.coupled_count, bad.head.channels
         ));
     }
-    if info.samples == 0 {
+    if info.samples == 0 || info.segments.iter().any(|segment| segment.samples == 0) {
         return Err("The SGMCA output holds no audio.".into());
+    }
+    if let Some(bad) = info
+        .segments
+        .iter()
+        .find(|segment| segment.start.as_ref().is_none_or(|start| start.local.is_none()))
+    {
+        return Err(format!(
+            "The SGMCA output's segment {} has no start time in the YYYY-MM-DDTHH:MM:SS±hhmm form, so CATalyst could not place it against a transcript.",
+            bad.number
+        ));
+    }
+    if let Some(expected) = expected_starts {
+        let written: Vec<&str> = info
+            .segments
+            .iter()
+            .map(|segment| segment.start.as_ref().map_or("", |start| start.text.as_str()))
+            .collect();
+        if written.len() != expected.len()
+            || written
+                .iter()
+                .zip(expected)
+                .any(|(written, expected)| written != expected)
+        {
+            return Err(format!(
+                "The SGMCA output's segment start times ({}) are not the ones planned ({}).",
+                written.join(", "),
+                expected.join(", ")
+            ));
+        }
     }
     Ok(info)
 }
 
-/// Synthetic Ogg Opus streams for tests, built with this module's writer.
-/// The audio packets are well-framed and correctly timed but never decoded.
+/// Synthetic Ogg Opus streams and Direct Audio files for tests, built with
+/// this module's writer. The audio packets are well-framed and correctly
+/// timed but never decoded.
 #[cfg(test)]
 pub(crate) mod fixtures {
     use super::*;
-
-    /// A made-up multi-session layout: a 40-byte file header, then for each
-    /// session a 56-byte segment header (size 56, version 1, kind 2, a NUL-
-    /// padded start text, the stream's length) followed by its Ogg stream.
-    /// The header bytes are invented for tests, not copied from a recording.
-    pub(crate) fn segmented(sessions: &[(&str, &[u8])]) -> Vec<u8> {
-        let mut out = Vec::new();
-        out.extend_from_slice(&40u32.to_le_bytes());
-        out.extend_from_slice(&1u32.to_le_bytes());
-        out.extend_from_slice(b"DEPOAUDIO-TEST\0\0");
-        out.resize(40, 0);
-        for (start, stream) in sessions {
-            out.extend_from_slice(&(SEGMENT_HEADER_LEN as u32).to_le_bytes());
-            out.extend_from_slice(&1u32.to_le_bytes());
-            out.extend_from_slice(&2u32.to_le_bytes());
-            out.extend_from_slice(&0u32.to_le_bytes());
-            let mut text = start.as_bytes().to_vec();
-            text.resize(32, 0);
-            out.extend_from_slice(&text);
-            out.extend_from_slice(&(stream.len() as u64).to_le_bytes());
-            out.extend_from_slice(stream);
-        }
-        out
-    }
 
     /// A family-255 header for `channels` mono streams.
     pub(crate) fn sgmca_head(channels: u8, pre_skip: u16) -> OpusHead {
@@ -1368,11 +2374,17 @@ pub(crate) mod fixtures {
         packet
     }
 
-    /// A synthetic stream: headers plus `count` 20 ms packets, end-trimmed by
-    /// `trim` samples, written with the module's own writer.
-    pub(crate) fn synthetic(count: usize, pre_skip: u16, trim: u64, sizes: impl Fn(usize) -> usize) -> Vec<u8> {
-        let mut writer = OggWriter::new(Vec::new(), 0x5eed);
-        writer.write_packet(&sgmca_head(4, pre_skip).to_bytes(), 0).unwrap();
+    /// A synthetic stream with `head`: headers plus `count` 20 ms packets,
+    /// end-trimmed by `trim` samples, written with the module's own writer.
+    pub(crate) fn stream_with(
+        head: &OpusHead,
+        serial: u32,
+        count: usize,
+        trim: u64,
+        sizes: impl Fn(usize) -> usize,
+    ) -> Vec<u8> {
+        let mut writer = OggWriter::new(Vec::new(), serial);
+        writer.write_packet(&head.to_bytes(), 0).unwrap();
         writer.flush(false).unwrap();
         writer.write_packet(&tags_packet("test", &["TITLE=x"]), 0).unwrap();
         writer.flush(false).unwrap();
@@ -1391,6 +2403,33 @@ pub(crate) mod fixtures {
             }
         }
         writer.into_inner()
+    }
+
+    /// A 4-channel family-255 stream (see `stream_with`).
+    pub(crate) fn synthetic(count: usize, pre_skip: u16, trim: u64, sizes: impl Fn(usize) -> usize) -> Vec<u8> {
+        stream_with(&sgmca_head(4, pre_skip), 0x5eed, count, trim, sizes)
+    }
+
+    /// The example identifier from the notes' worked example,
+    /// {12345678-9ABC-DEF0-1122-334455667788}, in the Windows byte layout.
+    pub(crate) const EXAMPLE_GUID: [u8; 16] = [
+        0x78, 0x56, 0x34, 0x12, 0xBC, 0x9A, 0xF0, 0xDE, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88,
+    ];
+
+    /// A Direct Audio file: the file header, then one segment per
+    /// `(start text, Ogg stream)`.
+    pub(crate) fn direct_audio(segments: &[(&str, &[u8])]) -> Vec<u8> {
+        let mut out = file_header(EXAMPLE_GUID).to_vec();
+        for (start, stream) in segments {
+            out.extend_from_slice(&segment_header(start, stream.len() as u64).unwrap());
+            out.extend_from_slice(stream);
+        }
+        out
+    }
+
+    /// One 4-channel session wrapped as a Direct Audio file.
+    pub(crate) fn synthetic_direct(count: usize, pre_skip: u16, trim: u64, sizes: impl Fn(usize) -> usize) -> Vec<u8> {
+        direct_audio(&[("2026-11-22T10:15:30-0500", &synthetic(count, pre_skip, trim, sizes))])
     }
 }
 
@@ -1421,11 +2460,129 @@ mod tests {
         }
     }
 
+    fn family_one(channels: u8, pre_skip: u16) -> OpusHead {
+        let mut head = sgmca_head(channels, pre_skip);
+        head.mapping_family = 1;
+        head
+    }
+
+    const START_1: &str = "2026-11-22T10:15:30-0500";
+    const START_2: &str = "2026-11-22T11:02:05-0500";
+    const START_3: &str = "2026-11-22T13:40:00-0500";
+
+    /// Three sessions: 4-channel, families 255, 1 and 255, of 100, 250 and 60
+    /// packets with different pre-skips and end trims.
+    fn three_sessions() -> (Vec<u8>, [Vec<u8>; 3]) {
+        let streams = [
+            stream_with(&sgmca_head(4, 312), 1, 100, 0, |_| 30),
+            stream_with(&family_one(4, 3840), 2, 250, 480, |index| 20 + index % 9),
+            stream_with(&sgmca_head(4, 312), 3, 60, 100, |_| 25),
+        ];
+        let file = direct_audio(&[(START_1, &streams[0]), (START_2, &streams[1]), (START_3, &streams[2])]);
+        (file, streams)
+    }
+
     #[test]
     fn crc_matches_the_ogg_reference_values() {
         // Known values for the Ogg polynomial, MSB first, init 0, no xor.
         assert_eq!(ogg_crc(b""), 0);
         assert_eq!(ogg_crc(b"123456789"), 0x89A1_897F);
+    }
+
+    #[test]
+    fn worked_example_header_bytes_match_the_notes() {
+        // The identifier's text form gives the same Windows-layout bytes.
+        let parsed = uuid::Uuid::parse_str("12345678-9ABC-DEF0-1122-334455667788").unwrap();
+        assert_eq!(parsed.to_bytes_le(), EXAMPLE_GUID);
+
+        let mut bytes = file_header(EXAMPLE_GUID).to_vec();
+        bytes.extend_from_slice(&segment_header(START_1, 123_456).unwrap());
+        let expected: Vec<u8> = [
+            "28 00 00 00",
+            "01 00 00 00",
+            "78 56 34 12 BC 9A F0 DE 11 22 33 44 55 66 77 88",
+            "00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00",
+            "38 00 00 00",
+            "01 00 00 00",
+            "02 00 00 00",
+            "00 00 00 00",
+            "32 30 32 36 2D 31 31 2D 32 32 54 31 30 3A 31 35",
+            "3A 33 30 2D 30 35 30 30 00 00 00 00 00 00 00 00",
+            "40 E2 01 00 00 00 00 00",
+        ]
+        .iter()
+        .flat_map(|line| line.split(' ').map(|byte| u8::from_str_radix(byte, 16).unwrap()))
+        .collect();
+        assert_eq!(bytes.len(), 0x60, "everything before the first OggS is 96 bytes");
+        assert_eq!(bytes, expected);
+        // The next segment header would sit at 0x60 + 0x1E240.
+        assert_eq!(0x60 + 123_456, 0x1E2A0);
+    }
+
+    #[test]
+    fn worked_example_opus_head_page_has_the_crc_in_the_notes() {
+        let page: Vec<u8> = [
+            "4F 67 67 53 00 02",
+            "00 00 00 00 00 00 00 00",
+            "78 56 34 12",
+            "00 00 00 00",
+            "00 00 00 00",
+            "01 17",
+            "4F 70 75 73 48 65 61 64 01 02 38 01 80 BB 00 00 00 00 FF 02 00 00 01",
+        ]
+        .iter()
+        .flat_map(|line| line.split(' ').map(|byte| u8::from_str_radix(byte, 16).unwrap()))
+        .collect();
+        assert_eq!(page.len(), 51);
+        assert_eq!(ogg_crc(&page), 0x8013_84E6);
+
+        // This module's writer produces the same page, CRC included.
+        let head = OpusHead {
+            version: 1,
+            channels: 2,
+            pre_skip: 312,
+            input_sample_rate: 48_000,
+            output_gain: 0,
+            mapping_family: 255,
+            stream_count: 2,
+            coupled_count: 0,
+            mapping: vec![0, 1],
+        };
+        let mut writer = OggWriter::new(Vec::new(), 0x1234_5678);
+        writer.write_packet(&head.to_bytes(), 0).unwrap();
+        writer.flush(false).unwrap();
+        let written = writer.into_inner();
+        assert_eq!(&written[22..26], &[0xE6, 0x84, 0x13, 0x80]);
+        let mut unsigned = written.clone();
+        unsigned[22..26].copy_from_slice(&[0; 4]);
+        assert_eq!(unsigned, page);
+    }
+
+    #[test]
+    fn start_text_parses_formats_and_shifts() {
+        let start = SegmentStart::from_text(START_1.into());
+        assert_eq!(start.local.as_deref(), Some("2026-11-22T10:15:30"));
+        assert_eq!(start.utc_offset.as_deref(), Some("-05:00"));
+        assert_eq!(start.shifted_text(30).as_deref(), Some("2026-11-22T10:16:00-0500"));
+        // Across midnight and a year end.
+        let late = SegmentStart::from_text("2026-12-31T23:59:50+0530".into());
+        assert_eq!(late.shifted_text(15).as_deref(), Some("2027-01-01T00:00:05+0530"));
+        for bad in [
+            "2026-13-22T10:15:30-0500",
+            "2026-02-30T10:15:30-0500",
+            "2026-11-22T24:00:00-0500",
+            "2026-11-22 10:15:30-0500",
+            "2026-11-22T10:15:30",
+            "2026-11-22T10:15:30-05:00",
+            "",
+        ] {
+            let parsed = SegmentStart::from_text(bad.into());
+            assert_eq!(parsed.local, None, "{bad}");
+            assert_eq!(parsed.shifted_text(1), None, "{bad}");
+        }
+        let (local, offset) = parse_start_text(START_1).unwrap();
+        assert_eq!(format_start_text(local, offset).as_deref(), Some(START_1));
+        assert_eq!(start_text_from_field(b"2026\x01ab\0\0zz"), "2026?ab");
     }
 
     #[test]
@@ -1519,83 +2676,369 @@ mod tests {
     }
 
     #[test]
-    fn inspect_reports_exact_duration_from_final_granule_minus_pre_skip() {
+    fn inspect_reads_one_direct_audio_session_exactly() {
         let dir = tempdir::Dir::new();
-        let path = write_temp(&dir, "a.sgmca", &synthetic(250, 3840, 480, |_| 60));
+        let path = write_temp(&dir, "a.sgmca", &synthetic_direct(250, 3840, 480, |_| 60));
         let info = inspect(&path, None).unwrap();
-        assert_eq!(info.stream_offset, 0);
+        assert_eq!(info.container, Container::DirectAudio);
+        assert_eq!(info.file_version, Some(1));
+        assert!(info.guid_present);
+        assert_eq!(info.stream_offset, 96);
         assert!(info.sgmca_layout);
+        assert!(!info.growing);
         assert_eq!(info.head.channels, 4);
         assert_eq!(info.audio_packets, 250);
         assert_eq!(info.final_granule, 250 * 960 - 480);
         assert_eq!(info.samples, 250 * 960 - 480 - 3840);
         assert!((info.duration_seconds - 4.91).abs() < 1e-9);
         assert_eq!(info.tags.comments, ["TITLE=x"]);
+        assert_eq!(info.segments.len(), 1);
+        let segment = &info.segments[0];
+        assert_eq!(segment.header_offset, Some(40));
+        assert_eq!(segment.bytes_read, segment.payload_length);
+        let start = segment.start.as_ref().unwrap();
+        assert_eq!(start.text, START_1);
+        assert_eq!(start.local.as_deref(), Some("2026-11-22T10:15:30"));
+        assert_eq!(start.utc_offset.as_deref(), Some("-05:00"));
+        assert!(segment.end_of_stream && segment.complete);
+        assert!(info.notes.is_empty(), "{:?}", info.notes);
     }
 
     #[test]
-    fn locate_skips_a_prefix_and_stray_markers() {
+    fn inspect_walks_every_session_and_joins_them_in_order() {
         let dir = tempdir::Dir::new();
-        let mut bytes = b"vendor prefix OggS not a page ".to_vec();
-        bytes.resize(700, 0x5a);
-        let stream = synthetic(10, 312, 0, |_| 30);
-        bytes.extend_from_slice(&stream);
-        let path = write_temp(&dir, "p.sgmca", &bytes);
-        assert_eq!(locate_stream(&mut fs::File::open(&path).unwrap()).unwrap(), 700);
-        assert_eq!(inspect(&path, None).unwrap().stream_offset, 700);
+        let (file, streams) = three_sessions();
+        let path = write_temp(&dir, "three.sgmca", &file);
+        let info = inspect(&path, None).unwrap();
+        assert_eq!(info.segments.len(), 3);
+        let expected = [100 * 960 - 312, 250 * 960 - 480 - 3840, 60 * 960 - 100 - 312];
+        let mut offset = 40u64;
+        let mut start_sample = 0;
+        for ((segment, stream), samples) in info.segments.iter().zip(&streams).zip(expected) {
+            assert_eq!(segment.header_offset, Some(offset));
+            assert_eq!(segment.data_offset, offset + 56);
+            assert_eq!(segment.payload_length, stream.len() as u64);
+            assert_eq!(segment.samples, samples);
+            assert_eq!(segment.start_sample, start_sample);
+            start_sample += samples;
+            offset += 56 + stream.len() as u64;
+        }
+        assert_eq!(info.samples, expected.iter().sum::<u64>());
+        assert_eq!(
+            info.segments
+                .iter()
+                .map(|segment| segment.start.as_ref().unwrap().text.as_str())
+                .collect::<Vec<_>>(),
+            [START_1, START_2, START_3]
+        );
+        assert_eq!(info.segments[1].head.mapping_family, 1);
+        // Family 1 is read, but only family 255 is the live-recording layout.
+        assert!(!info.sgmca_layout);
+        assert!(!info.growing);
     }
 
     #[test]
-    fn locate_explains_what_is_wrong() {
+    fn family_zero_mono_and_stereo_are_read() {
         let dir = tempdir::Dir::new();
-        let none = write_temp(&dir, "none.sgmca", &[0x5a; 100]);
-        assert!(locate_stream(&mut fs::File::open(&none).unwrap())
+        let mut stereo = sgmca_head(2, 312);
+        stereo.mapping_family = 0;
+        stereo.stream_count = 1;
+        stereo.coupled_count = 1;
+        let path = write_temp(
+            &dir,
+            "stereo.sgmca",
+            &direct_audio(&[(START_1, &stream_with(&stereo, 4, 20, 0, |_| 30))]),
+        );
+        let info = inspect(&path, None).unwrap();
+        assert_eq!(info.head.channels, 2);
+        assert_eq!(info.head.mapping_family, 0);
+    }
+
+    #[test]
+    fn sessions_with_different_channel_counts_are_refused() {
+        let dir = tempdir::Dir::new();
+        let file = direct_audio(&[
+            (START_1, &stream_with(&sgmca_head(4, 312), 1, 20, 0, |_| 30)),
+            (START_2, &stream_with(&sgmca_head(2, 312), 2, 20, 0, |_| 30)),
+        ]);
+        let error = inspect(&write_temp(&dir, "mixed.sgmca", &file), None).unwrap_err();
+        assert!(
+            error.contains("Segment 2 has 2 channels but segment 1 has 4"),
+            "{error}"
+        );
+
+        let mut stereo = sgmca_head(2, 312);
+        stereo.mapping_family = 0;
+        stereo.stream_count = 1;
+        stereo.coupled_count = 1;
+        let file = direct_audio(&[
+            (START_1, &stream_with(&sgmca_head(2, 312), 1, 20, 0, |_| 30)),
+            (START_2, &stream_with(&stereo, 2, 20, 0, |_| 30)),
+        ]);
+        let error = inspect(&write_temp(&dir, "layouts.sgmca", &file), None).unwrap_err();
+        assert!(error.contains("cannot be joined"), "{error}");
+    }
+
+    #[test]
+    fn other_opus_layouts_are_refused() {
+        let dir = tempdir::Dir::new();
+        let mut coupled = sgmca_head(4, 312);
+        coupled.mapping_family = 1;
+        coupled.stream_count = 2;
+        coupled.coupled_count = 2;
+        let file = direct_audio(&[(START_1, &stream_with(&coupled, 1, 20, 0, |_| 30))]);
+        let error = inspect(&write_temp(&dir, "coupled.sgmca", &file), None).unwrap_err();
+        assert!(error.contains("mapping family 1 with 2 streams (2 coupled)"), "{error}");
+    }
+
+    #[test]
+    fn wrong_file_and_segment_headers_are_refused_with_their_reason() {
+        let dir = tempdir::Dir::new();
+        let good = synthetic_direct(10, 312, 0, |_| 30);
+        let cases: [(&str, usize, u32, &str); 3] = [
+            ("size", 0, 0x30, "says it is 48 bytes long"),
+            ("version", 4, 2, "format version 2"),
+            (
+                "segment-size",
+                40,
+                0x30,
+                "Segment 1's header (byte 40) says it is 48 bytes long, but a segment header needs 56",
+            ),
+        ];
+        for (name, at, value, message) in cases {
+            let mut bytes = good.clone();
+            bytes[at..at + 4].copy_from_slice(&value.to_le_bytes());
+            let path = write_temp(&dir, &format!("{name}.sgmca"), &bytes);
+            let error = inspect(&path, None).unwrap_err();
+            assert!(error.contains(message), "{name}: {error}");
+        }
+        let short = write_temp(&dir, "short.sgmca", &good[..30]);
+        assert!(inspect(&short, None).unwrap_err().contains("shorter than the 40-byte"));
+        let empty = write_temp(&dir, "empty.sgmca", &[]);
+        assert!(inspect(&empty, None).unwrap_err().contains("empty"));
+        let random = write_temp(&dir, "random.sgmca", &[0x5a; 100]);
+        assert!(inspect(&random, None).unwrap_err().contains("not a Direct Audio file"));
+        let header_only = write_temp(&dir, "header.sgmca", &good[..40]);
+        assert!(inspect(&header_only, None)
             .unwrap_err()
-            .contains("does not contain an Ogg audio stream"));
+            .contains("no recorded audio yet"));
+    }
 
+    #[test]
+    fn a_bare_ogg_stream_is_read_as_the_older_layout() {
+        let dir = tempdir::Dir::new();
+        let path = write_temp(&dir, "bare.sgmca", &synthetic(50, 312, 0, |_| 30));
+        let info = inspect(&path, None).unwrap();
+        assert_eq!(info.container, Container::BareOgg);
+        assert_eq!(info.file_version, None);
+        assert!(!info.guid_present);
+        assert_eq!(info.stream_offset, 0);
+        assert_eq!(info.segments.len(), 1);
+        assert_eq!(info.segments[0].start, None);
+        assert_eq!(info.samples, 50 * 960 - 312);
+        assert!(info.notes.iter().any(|note| note.contains("bare Ogg Opus stream")));
+    }
+
+    #[test]
+    fn a_still_growing_last_session_is_read_up_to_its_last_complete_page() {
+        let dir = tempdir::Dir::new();
+        let (file, streams) = three_sessions();
+        let full = inspect(&write_temp(&dir, "full.sgmca", &file), None).unwrap();
+
+        // Cut 10 bytes into the last session's last page: its header still
+        // counts the whole payload.
+        let cut = write_temp(&dir, "cut.sgmca", &file[..file.len() - 10]);
+        let info = inspect(&cut, None).unwrap();
+        assert!(info.growing);
+        assert_eq!(info.segments.len(), 3);
+        let last = &info.segments[2];
+        assert!(!last.complete && !last.end_of_stream);
+        assert!(last.bytes_read < streams[2].len() as u64 - 10);
+        assert!(last.samples < full.segments[2].samples && last.samples > 0);
+        assert_eq!(
+            info.segments[..2].iter().map(|s| s.samples).sum::<u64>(),
+            full.segments[..2].iter().map(|s| s.samples).sum::<u64>()
+        );
+        assert!(info
+            .notes
+            .iter()
+            .any(|note| note.contains("shorter than its header says")));
+        // The bytes of the cut-off page are unread, and the session is named.
+        assert_eq!(info.cut_short_segment, Some(3));
+        assert!(info.omitted_segments.is_empty());
+        assert_eq!(
+            info.unread_bytes,
+            file.len() as u64 - 10 - (last.data_offset + last.bytes_read)
+        );
+        assert!(info.unread_bytes > 0);
+
+        // A page appended after the last header update: the header counts
+        // fewer bytes than the file holds.
+        let mut lagging = file.clone();
+        lagging.extend_from_slice(&streams[2][..200]);
+        let info = inspect(&write_temp(&dir, "lag.sgmca", &lagging), None).unwrap();
+        assert!(info.growing);
+        assert_eq!(info.unread_bytes, 200);
+        assert_eq!(info.samples, full.samples);
+        assert!(info.notes.iter().any(|note| note.contains("200 bytes")));
+        assert!(info.omitted_segments.is_empty());
+        assert_eq!(info.cut_short_segment, None);
+
+        // A new session whose header was written but not yet updated.
+        let mut started = file.clone();
+        started.extend_from_slice(&segment_header(START_3, 0).unwrap());
+        started.extend_from_slice(&streams[0][..100]);
+        let info = inspect(&write_temp(&dir, "started.sgmca", &started), None).unwrap();
+        assert!(info.growing);
+        assert_eq!(info.segments.len(), 3);
+        assert!(info.segments.iter().all(|segment| segment.complete));
+        assert!(info
+            .notes
+            .iter()
+            .any(|note| note.contains("Segment 4 has a header but its length is not written yet")));
+        assert!(!info.notes.iter().any(|note| note.contains("shorter than its header")));
+        // Recorded: segment 4 left out for its zero length, and the 100
+        // bytes after its header not read.
+        assert_eq!(
+            info.omitted_segments,
+            vec![OmittedSegment {
+                number: 4,
+                reason: OmitReason::ZeroLengthHeader,
+                last: true,
+            }]
+        );
+        assert_eq!(info.unread_bytes, 100);
+        // The same with nothing after the new header.
+        let header_only = [file.as_slice(), &segment_header(START_3, 0).unwrap()].concat();
+        let info = inspect(&write_temp(&dir, "header-only.sgmca", &header_only), None).unwrap();
+        assert!(info.growing);
+        assert_eq!(info.unread_bytes, 0);
+        assert_eq!(info.omitted_segments.len(), 1);
+        assert_eq!(info.omitted_segments[0].reason, OmitReason::ZeroLengthHeader);
+
+        // A last session cut inside its headers holds no audio yet: it is
+        // left out and the earlier ones are kept.
+        let mut early = file[..file.len() - streams[2].len() - 56].to_vec();
+        early.extend_from_slice(&segment_header(START_3, streams[2].len() as u64).unwrap());
+        early.extend_from_slice(&streams[2][..40]);
+        let info = inspect(&write_temp(&dir, "early.sgmca", &early), None).unwrap();
+        assert!(info.growing);
+        assert_eq!(info.segments.len(), 2);
+        assert!(info
+            .notes
+            .iter()
+            .any(|note| note.contains("Segment 3 has no complete audio yet")));
+        // Recorded: segment 3 left out, its 40 bytes after the header unread.
+        assert_eq!(
+            info.omitted_segments,
+            vec![OmittedSegment {
+                number: 3,
+                reason: OmitReason::NoCompleteAudio,
+                last: true,
+            }]
+        );
+        assert_eq!(info.unread_bytes, 40);
+        assert_eq!(info.cut_short_segment, None);
+    }
+
+    #[test]
+    fn damage_inside_a_session_is_named_with_its_segment_and_byte() {
+        let dir = tempdir::Dir::new();
+        let (file, streams) = three_sessions();
+        let mut corrupt = file.clone();
+        let second = 40 + 56 + streams[0].len() + 56;
+        corrupt[second + streams[1].len() / 2] ^= 0x01;
+        let error = inspect(&write_temp(&dir, "crc.sgmca", &corrupt), None).unwrap_err();
+        assert!(
+            error.starts_with("Segment 2:") && error.contains("fails its checksum"),
+            "{error}"
+        );
+
+        // A non-last session that ends early is damage, not growth.
+        let mut short = direct_audio(&[(START_1, &streams[0][..streams[0].len() - 10])]);
+        short.extend_from_slice(&segment_header(START_2, streams[1].len() as u64).unwrap());
+        short.extend_from_slice(&streams[1]);
+        let error = inspect(&write_temp(&dir, "short.sgmca", &short), None).unwrap_err();
+        assert!(
+            error.starts_with("Segment 1:") && error.contains("truncated"),
+            "{error}"
+        );
+
+        // Bytes after a session's end-of-stream page.
+        let mut padded = streams[0].clone();
+        padded.extend_from_slice(&[0u8; 16]);
+        let error = inspect(
+            &write_temp(&dir, "pad.sgmca", &direct_audio(&[(START_1, &padded)])),
+            None,
+        )
+        .unwrap_err();
+        assert!(error.contains("16 bytes after its end-of-stream page"), "{error}");
+
+        // A session holding another codec.
         let mut vorbis = OggWriter::new(Vec::new(), 1);
         vorbis.write_packet(b"\x01vorbis....", 0).unwrap();
         vorbis.flush(true).unwrap();
-        let vorbis = write_temp(&dir, "vorbis.sgmca", &vorbis.into_inner());
-        assert!(locate_stream(&mut fs::File::open(&vorbis).unwrap())
-            .unwrap_err()
-            .contains("Vorbis"));
-
-        let mut damaged = synthetic(5, 312, 0, |_| 30);
-        damaged[30] ^= 0xff; // breaks the first page's CRC
-        let damaged = write_temp(&dir, "damaged.sgmca", &damaged);
-        assert!(locate_stream(&mut fs::File::open(&damaged).unwrap())
-            .unwrap_err()
-            .contains("no readable Opus stream header"));
+        let vorbis = direct_audio(&[(START_1, &vorbis.into_inner())]);
+        let error = inspect(&write_temp(&dir, "vorbis.sgmca", &vorbis), None).unwrap_err();
+        assert!(error.contains("Vorbis"), "{error}");
     }
 
     #[test]
-    fn inspect_names_the_damaged_page() {
+    fn an_unreadable_start_time_is_kept_and_named() {
         let dir = tempdir::Dir::new();
-        let bytes = synthetic(200, 312, 0, |_| 60);
-        let mut corrupt = bytes.clone();
-        let at = corrupt.len() - 20;
-        corrupt[at] ^= 0x01;
-        let path = write_temp(&dir, "crc.sgmca", &corrupt);
-        assert!(inspect(&path, None).unwrap_err().contains("fails its checksum"));
+        let file = direct_audio(&[("yesterday", &synthetic(10, 312, 0, |_| 30))]);
+        let info = inspect(&write_temp(&dir, "when.sgmca", &file), None).unwrap();
+        let start = info.segments[0].start.as_ref().unwrap();
+        assert_eq!(start.text, "yesterday");
+        assert_eq!(start.local, None);
+        assert!(info.notes.iter().any(|note| note.contains("\"yesterday\"")));
+    }
 
-        let truncated = write_temp(&dir, "cut.sgmca", &bytes[..bytes.len() - 10]);
-        assert!(inspect(&truncated, None).unwrap_err().contains("truncated"));
+    #[test]
+    fn concat_script_points_ffmpeg_at_each_session_in_place() {
+        let dir = tempdir::Dir::new();
+        let (file, streams) = three_sessions();
+        let path = write_temp(&dir, "it's three.sgmca", &file);
+        let info = inspect(&path, None).unwrap();
+        let script = concat_script(&path, &info).unwrap();
+        let lines: Vec<&str> = script.lines().collect();
+        assert_eq!(lines[0], "ffconcat version 1.0");
+        assert_eq!(lines.len(), 7);
+        let quoted = path.to_str().unwrap().replace('\'', "'\\''");
+        let mut offset = 40 + 56;
+        for (index, stream) in streams.iter().enumerate() {
+            let end = offset + stream.len();
+            assert_eq!(
+                lines[1 + index * 2],
+                format!("file 'subfile,,start,{offset},end,{end},,:file:{quoted}'")
+            );
+            assert_eq!(
+                lines[2 + index * 2],
+                format!("duration {:.6}", info.segments[index].duration_seconds)
+            );
+            offset = end + 56;
+        }
     }
 
     #[test]
     fn slice_copies_packets_with_pre_roll_pre_skip_and_end_trim() {
         let dir = tempdir::Dir::new();
-        let src = write_temp(&dir, "src.sgmca", &synthetic(500, 312, 0, |index| 20 + index % 11));
+        let src = write_temp(
+            &dir,
+            "src.sgmca",
+            &synthetic_direct(500, 312, 0, |index| 20 + index % 11),
+        );
         let dst = dir.0.join("cut.sgmca");
         // 2.0 s to 3.5 s: 72 000 samples.
         let report = slice(&src, &dst, 2.0, Some(3.5), None).unwrap();
         assert_eq!(report.samples, 72_000);
         assert!((report.end_seconds - 3.5).abs() < 1e-9);
+        assert_eq!(report.start_text, "2026-11-22T10:15:32-0500");
+        assert_eq!(report.start_offset_ms, Some(0.0));
+        assert!(report.start_note.contains("whole second"), "{}", report.start_note);
         assert!(report.pre_skip as u64 >= PREROLL_SAMPLES);
 
-        let info = inspect(&dst, None).unwrap();
-        assert!(info.sgmca_layout);
+        let info = verify_written(&dst, Some(&["2026-11-22T10:15:32-0500".to_string()]), None).unwrap();
         assert_eq!(info.start_granule, 0);
         assert_eq!(info.head.pre_skip, report.pre_skip);
         assert_eq!(info.samples, 72_000);
@@ -1603,7 +3046,8 @@ mod tests {
 
         // The copied packets are the source's own bytes, unchanged: packet
         // contents are tagged with their index in the fill byte.
-        let mut packets = PacketReader::new(fs::File::open(&dst).unwrap(), 0);
+        let bytes = fs::read(&dst).unwrap();
+        let mut packets = PacketReader::new(&bytes[96..], 96);
         let mut fills = Vec::new();
         while let Some(page) = packets.next().unwrap() {
             fills.extend(
@@ -1625,21 +3069,83 @@ mod tests {
     }
 
     #[test]
+    fn whole_second_offsets_are_given_in_milliseconds_with_a_plain_note() {
+        assert_eq!(offset_ms(0, 48_000), 0.0);
+        assert_eq!(offset_ms(20_160, 48_000), 420.0);
+        assert_eq!(offset_ms(1, 44_100), 0.023);
+        assert_eq!(offset_ms(44_099, 44_100), 999.977);
+        assert_eq!(offset_ms(5, 0), 0.0);
+        assert_eq!(
+            whole_second_note(420.0),
+            "CATalyst stores whole seconds; this recording's first sample is 0.42 s after the time written."
+        );
+        assert!(whole_second_note(999.977).contains(" 0.999977 s "));
+    }
+
+    #[test]
     fn slice_from_zero_keeps_the_original_pre_skip_and_runs_to_the_end() {
         let dir = tempdir::Dir::new();
-        let src = write_temp(&dir, "src.sgmca", &synthetic(100, 3840, 300, |_| 25));
+        let src = write_temp(&dir, "src.sgmca", &synthetic_direct(100, 3840, 300, |_| 25));
         let dst = dir.0.join("all.sgmca");
         let report = slice(&src, &dst, 0.0, None, None).unwrap();
         let original = inspect(&src, None).unwrap();
         assert_eq!(report.pre_skip, 3840);
         assert_eq!(report.samples, original.samples);
-        assert_eq!(inspect(&dst, None).unwrap().samples, original.samples);
+        assert_eq!(
+            verify_written(&dst, Some(&[START_1.to_string()]), None)
+                .unwrap()
+                .samples,
+            original.samples
+        );
+    }
+
+    #[test]
+    fn slice_stays_inside_one_session() {
+        let dir = tempdir::Dir::new();
+        let (file, _) = three_sessions();
+        let src = write_temp(&dir, "three.sgmca", &file);
+        let info = inspect(&src, None).unwrap();
+        let second = &info.segments[1];
+        let second_start = second.start_sample as f64 / 48_000.0;
+        let second_end = (second.start_sample + second.samples) as f64 / 48_000.0;
+
+        // Inside the second session: its own start time, moved by the whole
+        // seconds skipped (2.5 s in, so 2 s). The cut is exactly where it was
+        // asked for: half a second, nothing before 2.5 s added or removed, and
+        // the half second left over is reported, not cut.
+        let inside = dir.0.join("inside.sgmca");
+        let report = slice(&src, &inside, second_start + 2.5, Some(second_start + 3.0), None).unwrap();
+        assert_eq!(report.samples, 24_000);
+        assert_eq!(report.start_seconds, (second.start_sample + 120_000) as f64 / 48_000.0);
+        assert_eq!(report.start_offset_ms, Some(500.0));
+        assert!(
+            report.start_note.contains(
+                "CATalyst stores whole seconds; this recording's first sample is 0.5 s after the time written."
+            ),
+            "{}",
+            report.start_note
+        );
+        assert!(report.start_note.contains("no audio was left out"));
+        let written = inspect(&inside, None).unwrap();
+        assert_eq!(written.samples, 24_000);
+        assert_eq!(
+            written.segments[0].start.as_ref().unwrap().text,
+            "2026-11-22T11:02:07-0500"
+        );
+        // Family 1 is copied as is, so the writer check (family 255 only)
+        // refuses it; the reader reads it.
+        assert_eq!(written.head.mapping_family, 1);
+
+        let across = dir.0.join("across.sgmca");
+        let error = slice(&src, &across, second_start + 1.0, Some(second_end + 0.5), None).unwrap_err();
+        assert!(error.contains("from recording session 2 into the next"), "{error}");
+        assert!(!across.exists());
     }
 
     #[test]
     fn slice_rejects_bad_ranges_and_never_overwrites() {
         let dir = tempdir::Dir::new();
-        let src = write_temp(&dir, "src.sgmca", &synthetic(50, 312, 0, |_| 25));
+        let src = write_temp(&dir, "src.sgmca", &synthetic_direct(50, 312, 0, |_| 25));
         let dst = dir.0.join("out.sgmca");
         assert!(slice(&src, &dst, -1.0, None, None).is_err());
         assert!(slice(&src, &dst, 2.0, Some(1.0), None).is_err());
@@ -1653,105 +3159,627 @@ mod tests {
     }
 
     #[test]
-    fn a_file_with_two_sessions_is_refused_with_each_sessions_start_and_length() {
+    fn one_segment_output_is_the_header_then_the_ogg_bytes_unchanged() {
         let dir = tempdir::Dir::new();
-        // 10 s (500 packets) and 5 s (250 packets), pre-skip 312.
-        let first = synthetic(500, 312, 0, |_| 40);
-        let second = synthetic(250, 312, 0, |_| 40);
-        let bytes = segmented(&[
-            ("2026-11-22T10:15:30-0500", &first),
-            ("2026-11-22T10:20:00-0500", &second),
-        ]);
-        let mut cursor = std::io::Cursor::new(bytes.clone());
-        let offset = locate_stream(&mut cursor).unwrap();
-        assert_eq!(offset, 40 + SEGMENT_HEADER_LEN as u64);
-        let sessions = find_sessions(&mut cursor, offset, None).unwrap();
-        assert_eq!(sessions.len(), 2);
-        assert_eq!(sessions[0].offset, offset);
+        let ogg_bytes = synthetic(120, 312, 0, |_| 30);
+        let ogg = write_temp(&dir, "encoded.ogg", &ogg_bytes);
+        let dst = dir.0.join("out.sgmca");
+        let plan = [PlannedSegment {
+            start_text: START_1.into(),
+            start_sample: 0,
+        }];
+        write_direct_audio(&ogg, &dst, &plan, None).unwrap();
+        let bytes = fs::read(&dst).unwrap();
+        assert_eq!(bytes.len(), 96 + ogg_bytes.len());
+        assert_eq!(&bytes[0..8], &[0x28, 0, 0, 0, 1, 0, 0, 0]);
+        assert!(bytes[8..24].iter().any(|&byte| byte != 0), "a fresh identifier");
+        assert_eq!(bytes[8 + 7] >> 4, 4, "a version 4 (random) GUID");
+        assert_eq!(&bytes[24..40], &[0; 16]);
+        assert_eq!(&bytes[40..56], &[0x38, 0, 0, 0, 1, 0, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0]);
+        assert_eq!(&bytes[56..80], START_1.as_bytes());
+        assert_eq!(&bytes[80..88], &[0; 8]);
         assert_eq!(
-            sessions[1].offset,
-            offset + first.len() as u64 + SEGMENT_HEADER_LEN as u64
+            u64::from_le_bytes(bytes[88..96].try_into().unwrap()),
+            ogg_bytes.len() as u64
         );
-        assert_eq!(sessions[0].start_label.as_deref(), Some("2026-11-22T10:15:30-0500"));
-        assert_eq!(sessions[1].start_label.as_deref(), Some("2026-11-22T10:20:00-0500"));
-        assert_eq!(sessions[0].duration_seconds, Some((500.0 * 960.0 - 312.0) / 48_000.0));
-        assert_eq!(sessions[1].duration_seconds, Some((250.0 * 960.0 - 312.0) / 48_000.0));
-        assert!(sessions.iter().all(|session| session.channels == 4));
+        assert_eq!(&bytes[96..], &ogg_bytes[..]);
+        verify_written(&dst, Some(&[START_1.to_string()]), None).unwrap();
+        // Two writes never share an identifier, and never replace a file.
+        let again = dir.0.join("again.sgmca");
+        write_direct_audio(&ogg, &again, &plan, None).unwrap();
+        assert_ne!(fs::read(&again).unwrap()[8..24], bytes[8..24]);
+        assert!(write_direct_audio(&ogg, &again, &plan, None).is_err());
+    }
 
-        // Inspection would describe the first session alone; it refuses.
-        let path = write_temp(&dir, "two.sgmca", &bytes);
-        let error = inspect(&path, None).unwrap_err();
-        assert!(error.contains("2 recording sessions"), "{error}");
-        assert!(
-            error.contains("segment header start 2026-11-22T10:15:30-0500, 9.993 s"),
-            "{error}"
+    #[test]
+    fn multi_segment_output_cuts_each_session_at_its_planned_sample() {
+        let dir = tempdir::Dir::new();
+        let ogg = write_temp(&dir, "encoded.ogg", &synthetic(300, 312, 200, |index| 20 + index % 5));
+        let total = 300 * 960 - 200 - 312;
+        let dst = dir.0.join("out.sgmca");
+        let plan = [
+            PlannedSegment {
+                start_text: START_1.into(),
+                start_sample: 0,
+            },
+            PlannedSegment {
+                start_text: START_2.into(),
+                start_sample: 70_001,
+            },
+            PlannedSegment {
+                start_text: START_3.into(),
+                start_sample: 200_000,
+            },
+        ];
+        write_direct_audio(&ogg, &dst, &plan, None).unwrap();
+        let starts: Vec<String> = plan.iter().map(|segment| segment.start_text.clone()).collect();
+        let info = verify_written(&dst, Some(&starts), None).unwrap();
+        assert_eq!(
+            info.segments.iter().map(|segment| segment.samples).collect::<Vec<_>>(),
+            [70_001, 200_000 - 70_001, total - 200_000]
         );
+        let serials: std::collections::HashSet<u32> = info
+            .segments
+            .iter()
+            .map(|segment| {
+                let bytes = fs::read(&dst).unwrap();
+                let at = segment.data_offset as usize;
+                u32::from_le_bytes(bytes[at + 14..at + 18].try_into().unwrap())
+            })
+            .collect();
+        assert_eq!(serials.len(), 3, "each session is its own Ogg stream");
+
+        // A plan past the end of the audio fails and leaves nothing behind.
+        let past = dir.0.join("past.sgmca");
+        let bad = [
+            plan[0].clone(),
+            PlannedSegment {
+                start_text: START_2.into(),
+                start_sample: total + 10_000,
+            },
+        ];
+        assert!(write_direct_audio(&ogg, &past, &bad, None).is_err());
+        assert!(!past.exists());
         assert!(
-            error.contains("segment header start 2026-11-22T10:20:00-0500, 4.994 s"),
-            "{error}"
+            write_direct_audio(&ogg, &past, &[plan[0].clone(), plan[2].clone(), plan[1].clone()], None)
+                .unwrap_err()
+                .contains("not in order")
         );
-        assert!(error.contains("time between them removed"), "{error}");
-        let dst = dir.0.join("slice.sgmca");
-        assert!(slice(&path, &dst, 0.0, None, None)
+        assert!(write_direct_audio(&ogg, &past, &[], None)
             .unwrap_err()
-            .contains("2 recording sessions"));
-        assert!(!dst.exists());
+            .contains("not in order"));
+        assert!(!past.exists());
 
-        // Two plain Ogg streams back to back (no segment headers) are two
-        // sessions too, without start texts.
-        let mut chained = first.clone();
-        chained.extend_from_slice(&second);
-        let mut cursor = std::io::Cursor::new(chained);
-        let sessions = find_sessions(&mut cursor, 0, None).unwrap();
-        assert_eq!(sessions.len(), 2);
-        assert!(sessions.iter().all(|session| session.start_label.is_none()));
+        // A plan whose first segment starts after sample 0 would leave the
+        // audio before it out, so it is refused and nothing is written.
+        let later = dir.0.join("later.sgmca");
+        assert!(write_direct_audio(&ogg, &later, &[plan[1].clone()], None)
+            .unwrap_err()
+            .contains("audio would be left out"));
+        assert!(!later.exists());
     }
 
     #[test]
-    fn one_session_with_a_header_stray_markers_and_trailing_bytes_is_one_session() {
+    fn verify_written_rejects_anything_but_complete_family_255_direct_audio() {
         let dir = tempdir::Dir::new();
-        let stream = synthetic(300, 312, 0, |index| 30 + index % 200);
-        let mut bytes = segmented(&[("2026-11-22T10:15:30-0500", &stream)]);
-        bytes.extend_from_slice(b"OggS trailing bytes that are not a page");
-        bytes.extend(std::iter::repeat_n(0x5a, 70_000));
-        let mut cursor = std::io::Cursor::new(bytes.clone());
-        let offset = locate_stream(&mut cursor).unwrap();
-        let sessions = find_sessions(&mut cursor, offset, None).unwrap();
-        assert_eq!(sessions.len(), 1);
-        assert_eq!(sessions[0].start_label.as_deref(), Some("2026-11-22T10:15:30-0500"));
-        let path = write_temp(&dir, "one.sgmca", &bytes);
-        let info = inspect(&path, None).unwrap();
-        assert_eq!(info.samples, 300 * 960 - 312);
+        let bare = write_temp(&dir, "bare.sgmca", &synthetic(20, 312, 0, |_| 30));
+        assert!(verify_written(&bare, None, None)
+            .unwrap_err()
+            .contains("no Direct Audio file header"));
 
-        // A stream larger than one read chunk is walked across chunk edges.
-        let large = synthetic(3000, 312, 0, |_| 900);
-        assert!(large.len() > SESSION_SCAN_CHUNK);
-        let mut cursor = std::io::Cursor::new(large);
-        assert_eq!(find_sessions(&mut cursor, 0, None).unwrap().len(), 1);
-
-        let cancel = || true;
-        let mut cursor = std::io::Cursor::new(bytes);
-        assert_eq!(
-            find_sessions(&mut cursor, offset, Some(&cancel)).unwrap_err(),
-            INSPECT_CANCELLED_MESSAGE
+        let mut stereo = sgmca_head(2, 312);
+        stereo.mapping_family = 0;
+        stereo.stream_count = 1;
+        stereo.coupled_count = 1;
+        let coupled = write_temp(
+            &dir,
+            "stereo.sgmca",
+            &direct_audio(&[(START_1, &stream_with(&stereo, 7, 10, 0, |_| 20))]),
         );
+        assert!(verify_written(&coupled, None, None)
+            .unwrap_err()
+            .contains("mapping family 0"));
+
+        let good = synthetic_direct(200, 312, 0, |_| 30);
+        let path = write_temp(&dir, "good.sgmca", &good);
+        assert!(verify_written(&path, Some(&[START_2.to_string()]), None)
+            .unwrap_err()
+            .contains("not the ones planned"));
+        let cut = write_temp(&dir, "cut.sgmca", &good[..good.len() - 5]);
+        let error = verify_written(&cut, None, None).unwrap_err();
+        assert!(error.contains("incomplete"), "{error}");
+        let mut anonymous = good.clone();
+        anonymous[8..24].copy_from_slice(&[0; 16]);
+        let anonymous = write_temp(&dir, "anon.sgmca", &anonymous);
+        assert!(verify_written(&anonymous, None, None)
+            .unwrap_err()
+            .contains("identifier"));
+        // A start text CATalyst could not parse fails the check, even when it
+        // is exactly the text that was planned.
+        let undated = write_temp(
+            &dir,
+            "undated.sgmca",
+            &direct_audio(&[("2026-11-22 10:15:30", &synthetic(20, 312, 0, |_| 30))]),
+        );
+        let error = verify_written(&undated, Some(&["2026-11-22 10:15:30".to_string()]), None).unwrap_err();
+        assert!(error.contains("segment 1 has no start time in the"), "{error}");
+    }
+
+    // ── Owner-supplied samples and edge cases ──────────────────────────────
+
+    fn vendor_sample(name: &str) -> std::path::PathBuf {
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../scripts/fixtures/sgmca/vendor-notes-samples")
+            .join(name)
+    }
+
+    /// Where a stroke at wall-clock `time` (HH:MM:SS on the session's day)
+    /// lands on the joined timeline, by the rule the notes describe: sessions
+    /// laid end to end, a stroke in a gap snaps to the next session's start.
+    fn timeline_seconds(info: &SgmcaInfo, clock_text: &str) -> f64 {
+        let stroke = |start: &SegmentStart| {
+            let (local, _) = parse_start_text(&start.text).unwrap();
+            let clock = time::Time::parse(
+                clock_text,
+                time::macros::format_description!("[hour]:[minute]:[second]"),
+            )
+            .unwrap();
+            (time::PrimitiveDateTime::new(local.date(), clock) - local).as_seconds_f64()
+        };
+        for segment in &info.segments {
+            let into = stroke(segment.start.as_ref().unwrap());
+            let joined = segment.start_sample as f64 / 48_000.0;
+            if into < 0.0 {
+                return joined;
+            }
+            if into < segment.duration_seconds {
+                return joined + into;
+            }
+        }
+        info.duration_seconds
     }
 
     #[test]
-    fn verify_written_rejects_a_coupled_layout() {
+    fn vendor_notes_samples_read_as_the_notes_describe() {
+        // Synthetic tones wrapped by the owner's own tool, not by CATalyst
+        // (see scripts/fixtures/sgmca/vendor-notes-samples/README.md).
+        let one = inspect(&vendor_sample("tone_1segment.sgmca"), None).unwrap();
+        let two = inspect(&vendor_sample("tone_2sessions.sgmca"), None).unwrap();
+        for info in [&one, &two] {
+            assert_eq!(info.container, Container::DirectAudio);
+            assert_eq!(info.file_version, Some(1));
+            assert!(info.guid_present);
+            assert!(!info.growing);
+            assert_eq!(info.unread_bytes, 0);
+            assert!(info.sgmca_layout);
+            assert!(info.notes.is_empty(), "{:?}", info.notes);
+            for segment in &info.segments {
+                assert_eq!(segment.head.channels, 2);
+                assert_eq!(segment.head.mapping_family, 255);
+                assert_eq!((segment.head.stream_count, segment.head.coupled_count), (2, 0));
+                assert_eq!(segment.head.pre_skip, 312);
+                assert_eq!(segment.head.input_sample_rate, 48_000);
+                assert!(segment.complete && segment.end_of_stream);
+                assert_eq!(segment.bytes_read, segment.payload_length);
+            }
+        }
+        assert_eq!(one.segments.len(), 1);
+        let only = &one.segments[0];
+        assert_eq!(only.data_offset, 96);
+        assert_eq!(only.payload_length, 110_401);
+        assert_eq!(only.final_granule, 480_312);
+        assert_eq!(only.samples, 480_000);
+        assert_eq!(only.start.as_ref().unwrap().text, "2026-11-22T10:15:30-0500");
+        assert_eq!(
+            fs::metadata(vendor_sample("tone_1segment.sgmca")).unwrap().len(),
+            96 + 110_401
+        );
+
+        assert_eq!(two.segments.len(), 2);
+        let (first, second) = (&two.segments[0], &two.segments[1]);
+        assert_eq!((first.payload_length, second.payload_length), (110_401, 44_952));
+        assert_eq!(second.header_offset, Some(0x1AFA1));
+        assert_eq!(second.data_offset, 0x1AFD9);
+        assert_eq!((first.final_granule, second.final_granule), (480_312, 240_312));
+        assert_eq!((first.samples, second.samples), (480_000, 240_000));
+        assert_eq!((first.start_sample, second.start_sample), (0, 480_000));
+        assert_eq!(two.samples, 720_000);
+        assert_eq!(two.duration_seconds, 15.0);
+        assert_eq!(first.start.as_ref().unwrap().text, "2026-11-22T10:15:30-0500");
+        assert_eq!(second.start.as_ref().unwrap().text, "2026-11-22T10:20:00-0500");
+        assert_eq!(
+            second.start.as_ref().unwrap().local.as_deref(),
+            Some("2026-11-22T10:20:00")
+        );
+        // The notes' timeline expectations for this file.
+        assert_eq!(timeline_seconds(&two, "10:15:35"), 5.0);
+        assert_eq!(timeline_seconds(&two, "10:20:02"), 12.0);
+        assert_eq!(timeline_seconds(&two, "10:18:00"), 10.0);
+        assert_eq!(
+            fs::metadata(vendor_sample("tone_2sessions.sgmca")).unwrap().len(),
+            40 + 56 + 110_401 + 56 + 44_952
+        );
+
+        // A slice from 2.7 s to 4.0 s is cut exactly there (1.3 s of audio);
+        // its header names 10:15:32, the whole second before its first
+        // sample, and the 0.7 s left over is reported.
         let dir = tempdir::Dir::new();
-        let mut writer = OggWriter::new(Vec::new(), 7);
-        let mut head = sgmca_head(2, 312);
-        head.mapping_family = 0;
-        head.stream_count = 1;
-        head.coupled_count = 1;
-        writer.write_packet(&head.to_bytes(), 0).unwrap();
+        let cut = dir.0.join("cut.sgmca");
+        let report = slice(&vendor_sample("tone_1segment.sgmca"), &cut, 2.7, Some(4.0), None).unwrap();
+        assert!((report.start_seconds - 2.7).abs() < 1e-9);
+        assert_eq!(report.samples, 62_400);
+        assert_eq!(report.start_offset_ms, Some(700.0));
+        assert!(report
+            .start_note
+            .contains("first sample is 0.7 s after the time written"));
+        let written = verify_written(&cut, Some(&["2026-11-22T10:15:32-0500".to_string()]), None).unwrap();
+        assert_eq!(written.samples, 62_400);
+    }
+
+    #[test]
+    fn a_live_session_with_only_its_first_pages_is_left_out_not_refused() {
+        let dir = tempdir::Dir::new();
+        let (file, streams) = three_sessions();
+        let full = inspect(&write_temp(&dir, "full.sgmca", &file), None).unwrap();
+        // The OpusHead page alone, with the length rewritten to cover it,
+        // exactly as the notes say the recorder leaves it after one page.
+        let head_page = {
+            let mut pages = PageReader::new(&streams[2][..], 0);
+            pages.next_page().unwrap().unwrap();
+            pages.position() as usize
+        };
+        let two_and_head = file.len() - streams[2].len() + head_page;
+        let mut live = file[..file.len() - streams[2].len() - 56].to_vec();
+        live.extend_from_slice(&segment_header(START_3, head_page as u64).unwrap());
+        live.extend_from_slice(&streams[2][..head_page]);
+        assert_eq!(live.len(), two_and_head);
+        let info = inspect(&write_temp(&dir, "live.sgmca", &live), None).unwrap();
+        assert_eq!(info.segments.len(), 2);
+        assert!(info.growing);
+        assert!(info
+            .notes
+            .iter()
+            .any(|note| note.contains("Segment 3 has no complete audio yet")));
+        // The headers but no audio page yet, counted by the length.
+        let tags_page = {
+            let mut pages = PageReader::new(&streams[2][..], 0);
+            pages.next_page().unwrap().unwrap();
+            pages.next_page().unwrap().unwrap();
+            pages.position() as usize
+        };
+        let mut headers = file[..file.len() - streams[2].len() - 56].to_vec();
+        headers.extend_from_slice(&segment_header(START_3, tags_page as u64).unwrap());
+        headers.extend_from_slice(&streams[2][..tags_page]);
+        let info = inspect(&write_temp(&dir, "headers.sgmca", &headers), None).unwrap();
+        assert_eq!(info.segments.len(), 2);
+        assert!(info.growing);
+        // A segment header with a full length and no bytes after it.
+        let mut empty = file[..file.len() - streams[2].len() - 56].to_vec();
+        empty.extend_from_slice(&segment_header(START_3, streams[2].len() as u64).unwrap());
+        let info = inspect(&write_temp(&dir, "empty.sgmca", &empty), None).unwrap();
+        assert_eq!(info.segments.len(), 2);
+
+        // Every cut of the file, byte by byte: the sessions finished before
+        // the cut are always read, and nothing else is ever an error.
+        let first_end = 40 + 56 + streams[0].len();
+        for length in 40..file.len() {
+            let path = write_temp(&dir, "sweep.sgmca", &file[..length]);
+            match inspect(&path, None) {
+                Ok(info) => {
+                    let finished = full
+                        .segments
+                        .iter()
+                        .filter(|segment| (segment.data_offset + segment.payload_length) as usize <= length)
+                        .count();
+                    assert!(info.segments.len() >= finished, "cut at {length}");
+                    for (read, whole) in info.segments.iter().zip(&full.segments).take(finished) {
+                        assert_eq!(read.samples, whole.samples, "cut at {length}");
+                    }
+                    // A cut exactly between two sessions looks like a
+                    // complete file with fewer sessions.
+                    let boundary = full
+                        .segments
+                        .iter()
+                        .any(|segment| (segment.data_offset + segment.payload_length) as usize == length);
+                    assert_eq!(info.growing, !boundary, "cut at {length}");
+                    // Every byte is accounted for: read, a header of a
+                    // session left out, or recorded as unread.
+                    let last = info.segments.last().unwrap();
+                    let omitted_headers = 56
+                        * info
+                            .omitted_segments
+                            .iter()
+                            .filter(|omitted| omitted.reason != OmitReason::Empty)
+                            .count() as u64;
+                    assert_eq!(
+                        last.data_offset + last.bytes_read + omitted_headers + info.unread_bytes,
+                        length as u64,
+                        "cut at {length}"
+                    );
+                    assert_eq!(
+                        info.growing,
+                        info.unread_bytes > 0 || !info.omitted_segments.is_empty() || info.cut_short_segment.is_some(),
+                        "cut at {length}"
+                    );
+                }
+                Err(error) => {
+                    assert!(length < first_end, "cut at {length}: {error}");
+                    assert!(
+                        error.contains("no recorded audio yet")
+                            || error.contains("no complete audio yet")
+                            || error.contains("ends inside its first segment header")
+                            || error.contains("holds any audio samples"),
+                        "cut at {length}: {error}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn later_sessions_behind_a_short_length_are_never_dropped() {
+        let dir = tempdir::Dir::new();
+        let (_, streams) = three_sessions();
+        // Session 2's length was never written (0), then session 3 recorded.
+        let mut zero = direct_audio(&[(START_1, &streams[0])]);
+        zero.extend_from_slice(&segment_header(START_2, 0).unwrap());
+        zero.extend_from_slice(&streams[1]);
+        zero.extend_from_slice(&segment_header(START_3, streams[2].len() as u64).unwrap());
+        zero.extend_from_slice(&streams[2]);
+        let error = inspect(&write_temp(&dir, "zero.sgmca", &zero), None).unwrap_err();
+        assert!(
+            error.contains("Segment 2's length in its header does not cover all of its audio")
+                && error.contains("rather than leave sessions out"),
+            "{error}"
+        );
+
+        // Session 2's length stops before its last page, then session 3.
+        let last_page = {
+            let mut pages = PageReader::new(&streams[1][..], 0);
+            let mut starts = Vec::new();
+            while let Some(page) = pages.next_page().unwrap() {
+                starts.push(page.offset);
+            }
+            *starts.last().unwrap()
+        };
+        let mut lagging = direct_audio(&[(START_1, &streams[0])]);
+        lagging.extend_from_slice(&segment_header(START_2, last_page).unwrap());
+        lagging.extend_from_slice(&streams[1]);
+        lagging.extend_from_slice(&segment_header(START_3, streams[2].len() as u64).unwrap());
+        lagging.extend_from_slice(&streams[2]);
+        let error = inspect(&write_temp(&dir, "lagging.sgmca", &lagging), None).unwrap_err();
+        assert!(error.contains("another recording session's header follows"), "{error}");
+
+        // A session whose length is 0 and which holds nothing: the next
+        // header follows straight after it, so the walk goes on.
+        let mut hollow = direct_audio(&[(START_1, &streams[0])]);
+        hollow.extend_from_slice(&segment_header(START_2, 0).unwrap());
+        hollow.extend_from_slice(&segment_header(START_3, streams[2].len() as u64).unwrap());
+        hollow.extend_from_slice(&streams[2]);
+        let info = inspect(&write_temp(&dir, "hollow.sgmca", &hollow), None).unwrap();
+        assert_eq!(info.segments.len(), 2);
+        assert_eq!(info.segments[1].number, 3);
+        assert!(!info.growing);
+        assert!(info
+            .notes
+            .iter()
+            .any(|note| note.contains("Segment 2 (byte") && note.contains("length of 0")));
+    }
+
+    #[test]
+    fn fields_catalyst_does_not_check_are_noted_not_refused() {
+        let dir = tempdir::Dir::new();
+        let good = synthetic_direct(10, 312, 0, |_| 30);
+        let mut odd = good.clone();
+        odd[44..48].copy_from_slice(&0u32.to_le_bytes());
+        odd[48..52].copy_from_slice(&7u32.to_le_bytes());
+        let info = inspect(&write_temp(&dir, "odd.sgmca", &odd), None).unwrap();
+        assert_eq!(info.segments.len(), 1);
+        assert!(info
+            .notes
+            .iter()
+            .any(|note| note.contains("version 0 and record kind 7")));
+
+        // A 64-byte segment header: the audio starts after all 64 bytes.
+        let mut long = good[..96].to_vec();
+        long[40..44].copy_from_slice(&64u32.to_le_bytes());
+        long.extend_from_slice(&[0; 8]);
+        long.extend_from_slice(&good[96..]);
+        let info = inspect(&write_temp(&dir, "long.sgmca", &long), None).unwrap();
+        assert_eq!(info.segments[0].data_offset, 104);
+        assert_eq!(
+            info.samples,
+            inspect(&write_temp(&dir, "good.sgmca", &good), None).unwrap().samples
+        );
+        assert!(info.notes.iter().any(|note| note.contains("says it is 64 bytes long")));
+
+        // A different output gain on a later session is named, not refused.
+        let mut quieter = sgmca_head(4, 312);
+        quieter.output_gain = -1536;
+        let file = direct_audio(&[
+            (START_1, &stream_with(&sgmca_head(4, 312), 1, 20, 0, |_| 30)),
+            (START_2, &stream_with(&quieter, 2, 20, 0, |_| 30)),
+        ]);
+        let info = inspect(&write_temp(&dir, "gain.sgmca", &file), None).unwrap();
+        assert_eq!(info.segments.len(), 2);
+        assert!(info
+            .notes
+            .iter()
+            .any(|note| note.contains("output gain of -6.00 dB where segment 1 asks for 0.00 dB")));
+    }
+
+    /// A 4-channel stream whose audio pages carry `granules` (one packet
+    /// per page), written with the module's own writer.
+    fn stream_with_granules(granules: &[u64]) -> Vec<u8> {
+        stream_with_granules_ending(granules, true)
+    }
+
+    /// One 30-byte packet per page at `granules`; the last page carries the
+    /// end-of-stream flag only with `eos`.
+    fn stream_with_granules_ending(granules: &[u64], eos: bool) -> Vec<u8> {
+        let mut writer = OggWriter::new(Vec::new(), 9);
+        writer.write_packet(&sgmca_head(4, 312).to_bytes(), 0).unwrap();
         writer.flush(false).unwrap();
-        writer.write_packet(&tags_packet("t", &[]), 0).unwrap();
+        writer.write_packet(&tags_packet("test", &[]), 0).unwrap();
         writer.flush(false).unwrap();
-        writer.write_packet(&fake_packet(20, 0), 960 * 10).unwrap();
-        writer.flush(true).unwrap();
-        let path = write_temp(&dir, "stereo.sgmca", &writer.into_inner());
-        assert!(verify_written(&path, None).unwrap_err().contains("mapping family 0"));
+        for (index, &granule) in granules.iter().enumerate() {
+            writer.write_packet(&fake_packet(30, index as u8), granule).unwrap();
+            writer.flush(eos && index + 1 == granules.len()).unwrap();
+        }
+        writer.into_inner()
+    }
+
+    #[test]
+    fn only_the_end_of_stream_page_may_end_the_audio_early() {
+        let dir = tempdir::Dir::new();
+        // The end-of-stream page trims 500 samples off its last packet.
+        let trimmed = direct_audio(&[(START_1, &stream_with_granules(&[960, 1920, 2380]))]);
+        let info = inspect(&write_temp(&dir, "trimmed.sgmca", &trimmed), None).unwrap();
+        assert_eq!(info.samples, 2380 - 312);
+        // The same short granule mid-stream: FFmpeg would play all 960
+        // samples of that packet, so every later sample would be late.
+        for (name, granules, eos) in [
+            ("middle", vec![960, 1500, 2460], true),
+            ("unflagged-last", vec![960, 1920, 2380], false),
+        ] {
+            let file = direct_audio(&[(START_1, &stream_with_granules_ending(&granules, eos))]);
+            let error = inspect(&write_temp(&dir, &format!("{name}.sgmca"), &file), None).unwrap_err();
+            assert!(
+                error.starts_with("Segment 1:") && error.contains("it is not the stream's last page"),
+                "{name}: {error}"
+            );
+        }
+        // A session whose trimmed last page lost its end-of-stream flag,
+        // followed by another session: refused, never read as if the trim
+        // held (FFmpeg would play the trimmed samples and move session 2).
+        let file = direct_audio(&[
+            (START_1, &stream_with_granules_ending(&[960, 1920, 2380], false)),
+            (START_2, &stream_with_granules(&[960, 1920])),
+        ]);
+        let error = inspect(&write_temp(&dir, "noeos.sgmca", &file), None).unwrap_err();
+        assert!(error.contains("it is not the stream's last page"), "{error}");
+    }
+
+    #[test]
+    fn impossible_or_jumping_timestamps_are_refused_without_overflow() {
+        let dir = tempdir::Dir::new();
+        for (name, granules, message) in [
+            ("max", vec![u64::MAX - 1, 5, 6], "impossible timestamp"),
+            (
+                "signed",
+                vec![i64::MAX as u64 + 1, i64::MAX as u64 + 961],
+                "impossible timestamp",
+            ),
+            (
+                "edge",
+                vec![i64::MAX as u64 - 10, i64::MAX as u64 - 9],
+                "past what Ogg can count",
+            ),
+            ("jump", vec![960, 1 << 50], "its packets end at sample 1920"),
+        ] {
+            let file = direct_audio(&[(START_1, &stream_with_granules(&granules))]);
+            let error = inspect(&write_temp(&dir, &format!("{name}.sgmca"), &file), None).unwrap_err();
+            assert!(
+                error.starts_with("Segment 1:") && error.contains(message),
+                "{name}: {error}"
+            );
+        }
+        // Correct timestamps that do not start at zero are fine.
+        let file = direct_audio(&[(START_1, &stream_with_granules(&[48_960, 49_920, 50_880]))]);
+        let info = inspect(&write_temp(&dir, "late.sgmca", &file), None).unwrap();
+        assert_eq!(info.samples, 3 * 960 - 312);
+    }
+
+    #[test]
+    fn a_file_whose_sessions_hold_no_samples_is_refused_by_the_reader() {
+        let dir = tempdir::Dir::new();
+        // One 20 ms packet each, all of it pre-skip.
+        let silent = stream_with(&sgmca_head(4, 960), 1, 1, 0, |_| 30);
+        let file = direct_audio(&[(START_1, &silent), (START_2, &silent)]);
+        let error = inspect(&write_temp(&dir, "silent.sgmca", &file), None).unwrap_err();
+        assert!(error.contains("holds any audio samples"), "{error}");
+    }
+
+    #[test]
+    fn a_second_logical_stream_inside_a_session_is_refused() {
+        let dir = tempdir::Dir::new();
+        let first = stream_with(&sgmca_head(4, 312), 0x5eed, 100, 0, |_| 30);
+        let second = stream_with(&sgmca_head(4, 312), 0x1234, 50, 0, |_| 30);
+        // The other stream's first page (its OpusHead) goes in after the
+        // first stream's third page, before that stream has ended.
+        let page_ends = |bytes: &[u8], count: usize| {
+            let mut pages = PageReader::new(bytes, 0);
+            for _ in 0..count {
+                pages.next_page().unwrap().unwrap();
+            }
+            pages.position() as usize
+        };
+        let split = page_ends(&first, 3);
+        let foreign = page_ends(&second, 1);
+        let mut payload = first[..split].to_vec();
+        payload.extend_from_slice(&second[..foreign]);
+        payload.extend_from_slice(&first[split..]);
+        let path = write_temp(&dir, "two-streams.sgmca", &direct_audio(&[(START_1, &payload)]));
+        let error = inspect(&path, None).unwrap_err();
+        let at = 40 + 56 + split;
+        assert!(
+            error.starts_with(&format!(
+                "Segment 1: The Ogg page at byte {at} belongs to a second logical stream (serial 0x00001234)"
+            )),
+            "{error}"
+        );
+        assert!(
+            error.contains("rather than leave the second stream's audio out"),
+            "{error}"
+        );
+
+        // The same in the second session, and as a whole second stream
+        // multiplexed into the first session's header pages.
+        let path = write_temp(
+            &dir,
+            "second-session.sgmca",
+            &direct_audio(&[(START_1, &first), (START_2, &payload)]),
+        );
+        assert!(inspect(&path, None)
+            .unwrap_err()
+            .starts_with("Segment 2: The Ogg page at byte"));
+        let mut grouped = first[..page_ends(&first, 1)].to_vec();
+        grouped.extend_from_slice(&second[..foreign]);
+        grouped.extend_from_slice(&first[page_ends(&first, 1)..]);
+        let path = write_temp(&dir, "grouped.sgmca", &direct_audio(&[(START_1, &grouped)]));
+        assert!(inspect(&path, None).unwrap_err().contains("second logical stream"));
+
+        // Another stream after the end-of-stream page is extra bytes, also
+        // refused (as before).
+        let after = [first.as_slice(), &second].concat();
+        let path = write_temp(&dir, "after-eos.sgmca", &direct_audio(&[(START_1, &after)]));
+        assert!(inspect(&path, None)
+            .unwrap_err()
+            .contains("after its end-of-stream page"));
+    }
+
+    #[test]
+    fn an_empty_session_between_two_is_recorded_as_left_out() {
+        let dir = tempdir::Dir::new();
+        let (file, streams) = three_sessions();
+        let mut bytes = file[..40 + 56 + streams[0].len()].to_vec();
+        bytes.extend_from_slice(&segment_header(START_2, 0).unwrap());
+        bytes.extend_from_slice(&file[40 + 56 + streams[0].len()..]);
+        let info = inspect(&write_temp(&dir, "gap.sgmca", &bytes), None).unwrap();
+        assert_eq!(info.segments.len(), 3);
+        assert!(!info.growing);
+        assert_eq!(info.unread_bytes, 0);
+        assert_eq!(
+            info.omitted_segments,
+            vec![OmittedSegment {
+                number: 2,
+                reason: OmitReason::Empty,
+                last: false,
+            }]
+        );
+        assert_eq!(
+            info.segments.iter().map(|segment| segment.number).collect::<Vec<_>>(),
+            [1, 3, 4]
+        );
     }
 }

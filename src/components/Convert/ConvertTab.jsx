@@ -789,12 +789,11 @@ export default function ConvertTab({
                       formatOut === 'opus'
                         ? 'Opus is always 48 kHz'
                         : formatOut === 'sgmca'
-                          ? 'SGMCA records at 16 kHz'
+                          ? 'SGMCA is encoded at 48 kHz'
                           : ''
                     }
                     onChange={e => setRate(e.target.value)}
                   >
-                    {formatOut === 'sgmca' && <option value="16000">16,000 Hz</option>}
                     <option value="22050">22,050 Hz</option>
                     <option value="44100">44,100 Hz</option>
                     <option value="48000">48,000 Hz</option>

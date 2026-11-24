@@ -666,3 +666,53 @@
     order: 11;
   }
 }
+
+/* Player listening-mix sliders (ListeningMix.jsx). The native unfilled track
+   is about 2:1 against the light card, under WCAG 1.4.11's 3:1, so the track
+   is drawn here: a 1px ink-2 border (well over 3:1 on the card in both
+   themes), filled in ink up to the value (--mix-fill, set by the component),
+   and an ink thumb ringed in the card color so it stays visible on the fill. */
+.mix-range {
+  appearance: none;
+  -webkit-appearance: none;
+  background: transparent;
+}
+.mix-range::-webkit-slider-runnable-track {
+  height: 8px;
+  border: 1px solid hsl(var(--sub));
+  border-radius: 9999px;
+  background: linear-gradient(
+    to right,
+    hsl(var(--foreground)) var(--mix-fill, 0%),
+    hsl(var(--card)) var(--mix-fill, 0%)
+  );
+}
+.mix-range::-moz-range-track {
+  height: 6px;
+  border: 1px solid hsl(var(--sub));
+  border-radius: 9999px;
+  background: linear-gradient(
+    to right,
+    hsl(var(--foreground)) var(--mix-fill, 0%),
+    hsl(var(--card)) var(--mix-fill, 0%)
+  );
+}
+.mix-range::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 18px;
+  height: 18px;
+  margin-top: -6px;
+  border: 2px solid hsl(var(--card));
+  border-radius: 9999px;
+  background: hsl(var(--foreground));
+  box-shadow: 0 0 0 1px hsl(var(--foreground));
+}
+.mix-range::-moz-range-thumb {
+  width: 14px;
+  height: 14px;
+  border: 2px solid hsl(var(--card));
+  border-radius: 9999px;
+  background: hsl(var(--foreground));
+  box-shadow: 0 0 0 1px hsl(var(--foreground));
+}

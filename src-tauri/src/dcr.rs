@@ -2542,6 +2542,11 @@ pub(crate) fn queue_streams_info(path: &Path) -> crate::manifest::AudioStreamsIn
         duration_secs,
         trm: None,
         trm_refusal: None,
+        recording_sessions: None,
+        still_recording: None,
+        unread_bytes: None,
+        omitted_sessions: None,
+        cut_short_session: None,
         dcr: Some(dcr),
         dm: None,
     }

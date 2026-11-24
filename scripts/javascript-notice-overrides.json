@@ -1,9 +1,9 @@
 {
   "schemaVersion": 1,
   "expected": {
-    "javascriptComponents": 56,
+    "javascriptComponents": 57,
     "generatedCssComponents": 2,
-    "totalComponents": 58
+    "totalComponents": 59
   },
   "generatedCss": [
     {
@@ -36,6 +36,11 @@
           "name": "@tauri-apps/plugin-fs",
           "version": "2.7.1",
           "integrity": "sha512-4TBVjpi/q8PuNzjpkAc2iBGXMTLjOrAyfTiiOL8ORaJCZJRG3tjzmQ4sqs2CMG75FvLyRkOkERfP7AyY4iBNwQ=="
+        },
+        {
+          "name": "@tauri-apps/plugin-global-shortcut",
+          "version": "2.4.1",
+          "integrity": "sha512-NVCoQ0ShDFncsj9f8iAzhRBTnsJj5sf60vOjcV6emeQHzmEFd6+RXH+fUHHuJAbEYP4mdT2vGlvVOG7tMr/e8g=="
         },
         {
           "name": "@tauri-apps/plugin-opener",

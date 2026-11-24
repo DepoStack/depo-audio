@@ -92,13 +92,14 @@ pub async fn detect_format(path: String) -> Option<FormatInfo> {
 }
 
 /// The audio streams of a queued file, for the Convert queue's multi-track
-/// notice, the FTR notices and the WAV size estimate. Read-only: one ffprobe
-/// of the original file, or one read of an FTR recording. Returns None when the file is not probed here: a rejected format, or
-/// an SGMCA, whose Ogg stream sits behind a vendor prefix and is only read
-/// from a temporary copy at conversion time. A Liberty / BIS DCR is read by
-/// DepoAudio's own reader instead of ffprobe (`crate::dcr::queue_streams_info`).
-/// A `.dm` is answered from its own header and block headers (no FFmpeg),
-/// with what was recorded over.
+/// notice, the FTR and recording-session notices and the WAV size estimate.
+/// Read-only: one ffprobe of the original file, one read of an FTR
+/// recording, or for an SGMCA a walk of its own headers and pages (ffprobe
+/// cannot read the Direct Audio layout). A `.dm` is answered from its own
+/// header and block headers (no FFmpeg), with what was recorded over, and a
+/// Liberty / BIS DCR by DepoAudio's own reader
+/// (`crate::dcr::queue_streams_info`). Returns None for a rejected format, or
+/// an SGMCA that cannot be read (conversion then gives the reason).
 #[tauri::command]
 pub async fn probe_audio_streams_cmd(
     app: AppHandle,
@@ -107,7 +108,14 @@ pub async fn probe_audio_streams_cmd(
     let source = Path::new(&path);
     crate::safety::check_file_safe(source)?;
     match detect_format_blocking(path.clone()).await {
-        Some(format) if format.handler == "rejected" || format.key == "sgmca" => Ok(None),
+        Some(format) if format.key == "sgmca" => {
+            let src = source.to_path_buf();
+            let info = tauri::async_runtime::spawn_blocking(move || crate::sgmca::inspect(&src, None))
+                .await
+                .map_err(|error| format!("SGMCA inspection task failed: {error}"))?;
+            Ok(info.ok().map(|info| crate::manifest::sgmca_audio_streams(&info)))
+        }
+        Some(format) if format.handler == "rejected" => Ok(None),
         // An FTR recording is read through (never changed) for its channel
         // count, the duration of the audio actually written, its session
         // flags and the decode route; ffprobe would take an unclosed

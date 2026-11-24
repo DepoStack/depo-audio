@@ -231,7 +231,7 @@ pub(crate) async fn probe_duration_cancellable(
 /// A video with a shorter first audio track, or a file with a longer second
 /// track, reports a container duration past the end of the converted stream.
 pub(crate) fn duration_probe_args(feed: &Path) -> Vec<String> {
-    vec![
+    let mut args: Vec<String> = vec![
         "-v".into(),
         "quiet".into(),
         "-protocol_whitelist".into(),
@@ -242,8 +242,11 @@ pub(crate) fn duration_probe_args(feed: &Path) -> Vec<String> {
         crate::helpers::source_audio_stream_specifier(),
         "-show_entries".into(),
         "stream=duration:stream_tags=DURATION:format=duration".into(),
-        feed.to_string_lossy().to_string(),
-    ]
+    ];
+    // An SGMCA concat script needs its demuxer options before the input.
+    args.extend(crate::helpers::feed_format_args(feed));
+    args.push(feed.to_string_lossy().to_string());
+    args
 }
 
 /// Duration in seconds from `duration_probe_args` output, if readable: the
@@ -270,7 +273,7 @@ pub(crate) async fn probe_channels_cancellable(
 /// ffprobe arguments for the channel count of the converted audio stream
 /// (`SOURCE_AUDIO_STREAM`, the same stream every FFmpeg pass maps).
 pub(crate) fn channel_probe_args(feed: &Path) -> Vec<String> {
-    vec![
+    let mut args: Vec<String> = vec![
         "-v".into(),
         "quiet".into(),
         "-protocol_whitelist".into(),
@@ -280,8 +283,11 @@ pub(crate) fn channel_probe_args(feed: &Path) -> Vec<String> {
         "-show_streams".into(),
         "-select_streams".into(),
         crate::helpers::source_audio_stream_specifier(),
-        feed.to_string_lossy().to_string(),
-    ]
+    ];
+    // An SGMCA concat script needs its demuxer options before the input.
+    args.extend(crate::helpers::feed_format_args(feed));
+    args.push(feed.to_string_lossy().to_string());
+    args
 }
 
 /// Channel count from `channel_probe_args` output; zero or unreadable is None.
@@ -323,7 +329,7 @@ pub(crate) async fn probe_manifest_source_cancellable(
 /// converted stream and the array length is the input's audio stream count.
 /// The Convert queue's multi-track notice reads the same document.
 pub(crate) fn manifest_probe_args(feed: &Path) -> Vec<String> {
-    vec![
+    let mut args: Vec<String> = vec![
         "-v".into(),
         "quiet".into(),
         "-protocol_whitelist".into(),
@@ -334,8 +340,11 @@ pub(crate) fn manifest_probe_args(feed: &Path) -> Vec<String> {
         "-show_streams".into(),
         "-select_streams".into(),
         "a".into(),
-        feed.to_string_lossy().to_string(),
-    ]
+    ];
+    // An SGMCA concat script needs its demuxer options before the input.
+    args.extend(crate::helpers::feed_format_args(feed));
+    args.push(feed.to_string_lossy().to_string());
+    args
 }
 
 /// Audio streams of a queued file for the Convert queue's notice (the same
@@ -371,10 +380,29 @@ pub(crate) const FADE_LENGTH_UNKNOWN_MESSAGE: &str = "Fade is on, but DepoAudio 
 /// its last link's length, and a VBR MP3 without an index states an
 /// estimate.
 pub(crate) fn decoded_length_args(feed: &AudioFeed) -> Vec<String> {
+    sample_count_args(feed, DECODED_LENGTH_FILTER)
+}
+
+/// The source-rate counting pass's filter: `DECODED_LENGTH_FILTER` without
+/// the resampler, so it counts the samples the decoder gives at the
+/// stream's own rate (the same astats filter, so no other filter has to
+/// ship for it).
+pub(crate) const SOURCE_LENGTH_FILTER: &str =
+    "astats=metadata=0:reset=0:measure_perchannel=none:measure_overall=Number_of_samples";
+
+/// FFmpeg arguments that decode the converted stream exactly as a
+/// conversion does and count its samples at the stream's own rate: the
+/// exact source length an SGMCA output is checked against when no header
+/// states it (see `conversion::plan_sgmca_output`).
+pub(crate) fn source_length_args(feed: &AudioFeed) -> Vec<String> {
+    sample_count_args(feed, SOURCE_LENGTH_FILTER)
+}
+
+fn sample_count_args(feed: &AudioFeed, filter: &str) -> Vec<String> {
     let mut args = crate::helpers::safe_ffmpeg_input_prelude();
     args.extend(["-nostats".into(), "-v".into(), "info".into()]);
     args.extend(feed.input_args(&[]));
-    args.extend(feed.source_output_args(Some(DECODED_LENGTH_FILTER)));
+    args.extend(feed.source_output_args(Some(filter)));
     args.extend(["-vn".into(), "-sn".into(), "-f".into(), "null".into(), "-".into()]);
     args
 }
@@ -382,12 +410,42 @@ pub(crate) fn decoded_length_args(feed: &AudioFeed) -> Vec<String> {
 /// Decoded length in seconds from the stderr of `decoded_length_args`: the
 /// last "Number of samples" astats reports, over `DECODED_LENGTH_RATE`.
 pub(crate) fn parse_decoded_seconds(stderr: &[u8]) -> Option<f64> {
+    parse_decoded_samples(stderr).map(|samples| samples as f64 / f64::from(DECODED_LENGTH_RATE))
+}
+
+/// The last "Number of samples" astats reports in `stderr` (of
+/// `decoded_length_args` or `source_length_args`); None when there is none
+/// or it is 0.
+pub(crate) fn parse_decoded_samples(stderr: &[u8]) -> Option<u64> {
     let text = String::from_utf8_lossy(stderr);
     let samples: u64 = text
         .lines()
         .rev()
         .find_map(|line| line.split("Number of samples:").nth(1)?.trim().parse().ok())?;
-    (samples > 0).then(|| samples as f64 / f64::from(DECODED_LENGTH_RATE))
+    (samples > 0).then_some(samples)
+}
+
+/// Samples the converted stream decodes to at its own rate
+/// (`source_length_args`), with the bundled FFmpeg. None when FFmpeg fails
+/// or reports no count.
+pub(crate) async fn measure_source_samples_cancellable(
+    app: &AppHandle,
+    feed: &AudioFeed,
+    timeout_secs: u64,
+    cancelled: CancelCheck<'_>,
+) -> Option<u64> {
+    let output = sidecar_output_cancellable(
+        app,
+        ffmpeg_bin_name(),
+        source_length_args(feed),
+        bounded_ffmpeg_timeout(timeout_secs),
+        cancelled,
+    )
+    .await?;
+    if !output.success {
+        return None;
+    }
+    parse_decoded_samples(&output.stderr)
 }
 
 pub(crate) async fn measure_decoded_seconds_cancellable(
