@@ -12,6 +12,8 @@
     "dialog:allow-save",
     "fs:allow-read-text-file",
     "fs:allow-write-text-file",
+    "global-shortcut:allow-register",
+    "global-shortcut:allow-unregister-all",
     {
       "identifier": "opener:allow-open-url",
       "allow": [

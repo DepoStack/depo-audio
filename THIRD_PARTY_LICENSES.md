@@ -128,8 +128,8 @@ review because this baseline can change after the date above.
 
 ## JavaScript and generated CSS notice status
 
-The reviewed production closure contains 56 JavaScript packages plus Tailwind
-CSS and tailwindcss-animate (58 components total). A deterministic generator
+The reviewed production closure contains 57 JavaScript packages plus Tailwind
+CSS and tailwindcss-animate (59 components total). A deterministic generator
 commits and bundles byte-stable HTML and JSON notice evidence from the lockfile
 and reviewed overrides. The release workflow also generates a production npm
 CycloneDX inventory, but an SBOM does not replace copyright notices or license
@@ -147,10 +147,10 @@ pre-existing body styles, and React Strict Mode cleanup.
 The remaining reviewed notice cases are:
 
 - `@tauri-apps/plugin-dialog@2.8.4`, `plugin-fs@2.7.1`,
-  `plugin-opener@2.7.3`, `plugin-process@2.4.0`, `plugin-shell@2.6.0`, and
-  `plugin-updater@2.14.1` ship SPDX declarations but not the complete MIT and
-  Apache-2.0 texts. Preserve those declarations and add the exact upstream
-  license texts.
+  `plugin-global-shortcut@2.4.1`, `plugin-opener@2.7.3`, `plugin-process@2.4.0`,
+  `plugin-shell@2.6.0`, and `plugin-updater@2.14.1` ship SPDX declarations but
+  not the complete MIT and Apache-2.0 texts. Preserve those declarations and
+  add the exact upstream license texts.
 - `tslib@2.8.1` includes a separate `CopyrightNotice.txt`; preserve it beside
   `LICENSE.txt`.
 - The generated CSS retains Tailwind CSS 4.3.5's legal banner and includes
