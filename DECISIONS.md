@@ -2,7 +2,8 @@
 
 ## 2026-11-24 Grill with docs (owner, docs only, nothing built)
 - DepoAudio stays free. Converting, improving, playing and organizing need no account.
-- DepoAudio stays a fully separate brand: no "by DepoStack" line on the app or depoaudio.com.
+- DepoAudio stays a fully separate brand: no "by DepoStack" line on the app. depoaudio.com keeps one quiet made-by
+  credit in its footer and nothing else (see the website repo's DECISIONS.md).
 - DepoAudio does not connect to DepoStack yet: no depostack.com sign-in and no sending recordings to Transcript or
   Video. The owner wants to wait until DepoStack is closer to production and stable.
 - When that time comes, the plan the owner sketched is: sign-in optional, and a recording stays on the computer

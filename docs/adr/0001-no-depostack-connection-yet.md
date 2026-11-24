@@ -9,7 +9,7 @@ sign-in that sends recordings to Transcript or Video was considered.
 
 ## Decision
 DepoAudio stays a separate, free brand with no DepoStack connection until DepoStack is closer to production and
-stable. No sign-in, no sending, no "by DepoStack" line.
+stable. No sign-in, no sending, no "by DepoStack" line in the app; the website keeps one footer credit.
 
 ## Consequences
 - The no-account and no-upload promises in the README and on depoaudio.com stay true.
