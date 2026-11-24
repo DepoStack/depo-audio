@@ -8,8 +8,8 @@ use serde::Serialize;
 use tauri::AppHandle;
 use tokio::sync::oneshot;
 
-use crate::ffmpeg::{ensure_ftr_decoder, probe_duration_cancellable, sidecar_output_cancellable};
-use crate::helpers::{ffmpeg_bin_name, input_codec_args, prepare_audio_feed_cancellable};
+use crate::ffmpeg::{probe_duration_cancellable, sidecar_output_cancellable};
+use crate::helpers::{ffmpeg_bin_name, prepare_audio_feed_cancellable};
 
 const MAX_WAVEFORM_SECONDS: f64 = 10.0 * 60.0;
 const WAVEFORM_SAMPLE_RATE: u32 = 1_000;
@@ -340,9 +340,11 @@ pub(crate) fn samples_to_peaks(bytes: &[u8], bucket_limit: usize) -> Result<Vec<
     Ok(peaks)
 }
 
-/// FFmpeg arguments that decode the prepared feed's converted stream to mono
-/// 32-bit float PCM on stdout for the peak overview.
-pub(crate) fn decode_args(feed: &Path) -> Vec<String> {
+/// FFmpeg arguments that decode the prepared feed's converted stream (the
+/// file's `0:a:0`, or an FTR recording's channel files joined in order) to
+/// mono 32-bit float PCM on stdout for the peak overview, so the waveform
+/// shows the audio the probes describe and the conversion encodes.
+pub(crate) fn decode_args(feed: &crate::helpers::AudioFeed) -> Vec<String> {
     let mut args: Vec<String> = vec![
         "-nostdin".into(),
         "-hide_banner".into(),
@@ -351,11 +353,8 @@ pub(crate) fn decode_args(feed: &Path) -> Vec<String> {
         "-protocol_whitelist".into(),
         "file,pipe".into(),
     ];
-    args.extend(input_codec_args(feed));
-    args.extend(["-i".into(), feed.to_string_lossy().to_string()]);
-    // The converted stream (`-map 0:a:0`), so the waveform shows the audio
-    // the probes describe and the conversion encodes.
-    args.extend(crate::helpers::source_audio_map_args());
+    args.extend(feed.input_args(&[]));
+    args.extend(feed.source_output_args(None));
     args.extend([
         "-vn".into(),
         "-sn".into(),
@@ -388,18 +387,11 @@ async fn decode_waveform(app: &AppHandle, key: &FileKey, cancelled: Arc<AtomicBo
             .note
             .unwrap_or_else(|| "This audio format cannot be decoded".into()));
     }
-    if format.handler == "ftr" {
-        ensure_ftr_decoder(app).await?;
-        if is_cancelled() {
-            return Err(WAVEFORM_CANCELLED_MESSAGE.into());
-        }
-    }
-
     let source = key.canonical_path.clone();
     let preparation_flag = cancelled.clone();
     let preparation_cancelled: Arc<dyn Fn() -> bool + Send + Sync> =
         Arc::new(move || preparation_flag.load(Ordering::Acquire));
-    let (feed, _feed_guard) = prepare_audio_feed_cancellable(app, source, preparation_cancelled)
+    let feed = prepare_audio_feed_cancellable(app, source.clone(), preparation_cancelled.clone())
         .await
         .map_err(|error| {
             if is_cancelled() {
@@ -423,22 +415,26 @@ async fn decode_waveform(app: &AppHandle, key: &FileKey, cancelled: Arc<AtomicBo
         return Err("Waveform disabled for recordings over 10 minutes. Playback is still available.".into());
     }
 
-    let args = decode_args(&feed);
-
-    let output = sidecar_output_cancellable(app, ffmpeg_bin_name(), args, 120, Some(&is_cancelled)).await;
+    let mut output = run_waveform_decoder(app, &feed, &is_cancelled).await;
     if is_cancelled() {
         return Err(WAVEFORM_CANCELLED_MESSAGE.into());
     }
-    let output = output.ok_or_else(|| "Waveform decoder timed out or could not start".to_string())?;
-    if !output.success {
-        let detail = String::from_utf8_lossy(&output.stderr);
-        let detail = detail
-            .lines()
-            .rev()
-            .find(|line| !line.trim().is_empty())
-            .unwrap_or("unknown FFmpeg error");
-        return Err(format!("Waveform decoder failed: {detail}"));
+    // FFmpeg's native FTR decoder failed: split the channels and decode them
+    // instead, as conversion and Scan do.
+    if output.is_err() && feed.used_native_ftr() {
+        drop(feed);
+        let split = crate::helpers::prepare_audio_feed_after_native_failure(app, source, preparation_cancelled).await;
+        if is_cancelled() {
+            return Err(WAVEFORM_CANCELLED_MESSAGE.into());
+        }
+        let first = output.err().unwrap_or_default();
+        let split = split.map_err(|error| format!("{first}; splitting its channels also failed: {error}"))?;
+        output = run_waveform_decoder(app, &split, &is_cancelled).await;
+        if is_cancelled() {
+            return Err(WAVEFORM_CANCELLED_MESSAGE.into());
+        }
     }
+    let stdout = output?;
 
     // The key is checked again only after FFmpeg has finished. A changed
     // source is neither delivered nor cached, even when FFmpeg exited cleanly.
@@ -453,7 +449,31 @@ async fn decode_waveform(app: &AppHandle, key: &FileKey, cancelled: Arc<AtomicBo
         return Err(WAVEFORM_CANCELLED_MESSAGE.into());
     }
 
-    samples_to_peaks(&output.stdout, WAVEFORM_BUCKETS).map(Arc::new)
+    samples_to_peaks(&stdout, WAVEFORM_BUCKETS).map(Arc::new)
+}
+
+/// Decode `feed` to mono f32 PCM for the waveform; the error names FFmpeg's
+/// last message.
+async fn run_waveform_decoder(
+    app: &AppHandle,
+    feed: &crate::helpers::AudioFeed,
+    is_cancelled: &(dyn Fn() -> bool + Sync),
+) -> Result<Vec<u8>, String> {
+    let args = decode_args(feed);
+
+    let output = sidecar_output_cancellable(app, ffmpeg_bin_name(), args, 120, Some(is_cancelled))
+        .await
+        .ok_or_else(|| "Waveform decoder timed out or could not start".to_string())?;
+    if !output.success {
+        let detail = String::from_utf8_lossy(&output.stderr);
+        let detail = detail
+            .lines()
+            .rev()
+            .find(|line| !line.trim().is_empty())
+            .unwrap_or("unknown FFmpeg error");
+        return Err(format!("Waveform decoder failed: {detail}"));
+    }
+    Ok(output.stdout)
 }
 
 /// Join or start a bounded waveform request. Disk inspection happens before

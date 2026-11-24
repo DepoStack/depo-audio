@@ -21,5 +21,8 @@ export default defineConfig({
     target: 'esnext',
     minify: !process.env.TAURI_DEBUG ? 'esbuild' : false,
     sourcemap: !!process.env.TAURI_DEBUG,
+    // AudioWorklet modules must stay separate same-origin files: the app CSP
+    // (script-src 'self') blocks the data: URL Vite would inline them as.
+    assetsInlineLimit: file => (file.endsWith('.worklet.js') ? false : undefined),
   },
 })

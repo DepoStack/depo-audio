@@ -113,7 +113,8 @@ describe('usePreferences hydration', () => {
     })
 
     const savedPatch = invoke.mock.calls.find(([command]) => command === 'prefs_set')[1].patch
-    expect(savedPatch).toMatchObject({ denoise: false, denoiseQuality: 'fast', enhance: false, dereverb: false })
+    for (const field of ['denoise', 'denoiseQuality', 'enhance', 'dereverb'])
+      expect(savedPatch).not.toHaveProperty(field)
     expect(result.current).not.toHaveProperty('setDenoise')
     expect(result.current).not.toHaveProperty('setEnhance')
     expect(result.current).not.toHaveProperty('setDereverb')
@@ -121,26 +122,83 @@ describe('usePreferences hydration', () => {
   })
 })
 
+describe('saved processing from earlier presets', () => {
+  beforeEach(() => invoke.mockReset())
+
+  it('loads and saves back every processing option exactly as it was saved', async () => {
+    // What 1.0.x saved after its Deposition preset turned processing on.
+    const saved = {
+      mode: 'stereo',
+      format: 'mp3',
+      rate: '44100',
+      mp3Bitrate: 192,
+      normalize: true,
+      trim: true,
+      fade: true,
+      fadeDur: 0.3,
+      hpf: true,
+      autoLevel: true,
+      declip: true,
+    }
+    invoke.mockImplementation(command => (command === 'prefs_get' ? Promise.resolve(saved) : Promise.resolve(true)))
+    const { result, unmount } = renderHook(() => usePreferences())
+    await waitFor(() => expect(result.current.prefsReady).toBe(true))
+    expect(result.current).toMatchObject({
+      normalize: true,
+      trim: true,
+      fade: true,
+      fadeDur: 0.3,
+      hpf: true,
+      autoLevel: true,
+      declip: true,
+      rate: '44100',
+      formatOut: 'mp3',
+    })
+    await waitFor(() => expect(invoke.mock.calls.some(([command]) => command === 'prefs_set')).toBe(true), {
+      timeout: 2000,
+    })
+    const savedPatch = invoke.mock.calls.find(([command]) => command === 'prefs_set')[1].patch
+    expect(savedPatch).toMatchObject(saved)
+    unmount()
+  })
+
+  it('starts a first run with every processing option off', async () => {
+    invoke.mockImplementation(command => (command === 'prefs_get' ? Promise.resolve({}) : Promise.resolve(true)))
+    const { result, unmount } = renderHook(() => usePreferences())
+    await waitFor(() => expect(result.current.prefsReady).toBe(true))
+    expect(result.current).toMatchObject({
+      normalize: false,
+      trim: false,
+      fade: false,
+      hpf: false,
+      autoLevel: false,
+      declip: false,
+    })
+    unmount()
+  })
+})
+
 describe('processing defaults', () => {
-  it('never enables learned-model processing in presets', () => {
+  it('never sets learned-model processing, or any processing, in presets', () => {
     for (const preset of PRESETS) {
-      expect(preset.settings).toMatchObject({ denoise: false, enhance: false, dereverb: false })
+      for (const key of ['denoise', 'enhance', 'dereverb', 'normalize', 'hpf', 'autoLevel', 'declip', 'trim', 'fade']) {
+        expect(preset.settings, preset.id).not.toHaveProperty(key)
+      }
     }
   })
 
-  it('fails closed even when stale preset data requests learned processing', () => {
-    const courtroom = PRESETS.find(preset => preset.id === 'split-wav')
-    expect(
-      resolvePresetSettings({ ...courtroom.settings, denoise: true, enhance: true, dereverb: true }),
-    ).toMatchObject({ denoise: false, enhance: false, dereverb: false })
-    expect(resolvePresetSettings({ ...courtroom.settings, mode: 'keep' }).autoLevel).toBe(false)
+  it('fails closed even when stale settings request learned processing', () => {
+    const split = PRESETS.find(preset => preset.id === 'split-wav')
+    const resolved = resolvePresetSettings({ ...split.settings, denoise: true, enhance: true, dereverb: true })
+    for (const field of ['denoise', 'enhance', 'dereverb']) expect(resolved).not.toHaveProperty(field)
+    expect(resolvePresetSettings({ ...split.settings, mode: 'keep', autoLevel: true }).autoLevel).toBe(false)
   })
 
   it('keeps preset descriptions within released non-learned processing', () => {
-    const courtroom = PRESETS.find(preset => preset.id === 'split-wav')
+    const split = PRESETS.find(preset => preset.id === 'split-wav')
     expect(PRESETS.map(preset => preset.desc).join(' ')).not.toMatch(
       /denoise|noise removal|enhance clarity|echo|reverb/i,
     )
-    expect(courtroom.desc).toMatch(/microphone channels/i)
+    expect(split.desc).toMatch(/microphone channels/i)
   })
 })

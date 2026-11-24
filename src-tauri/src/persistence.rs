@@ -454,6 +454,46 @@ mod tests {
 
     // ── Prefs patch-merge ───────────────────────────────────────────────────
 
+    /// Preferences saved by 1.1.0 after choosing its Deposition preset, which
+    /// turned processing on. Built-in presets no longer turn processing on,
+    /// but a person's saved choices are theirs: loading keeps every one of
+    /// them, and only the retired learned-model flags are cleared.
+    #[test]
+    fn saved_processing_from_an_earlier_preset_stays_on_when_loaded() {
+        let dir = test_dir("prefs_migration");
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("prefs.json");
+        fs::write(
+            &path,
+            serde_json::to_vec(&serde_json::json!({
+                "theme": "system", "mode": "stereo", "format": "mp3", "rate": "44100",
+                "mp3Bitrate": 192, "outDir": "", "labels": ["Witness"], "chanVols": [1.0],
+                "normalize": true, "trim": true, "fade": true, "fadeDur": 0.3, "hpf": true,
+                "autoLevel": true, "declip": true, "denoise": true, "enhance": true, "dereverb": true
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let loaded = read_json_or_default::<Prefs>(&path, "Preferences", MAX_PREFS_BYTES)
+            .map(disable_unreleased_model_preferences)
+            .unwrap();
+        assert!(loaded.normalize && loaded.trim && loaded.fade && loaded.hpf && loaded.auto_level && loaded.declip);
+        assert_eq!(loaded.fade_dur, 0.3);
+        assert_eq!(loaded.rate, "44100");
+        assert_eq!((loaded.mode.as_str(), loaded.format.as_str()), ("stereo", "mp3"));
+        assert!(!loaded.denoise && !loaded.enhance && !loaded.dereverb);
+        // A later save of other settings leaves them as they are.
+        let saved = merge_prefs(&loaded, serde_json::json!({ "theme": "dark" })).unwrap();
+        assert!(saved.normalize && saved.trim && saved.fade && saved.hpf && saved.auto_level && saved.declip);
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn first_run_preferences_have_every_processing_option_off() {
+        let prefs = Prefs::default();
+        assert!(!prefs.normalize && !prefs.trim && !prefs.fade && !prefs.hpf && !prefs.auto_level && !prefs.declip);
+    }
+
     #[test]
     fn merge_prefs_replaces_top_level_keys() {
         let cur = Prefs::default();
@@ -478,6 +518,47 @@ mod tests {
         let error = merge_prefs(
             &Prefs::default(),
             serde_json::json!({ "theme": "dark", "fadeDur": "not-a-number" }),
+        )
+        .unwrap_err();
+        assert!(error.contains("Invalid preference update"));
+    }
+
+    #[test]
+    fn playback_keys_default_off_and_load_off_from_older_files() {
+        assert!(!Prefs::default().playback_keys.enabled);
+        // A preferences file written before this setting existed
+        let mut old = serde_json::to_value(Prefs::default()).unwrap();
+        old.as_object_mut().unwrap().remove("playbackKeys");
+        let loaded: Prefs = serde_json::from_value(old).unwrap();
+        assert_eq!(loaded.playback_keys, crate::types::PlaybackKeysPrefs::default());
+        // A partial object keeps the missing fields at their defaults
+        let next = merge_prefs(
+            &Prefs::default(),
+            serde_json::json!({ "playbackKeys": { "bindings": { "playPause": "F14" } } }),
+        )
+        .unwrap();
+        assert!(!next.playback_keys.enabled);
+        assert!(!next.playback_keys.hold_to_play);
+        assert_eq!(
+            next.playback_keys.bindings.get("playPause").map(String::as_str),
+            Some("F14")
+        );
+    }
+
+    #[test]
+    fn playback_keys_round_trip_with_camel_case_names() {
+        let next = merge_prefs(
+            &Prefs::default(),
+            serde_json::json!({ "playbackKeys": { "enabled": true, "holdToPlay": true, "bindings": { "back": "F13" } } }),
+        )
+        .unwrap();
+        let wire = serde_json::to_value(&next).unwrap();
+        assert_eq!(wire["playbackKeys"]["enabled"], true);
+        assert_eq!(wire["playbackKeys"]["holdToPlay"], true);
+        assert_eq!(wire["playbackKeys"]["bindings"]["back"], "F13");
+        let error = merge_prefs(
+            &Prefs::default(),
+            serde_json::json!({ "playbackKeys": { "enabled": "yes" } }),
         )
         .unwrap_err();
         assert!(error.contains("Invalid preference update"));

@@ -12,6 +12,8 @@ import { usePreferencesContext } from './hooks/PreferencesContext'
 import useFileDrop from './hooks/useFileDrop'
 import useConversion from './hooks/useConversion'
 import useUpdater from './hooks/useUpdater'
+import usePlaybackKeys from './hooks/usePlaybackKeys'
+import { playbackKeysSidebarLabel } from './lib/playbackKeys'
 import UpdateBanner from './components/UpdateBanner'
 import EngineHealthBanner from './components/EngineHealthBanner'
 import { engineProblem } from './lib/engineHealth'
@@ -54,6 +56,9 @@ export default function App() {
   const { labels, outDir, prefsReady, prefsError } = prefs
   const { themePref, themeLabel, cycleTheme, setThemeDirect } = useTheme(prefs.themePref, prefs.setThemePref)
   const [settingsOpen, setSettingsOpen] = useState(false)
+
+  // System-wide Player keys: registered only while the person has them on
+  const playbackKeys = usePlaybackKeys(prefsReady ? prefs.playbackKeys : null)
 
   // Auto-update via GitHub Releases (checks once on launch)
   const updater = useUpdater()
@@ -169,9 +174,6 @@ export default function App() {
       outDir,
       ...prefs,
       autoLevel: prefs.mode !== 'keep' && prefs.autoLevel,
-      denoise: false,
-      enhance: false,
-      dereverb: false,
       caseName,
       setCases,
       onLibraryError: reportLibraryError,
@@ -277,6 +279,19 @@ export default function App() {
         </TabsList>
 
         <div className="app-sidebar-spacer flex-1" />
+
+        {/* Global playback keys status (shown only while they are on) */}
+        {playbackKeys.settings.enabled && (
+          <div
+            role="status"
+            aria-live="polite"
+            aria-atomic="true"
+            aria-label="Playback keys status"
+            className="hidden sm:block mx-3 mb-2 border-y border-border/70 py-2.5"
+          >
+            <div className="py-0.5 type-small text-[hsl(var(--sub))]">{playbackKeysSidebarLabel(playbackKeys)}</div>
+          </div>
+        )}
 
         {/* DepoStack brand link: DepoAudio, powered by DepoStack */}
         <button
@@ -454,6 +469,7 @@ export default function App() {
               <Suspense fallback={<WorkspaceLoading label="Loading Player workspace" />}>
                 <PlayerTab
                   dropHandlerRef={dropOverrideRef}
+                  playbackKeys={playbackKeys}
                   openRequest={playerOpenRequest}
                   onOpenRequestHandled={request =>
                     setPlayerOpenRequest(current => (current === request ? null : current))
@@ -516,6 +532,7 @@ export default function App() {
           onRecheckHealth={runHealthCheck}
           initialSection={settingsSection}
           conversionActive={converting || cancelling}
+          playbackKeys={playbackKeys}
         />
       </Suspense>
     </Tabs>

@@ -1,4 +1,4 @@
-# Liberty / BIS Digital DCR in DepoAudio (experimental)
+# Liberty / BIS Digital DCR in DepoAudio (Preview)
 
 DepoAudio reads `.dcr` court recordings that start with the `HGCRLCRS` signature with its own
 reader, [`src-tauri/src/dcr.rs`](../src-tauri/src/dcr.rs). The layout comes from interoperability

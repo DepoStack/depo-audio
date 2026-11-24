@@ -44,9 +44,14 @@ describe('FORMATS_OUT', () => {
     expect(ids).toEqual(['wav', 'mp3', 'flac', 'opus', 'm4a', 'sgmca'])
   })
 
+  it('labels only SGMCA output as Preview', () => {
+    expect(FORMATS_OUT.filter(f => f.preview).map(f => f.id)).toEqual(['sgmca'])
+    expect(FORMATS_OUT.find(f => f.id === 'sgmca').preview).toMatch(/^Preview/)
+  })
+
   it('fixes the rate only for formats that set their own', () => {
     expect(effectiveOutputRate('opus', '44100')).toBe('48000')
-    expect(effectiveOutputRate('sgmca', '44100')).toBe('16000')
+    expect(effectiveOutputRate('sgmca', '44100')).toBe('48000')
     expect(effectiveOutputRate('wav', '44100')).toBe('44100')
   })
 })
@@ -75,12 +80,12 @@ describe('FORMAT_ROWS', () => {
 })
 
 describe('FORMAT_ROWS intake rows', () => {
-  it('lists the legacy deposition video containers as audio-extracted standard rows', () => {
+  it('lists the legacy deposition video containers as Preview audio-extracted standard rows', () => {
     const rows = ['.mpg  .mpeg  .vob', '.ts  .mts  .m2ts', '.wmv  .asf'].map(ext =>
       FORMAT_ROWS.find(r => r.ext === ext),
     )
     for (const row of rows) {
-      expect(row).toMatchObject({ status: 'supported', group: 'standard' })
+      expect(row).toMatchObject({ status: 'experimental', group: 'standard', note: 'Tested with synthetic files only' })
       expect(row.vendor).toContain('audio track extracted')
     }
   })

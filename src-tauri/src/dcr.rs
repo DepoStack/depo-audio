@@ -1,4 +1,4 @@
-//! Liberty / BIS Digital `.dcr` court recordings (experimental).
+//! Liberty / BIS Digital `.dcr` court recordings (Preview; internal status "experimental").
 //!
 //! Layout source: owner-supplied interoperability notes; not yet confirmed
 //! against a recorded file. The tests build synthetic files, and two
@@ -2540,6 +2540,13 @@ pub(crate) fn queue_streams_info(path: &Path) -> crate::manifest::AudioStreamsIn
         converted_index: crate::helpers::SOURCE_AUDIO_STREAM,
         streams,
         duration_secs,
+        trm: None,
+        trm_refusal: None,
+        recording_sessions: None,
+        still_recording: None,
+        unread_bytes: None,
+        omitted_sessions: None,
+        cut_short_session: None,
         dcr: Some(dcr),
         dm: None,
     }
@@ -2837,6 +2844,7 @@ pub(crate) fn clear_channel_mask(path: &Path) -> Result<(), String> {
 
 /// The FFmpeg run still needed to finish a feed: join the mono channel
 /// files into `output`. The inputs are removed when this is dropped.
+#[derive(Debug)]
 pub(crate) struct MergeStep {
     pub inputs: Vec<TempFile>,
     pub args: Vec<String>,

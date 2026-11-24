@@ -179,14 +179,21 @@ function assertFrontendBoundary(sourceFiles) {
   }
 }
 
-function assertCapabilitiesBoundary(modelsSource) {
-  for (const contract of [
-    'recommend_speaker_detection: false',
-    'recommend_enhance: false',
-    'dereverb_available: false',
-    'recommended_denoise: "unavailable".into()',
+// models.rs is deletion-only legacy cleanup. The old system-capabilities
+// command, which reported learned-model availability (always false), was
+// removed in 1.2.0; no command may report or offer learned processing again.
+function assertCapabilitiesBoundary(modelsSource, libSource, commandsSource) {
+  for (const surface of [
+    'system_capabilities_cmd',
+    'SystemCapabilities',
+    'recommended_denoise',
+    'recommend_speaker_detection',
+    'recommend_enhance',
+    'dereverb_available',
   ]) {
-    if (!modelsSource.includes(contract)) throw new Error(`System capabilities do not fail closed: ${contract}`)
+    if ([modelsSource, libSource, commandsSource].some(source => source.includes(surface))) {
+      throw new Error(`A learned-model capability surface remains: ${surface}`)
+    }
   }
   if (/(?:https?:\/\/|download_model|reqwest::)/u.test(modelsSource)) {
     throw new Error('The release model surface contains a download path')
@@ -209,7 +216,7 @@ async function verifyRepository(root = process.cwd()) {
   assertCompiledBoundary(libSource, commandsSource)
   await assertNoLearnedSources(root)
   assertConversionBoundary(conversionSource)
-  assertCapabilitiesBoundary(modelsSource)
+  assertCapabilitiesBoundary(modelsSource, libSource, commandsSource)
 
   const tauri = JSON.parse(tauriConfig)
   const resources = tauri?.bundle?.resources
@@ -242,7 +249,7 @@ async function writeFixture(root) {
     'src-tauri/src/conversion.rs':
       'fn validate(job: Job) -> Result<(), String> {\n  if job.denoise || job.enhance || job.dereverb { return Err("Learned-model processing is not included".into()); }\n  safe_input_path(job.input)?;\n  Ok(())\n}\n',
     'src-tauri/src/models.rs':
-      'recommended_denoise: "unavailable".into(),\nrecommend_speaker_detection: false,\nrecommend_enhance: false,\ndereverb_available: false,\n',
+      'pub(crate) fn legacy_model_cleanup_catalog() {}\npub(crate) fn delete_legacy_model() {}\n',
     'src-tauri/tauri.conf.json': '{"bundle":{"resources":["resources/third-party/javascript"]}}\n',
     'src/presets.js': 'export const preset = { denoise: false, enhance: false, dereverb: false }\n',
     'src-tauri/resources/third-party/javascript/notice.txt': 'fixture notice\n',
@@ -291,6 +298,12 @@ async function selfTest() {
       'src-tauri/src/conversion.rs',
       'fn convert(job: Job) { safe_input_path(job.input); }\n',
       'does not reject all learned-model request flags',
+    )
+    await expectFixtureRejection(
+      root,
+      'src-tauri/src/models.rs',
+      'pub struct SystemCapabilities { pub recommend_enhance: bool }\n',
+      'learned-model capability surface remains',
     )
     await expectFixtureRejection(
       root,

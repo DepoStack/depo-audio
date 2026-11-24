@@ -6,7 +6,7 @@ use tauri::{AppHandle, Emitter};
 use tauri_plugin_shell::process::CommandEvent;
 use tauri_plugin_shell::ShellExt;
 
-use crate::helpers::{ffmpeg_bin_name, ffprobe_bin_name};
+use crate::helpers::{ffmpeg_bin_name, ffprobe_bin_name, AudioFeed};
 use crate::types::{ConvertJob, ProgressEvent};
 
 /// How many seconds of audio the pre-scan / auto-level analysis reads.
@@ -194,27 +194,35 @@ pub(crate) async fn ftr_decoder_available(app: &AppHandle) -> Result<bool, Strin
     Ok(available)
 }
 
-/// Return a user-actionable error before starting a TRM scan/conversion when
-/// the bundled multimedia engine cannot support the format at all.
-pub(crate) async fn ensure_ftr_decoder(app: &AppHandle) -> Result<(), String> {
-    if ftr_decoder_available(app).await? {
-        Ok(())
+/// Feed options for `src`: for an FTR recording, whether the bundled FFmpeg
+/// has its native decoder (a failed check counts as no); nothing to ask for
+/// any other file.
+pub(crate) async fn feed_options(app: &AppHandle, src: &Path) -> crate::helpers::FeedOptions {
+    let native_ftr = if crate::helpers::is_trm_path(src) {
+        ftr_decoder_available(app).await.unwrap_or(false)
     } else {
-        Err(
-            "This FTR/TRM recording requires FFmpeg's native 'ftr' decoder, but this FFmpeg build does not provide it. Update or reinstall DepoAudio; forcing the ordinary AAC decoder cannot decode FTR's multichannel bitstream."
-                .into(),
-        )
+        false
+    };
+    crate::helpers::FeedOptions {
+        native_ftr,
+        native_failed: false,
     }
 }
 
 // Note: ffprobe auto-detects codecs and does not accept ffmpeg input options
 // like -acodec, so the probe helpers take no input codec arguments.
+/// The converted stream's duration. An FTR feed's comes from the frames read,
+/// so an unclosed recording's placeholder length is never used.
 pub(crate) async fn probe_duration_cancellable(
     app: &AppHandle,
-    feed: &Path,
+    feed: &AudioFeed,
     cancelled: CancelCheck<'_>,
 ) -> Option<f64> {
-    let output = sidecar_output_cancellable(app, ffprobe_bin_name(), duration_probe_args(feed), 30, cancelled).await?;
+    if feed.trm_frames_read() {
+        return feed.known_duration();
+    }
+    let output =
+        sidecar_output_cancellable(app, ffprobe_bin_name(), duration_probe_args(feed.path()), 30, cancelled).await?;
     parse_duration_probe(&output.stdout)
 }
 
@@ -223,7 +231,7 @@ pub(crate) async fn probe_duration_cancellable(
 /// A video with a shorter first audio track, or a file with a longer second
 /// track, reports a container duration past the end of the converted stream.
 pub(crate) fn duration_probe_args(feed: &Path) -> Vec<String> {
-    vec![
+    let mut args: Vec<String> = vec![
         "-v".into(),
         "quiet".into(),
         "-protocol_whitelist".into(),
@@ -234,8 +242,11 @@ pub(crate) fn duration_probe_args(feed: &Path) -> Vec<String> {
         crate::helpers::source_audio_stream_specifier(),
         "-show_entries".into(),
         "stream=duration:stream_tags=DURATION:format=duration".into(),
-        feed.to_string_lossy().to_string(),
-    ]
+    ];
+    // An SGMCA concat script needs its demuxer options before the input.
+    args.extend(crate::helpers::feed_format_args(feed));
+    args.push(feed.to_string_lossy().to_string());
+    args
 }
 
 /// Duration in seconds from `duration_probe_args` output, if readable: the
@@ -248,17 +259,21 @@ pub(crate) fn parse_duration_probe(stdout: &[u8]) -> Option<f64> {
 
 pub(crate) async fn probe_channels_cancellable(
     app: &AppHandle,
-    feed: &Path,
+    feed: &AudioFeed,
     cancelled: CancelCheck<'_>,
 ) -> Option<u32> {
-    let out = sidecar_output_cancellable(app, ffprobe_bin_name(), channel_probe_args(feed), 30, cancelled).await?;
+    if let Some(channels) = feed.known_channels() {
+        return Some(channels);
+    }
+    let out =
+        sidecar_output_cancellable(app, ffprobe_bin_name(), channel_probe_args(feed.path()), 30, cancelled).await?;
     parse_channel_probe(&out.stdout)
 }
 
 /// ffprobe arguments for the channel count of the converted audio stream
 /// (`SOURCE_AUDIO_STREAM`, the same stream every FFmpeg pass maps).
 pub(crate) fn channel_probe_args(feed: &Path) -> Vec<String> {
-    vec![
+    let mut args: Vec<String> = vec![
         "-v".into(),
         "quiet".into(),
         "-protocol_whitelist".into(),
@@ -268,8 +283,11 @@ pub(crate) fn channel_probe_args(feed: &Path) -> Vec<String> {
         "-show_streams".into(),
         "-select_streams".into(),
         crate::helpers::source_audio_stream_specifier(),
-        feed.to_string_lossy().to_string(),
-    ]
+    ];
+    // An SGMCA concat script needs its demuxer options before the input.
+    args.extend(crate::helpers::feed_format_args(feed));
+    args.push(feed.to_string_lossy().to_string());
+    args
 }
 
 /// Channel count from `channel_probe_args` output; zero or unreadable is None.
@@ -289,16 +307,21 @@ pub(crate) fn parse_channel_probe(stdout: &[u8]) -> Option<u32> {
 /// record: the manifest then says the start is unknown instead of guessing.
 pub(crate) async fn probe_manifest_source_cancellable(
     app: &AppHandle,
-    feed: &Path,
+    feed: &AudioFeed,
     cancelled: CancelCheck<'_>,
 ) -> crate::manifest::ProbedSource {
-    let Some(out) = sidecar_output_cancellable(app, ffprobe_bin_name(), manifest_probe_args(feed), 30, cancelled).await
+    if let Some(probed) = crate::manifest::probed_from_feed(feed) {
+        return probed;
+    }
+    let Some(out) =
+        sidecar_output_cancellable(app, ffprobe_bin_name(), manifest_probe_args(feed.path()), 30, cancelled).await
     else {
         return crate::manifest::ProbedSource::default();
     };
-    serde_json::from_slice::<serde_json::Value>(&out.stdout)
+    let probed = serde_json::from_slice::<serde_json::Value>(&out.stdout)
         .map(|probe| crate::manifest::parse_probe(&probe))
-        .unwrap_or_default()
+        .unwrap_or_default();
+    crate::manifest::with_trm_timing(probed, feed)
 }
 
 /// ffprobe arguments for the export record's source facts: format tags and
@@ -306,7 +329,7 @@ pub(crate) async fn probe_manifest_source_cancellable(
 /// converted stream and the array length is the input's audio stream count.
 /// The Convert queue's multi-track notice reads the same document.
 pub(crate) fn manifest_probe_args(feed: &Path) -> Vec<String> {
-    vec![
+    let mut args: Vec<String> = vec![
         "-v".into(),
         "quiet".into(),
         "-protocol_whitelist".into(),
@@ -317,8 +340,11 @@ pub(crate) fn manifest_probe_args(feed: &Path) -> Vec<String> {
         "-show_streams".into(),
         "-select_streams".into(),
         "a".into(),
-        feed.to_string_lossy().to_string(),
-    ]
+    ];
+    // An SGMCA concat script needs its demuxer options before the input.
+    args.extend(crate::helpers::feed_format_args(feed));
+    args.push(feed.to_string_lossy().to_string());
+    args
 }
 
 /// Audio streams of a queued file for the Convert queue's notice (the same
@@ -344,45 +370,87 @@ pub(crate) const DECODED_LENGTH_FILTER: &str =
     "aresample=48000,astats=metadata=0:reset=0:measure_perchannel=none:measure_overall=Number_of_samples";
 
 /// Why a conversion with Fade on stops when the decoded length is unknown.
-pub(crate) const FADE_LENGTH_UNKNOWN_MESSAGE: &str = "Fade is on, but DepoAudio could not measure how long the recording decodes to, so it cannot place the fade-out at the real end. Nothing was converted. Turn Fade off, or try again.";
+pub(crate) const FADE_LENGTH_UNKNOWN_MESSAGE: &str = "Fade is on, but DepoAudio could not measure how long the recording decodes to, so it cannot place the fade-out at the real end. Nothing was converted. Turn Fade off, or try again. If this is a long recording, raise Processing timeout in Settings, since this check decodes the whole recording once before converting.";
 
 /// FFmpeg arguments that decode the converted stream exactly as a conversion
-/// does (same input decoder, `-map 0:a:0`) and count its samples at
-/// `DECODED_LENGTH_RATE`. The count is the length that is really converted,
-/// which a stated duration may not be: a chained Ogg file states its last
-/// link's length, and a VBR MP3 without an index states an estimate.
-pub(crate) fn decoded_length_args(feed: &Path) -> Vec<String> {
+/// does (same inputs and input decoder, `-map 0:a:0`, or for an FTR
+/// recording split into channel files the same `amerge`) and count its
+/// samples at `DECODED_LENGTH_RATE`. The count is the length that is really
+/// converted, which a stated duration may not be: a chained Ogg file states
+/// its last link's length, and a VBR MP3 without an index states an
+/// estimate.
+pub(crate) fn decoded_length_args(feed: &AudioFeed) -> Vec<String> {
+    sample_count_args(feed, DECODED_LENGTH_FILTER)
+}
+
+/// The source-rate counting pass's filter: `DECODED_LENGTH_FILTER` without
+/// the resampler, so it counts the samples the decoder gives at the
+/// stream's own rate (the same astats filter, so no other filter has to
+/// ship for it).
+pub(crate) const SOURCE_LENGTH_FILTER: &str =
+    "astats=metadata=0:reset=0:measure_perchannel=none:measure_overall=Number_of_samples";
+
+/// FFmpeg arguments that decode the converted stream exactly as a
+/// conversion does and count its samples at the stream's own rate: the
+/// exact source length an SGMCA output is checked against when no header
+/// states it (see `conversion::plan_sgmca_output`).
+pub(crate) fn source_length_args(feed: &AudioFeed) -> Vec<String> {
+    sample_count_args(feed, SOURCE_LENGTH_FILTER)
+}
+
+fn sample_count_args(feed: &AudioFeed, filter: &str) -> Vec<String> {
     let mut args = crate::helpers::safe_ffmpeg_input_prelude();
     args.extend(["-nostats".into(), "-v".into(), "info".into()]);
-    args.extend(crate::helpers::input_codec_args(feed));
-    args.extend(["-i".into(), feed.to_string_lossy().to_string()]);
-    args.extend(crate::helpers::source_audio_map_args());
-    args.extend([
-        "-vn".into(),
-        "-sn".into(),
-        "-af".into(),
-        DECODED_LENGTH_FILTER.into(),
-        "-f".into(),
-        "null".into(),
-        "-".into(),
-    ]);
+    args.extend(feed.input_args(&[]));
+    args.extend(feed.source_output_args(Some(filter)));
+    args.extend(["-vn".into(), "-sn".into(), "-f".into(), "null".into(), "-".into()]);
     args
 }
 
 /// Decoded length in seconds from the stderr of `decoded_length_args`: the
 /// last "Number of samples" astats reports, over `DECODED_LENGTH_RATE`.
 pub(crate) fn parse_decoded_seconds(stderr: &[u8]) -> Option<f64> {
+    parse_decoded_samples(stderr).map(|samples| samples as f64 / f64::from(DECODED_LENGTH_RATE))
+}
+
+/// The last "Number of samples" astats reports in `stderr` (of
+/// `decoded_length_args` or `source_length_args`); None when there is none
+/// or it is 0.
+pub(crate) fn parse_decoded_samples(stderr: &[u8]) -> Option<u64> {
     let text = String::from_utf8_lossy(stderr);
     let samples: u64 = text
         .lines()
         .rev()
         .find_map(|line| line.split("Number of samples:").nth(1)?.trim().parse().ok())?;
-    (samples > 0).then(|| samples as f64 / f64::from(DECODED_LENGTH_RATE))
+    (samples > 0).then_some(samples)
+}
+
+/// Samples the converted stream decodes to at its own rate
+/// (`source_length_args`), with the bundled FFmpeg. None when FFmpeg fails
+/// or reports no count.
+pub(crate) async fn measure_source_samples_cancellable(
+    app: &AppHandle,
+    feed: &AudioFeed,
+    timeout_secs: u64,
+    cancelled: CancelCheck<'_>,
+) -> Option<u64> {
+    let output = sidecar_output_cancellable(
+        app,
+        ffmpeg_bin_name(),
+        source_length_args(feed),
+        bounded_ffmpeg_timeout(timeout_secs),
+        cancelled,
+    )
+    .await?;
+    if !output.success {
+        return None;
+    }
+    parse_decoded_samples(&output.stderr)
 }
 
 pub(crate) async fn measure_decoded_seconds_cancellable(
     app: &AppHandle,
-    feed: &Path,
+    feed: &AudioFeed,
     timeout_secs: u64,
     cancelled: CancelCheck<'_>,
 ) -> Option<f64> {
@@ -400,14 +468,199 @@ pub(crate) async fn measure_decoded_seconds_cancellable(
     parse_decoded_seconds(&output.stderr)
 }
 
+// ── Leading-silence trim measurement ─────────────────────────────────────────
+
+/// astats options that count the samples per channel and print the total.
+const SAMPLE_COUNT_STATS: &str = "metadata=0:reset=0:measure_perchannel=none:measure_overall=Number_of_samples";
+
+/// The trim detection: FFmpeg's leading-silence removal, stopping at the
+/// first sample above the threshold on any channel
+/// (`detection=peak:window=0`), so only audio below the threshold is
+/// removed. It runs only in the measuring pass
+/// (`leading_trim_measure_filter`); the conversion itself removes the
+/// measured number of samples with `leading_trim_filters`.
+///
+/// Leading only: `stop_periods=-1` would remove every long pause in the
+/// middle of a recording, and a positive stop period stops copying at the
+/// first qualifying pause. FFmpeg 6.1 and newer also drop the
+/// `start_duration` of sound they use to confirm the silence has ended, and
+/// the default 20 ms RMS window ends the silence a few samples late, so
+/// neither is used: an earlier `start_duration=0.3` cut the first 0.3 s of
+/// speech.
+pub(crate) fn trim_detection_filter(silence_thresh: f64) -> String {
+    format!(
+        "silenceremove=start_periods=1:start_threshold={}dB:start_mode=any:detection=peak:window=0",
+        silence_thresh
+    )
+}
+
+/// The measuring pass's filter: count every decoded sample, run the trim
+/// detection, and count what is left. The difference is exactly the number
+/// of samples trim removes. The release workflow runs this string (at the
+/// default -50 dB) on the bundled FFmpeg.
+pub(crate) fn leading_trim_measure_filter(silence_thresh: f64) -> String {
+    format!(
+        "astats@total={SAMPLE_COUNT_STATS},{},astats@kept={SAMPLE_COUNT_STATS}",
+        trim_detection_filter(silence_thresh)
+    )
+}
+
+/// The filters that remove exactly `samples` samples from the start: number
+/// the samples from 0 by count (`N`, never the decoder's timestamps), keep
+/// from sample `samples` on, and restart the timestamps at 0 for the filters
+/// after it. They come first in the chain, before any filter that changes
+/// the sample rate (loudnorm runs at 192 kHz), so `samples` counts at the
+/// converted stream's own rate.
+pub(crate) fn leading_trim_filters(samples: u64) -> Vec<String> {
+    vec![
+        "asetpts=N/SR/TB".into(),
+        format!("atrim=start_sample={samples}"),
+        "asetpts=PTS-STARTPTS".into(),
+    ]
+}
+
+/// FFmpeg arguments for the measuring pass: the converted stream decoded
+/// exactly as a conversion decodes it (same inputs and decoder, `-map 0:a:0`,
+/// or for an FTR recording's channel files the same `amerge` in front of
+/// the measure), at its own rate.
+pub(crate) fn leading_trim_measure_args(feed: &AudioFeed, silence_thresh: f64) -> Vec<String> {
+    sample_count_args(feed, &leading_trim_measure_filter(silence_thresh))
+}
+
+/// The two counts from the stderr of a successful `leading_trim_measure_args`
+/// run: (decoded samples, samples left after the trim detection), each the
+/// last count its astats instance reports. astats reports nothing when no
+/// sample reaches it, so a run whose second instance printed nothing at all
+/// kept 0 samples (checked with FFmpeg 6.1.1 on a silent file). None unless
+/// the first count is present and the second is not larger than it.
+pub(crate) fn parse_leading_trim_counts(stderr: &[u8]) -> Option<(u64, u64)> {
+    let text = String::from_utf8_lossy(stderr);
+    let count = |instance: &str| -> Option<u64> {
+        let prefix = format!("[astats@{instance} @");
+        text.lines()
+            .rev()
+            .filter(|line| line.starts_with(&prefix))
+            .find_map(|line| line.split("Number of samples:").nth(1)?.trim().parse().ok())
+    };
+    let total = count("total")?;
+    let kept = match count("kept") {
+        Some(kept) => kept,
+        None if !text.contains("[astats@kept @") => 0,
+        None => return None,
+    };
+    (kept <= total).then_some((total, kept))
+}
+
+/// Why a conversion with Trim silence on stops when the trim is not measured.
+pub(crate) const TRIM_UNMEASURED_MESSAGE: &str = "Trim silence is on, but DepoAudio could not measure how much silence is at the start, so it cannot record what trim removes. Nothing was converted. Turn Trim silence off, or try again. If this is a long recording, raise Processing timeout in Settings, since this check decodes the whole recording once before converting.";
+
+/// The measured trim for a stream at `sample_rate`, as the export record
+/// holds it. An all-silent recording is refused rather than converted to an
+/// empty file.
+pub(crate) fn leading_trim_record(
+    opts: &ConvertJob,
+    counts: (u64, u64),
+    sample_rate: u32,
+) -> Result<crate::manifest::LeadingTrimRecord, String> {
+    let (total, kept) = counts;
+    if kept == 0 {
+        return Err(format!(
+            "Trim silence is on, and every sample of this recording is below the silence threshold ({} dB), so trim would remove all of it. Nothing was converted. Turn Trim silence off, or lower the threshold in Settings.",
+            opts.silence_thresh
+        ));
+    }
+    let samples = total - kept;
+    Ok(crate::manifest::LeadingTrimRecord {
+        samples,
+        seconds: samples as f64 / f64::from(sample_rate),
+        sample_rate,
+        threshold_db: opts.silence_thresh,
+        decoded_source_samples: total,
+        measured_with: leading_trim_measure_filter(opts.silence_thresh),
+    })
+}
+
+/// Measure leading-silence trim, when it applies to this conversion (Trim
+/// silence on, and not Split Channels, which keeps the shared timeline).
+pub(crate) async fn measure_leading_trim_cancellable(
+    app: &AppHandle,
+    opts: &ConvertJob,
+    feed: &AudioFeed,
+    sample_rate: Option<u32>,
+    cancelled: CancelCheck<'_>,
+) -> Result<Option<crate::manifest::LeadingTrimRecord>, String> {
+    if !trim_applies(opts) {
+        return Ok(None);
+    }
+    let rate = sample_rate.ok_or(TRIM_UNMEASURED_MESSAGE)?;
+    let output = sidecar_output_cancellable(
+        app,
+        ffmpeg_bin_name(),
+        leading_trim_measure_args(feed, opts.silence_thresh),
+        bounded_ffmpeg_timeout(u64::from(opts.ffmpeg_timeout)),
+        cancelled,
+    )
+    .await
+    .ok_or(TRIM_UNMEASURED_MESSAGE)?;
+    if !output.success {
+        return Err(TRIM_UNMEASURED_MESSAGE.into());
+    }
+    let counts = parse_leading_trim_counts(&output.stderr).ok_or(TRIM_UNMEASURED_MESSAGE)?;
+    leading_trim_record(opts, counts, rate).map(Some)
+}
+
+/// Whether the processing chain restarts the timeline at 0: leading trim
+/// (when it removes anything) and Fade, whose fade-in and fade-out times are
+/// on a timeline that starts at 0. A source whose audio starts later than
+/// its other streams (`ProbedSource::start_offset_micros`) would otherwise
+/// have its fades placed too early.
+pub(crate) fn resets_timeline(opts: &ConvertJob, trim_samples: u64) -> bool {
+    opts.fade || (trim_applies(opts) && trim_samples > 0)
+}
+
+/// Numbers the samples from 0 by count, so the fades that follow are placed
+/// on the stream's own samples.
+pub(crate) const TIMELINE_FROM_ZERO: &str = "asetpts=N/SR/TB";
+
+/// The output option that puts back the source's own start offset after the
+/// chain restarted the timeline at 0, moved later by what trim removed, so
+/// an M4A or Opus output keeps the start an untrimmed, unfaded conversion
+/// would have, plus exactly the recorded trim. Formats without a start time
+/// (WAV, FLAC, MP3) ignore it. Nothing when there is no offset to keep or
+/// the timeline was not restarted.
+pub(crate) fn output_start_offset_args(
+    opts: &ConvertJob,
+    start_offset_micros: Option<u64>,
+    trim: Option<&crate::manifest::LeadingTrimRecord>,
+) -> Vec<String> {
+    let trim_samples = trim.map_or(0, |trim| trim.samples);
+    match start_offset_micros {
+        Some(offset) if resets_timeline(opts, trim_samples) => {
+            let seconds = offset as f64 / 1_000_000.0 + trim.map_or(0.0, |trim| trim.seconds);
+            vec!["-output_ts_offset".into(), format!("{seconds:.6}")]
+        }
+        _ => Vec::new(),
+    }
+}
+
+/// Trim silence applies to Mix to Stereo and Keep Original. Split Channels
+/// applies the chain to each channel on its own, where trim could start the
+/// channels at different times, so it keeps the shared timeline instead.
+pub(crate) fn trim_applies(opts: &ConvertJob) -> bool {
+    opts.trim && opts.mode != "split"
+}
+
 /// Where the fade-out goes on a recording that decodes to `decoded` seconds,
-/// with the length its header states (`stated`) kept for the record.
+/// of which leading-silence trim removes `trimmed` seconds from the start,
+/// with the length its header states (`stated`) kept for the record. The
+/// start is on the output's timeline.
 pub(crate) fn fade_out_placement(
     opts: &ConvertJob,
     decoded: f64,
+    trimmed: f64,
     stated: Option<f64>,
 ) -> crate::manifest::FadeOutRecord {
-    let start = (decoded - opts.fade_dur).max(0.0);
+    let start = (decoded - trimmed - opts.fade_dur).max(0.0);
     crate::manifest::FadeOutRecord {
         start_seconds: (start * 1000.0).round() / 1000.0,
         duration_seconds: opts.fade_dur,
@@ -416,38 +669,89 @@ pub(crate) fn fade_out_placement(
     }
 }
 
+/// The processing filters of one conversion and what the export record
+/// says about them.
+pub(crate) struct ProcPlan {
+    pub filters: Vec<String>,
+    pub fade_out: Option<crate::manifest::FadeOutRecord>,
+    pub leading_trim: Option<crate::manifest::LeadingTrimRecord>,
+}
+
 /// Build the processing filter chain, optionally injecting a computed gain
-/// value from auto-leveling analysis. With Fade on, the recording is decoded
-/// once to measure its real length, and the fade-out is placed from that,
-/// never from the stated duration (`stated`, kept for the record only): a
-/// stated length shorter than the audio put the fade-out in the middle and
-/// silenced everything after it. If the length cannot be measured the
-/// conversion stops rather than guess.
+/// value from auto-leveling analysis. With Trim silence on, a measuring pass
+/// counts the samples trim removes (`measure_leading_trim_cancellable`) and
+/// the chain removes exactly that many. With Fade on, the recording is
+/// decoded once to measure its real length, and the fade-out is placed from
+/// that, never from the stated duration (`stated`, kept for the record
+/// only): a stated length shorter than the audio put the fade-out in the
+/// middle and silenced everything after it. If either cannot be measured the
+/// conversion stops rather than guess. `sample_rate` is the converted
+/// stream's rate, which the trim counts at.
 pub(crate) async fn build_proc_filters_with_gain(
     app: &AppHandle,
     opts: &ConvertJob,
-    feed: &Path,
+    feed: &AudioFeed,
     auto_gain: Option<f64>,
     stated: Option<f64>,
+    sample_rate: Option<u32>,
     cancelled: CancelCheck<'_>,
-) -> Result<(Vec<String>, Option<crate::manifest::FadeOutRecord>), String> {
+) -> Result<ProcPlan, String> {
+    let leading_trim = measure_leading_trim_cancellable(app, opts, feed, sample_rate, cancelled).await?;
+    let trimmed = leading_trim.as_ref().map_or(0.0, |trim| trim.seconds);
     let fade_out = if opts.fade {
         let decoded = measure_decoded_seconds_cancellable(app, feed, u64::from(opts.ffmpeg_timeout), cancelled)
             .await
             .ok_or(FADE_LENGTH_UNKNOWN_MESSAGE)?;
-        Some(fade_out_placement(opts, decoded, stated))
+        Some(fade_out_placement(opts, decoded, trimmed, stated))
     } else {
         None
     };
-    let decoded = fade_out.as_ref().map(|fade| fade.decoded_source_seconds);
-    Ok((proc_filters(opts, auto_gain, decoded), fade_out))
+    Ok(proc_plan(opts, auto_gain, fade_out, leading_trim))
 }
 
-/// Pure core of the filter-chain builder: everything except the length
-/// measurement. `duration` is the converted stream's decoded length. Filter order is part of the output contract (de-clip → HPF → gain →
-/// loudnorm → source-relative fade-out → trim → fade-in) — see PARITY.md.
-pub(crate) fn proc_filters(opts: &ConvertJob, auto_gain: Option<f64>, duration: Option<f64>) -> Vec<String> {
+/// The filters for measured trim and fade placements (no process runs).
+pub(crate) fn proc_plan(
+    opts: &ConvertJob,
+    auto_gain: Option<f64>,
+    fade_out: Option<crate::manifest::FadeOutRecord>,
+    leading_trim: Option<crate::manifest::LeadingTrimRecord>,
+) -> ProcPlan {
+    let length = fade_out
+        .as_ref()
+        .map(|fade| fade.decoded_source_seconds - leading_trim.as_ref().map_or(0.0, |trim| trim.seconds));
+    ProcPlan {
+        filters: proc_filters(opts, auto_gain, length, leading_trim.as_ref().map(|trim| trim.samples)),
+        fade_out,
+        leading_trim,
+    }
+}
+
+/// Pure core of the filter-chain builder: everything except the
+/// measurements. `duration` is the length of the audio after trim (the
+/// decoded length less what trim removes), which places the fade-out;
+/// `trim_samples` is the measured leading-silence trim. Filter order is part
+/// of the output contract (trim → de-clip → HPF → gain → loudnorm →
+/// fade-out → fade-in) — see PARITY.md.
+pub(crate) fn proc_filters(
+    opts: &ConvertJob,
+    auto_gain: Option<f64>,
+    duration: Option<f64>,
+    trim_samples: Option<u64>,
+) -> Vec<String> {
     let mut filters = Vec::new();
+
+    // Leading-silence trim runs first, while the samples are still at the
+    // converted stream's own rate, and removes exactly the measured count.
+    // Only leading audio below the threshold is removed: interior pauses
+    // and the ending are kept. Split Channels never trims (`trim_applies`).
+    // With Fade on and nothing trimmed, the timeline still restarts at 0 so
+    // the fades are placed on the stream's own samples (`resets_timeline`).
+    let trim_samples = trim_samples.unwrap_or(0);
+    if trim_applies(opts) && trim_samples > 0 {
+        filters.extend(leading_trim_filters(trim_samples));
+    } else if resets_timeline(opts, trim_samples) {
+        filters.push(TIMELINE_FROM_ZERO.into());
+    }
 
     // De-clipping runs first — reconstruct clipped peaks before other processing
     if opts.declip {
@@ -474,9 +778,8 @@ pub(crate) fn proc_filters(opts: &ConvertJob, auto_gain: Option<f64>, duration: 
         ));
     }
 
-    // Place fade-out while timestamps still match the decoded source length.
-    // Leading silence removal below shortens the result, so placing this after
-    // trim can move the fade beyond EOF.
+    // The fade-out is placed from the length after trim, on the timeline the
+    // trim filters restart at 0.
     if opts.fade {
         if let Some(d) = duration {
             let start = (d - opts.fade_dur).max(0.0);
@@ -484,30 +787,7 @@ pub(crate) fn proc_filters(opts: &ConvertJob, auto_gain: Option<f64>, duration: 
         }
     }
 
-    // `stop_periods=-1` removes every sufficiently long pause in the middle of
-    // a recording, which changes the evidentiary timeline. A positive stop
-    // period is not safe either: FFmpeg stops copying at the first qualifying
-    // pause and cannot know that a pause is truly trailing until EOF. Keep trim
-    // boundary-safe by removing leading dead air only.
-    //
-    // Split mode applies this filter chain independently to each channel. Even
-    // leading-only trimming can then produce different start times, so retain
-    // the original shared timeline for split outputs.
-    //
-    // Trim stops at the first sample above the threshold on any channel
-    // (`detection=peak:window=0`), so only audio below the threshold is
-    // removed. FFmpeg 6.1 and newer also drop the `start_duration` of sound
-    // they use to confirm the silence has ended, and the default 20 ms RMS
-    // window ends the silence a few samples late, so neither is used: an
-    // earlier `start_duration=0.3` cut the first 0.3 s of speech.
-    if opts.trim && opts.mode != "split" {
-        filters.push(format!(
-            "silenceremove=start_periods=1:start_threshold={}dB:start_mode=any:detection=peak:window=0",
-            opts.silence_thresh
-        ));
-    }
-
-    // Fade-in must follow leading trim so it applies to the audible start.
+    // Fade-in follows leading trim so it applies to the audible start.
     if opts.fade {
         filters.push(format!("afade=t=in:d={}", opts.fade_dur));
     }
@@ -709,13 +989,13 @@ Decoders:
 
     #[test]
     fn all_processing_off_yields_empty_chain() {
-        assert!(proc_filters(&job(""), None, None).is_empty());
+        assert!(proc_filters(&job(""), None, None, None).is_empty());
     }
 
     #[test]
     fn declip_filter_is_stable() {
         assert_eq!(
-            proc_filters(&job(r#", "declip": true"#), None, None),
+            proc_filters(&job(r#", "declip": true"#), None, None, None),
             vec!["adeclip=w=55:o=50"]
         );
     }
@@ -723,7 +1003,7 @@ Decoders:
     #[test]
     fn hpf_uses_default_cutoff_80() {
         assert_eq!(
-            proc_filters(&job(r#", "hpf": true"#), None, None),
+            proc_filters(&job(r#", "hpf": true"#), None, None, None),
             vec!["highpass=f=80"]
         );
     }
@@ -731,7 +1011,7 @@ Decoders:
     #[test]
     fn hpf_honors_custom_cutoff() {
         assert_eq!(
-            proc_filters(&job(r#", "hpf": true, "hpfCutoff": 120.0"#), None, None),
+            proc_filters(&job(r#", "hpf": true, "hpfCutoff": 120.0"#), None, None, None),
             vec!["highpass=f=120"]
         );
     }
@@ -739,58 +1019,136 @@ Decoders:
     #[test]
     fn normalize_uses_default_lufs_and_tp() {
         assert_eq!(
-            proc_filters(&job(r#", "normalize": true"#), None, None),
+            proc_filters(&job(r#", "normalize": true"#), None, None, None),
             vec!["loudnorm=I=-16:TP=-1.5:LRA=11"]
         );
     }
 
     #[test]
-    fn trim_uses_default_silence_threshold() {
+    fn trim_removes_exactly_the_measured_samples_by_count() {
         assert_eq!(
-            proc_filters(&job(r#", "trim": true"#), None, None),
-            vec!["silenceremove=start_periods=1:start_threshold=-50dB:start_mode=any:detection=peak:window=0"]
+            proc_filters(&job(r#", "trim": true"#), None, None, Some(24_002)),
+            vec!["asetpts=N/SR/TB", "atrim=start_sample=24002", "asetpts=PTS-STARTPTS"]
+        );
+        // Nothing measured, or nothing to remove: no trim filters.
+        assert!(proc_filters(&job(r#", "trim": true"#), None, None, None).is_empty());
+        assert!(proc_filters(&job(r#", "trim": true"#), None, None, Some(0)).is_empty());
+        // Trim off: a stray count is ignored.
+        assert!(proc_filters(&job(""), None, None, Some(10)).is_empty());
+    }
+
+    #[test]
+    fn trim_detection_uses_the_threshold_and_never_removes_interior_silence() {
+        assert_eq!(
+            trim_detection_filter(-50.0),
+            "silenceremove=start_periods=1:start_threshold=-50dB:start_mode=any:detection=peak:window=0"
+        );
+        assert_eq!(
+            trim_detection_filter(-42.5),
+            "silenceremove=start_periods=1:start_threshold=-42.5dB:start_mode=any:detection=peak:window=0"
+        );
+        assert!(!trim_detection_filter(-50.0).contains("stop_periods"));
+        assert_eq!(
+            leading_trim_measure_filter(-50.0),
+            "astats@total=metadata=0:reset=0:measure_perchannel=none:measure_overall=Number_of_samples,\
+silenceremove=start_periods=1:start_threshold=-50dB:start_mode=any:detection=peak:window=0,\
+astats@kept=metadata=0:reset=0:measure_perchannel=none:measure_overall=Number_of_samples"
         );
     }
 
     #[test]
-    fn trim_never_removes_interior_silence() {
-        let filters = proc_filters(&job(r#", "trim": true"#), None, None);
-        assert_eq!(filters.len(), 1);
-        assert!(!filters[0].contains("stop_periods"));
+    fn trim_measuring_pass_decodes_the_converted_stream_at_its_own_rate() {
+        let feed = AudioFeed::plain(std::path::PathBuf::from("/in/session.sgmca"));
+        let args = leading_trim_measure_args(&feed, -50.0);
+        let joined = args.join(" ");
+        assert!(
+            joined.contains("-c:a libopus -i /in/session.sgmca -map 0:a:0 -af astats@total="),
+            "{joined}"
+        );
+        assert!(!args.iter().any(|arg| arg == "-ar" || arg.contains("aresample")));
+        assert!(joined.ends_with("-f null -"));
+    }
+
+    #[test]
+    fn trim_counts_are_read_per_astats_instance() {
+        let log = b"[astats@total @ 0x1] Overall\n\
+[astats@total @ 0x1] Number of samples: 144000\n\
+[astats@kept @ 0x2] Overall\n\
+[astats@kept @ 0x2] Number of samples: 119999\n";
+        assert_eq!(parse_leading_trim_counts(log), Some((144_000, 119_999)));
+        // Nothing reached the second count: every sample was trimmed.
+        assert_eq!(
+            parse_leading_trim_counts(b"[astats@total @ 0x1] Number of samples: 10\n"),
+            Some((10, 0))
+        );
+        assert_eq!(
+            parse_leading_trim_counts(b"[astats@total @ 0x1] Number of samples: 10\n[astats@kept @ 0x2] Overall\n"),
+            None
+        );
+        assert_eq!(
+            parse_leading_trim_counts(b"[astats@kept @ 0x2] Number of samples: 10\n"),
+            None
+        );
+        // More kept than decoded cannot be a trim.
+        assert_eq!(
+            parse_leading_trim_counts(
+                b"[astats@total @ 0x1] Number of samples: 10\n[astats@kept @ 0x2] Number of samples: 11\n"
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn trim_record_holds_the_exact_count_and_refuses_an_all_silent_recording() {
+        let opts = job(r#", "trim": true"#);
+        let record = leading_trim_record(&opts, (144_000, 119_999), 48_000).unwrap();
+        assert_eq!(record.samples, 24_001);
+        assert_eq!(record.seconds, 24_001.0 / 48_000.0);
+        assert_eq!(record.sample_rate, 48_000);
+        assert_eq!(record.threshold_db, -50.0);
+        assert_eq!(record.decoded_source_samples, 144_000);
+        assert_eq!(record.measured_with, leading_trim_measure_filter(-50.0));
+        let error = leading_trim_record(&opts, (144_000, 0), 48_000).unwrap_err();
+        assert!(error.contains("every sample of this recording is below the silence threshold (-50 dB)"));
     }
 
     #[test]
     fn split_trim_preserves_the_shared_channel_timeline() {
-        let filters = proc_filters(&job(r#", "trim": true, "mode": "split""#), None, None);
-        assert!(filters.is_empty());
+        let split = job(r#", "trim": true, "mode": "split""#);
+        assert!(!trim_applies(&split));
+        assert!(proc_filters(&split, None, None, Some(100)).is_empty());
+        assert!(trim_applies(&job(r#", "trim": true, "mode": "keep""#)));
     }
 
     #[test]
     fn near_unity_auto_gain_is_skipped() {
         // Gains within ±0.01 of 1.0 are noise, not leveling — omitted entirely
-        assert!(proc_filters(&job(""), Some(1.005), None).is_empty());
-        assert!(proc_filters(&job(""), Some(0.995), None).is_empty());
+        assert!(proc_filters(&job(""), Some(1.005), None, None).is_empty());
+        assert!(proc_filters(&job(""), Some(0.995), None, None).is_empty());
     }
 
     #[test]
     fn auto_gain_is_injected_at_4_decimals() {
-        assert_eq!(proc_filters(&job(""), Some(1.5), None), vec!["volume=1.5000"]);
-        assert_eq!(proc_filters(&job(""), Some(0.3333333), None), vec!["volume=0.3333"]);
+        assert_eq!(proc_filters(&job(""), Some(1.5), None, None), vec!["volume=1.5000"]);
+        assert_eq!(
+            proc_filters(&job(""), Some(0.3333333), None, None),
+            vec!["volume=0.3333"]
+        );
     }
 
     #[test]
     fn fade_out_is_placed_from_duration() {
         assert_eq!(
-            proc_filters(&job(r#", "fade": true"#), None, Some(10.0)),
-            vec!["afade=t=out:st=9.500:d=0.5", "afade=t=in:d=0.5"]
+            proc_filters(&job(r#", "fade": true"#), None, Some(10.0), None),
+            vec!["asetpts=N/SR/TB", "afade=t=out:st=9.500:d=0.5", "afade=t=in:d=0.5"]
         );
     }
 
     #[test]
     fn fade_without_known_duration_only_fades_in() {
         assert_eq!(
-            proc_filters(&job(r#", "fade": true"#), None, None),
-            vec!["afade=t=in:d=0.5"]
+            proc_filters(&job(r#", "fade": true"#), None, None, None),
+            vec!["asetpts=N/SR/TB", "afade=t=in:d=0.5"]
         );
     }
 
@@ -798,36 +1156,46 @@ Decoders:
     fn fade_out_start_never_negative() {
         // Track shorter than the fade: fade-out starts at 0, not below
         assert_eq!(
-            proc_filters(&job(r#", "fade": true, "fadeDur": 2.0"#), None, Some(1.0)),
-            vec!["afade=t=out:st=0.000:d=2", "afade=t=in:d=2"]
+            proc_filters(&job(r#", "fade": true, "fadeDur": 2.0"#), None, Some(1.0), None),
+            vec!["asetpts=N/SR/TB", "afade=t=out:st=0.000:d=2", "afade=t=in:d=2"]
         );
     }
 
     #[test]
-    fn trim_and_fade_order_keeps_fade_out_on_source_timeline() {
+    fn trim_comes_first_and_the_fade_out_is_placed_on_the_trimmed_timeline() {
+        let opts = job(r#", "trim": true, "fade": true"#);
+        // 10 s decoded, 0.5 s trimmed: 9.5 s remain, so the fade-out starts at 9 s.
+        let trim = leading_trim_record(&opts, (480_000, 456_000), 48_000).unwrap();
+        let fade = fade_out_placement(&opts, 10.0, trim.seconds, None);
+        assert_eq!(fade.start_seconds, 9.0);
+        let plan = proc_plan(&opts, None, Some(fade), Some(trim));
         assert_eq!(
-            proc_filters(&job(r#", "trim": true, "fade": true"#), None, Some(10.0)),
+            plan.filters,
             vec![
-                "afade=t=out:st=9.500:d=0.5",
-                "silenceremove=start_periods=1:start_threshold=-50dB:start_mode=any:detection=peak:window=0",
+                "asetpts=N/SR/TB",
+                "atrim=start_sample=24000",
+                "asetpts=PTS-STARTPTS",
+                "afade=t=out:st=9.000:d=0.5",
                 "afade=t=in:d=0.5",
             ]
         );
     }
 
     #[test]
-    fn full_chain_order_is_declip_hpf_gain_loudnorm_fade_out_trim_fade_in() {
+    fn full_chain_order_is_trim_declip_hpf_gain_loudnorm_fade_out_fade_in() {
         // Filter ORDER is part of the audio contract: reordering changes output
         let j = job(r#", "declip": true, "hpf": true, "normalize": true, "trim": true, "fade": true"#);
         assert_eq!(
-            proc_filters(&j, Some(2.0), Some(60.0)),
+            proc_filters(&j, Some(2.0), Some(60.0), Some(480)),
             vec![
+                "asetpts=N/SR/TB",
+                "atrim=start_sample=480",
+                "asetpts=PTS-STARTPTS",
                 "adeclip=w=55:o=50",
                 "highpass=f=80",
                 "volume=2.0000",
                 "loudnorm=I=-16:TP=-1.5:LRA=11",
                 "afade=t=out:st=59.500:d=0.5",
-                "silenceremove=start_periods=1:start_threshold=-50dB:start_mode=any:detection=peak:window=0",
                 "afade=t=in:d=0.5",
             ]
         );
@@ -835,15 +1203,15 @@ Decoders:
 
     #[test]
     fn decoded_length_pass_maps_the_converted_stream_and_counts_at_48_khz() {
-        let args = decoded_length_args(Path::new("/in/session.sgmca"));
+        let feed = AudioFeed::plain(std::path::PathBuf::from("/in/session.sgmca"));
+        let args = decoded_length_args(&feed);
         let joined = args.join(" ");
         assert!(
-            joined.contains("-c:a libopus -i /in/session.sgmca -map 0:a:0 -vn -sn"),
+            joined.contains(
+                "-c:a libopus -i /in/session.sgmca -map 0:a:0 -af aresample=48000,astats=metadata=0:reset=0:measure_perchannel=none:measure_overall=Number_of_samples -vn -sn -f null -"
+            ),
             "{joined}"
         );
-        assert!(joined.contains(
-            "-af aresample=48000,astats=metadata=0:reset=0:measure_perchannel=none:measure_overall=Number_of_samples -f null -"
-        ));
         assert_eq!(&args[..4], &["-nostdin", "-hide_banner", "-protocol_whitelist", "file"]);
         assert!(DECODED_LENGTH_FILTER.starts_with(&format!("aresample={DECODED_LENGTH_RATE},")));
     }
@@ -864,16 +1232,59 @@ Decoders:
     #[test]
     fn fade_out_is_placed_from_the_decoded_length_and_records_the_stated_one() {
         let opts = job(r#", "fade": true"#);
-        let fade = fade_out_placement(&opts, 15.0, Some(5.0065));
+        let fade = fade_out_placement(&opts, 15.0, 0.0, Some(5.0065));
         assert_eq!(fade.start_seconds, 14.5);
         assert_eq!(fade.duration_seconds, 0.5);
         assert_eq!(fade.decoded_source_seconds, 15.0);
         assert_eq!(fade.stated_source_seconds, Some(5.0065));
         assert_eq!(
-            proc_filters(&opts, None, Some(fade.decoded_source_seconds))[0],
+            proc_filters(&opts, None, Some(fade.decoded_source_seconds), None)[1],
             "afade=t=out:st=14.500:d=0.5"
         );
-        assert_eq!(fade_out_placement(&opts, 0.2, None).start_seconds, 0.0);
+        assert_eq!(fade_out_placement(&opts, 0.2, 0.0, None).start_seconds, 0.0);
+    }
+
+    #[test]
+    fn fade_restarts_the_timeline_at_zero_once_even_with_nothing_trimmed() {
+        // Fade alone, and trim that removes nothing: the fades are placed on
+        // the stream's own samples from 0.
+        for (extra, trim) in [("", None), (r#", "trim": true"#, Some(0))] {
+            let filters = proc_filters(&job(&format!(r#", "fade": true{extra}"#)), None, Some(10.0), trim);
+            assert_eq!(filters[0], TIMELINE_FROM_ZERO, "{extra}");
+            assert_eq!(
+                filters.iter().filter(|f| f.starts_with("asetpts")).count(),
+                1,
+                "{extra}"
+            );
+        }
+        // Split Channels never trims, but its fades are on the same timeline.
+        let split = job(r#", "fade": true, "trim": true, "mode": "split""#);
+        assert_eq!(proc_filters(&split, None, Some(10.0), Some(100))[0], TIMELINE_FROM_ZERO);
+        // Neither on: the timeline is left as the decoder gives it.
+        assert!(!resets_timeline(&job(r#", "normalize": true"#), 0));
+        assert!(!resets_timeline(&job(r#", "trim": true"#), 0));
+        assert!(resets_timeline(&job(r#", "trim": true"#), 1));
+        assert!(!resets_timeline(&job(r#", "trim": true, "mode": "split""#), 1));
+    }
+
+    #[test]
+    fn output_start_offset_puts_back_the_source_offset_plus_the_trim() {
+        let trim_job = job(r#", "trim": true"#);
+        let trim = leading_trim_record(&trim_job, (120_000, 115_200), 48_000).unwrap();
+        assert_eq!(
+            output_start_offset_args(&trim_job, Some(500_000), Some(&trim)),
+            vec!["-output_ts_offset", "0.600000"]
+        );
+        // Fade alone restarts the timeline too: the offset alone is put back.
+        assert_eq!(
+            output_start_offset_args(&job(r#", "fade": true"#), Some(500_000), None),
+            vec!["-output_ts_offset", "0.500000"]
+        );
+        // No offset, or a chain that keeps the decoder's timeline: nothing.
+        assert!(output_start_offset_args(&trim_job, None, Some(&trim)).is_empty());
+        assert!(output_start_offset_args(&job(r#", "normalize": true"#), Some(500_000), None).is_empty());
+        let nothing = leading_trim_record(&trim_job, (120_000, 120_000), 48_000).unwrap();
+        assert!(output_start_offset_args(&trim_job, Some(500_000), Some(&nothing)).is_empty());
     }
 
     #[test]

@@ -68,7 +68,7 @@ DepoAudio rules that still apply during an incident:
    `npm run release:check`, which fails until all of these agree.
 3. Build and publish through the normal sequence in the new candidate runbook
    (the current one is
-   [`V1.1.0-RELEASE-CANDIDATE.md`](V1.1.0-RELEASE-CANDIDATE.md#exact-candidate-to-publication-sequence)):
+   [`V1.2.0-RELEASE-CANDIDATE.md`](V1.2.0-RELEASE-CANDIDATE.md#exact-candidate-to-publication-sequence)):
    `release.yml` builds a private draft, then `publish-release.yml` publishes it
    after the wait timer. The 24-hour wait still applies. Steps 1.2 and 1.3
    above are what protect people in the meantime.

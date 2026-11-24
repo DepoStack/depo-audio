@@ -14,7 +14,8 @@ the app, with the exact folder path on that computer.
 | Settings | app data folder, `prefs.json` | Audio processing settings, startup defaults and theme |
 | Unfinished saves | app data folder, `library.tmp.*` / `prefs.tmp.*` | A temporary copy left only if a save was interrupted |
 | Legacy model files | app data folder, `models/` | Files left by an older build. DepoAudio never loads them |
-| Transcripts | app web view storage, key `transcript:<track path>` | The transcript lines you edited for a track (speaker, text, time) |
+| Transcripts | app web view storage, key `transcript:<track path>` | The transcript lines you opened for proofing a track (speaker, text, time), with your proofing flags and notes. Earlier versions also saved transcripts typed or edited in the Player here; they still open, read-only |
+| Transcript sync | app web view storage, key `transcript-sync:<track path>` | That track's sync shift, whether its times are time of day, and the recording start time you entered. Not included in backups |
 | Bookmarks | app web view storage, `player-bookmarks` | Bookmark times, labels and the track path |
 | Playback speed, backstep and theme | app web view storage, `player-speed`, `player-backstep`, `depoaudio-theme` | One setting each |
 
@@ -27,7 +28,7 @@ The web view storage sits in the system web view's data folder for DepoAudio.
 On Windows that is expected under `%LOCALAPPDATA%\com.andrewmayes.depoaudio\EBWebView`;
 on macOS it is expected under `~/Library/WebKit/com.andrewmayes.depoaudio`.
 Neither location has been checked on an installed build yet. The installed-app
-pass in `V1.1.0-RELEASE-CANDIDATE.md` must confirm both before the website
+pass in [`V1.2.0-RELEASE-CANDIDATE.md`](V1.2.0-RELEASE-CANDIDATE.md) must confirm both before the website
 states them.
 
 **Not stored by DepoAudio:** your recordings, converted files, the
@@ -81,9 +82,10 @@ files separately and says to restart; it does not call them missing.
 
 ## Deleting data
 
-- **Delete transcript for this track** (the bin button in the Player's
-  transcript card): removes the saved transcript for that track only, after a
-  confirmation. Exported SRT or TXT files are not affected.
+- **Remove this transcript from DepoAudio** (the bin button in the Player's
+  transcript proofing card): removes the stored copy of that track's
+  transcript, its flags and its sync settings, after a confirmation. The
+  transcript file you opened and any flags you exported are not affected.
 - **Library → delete a case or session**: removes the Library entry only. The
   audio files are not deleted.
 - **Settings → Model files**: removes individual legacy model files.

@@ -5,7 +5,6 @@ import { listen } from '@tauri-apps/api/event'
 import { open } from '@tauri-apps/plugin-dialog'
 import useConversion, { cancelQueuedJobs } from '../hooks/useConversion'
 import useFileDrop, { AUDIO_PROBE_CONCURRENCY } from '../hooks/useFileDrop'
-import { countHiddenProcessingOptions } from '../components/Convert/ConvertTab'
 
 vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn() }))
 vi.mock('@tauri-apps/api/event', () => ({ listen: vi.fn() }))
@@ -172,7 +171,7 @@ describe('conversion cancellation', () => {
     await act(async () => batch)
   })
 
-  it('forces learned-model flags off in the final IPC payload', async () => {
+  it('sends no learned-model fields in the IPC payload, even when asked to', async () => {
     const file = { path: 'C:\\case\\source.wav', name: 'source.wav' }
     const { result } = renderHook(() => useConversion())
 
@@ -185,7 +184,8 @@ describe('conversion cancellation', () => {
     await waitFor(() => expect(invoke.mock.calls.some(([command]) => command === 'convert')).toBe(true))
     const activeJob = invoke.mock.calls.find(([command]) => command === 'convert')[1].job
 
-    expect(activeJob).toMatchObject({ denoise: false, denoiseQuality: 'fast', enhance: false, dereverb: false })
+    for (const field of ['denoise', 'denoiseQuality', 'enhance', 'dereverb'])
+      expect(activeJob).not.toHaveProperty(field)
     act(() => emit('convert:done', { id: activeJob.id, files: [] }))
     await act(async () => batch)
   })
@@ -356,7 +356,7 @@ describe('conversion cancellation', () => {
     await act(async () => result.current.addFiles(['C:\\case\\session.trs', 'C:\\case\\part-1.ftr']))
 
     expect(result.current.files.map(file => file.path)).toEqual(['C:\\case\\part-1.ftr'])
-    expect(result.current.queueNotice).toContain('All 1 dropped FTR/TRM chunk is queued')
+    expect(result.current.queueNotice).toContain('All 1 dropped FTR chunk is queued')
   })
 
   it('keeps valid outputs visible when library filing finishes with a warning', async () => {
@@ -426,22 +426,5 @@ describe('conversion results', () => {
     act(() => emit('convert:done', { id: activeJob.id, files: [{ path: '/case/out.wav', name: 'out.wav', size: 1 }] }))
     await act(async () => batch)
     expect(result.current.jobs[file.path]).toMatchObject({ status: 'done', trimmed })
-  })
-})
-
-describe('conversion processing UI contracts', () => {
-  it('counts only released non-learned processing options', () => {
-    const allHidden = {
-      hasAnalysis: true,
-      showAllProcessing: false,
-      showAutoLevel: false,
-      showDeclip: false,
-      showHpf: false,
-      showNormalize: false,
-      showTrim: false,
-      showFade: false,
-    }
-
-    expect(countHiddenProcessingOptions(allHidden)).toBe(6)
   })
 })

@@ -17,13 +17,14 @@ import {
   NOT_TESTED_NOTE,
   OPUS_CATALYST_NOTE,
   STENOGRAPH_SOURCES,
+  PROCESSING_OPTIONS,
   describeSettings,
-  resolvePresetSettings,
+  processingOptionsInUse,
+  processingSummary,
 } from '../../presets'
 import { usePreferencesContext } from '../../hooks/PreferencesContext'
-import { Check, Loader2, Play } from 'lucide-react'
+import { AlertTriangle, Check, Loader2, Lock, Play } from 'lucide-react'
 import { Button } from '../ui/button'
-import { Card, CardHeader, CardTitle, CardContent } from '../ui/card'
 import { Badge } from '../ui/badge'
 import { Input } from '../ui/input'
 import { Label } from '../ui/label'
@@ -33,6 +34,7 @@ import ProcessingToggle from './ProcessingToggle'
 import FormatTable from './FormatTable'
 import FileRow from './FileRow'
 import { wavSizeEstimateText } from '../../lib/outputSize'
+import { trmSessionNotices } from '../../lib/queue'
 import { SCAN_SAMPLE_NOTE, aggregateAnalysisResults } from '../../lib/analysis'
 
 // The backend emits scan:progress events throughout each file's analysis
@@ -52,20 +54,8 @@ const SCAN_PHASES = {
   done: 'Finishing up',
 }
 
-// eslint-disable-next-line react-refresh/only-export-components -- pure UI-state helper is regression-tested directly
-export function countHiddenProcessingOptions({
-  hasAnalysis,
-  showAllProcessing,
-  showAutoLevel,
-  showDeclip,
-  showHpf,
-  showNormalize,
-  showTrim,
-  showFade,
-}) {
-  if (!hasAnalysis || showAllProcessing) return 0
-  return [showAutoLevel, showDeclip, showHpf, showNormalize, showTrim, showFade].filter(visible => !visible).length
-}
+// Each processing option's name and one-line reason, by id.
+const PROCESSING = Object.fromEntries(PROCESSING_OPTIONS.map(option => [option.id, option]))
 
 export default function ConvertTab({
   // Files
@@ -142,12 +132,33 @@ export default function ConvertTab({
     declip,
   })
   // The preset the person chose in this session. A preset is "in use" only
-  // when they chose it and the settings still match it; settings that merely
-  // happen to match one (the defaults match "For other or older CAT
-  // software") are described as a match, not as a choice.
+  // when they chose it and the settings still have its format; settings that
+  // merely happen to match one (the defaults match "For CATalyst audio sync"
+  // and "For other or older CAT software") are described as a match, not as
+  // a choice. Processing is never part of a preset: the status and every
+  // card say what processing the person has turned on.
   const [chosenPresetId, setChosenPresetId] = useState(null)
-  const presetInUse =
-    presetState.kind === 'preset' && presetState.preset.id === chosenPresetId ? presetState.preset : null
+  const presetInUse = presetState.matches.find(p => p.id === chosenPresetId) || null
+  const processingLine = processingSummary({
+    mode,
+    normalize,
+    trim,
+    fade,
+    hpf,
+    autoLevel,
+    declip,
+  })
+  const quoted = presets => presets.map(p => `\u201c${p.name}\u201d`).join(' and ')
+  const legacyNote = presetState.legacy
+    ? ` These are the settings of the earlier \u201c${presetState.legacy.name}\u201d preset; its processing stays on until you turn it off.`
+    : ''
+  const presetStatus = presetInUse
+    ? `Using: ${presetInUse.name}. ${processingLine}.`
+    : presetState.kind === 'preset'
+      ? `No preset chosen. The current settings are the same as ${quoted(presetState.matches)}.`
+      : presetState.matches.length > 0
+        ? `Custom: the format of ${quoted(presetState.matches)}. ${processingLine}.${legacyNote}`
+        : `Custom settings. ${processingLine}.${legacyNote}`
   const [sourceLinkError, setSourceLinkError] = useState('')
   const openSource = async source => {
     setSourceLinkError('')
@@ -157,29 +168,48 @@ export default function ConvertTab({
       setSourceLinkError(`Couldn't open Stenograph's \u201c${source.title}\u201d article: ${String(error)}`)
     }
   }
-  const applyPreset = preset => {
+  // The processing that would run with the current settings in `nextMode`.
+  const processingFor = nextMode =>
+    processingOptionsInUse({ mode: nextMode, normalize, trim, fade, hpf, autoLevel, declip })
+  // Turn off the given processing options, only when the person asks.
+  const processingSetters = {
+    autoLevel: setAutoLevel,
+    declip: setDeclip,
+    hpf: setHpf,
+    normalize: setNormalize,
+    trim: setTrim,
+    fade: setFade,
+  }
+  const turnProcessingOff = options => {
+    for (const option of options) processingSetters[option.id](false)
+  }
+  // A preset sets only the channel mode, the format and the MP3 bitrate. It
+  // never touches processing or the sample rate on its own. A preset whose
+  // name promises the recording unchanged (Archive) asks first when
+  // processing is on: the person keeps it, turns it off, or cancels.
+  const [processingQuestion, setProcessingQuestion] = useState(null)
+  const setPresetNow = preset => {
+    setProcessingQuestion(null)
     setChosenPresetId(preset.id)
-    const s = resolvePresetSettings(preset.settings)
+    const s = preset.settings
     handleModeChange(s.mode)
     setFormatOut(s.format)
-    setRate(s.rate)
-    setNormalize(s.normalize)
-    setTrim(s.trim)
-    setFade(s.fade)
-    // The fade length only matters with fades on; leave the person's own
-    // value alone otherwise.
-    if (s.fade) setFadeDur(s.fadeDur)
-    setHpf(s.hpf)
-    setAutoLevel(s.autoLevel)
-    setDeclip(s.declip)
     if (s.format === 'mp3') setMp3Bitrate(s.mp3Bitrate ?? 192)
   }
+  const applyPreset = preset => {
+    const inUse = processingFor(preset.settings.mode)
+    if (preset.asksAboutProcessing && inUse.length > 0) {
+      setProcessingQuestion({ preset, options: inUse })
+      return
+    }
+    setPresetNow(preset)
+  }
+  const currentProcessing = processingFor(mode)
   const [analysis, setAnalysis] = useState(null)
   const [scanning, setScanning] = useState(false)
   const [scanProgress, setScanProgress] = useState({ current: 0, total: 0, fileName: '', phase: '', filePct: 0 })
   const [scanError, setScanError] = useState(null)
   const [scanCancelling, setScanCancelling] = useState(false)
-  const [showAllProcessing, setShowAllProcessing] = useState(false)
 
   // Guards for long-running scans: scanIdRef invalidates a superseded scan
   // (cancel, re-click, unmount), filesRef detects the queue changing mid-scan
@@ -229,7 +259,6 @@ export default function ConvertTab({
     setPrevFiles(files)
     setAnalysis(null)
     setScanError(null)
-    setShowAllProcessing(false)
   }
 
   const cancelScan = async () => {
@@ -434,6 +463,7 @@ export default function ConvertTab({
   const procCount = [autoLevelEffective, declip, hpf, normalize, trimEffective, fade].filter(Boolean).length
   const formatLabel = FORMATS_OUT.find(f => f.id === formatOut)?.label || formatOut
   const wavEstimate = formatOut === 'wav' ? wavSizeEstimateText(files, audioStreams, { mode, rate }) : ''
+  const sessionNotices = trmSessionNotices(files, audioStreams)
   const modeLabel = MODES.find(m => m.id === mode)?.label || mode
   const unsupportedFiles = files.filter(file => file.fmt?.status === 'unsupported')
   const resultParts = [
@@ -460,6 +490,9 @@ export default function ConvertTab({
           : 'Remove unsupported files first. The note for each one says how to export it.'
         : ''
 
+  const warnGlyph = <AlertTriangle aria-hidden="true" size={14} className="mt-0.5 shrink-0 text-warning" />
+  const title = 'type-label text-ink-2'
+
   return (
     <>
       <div className="flex-1 overflow-y-auto overflow-x-hidden scrollbar-thin scrollbar-thumb-border scrollbar-track-transparent">
@@ -472,7 +505,7 @@ export default function ConvertTab({
           />
 
           {/* ── STEPPER (state-driven, purely informational) ─────────────── */}
-          <ol className="conversion-stepper flex items-center gap-2.5 mb-1" aria-label="Conversion progress">
+          <ol className="conversion-stepper flex items-center gap-2" aria-label="Conversion progress">
             {['Add recording', 'Choose settings', 'Convert'].map((label, i) => {
               const n = i + 1
               const done = stepDone(n)
@@ -480,30 +513,26 @@ export default function ConvertTab({
               return (
                 <li
                   key={label}
-                  className="conversion-step flex items-center gap-2.5"
+                  className="conversion-step flex items-center gap-2"
                   aria-current={now ? 'step' : undefined}
                 >
                   <span
                     aria-hidden="true"
-                    className={`w-6 h-6 rounded-full grid place-items-center text-[11px] font-semibold border transition-colors ${
+                    className={`w-6 h-6 rounded-full grid place-items-center type-label tabular-nums border transition-colors ${
                       done
-                        ? 'bg-[hsl(var(--success))] border-[hsl(var(--success))] text-white'
+                        ? 'bg-success border-success text-background'
                         : now
                           ? 'bg-foreground border-foreground text-background'
-                          : 'bg-card border-border text-[hsl(var(--sub))]'
+                          : 'bg-card border-border text-ink-2'
                     }`}
                   >
                     {done ? <Check aria-hidden="true" className="h-3.5 w-3.5" strokeWidth={2.2} /> : n}
                   </span>
-                  <span
-                    className={`text-[12px] ${now ? 'font-semibold text-foreground' : done ? 'text-[hsl(var(--text2))]' : 'text-[hsl(var(--sub))]'}`}
-                  >
-                    {label}
-                  </span>
+                  <span className={`type-small ${now ? 'font-semibold' : 'text-ink-2'}`}>{label}</span>
                   {n < 3 && (
                     <span
                       aria-hidden="true"
-                      className={`conversion-step-line w-9 h-px ${done ? 'bg-[hsl(var(--success))]' : 'bg-border'}`}
+                      className={`conversion-step-line w-8 h-px ${done ? 'bg-success' : 'bg-border'}`}
                     />
                   )}
                 </li>
@@ -514,28 +543,27 @@ export default function ConvertTab({
           {/* ── FILES (drop zone + queue) — the workflow starts here ─────── */}
           <div
             aria-busy={queueLocked}
-            className={`recording-intake grid items-center gap-3 rounded-xl border border-dashed px-4 py-4 transition-colors sm:grid-cols-[auto_minmax(0,1fr)_auto] ${
+            // Dashed marks a live drop target only. Locked: a plain hairline,
+            // ink 2, and the lock glyph in place of the waveform.
+            className={`recording-intake grid items-center gap-4 border p-4 transition-colors sm:grid-cols-[auto_minmax(0,1fr)_auto] ${
               queueLocked
-                ? 'border-border/60 bg-[hsl(var(--surface))] opacity-70'
+                ? 'border-border text-ink-2'
                 : dragOver
-                  ? 'border-foreground bg-secondary'
-                  : 'border-border bg-[hsl(var(--surface))] hover:border-[hsl(var(--text2)/0.55)]'
+                  ? 'border-dashed border-foreground bg-secondary'
+                  : 'border-dashed border-input bg-card'
             }`}
             onDragOver={queueLocked ? undefined : onDragOver}
             onDragLeave={onDragLeave}
             onDrop={queueLocked ? undefined : onDrop}
           >
-            <div
-              aria-hidden="true"
-              className="grid h-11 w-11 place-items-center rounded-lg border border-border/70 bg-card text-foreground"
-            >
-              <WaveformIcon />
-            </div>
+            <span aria-hidden="true" className="grid place-items-center">
+              {queueLocked ? <Lock size={28} strokeWidth={1.6} /> : <WaveformIcon />}
+            </span>
             <div className="min-w-0">
-              <p className="text-[13px] font-semibold text-foreground">
+              <p className="font-semibold">
                 {queueLocked ? 'File queue locked during conversion' : 'Add the recording you need to open or convert'}
               </p>
-              <p className="mt-0.5 type-small leading-relaxed text-[hsl(var(--sub))]">
+              <p className="type-small text-ink-2">
                 {queueLocked
                   ? 'Wait for the current batch to finish before adding or replacing files.'
                   : 'Drop files here, or browse for WAV, MP3, FLAC, SGMCA, TRM, BWF, and supported video containers.'}
@@ -556,24 +584,26 @@ export default function ConvertTab({
           {files.length > 0 && (
             <div className="flex flex-col gap-2">
               <div className="flex items-center justify-between">
-                <span className="tabular-nums text-[12px] text-[hsl(var(--sub))]">
+                <span className="type-small text-ink-2">
                   {files.length} file{files.length !== 1 ? 's' : ''} queued
                 </span>
                 {!converting && (
                   <button
-                    className="type-small text-[hsl(var(--sub))] hover:text-foreground transition-colors cursor-pointer"
+                    className="type-small text-ink-2 hover:text-foreground transition-colors cursor-pointer"
                     onClick={() => clearAll(converting)}
                   >
                     Clear all
                   </button>
                 )}
               </div>
-              <div className="flex flex-col gap-1.5">
+              {/* Top rule only: the next zone's rule closes the list. */}
+              <div className="flex flex-col border-t border-border divide-y divide-border">
                 {files.map(f => (
                   <FileRow
                     key={f.path}
                     file={f}
                     streams={audioStreams[f.path]}
+                    sessionNotice={sessionNotices[f.path] || ''}
                     job={jobs[f.path]}
                     onRemove={() => removeFile(f.path, converting)}
                     converting={converting}
@@ -585,10 +615,7 @@ export default function ConvertTab({
           )}
 
           {unsupportedFiles.length > 0 && (
-            <p
-              role="alert"
-              className="px-3 py-2 rounded-md border border-destructive/30 border-l-[3px] border-l-destructive type-small text-destructive"
-            >
+            <p role="alert" className="notice notice-error">
               Remove{' '}
               {unsupportedFiles.length === 1
                 ? unsupportedFiles[0].name
@@ -604,19 +631,14 @@ export default function ConvertTab({
           )}
 
           {queueNotice && (
-            <p
-              role="status"
-              className="px-3 py-2 rounded-md border border-warning/30 bg-warning/10 type-small text-foreground"
-            >
+            <p role="status" className="notice flex items-start gap-2">
+              {warnGlyph}
               {queueNotice}
             </p>
           )}
 
           {conversionError && (
-            <p
-              role="alert"
-              className="px-3 py-2 rounded-md border border-destructive/30 border-l-[3px] border-l-destructive type-small text-destructive"
-            >
+            <p role="alert" className="notice notice-error">
               {conversionError}
             </p>
           )}
@@ -625,21 +647,54 @@ export default function ConvertTab({
           {/* Each preset is named for where the file is going and states its
               basis. The one the current settings match is highlighted; when
               none matches, the picker says "Custom" and changes nothing. */}
-          <Card className="workflow-section" data-testid="preset-picker">
-            <CardHeader>
-              <CardTitle>Quick setup</CardTitle>
-              <span className="type-small text-[hsl(var(--sub))]" data-testid="preset-status" role="status">
-                {presetInUse
-                  ? `Using: ${presetInUse.name}`
-                  : presetState.kind === 'preset'
-                    ? `No preset chosen. The current settings are the same as \u201c${presetState.preset.name}\u201d.`
-                    : presetState.legacy
-                      ? `Custom: the earlier \u201c${presetState.legacy.name}\u201d preset. Closest new preset: ${presetState.closest?.name}`
-                      : 'Custom settings'}
+          <div className="workflow-section zone" data-testid="preset-picker">
+            <div className="zone-head">
+              <h3 className={title}>Quick setup</h3>
+              <span className="type-small text-ink-2" data-testid="preset-status" role="status">
+                {presetStatus}
               </span>
-            </CardHeader>
-            <CardContent>
-              <div className="grid grid-cols-1 gap-2 p-3 sm:grid-cols-2 lg:grid-cols-3">
+              {currentProcessing.length > 0 && !processingQuestion && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  aria-label={`Turn processing off: ${currentProcessing.map(option => option.name).join(', ')}`}
+                  onClick={() => turnProcessingOff(currentProcessing)}
+                >
+                  Turn processing off
+                </Button>
+              )}
+            </div>
+            <>
+              {processingQuestion && (
+                <div
+                  role="group"
+                  aria-labelledby="preset-processing-question"
+                  data-testid="preset-processing-question"
+                  className="notice flex flex-col gap-2"
+                >
+                  <p id="preset-processing-question">
+                    {`\u201c${processingQuestion.preset.name}\u201d is for keeping the recording as it is, but processing is on: ${processingQuestion.options.map(option => option.name).join(', ')}. With it on, the archive copy is changed. Nothing has changed yet.`}
+                  </p>
+                  <div className="flex flex-wrap gap-2">
+                    <Button
+                      size="sm"
+                      onClick={() => {
+                        turnProcessingOff(processingQuestion.options)
+                        setPresetNow(processingQuestion.preset)
+                      }}
+                    >
+                      Turn processing off and use this preset
+                    </Button>
+                    <Button size="sm" variant="outline" onClick={() => setPresetNow(processingQuestion.preset)}>
+                      Keep processing on and use this preset
+                    </Button>
+                    <Button size="sm" variant="ghost" onClick={() => setProcessingQuestion(null)}>
+                      Cancel
+                    </Button>
+                  </div>
+                </div>
+              )}
+              <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-3">
                 {PRESETS.map(p => {
                   const active = presetInUse?.id === p.id
                   return (
@@ -649,21 +704,24 @@ export default function ConvertTab({
                       title={p.desc}
                       aria-pressed={active}
                       aria-labelledby={`preset-name-${p.id}`}
-                      aria-describedby={`preset-basis-${p.id} preset-tested-${p.id}`}
-                      className={`relative flex flex-col items-start gap-0.5 px-3 py-2.5 rounded-lg border text-left transition-all cursor-pointer focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring ${
-                        active
-                          ? 'border-foreground bg-secondary'
-                          : 'border-border bg-card hover:border-[hsl(var(--sub))]'
-                      }`}
+                      aria-describedby={`preset-basis-${p.id} preset-processing-${p.id} preset-tested-${p.id}`}
+                      className="choice"
                       onClick={() => applyPreset(p)}
                     >
-                      <span id={`preset-name-${p.id}`} className="text-[12.5px] font-semibold text-foreground pr-5">
+                      <span id={`preset-name-${p.id}`} className="type-small font-semibold pr-5">
                         {p.name}
                       </span>
-                      <span id={`preset-basis-${p.id}`} className="type-small text-[hsl(var(--text2))] leading-snug">
+                      <span id={`preset-basis-${p.id}`} className="type-small text-ink-2">
                         {p.basis}
                       </span>
-                      <span id={`preset-tested-${p.id}`} className="type-small text-[hsl(var(--sub))]">
+                      <span
+                        id={`preset-processing-${p.id}`}
+                        data-testid="preset-processing"
+                        className="type-small text-ink-2"
+                      >
+                        {processingLine}
+                      </span>
+                      <span id={`preset-tested-${p.id}`} className="type-small text-ink-2">
                         {NOT_TESTED_NOTE}
                       </span>
                       {active && (
@@ -675,14 +733,14 @@ export default function ConvertTab({
                   )
                 })}
               </div>
-              <p className="px-3 pb-3 type-small text-[hsl(var(--sub))]">
+              <p className="type-small text-ink-2">
                 Format notes come from Stenograph&rsquo;s Solution Center articles{' '}
                 {STENOGRAPH_SOURCES.map((source, index) => (
                   <span key={source.url}>
                     {index > 0 && ' and '}
                     <button
                       type="button"
-                      className="underline underline-offset-2 text-[hsl(var(--text2))] hover:text-foreground focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring rounded-sm cursor-pointer"
+                      className="underline underline-offset-2 hover:text-foreground cursor-pointer"
                       aria-label={`${source.title} (Stenograph Solution Center, opens in your browser)`}
                       onClick={() => openSource(source)}
                     >
@@ -690,66 +748,64 @@ export default function ConvertTab({
                     </button>
                   </span>
                 ))}
-                . Choosing a preset changes the settings below; you can still change any of them.
+                . A preset sets only the mode, format and MP3 bitrate. It does not turn processing on or off or change
+                the sample rate.
               </p>
               {sourceLinkError && (
-                <p
-                  role="alert"
-                  className="mx-3 mb-3 px-3 py-2 rounded-md border border-destructive/30 border-l-[3px] border-l-destructive type-small text-destructive"
-                >
+                <p role="alert" className="notice notice-error">
                   {sourceLinkError}
                 </p>
               )}
-            </CardContent>
-          </Card>
+            </>
+          </div>
 
           {/* ── OUTPUT MODE (segmented) ──────────────────────────────────── */}
-          <Card className="workflow-section">
-            <CardHeader>
-              <CardTitle>Output mode</CardTitle>
-            </CardHeader>
-            <CardContent>
-              <div className="output-mode-grid grid grid-cols-1 gap-1.5 bg-secondary/45 p-2 sm:grid-cols-3">
-                {MODES.map(m => (
-                  <button
-                    key={m.id}
-                    aria-pressed={mode === m.id}
-                    className={`flex items-center gap-3 rounded-md border p-2.5 text-left transition-[color,background-color,border-color,transform] duration-150 active:translate-y-px ${mode === m.id ? 'border-foreground bg-card' : 'border-transparent hover:border-border hover:bg-card/55'}`}
-                    onClick={() => handleModeChange(m.id)}
-                  >
-                    <ModeIcon id={m.id} active={mode === m.id} />
-                    <div className="flex flex-col items-start">
-                      <span className="text-[12px] font-semibold text-foreground">{m.label}</span>
-                      <span className="type-small text-[hsl(var(--text2))] leading-tight">{m.desc}</span>
-                    </div>
-                  </button>
-                ))}
-              </div>
-            </CardContent>
-          </Card>
+          <div className="workflow-section zone">
+            <div className="zone-head">
+              <h3 className={title}>Output mode</h3>
+            </div>
+            <div className="output-mode-grid grid grid-cols-1 gap-2 sm:grid-cols-3">
+              {MODES.map(m => (
+                <button
+                  key={m.id}
+                  aria-pressed={mode === m.id}
+                  className="choice flex-row items-center gap-3 pr-8"
+                  onClick={() => handleModeChange(m.id)}
+                >
+                  <ModeIcon id={m.id} active={mode === m.id} />
+                  <div className="flex flex-col items-start">
+                    <span className="type-small font-semibold">{m.label}</span>
+                    <span className="type-small text-ink-2">{m.desc}</span>
+                  </div>
+                  {mode === m.id && (
+                    <span aria-hidden="true" className="absolute top-2 right-2">
+                      <Check aria-hidden="true" className="h-3.5 w-3.5" strokeWidth={2.2} />
+                    </span>
+                  )}
+                </button>
+              ))}
+            </div>
+          </div>
 
           {/* ── FORMAT (tiles with plain-English trade-offs) ─────────────── */}
-          <Card className="workflow-section">
-            <CardHeader>
-              <CardTitle>Format</CardTitle>
-            </CardHeader>
-            <CardContent>
-              <div className="format-output-grid grid grid-cols-1 gap-2 p-3 min-[420px]:grid-cols-2 sm:grid-cols-3 lg:grid-cols-5">
+          <div className="workflow-section zone">
+            <div className="zone-head">
+              <h3 className={title}>Format</h3>
+            </div>
+            <>
+              <div className="format-output-grid grid grid-cols-1 gap-2 min-[420px]:grid-cols-2 sm:grid-cols-3 lg:grid-cols-5">
                 {FORMATS_OUT.map(f => (
                   <button
                     key={f.id}
                     aria-pressed={formatOut === f.id}
-                    className={`relative flex flex-col items-start gap-0.5 px-3 py-2.5 rounded-lg border text-left transition-all cursor-pointer focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring ${
-                      formatOut === f.id
-                        ? 'border-foreground bg-secondary'
-                        : 'border-border bg-card hover:border-[hsl(var(--sub))]'
-                    }`}
+                    className="choice"
                     onClick={() => setFormatOut(f.id)}
                   >
-                    <span className="text-[13px] font-bold text-foreground">{f.label}</span>
-                    <span className="type-small text-[hsl(var(--text2))] leading-tight">{f.desc}</span>
+                    <span className="type-small font-semibold">{f.label}</span>
+                    <span className="type-small text-ink-2">{f.desc}</span>
+                    {f.preview && <span className="type-small font-semibold text-warning">{f.preview}</span>}
                     {formatOut === f.id && (
-                      <span aria-hidden="true" className="absolute top-1.5 right-2 text-foreground type-small">
+                      <span aria-hidden="true" className="absolute top-2 right-2">
                         <Check aria-hidden="true" className="h-3.5 w-3.5" strokeWidth={2.2} />
                       </span>
                     )}
@@ -757,56 +813,49 @@ export default function ConvertTab({
                 ))}
               </div>
               {formatOut === 'opus' && (
-                <p
-                  data-testid="opus-catalyst-note"
-                  className="mx-3 mb-3 px-3 py-2 rounded-md border border-warning/30 bg-warning/10 type-small text-foreground"
-                >
+                <p data-testid="opus-catalyst-note" className="notice flex items-start gap-2">
+                  {warnGlyph}
                   {OPUS_CATALYST_NOTE}
                 </p>
               )}
               {mode === 'keep' && KEEP_STEREO_ONLY_FORMATS.includes(formatOut) && (
-                <p
-                  data-testid="keep-stereo-only-note"
-                  className="mx-3 mb-3 px-3 py-2 rounded-md border border-warning/30 bg-warning/10 type-small text-foreground"
-                >
+                <p data-testid="keep-stereo-only-note" className="notice flex items-start gap-2">
+                  {warnGlyph}
                   {KEEP_STEREO_ONLY_NOTE}
                 </p>
               )}
-              <div className="flex items-end gap-3 flex-wrap px-3 pb-3">
-                <div className="min-w-[130px]">
-                  <Label className="mb-1 block" htmlFor="sample-rate">
-                    Sample rate
-                  </Label>
+              <div className="flex items-end gap-3 flex-wrap">
+                <div className="flex min-w-[130px] flex-col gap-1">
+                  <Label htmlFor="sample-rate">Sample rate</Label>
                   <select
                     id="sample-rate"
-                    className="flex h-8 w-full rounded-lg border border-border bg-card px-2.5 py-1.5 type-small text-foreground transition-colors focus:border-ring cursor-pointer"
+                    className="h-8 w-full border border-input bg-card px-2 type-small cursor-pointer disabled:border-dashed disabled:text-ink-2"
                     value={effectiveOutputRate(formatOut, rate)}
                     disabled={formatOut in FIXED_OUTPUT_RATES}
                     title={
                       formatOut === 'opus'
                         ? 'Opus is always 48 kHz'
                         : formatOut === 'sgmca'
-                          ? 'SGMCA records at 16 kHz'
+                          ? 'SGMCA is encoded at 48 kHz'
                           : ''
                     }
                     onChange={e => setRate(e.target.value)}
                   >
-                    {formatOut === 'sgmca' && <option value="16000">16,000 Hz</option>}
                     <option value="22050">22,050 Hz</option>
                     <option value="44100">44,100 Hz</option>
                     <option value="48000">48,000 Hz</option>
                   </select>
                 </div>
                 {formatOut === 'mp3' && (
-                  <div>
-                    <Label className="mb-1 block">MP3 bitrate</Label>
-                    <div className="flex gap-px bg-secondary rounded-md p-0.5">
+                  <div className="flex flex-col gap-1">
+                    <Label>MP3 bitrate</Label>
+                    <div className="flex gap-0.5 bg-secondary p-0.5">
                       {MP3_BITRATES.map(b => (
                         <button
                           key={b.value}
                           title={b.desc}
                           aria-pressed={mp3Bitrate === b.value}
-                          className={`px-2.5 py-1.5 type-label rounded-md transition-colors cursor-pointer ${mp3Bitrate === b.value ? 'bg-card text-foreground ring-1 ring-inset ring-foreground' : 'text-[hsl(var(--sub))] hover:text-[hsl(var(--text2))]'}`}
+                          className={`h-7 px-3 type-label cursor-pointer ${mp3Bitrate === b.value ? 'bg-card ring-1 ring-inset ring-foreground' : 'text-ink-2 hover:text-foreground'}`}
                           onClick={() => setMp3Bitrate(b.value)}
                         >
                           {b.label}
@@ -816,32 +865,32 @@ export default function ConvertTab({
                   </div>
                 )}
               </div>
-              {wavEstimate && <p className="px-3 pb-3 type-small text-[hsl(var(--text2))]">{wavEstimate}</p>}
-            </CardContent>
-          </Card>
+              {wavEstimate && <p className="type-small text-ink-2">{wavEstimate}</p>}
+            </>
+          </div>
 
           {/* ── CHANNELS (labels + mix) ────────────────────────────────── */}
           {/* Only meaningful once files are queued, and not in keep mode —
               keep mode preserves channels untouched and ignores labels */}
           {files.length > 0 && mode !== 'keep' && (
-            <Card className="workflow-section">
-              <CardHeader>
-                <CardTitle>Channels</CardTitle>
-                <span className="type-small text-[hsl(var(--sub))]">
+            <div className="workflow-section zone">
+              <div className="zone-head">
+                <h3 className={title}>Channels</h3>
+                <span className="type-small text-ink-2">
                   {mode === 'stereo' && autoLevel && 'Name channels — volume managed by auto-level'}
                   {mode === 'stereo' && !autoLevel && 'Name channels and adjust mix volumes'}
                   {mode === 'split' && 'Channel names used as output filenames'}
                 </span>
-              </CardHeader>
-              <CardContent>
-                <div className="flex flex-col gap-1 p-3">
+              </div>
+              <>
+                <div className="flex flex-col gap-1">
                   {labels.map((l, i) => (
                     <div key={i} className="channel-row flex items-center gap-2">
                       <span
                         className="w-2 h-2 rounded-full shrink-0"
                         style={{ background: CH_COLORS[i % CH_COLORS.length] }}
                       />
-                      <span className="tabular-nums text-[12px] text-[hsl(var(--sub))] shrink-0 w-7">CH {i + 1}</span>
+                      <span className="type-min tabular-nums text-ink-2 shrink-0 w-8">CH {i + 1}</span>
                       <Input
                         className="h-7 type-small w-32 shrink-0"
                         value={l}
@@ -858,14 +907,15 @@ export default function ConvertTab({
                             step="0.05"
                             value={autoLevel ? 1.0 : chanVols[i]}
                             aria-label={`Mix volume for channel ${i + 1}`}
-                            className={`flex-1 h-1 accent-primary cursor-pointer ${autoLevel ? 'opacity-40' : ''}`}
+                            className={`mix-range h-7 min-w-0 flex-1 ${autoLevel ? '' : 'cursor-pointer'}`}
+                            style={{ '--mix-fill': `${((autoLevel ? 1 : chanVols[i]) / 2) * 100}%` }}
                             disabled={autoLevel}
                             onChange={e =>
                               setChanVols(p => p.map((x, j) => (j === i ? parseFloat(e.target.value) : x)))
                             }
                           />
                           <span
-                            className={`tabular-nums text-[12px] w-8 text-right shrink-0 ${autoLevel ? 'text-foreground' : 'text-[hsl(var(--sub))]'}`}
+                            className={`type-min tabular-nums w-8 text-right shrink-0 ${autoLevel ? '' : 'text-ink-2'}`}
                           >
                             {autoLevel ? 'auto' : chanVols[i] === 0 ? 'mute' : chanVols[i].toFixed(2)}
                           </span>
@@ -874,37 +924,35 @@ export default function ConvertTab({
                     </div>
                   ))}
                 </div>
-              </CardContent>
-            </Card>
+              </>
+            </div>
           )}
 
           {/* ── AUDIO PROCESSING (unified panel) ─────────────────────────── */}
-          <Card className="workflow-section">
-            <CardHeader>
-              <CardTitle>Audio processing</CardTitle>
+          <div className="workflow-section zone">
+            <div className="zone-head">
+              <h3 className={title}>Audio processing</h3>
               <Button variant="scan" size="sm" onClick={handleScan} disabled={!files.length || scanning || converting}>
                 {scanning
                   ? `Scanning${files.length > 1 ? ` (${files.length} files)` : ''}…`
                   : `Scan${files.length > 1 ? ` All (${files.length})` : ''}`}
               </Button>
-            </CardHeader>
-            <CardContent>
+            </div>
+            <div>
               {!analysis && !scanning && !scanError && (
-                <p className="px-4 py-2.5 type-small text-[hsl(var(--sub))]">
+                <p className="pb-2 type-small text-ink-2">
                   Drop files and click <strong className="text-foreground">Scan</strong> to check for level differences
                   and clipping. {SCAN_SAMPLE_NOTE} Scan suggests fixes; nothing changes until you apply them.
                 </p>
               )}
 
               {analysis && !scanning && (
-                <p className="px-4 pt-2.5 pb-1 type-small text-[hsl(var(--sub))]">
-                  {SCAN_SAMPLE_NOTE} Anything after that is not measured.
-                </p>
+                <p className="pb-2 type-small text-ink-2">{SCAN_SAMPLE_NOTE} Anything after that is not measured.</p>
               )}
 
               {analysis && !scanning && pendingSuggestions.length > 0 && (
-                <div className="flex flex-wrap items-center justify-between gap-2 px-4 py-2.5 border-b border-border/60">
-                  <p className="type-small text-[hsl(var(--text2))]">
+                <div className="flex flex-wrap items-center justify-between gap-2 pb-2">
+                  <p className="type-small text-ink-2">
                     Scan suggests {pendingSuggestions.map(s => s.label).join(' and ')}. Nothing is switched on until you
                     apply {pendingSuggestions.length === 1 ? 'it' : 'them'}.
                   </p>
@@ -915,20 +963,21 @@ export default function ConvertTab({
               )}
 
               {scanError && !scanning && (
-                <p role="alert" className="px-4 py-2.5 type-small text-[hsl(var(--warning))]">
+                <p role="alert" className="notice mb-2 flex items-start gap-2">
+                  {warnGlyph}
                   {scanError}
                 </p>
               )}
 
               {scanning && (
-                <div className="px-4 py-2.5">
-                  <div className="flex items-center justify-between gap-2 mb-1.5">
+                <div className="pb-2">
+                  <div className="flex items-center justify-between gap-2 mb-1">
                     <p
                       role="status"
                       aria-label="Recording scan status"
                       aria-live="polite"
                       aria-atomic="true"
-                      className="type-small text-[hsl(var(--sub))] flex items-center gap-1.5 min-w-0"
+                      className="type-small text-ink-2 flex items-center gap-1.5 min-w-0"
                     >
                       <Loader2
                         aria-hidden="true"
@@ -938,18 +987,16 @@ export default function ConvertTab({
                         Scanning {Math.min(scanProgress.current + 1, scanProgress.total)} of {scanProgress.total}
                       </span>
                       {scanProgress.fileName && (
-                        <span className="text-[hsl(var(--text2))] truncate max-w-[180px]">
-                          — {scanProgress.fileName}
-                        </span>
+                        <span className="text-ink-2 truncate max-w-[180px]">— {scanProgress.fileName}</span>
                       )}
                       {scanProgress.phase && (
-                        <span className="text-[hsl(var(--sub))] truncate hidden sm:inline">
+                        <span className="text-ink-2 truncate hidden sm:inline">
                           · {SCAN_PHASES[scanProgress.phase] || scanProgress.phase}
                         </span>
                       )}
                     </p>
                     <button
-                      className="type-small text-[hsl(var(--sub))] hover:text-foreground transition-colors cursor-pointer shrink-0"
+                      className="type-small text-ink-2 hover:text-foreground transition-colors cursor-pointer shrink-0"
                       onClick={cancelScan}
                       disabled={scanCancelling}
                     >
@@ -957,7 +1004,8 @@ export default function ConvertTab({
                     </button>
                   </div>
                   {scanError && (
-                    <p role="alert" className="mb-1.5 type-small text-[hsl(var(--warning))]">
+                    <p role="alert" className="notice mb-1 flex items-start gap-2">
+                      {warnGlyph}
                       {scanError}
                     </p>
                   )}
@@ -979,216 +1027,145 @@ export default function ConvertTab({
                 </div>
               )}
 
-              {/* ── Recommended (shown after scan, or all if no scan) ── */}
-              {(() => {
-                const hasAnalysis = !!analysis
-                // After scan: only show toggles that are recommended or already enabled
-                const showAutoLevel =
-                  mode === 'keep' || !hasAnalysis || analysis.needsLeveling || autoLevelEffective || showAllProcessing
-                const showDeclip = !hasAnalysis || analysis.hasClipping || declip || showAllProcessing
-                const showHpf = !hasAnalysis || hpf || showAllProcessing
-                const showNormalize = !hasAnalysis || normalize || showAllProcessing
-                const showTrim = !hasAnalysis || trim || showAllProcessing
-                const showFade = !hasAnalysis || fade || showAllProcessing
+              {/* ── Every processing option, always shown and off until the
+                  person turns it on. A scan only marks what it recommends. ── */}
+              <p className={`border-t border-border pt-4 pb-1 ${title}`}>Signal repair</p>
 
-                const hiddenCount = countHiddenProcessingOptions({
-                  hasAnalysis,
-                  showAllProcessing,
-                  showAutoLevel,
-                  showDeclip,
-                  showHpf,
-                  showNormalize,
-                  showTrim,
-                  showFade,
-                })
+              <ProcessingToggle
+                smart
+                name={PROCESSING.autoLevel.name}
+                desc={
+                  mode === 'keep'
+                    ? 'Unavailable while preserving the original channel layout'
+                    : PROCESSING.autoLevel.reason
+                }
+                checked={autoLevelEffective}
+                disabled={mode === 'keep'}
+                onChange={setAutoLevel}
+                detected={
+                  analysis?.needsLeveling
+                    ? `${analysis.recommendations?.find(r => r.includes('spread'))?.match(/[\d.]+/)?.[0] || ''}dB imbalance found`
+                    : null
+                }
+              />
 
-                return (
-                  <>
-                    {(showAutoLevel || showDeclip) && (
-                      <div className="px-4 py-1.5 bg-secondary/50">
-                        <span className="type-label text-[hsl(var(--sub))]">
-                          {hasAnalysis && !showAllProcessing ? 'Recommended' : 'Signal repair'}
-                        </span>
-                      </div>
-                    )}
+              <ProcessingToggle
+                smart
+                name={PROCESSING.declip.name}
+                desc={PROCESSING.declip.reason}
+                checked={declip}
+                onChange={setDeclip}
+                detected={analysis?.hasClipping ? 'Clipping found' : null}
+              />
 
-                    {showAutoLevel && (
-                      <ProcessingToggle
-                        smart
-                        name="Balance Microphone Levels"
-                        desc={
-                          mode === 'keep'
-                            ? 'Unavailable while preserving the original channel layout'
-                            : 'Evens out channel levels so quiet microphones are easier to hear'
-                        }
-                        checked={autoLevelEffective}
-                        disabled={mode === 'keep'}
-                        onChange={setAutoLevel}
-                        detected={
-                          analysis?.needsLeveling
-                            ? `${analysis.recommendations?.find(r => r.includes('spread'))?.match(/[\d.]+/)?.[0] || ''}dB imbalance found`
-                            : null
-                        }
+              <p className={`pt-4 pb-1 ${title}`}>Fine-tune</p>
+
+              <ProcessingToggle
+                name={PROCESSING.hpf.name}
+                desc={PROCESSING.hpf.reason}
+                checked={hpf}
+                onChange={setHpf}
+              />
+
+              <ProcessingToggle
+                name={PROCESSING.normalize.name}
+                desc={PROCESSING.normalize.reason}
+                checked={normalize}
+                onChange={setNormalize}
+              />
+
+              <ProcessingToggle
+                name={PROCESSING.trim.name}
+                desc={
+                  mode === 'split'
+                    ? 'Skipped in Split Channels mode to preserve cross-channel alignment'
+                    : PROCESSING.trim.reason
+                }
+                checked={trim}
+                onChange={setTrim}
+              />
+
+              <ProcessingToggle
+                name={PROCESSING.fade.name}
+                desc={PROCESSING.fade.reason}
+                checked={fade}
+                onChange={setFade}
+                extra={
+                  fade && (
+                    <span className="inline-flex items-center gap-1" onClick={e => e.preventDefault()}>
+                      <input
+                        type="number"
+                        className="h-7 w-12 bg-transparent border border-input px-1 type-small tabular-nums text-center"
+                        min="0.1"
+                        max="5"
+                        step="0.1"
+                        value={fadeDur}
+                        onChange={e => setFadeDur(Math.max(0.1, parseFloat(e.target.value) || 0.5))}
                       />
-                    )}
-
-                    {showDeclip && (
-                      <ProcessingToggle
-                        smart
-                        name="Fix Clipped Audio"
-                        desc="Repairs distorted peaks from recordings that were too loud"
-                        checked={declip}
-                        onChange={setDeclip}
-                        detected={analysis?.hasClipping ? 'Clipping found' : null}
-                      />
-                    )}
-
-                    {/* ── Fine-tune ── */}
-                    {(showHpf || showNormalize || showTrim || showFade) && (
-                      <div className="px-4 py-1.5 bg-secondary/50">
-                        <span className="type-label text-[hsl(var(--sub))]">Fine-tune</span>
-                      </div>
-                    )}
-
-                    {showHpf && (
-                      <ProcessingToggle
-                        name="High-Pass Filter"
-                        desc="80 Hz cutoff — removes low rumble and handling noise"
-                        checked={hpf}
-                        onChange={setHpf}
-                      />
-                    )}
-
-                    {showNormalize && (
-                      <ProcessingToggle
-                        name="Normalize Volume"
-                        desc="Targets –16 LUFS / –1.5 TP for consistent output level"
-                        checked={normalize}
-                        onChange={setNormalize}
-                      />
-                    )}
-
-                    {showTrim && (
-                      <ProcessingToggle
-                        name="Trim Leading Silence"
-                        desc={
-                          mode === 'split'
-                            ? 'Skipped in Split Channels mode to preserve cross-channel alignment'
-                            : 'Remove leading dead air only (below –50 dB); interior pauses and the ending are preserved'
-                        }
-                        checked={trim}
-                        onChange={setTrim}
-                      />
-                    )}
-
-                    {showFade && (
-                      <ProcessingToggle
-                        name="Fade In / Out"
-                        desc="Smooth start and end"
-                        checked={fade}
-                        onChange={setFade}
-                        extra={
-                          fade && (
-                            <span className="inline-flex items-center gap-1 mt-0.5" onClick={e => e.preventDefault()}>
-                              <span className="text-[hsl(var(--sub))]">—</span>
-                              <input
-                                type="number"
-                                className="w-[42px] bg-secondary border border-border rounded px-1 py-px tabular-nums text-[12px] text-foreground text-center focus:border-ring outline-hidden"
-                                min="0.1"
-                                max="5"
-                                step="0.1"
-                                value={fadeDur}
-                                onChange={e => setFadeDur(Math.max(0.1, parseFloat(e.target.value) || 0.5))}
-                              />
-                              <span className="type-small text-[hsl(var(--sub))]">s</span>
-                            </span>
-                          )
-                        }
-                      />
-                    )}
-
-                    {/* Show more / less toggle */}
-                    {hasAnalysis && hiddenCount > 0 && !showAllProcessing && (
-                      <button
-                        className="px-4 py-2 type-small text-foreground hover:text-foreground transition-colors cursor-pointer text-left"
-                        onClick={() => setShowAllProcessing(true)}
-                      >
-                        Show {hiddenCount} more option{hiddenCount !== 1 ? 's' : ''}...
-                      </button>
-                    )}
-                    {hasAnalysis && showAllProcessing && (
-                      <button
-                        className="px-4 py-2 type-small text-[hsl(var(--sub))] hover:text-foreground transition-colors cursor-pointer text-left"
-                        onClick={() => setShowAllProcessing(false)}
-                      >
-                        Show less
-                      </button>
-                    )}
-                  </>
-                )
-              })()}
+                      <span className="type-small text-ink-2">s</span>
+                    </span>
+                  )
+                }
+              />
 
               {/* Processing chain preview */}
-              <div className="flex items-center gap-2 px-4 py-2.5 border-t border-border/60 bg-secondary/30">
-                <span className="type-label text-[hsl(var(--sub))] shrink-0">Chain</span>
+              <div className="flex items-center gap-2 pr-3 py-2 border-b border-border">
+                <span className={`shrink-0 ${title}`}>Chain</span>
                 {anyProcessing ? (
                   <div className="flex items-center gap-1 flex-wrap">
+                    {/* Leading trim runs first, at the recording's own rate. */}
+                    {trimEffective && (
+                      <>
+                        <Badge variant="default">Leading trim</Badge>
+                        <span className="type-small text-ink-2">→</span>
+                      </>
+                    )}
                     {declip && (
                       <>
                         <Badge variant="info">De-clip</Badge>
-                        <span className="type-small text-[hsl(var(--sub))]">→</span>
+                        <span className="type-small text-ink-2">→</span>
                       </>
                     )}
                     {hpf && (
                       <>
                         <Badge variant="default">HPF</Badge>
-                        <span className="type-small text-[hsl(var(--sub))]">→</span>
+                        <span className="type-small text-ink-2">→</span>
                       </>
                     )}
                     {autoLevelEffective && (
                       <>
                         <Badge variant="info">Auto-Level</Badge>
-                        <span className="type-small text-[hsl(var(--sub))]">→</span>
+                        <span className="type-small text-ink-2">→</span>
                       </>
                     )}
                     {normalize && (
                       <>
                         <Badge variant="default">Normalize</Badge>
-                        <span className="type-small text-[hsl(var(--sub))]">→</span>
-                      </>
-                    )}
-                    {trimEffective && (
-                      <>
-                        <Badge variant="default">Leading trim</Badge>
-                        <span className="type-small text-[hsl(var(--sub))]">→</span>
+                        <span className="type-small text-ink-2">→</span>
                       </>
                     )}
                     {fade && <Badge variant="default">Fade {fadeDur}s</Badge>}
                   </div>
                 ) : (
-                  <span className="type-small text-[hsl(var(--sub))] italic">
-                    No processing — direct transcode only
-                  </span>
+                  <span className="type-small text-ink-2 italic">No processing — direct transcode only</span>
                 )}
               </div>
 
-              <p className="px-4 py-2 type-small text-[hsl(var(--sub))] border-t border-border/60">
+              <p className="pt-2 type-small text-ink-2">
                 All processing runs on your machine — nothing is uploaded or sent anywhere.
               </p>
-            </CardContent>
-          </Card>
+            </div>
+          </div>
 
           {/* ── DESTINATION ──────────────────────────────────────────────── */}
-          <Card className="workflow-section">
-            <CardHeader>
-              <CardTitle>Destination</CardTitle>
-            </CardHeader>
-            <CardContent>
-              <div className="flex items-end gap-3 flex-wrap p-3">
-                <div className="flex-1 min-w-[200px]">
-                  <Label className="mb-1 block" htmlFor="case-name">
-                    Case name
-                  </Label>
+          <div className="workflow-section zone">
+            <div className="zone-head">
+              <h3 className={title}>Destination</h3>
+            </div>
+            <>
+              <div className="flex items-end gap-3 flex-wrap">
+                <div className="flex flex-1 min-w-[200px] flex-col gap-1">
+                  <Label htmlFor="case-name">Case name</Label>
                   <Input
                     id="case-name"
                     value={caseName}
@@ -1196,11 +1173,9 @@ export default function ConvertTab({
                     onChange={e => setCaseName(e.target.value)}
                   />
                 </div>
-                <div className="flex-1 min-w-[200px]">
-                  <Label className="mb-1 block" htmlFor="out-dir">
-                    Output folder
-                  </Label>
-                  <div className="flex gap-1.5">
+                <div className="flex flex-1 min-w-[200px] flex-col gap-1">
+                  <Label htmlFor="out-dir">Output folder</Label>
+                  <div className="flex gap-2">
                     <Input
                       id="out-dir"
                       className="flex-1"
@@ -1208,20 +1183,20 @@ export default function ConvertTab({
                       placeholder="Default: same folder as source"
                       onChange={e => setOutDir(e.target.value)}
                     />
-                    <Button variant="default" size="sm" onClick={() => browseOutDir(setOutDir)}>
+                    <Button variant="default" onClick={() => browseOutDir(setOutDir)}>
                       Browse
                     </Button>
                   </div>
                 </div>
               </div>
-            </CardContent>
-          </Card>
+            </>
+          </div>
 
           <FormatTable />
         </div>
       </div>
 
-      <footer className="conversion-footer flex shrink-0 items-center justify-between gap-4 border-t border-border/60 bg-card px-4 py-3 sm:px-6 lg:px-7">
+      <footer className="conversion-footer flex shrink-0 items-center justify-between gap-4 border-t border-border bg-card px-4 py-3 sm:px-6 lg:px-[max(2rem,calc((100%-1100px)/2+2rem))]">
         <div
           role="status"
           aria-label="Conversion status"
@@ -1240,13 +1215,13 @@ export default function ConvertTab({
           )}
           {!converting && resultCount > 0 && <Badge variant={resultVariant}>{resultParts.join(', ')}</Badge>}
           {!converting && resultCount === 0 && files.length === 0 && (
-            <p className="type-small text-[hsl(var(--sub))]">Add a recording to choose an output and convert.</p>
+            <p className="type-small text-ink-2">Add a recording to choose an output and convert.</p>
           )}
           {!converting && resultCount === 0 && unsupportedFiles.length > 0 && (
             <p className="type-small text-warning">{convertDisabledReason}</p>
           )}
           {!converting && resultCount === 0 && files.length > 0 && unsupportedFiles.length === 0 && (
-            <p className="text-[12px] text-[hsl(var(--sub))] truncate">
+            <p className="type-small text-ink-2 truncate">
               Ready:{' '}
               <span className="font-semibold text-foreground">
                 {formatLabel} · {modeLabel.toLowerCase()}

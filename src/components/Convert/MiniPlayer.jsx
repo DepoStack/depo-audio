@@ -24,10 +24,10 @@ export default function MiniPlayer({ out, color, multi }) {
           ▮
         </span>
       )}
-      <span className="type-small text-[hsl(var(--text2))] flex-1 min-w-0 truncate" title={out.path}>
+      <span className="type-small text-ink-2 flex-1 min-w-0 truncate" title={out.path}>
         {out.name}
       </span>
-      <span className="tabular-nums text-[12px] text-[hsl(var(--sub))] shrink-0">{fmtSize(out.size)}</span>
+      <span className="type-min tabular-nums text-ink-2 shrink-0">{fmtSize(out.size)}</span>
       <audio
         ref={audioRef}
         src={src}
@@ -42,16 +42,16 @@ export default function MiniPlayer({ out, color, multi }) {
           setCurrent(0)
         }}
       />
-      <div className="flex items-center gap-1.5 shrink-0">
+      <div className="flex items-center gap-2 shrink-0">
         <button
-          className="w-[22px] h-[22px] bg-secondary border border-foreground/60 text-foreground flex items-center justify-center shrink-0 transition-colors hover:border-foreground"
+          className="h-6 w-6 border border-input flex items-center justify-center shrink-0 hover:bg-secondary"
           aria-label={playing ? `Pause ${out.name}` : `Play ${out.name}`}
           onClick={toggle}
         >
           {playing ? <Pause size={10} fill="currentColor" /> : <Play size={10} fill="currentColor" />}
         </button>
         <div
-          className="w-[90px] h-1 bg-border rounded-sm cursor-pointer overflow-hidden shrink-0"
+          className="w-24 h-1 bg-border cursor-pointer overflow-hidden shrink-0"
           role="slider"
           aria-label={`Seek ${out.name}`}
           aria-valuemin={0}
@@ -76,12 +76,12 @@ export default function MiniPlayer({ out, color, multi }) {
           }}
         >
           <div
-            className="h-full bg-foreground rounded-sm transition-[width_0.1s]"
+            className="h-full bg-foreground transition-[width_0.1s]"
             style={{ width: duration ? `${(current / duration) * 100}%` : '0%' }}
           />
         </div>
         {duration > 0 && (
-          <span className="tabular-nums text-[12px] text-[hsl(var(--sub))] shrink-0 text-right whitespace-nowrap">
+          <span className="type-min tabular-nums text-ink-2 shrink-0 text-right whitespace-nowrap">
             {fmtTime(current)}/{fmtTime(duration)}
           </span>
         )}

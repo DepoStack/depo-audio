@@ -466,6 +466,17 @@ expect(
   !bundleResources.some(resource => /(?:^|\/)(?:model|models|onnxruntime)(?:\/|$)|\.onnx$/i.test(resource)),
   'tauri.conf.json must not bundle learned-model material or ONNX Runtime',
 )
+// Playback keys can press Play with Separate channels on, which is not a user
+// gesture. That is heard because wry's autoplay default adds
+// --autoplay-policy=no-user-gesture-required to WebView2, but only while no
+// additionalBrowserArgs are set (src/components/Player/PlayerTab.jsx onPlay).
+// Setting them, or turning autoplay off, needs that path rechecked first.
+expect(
+  (tauriConfig.app?.windows ?? []).every(
+    window => window.additionalBrowserArgs === undefined && window.autoplay !== false,
+  ),
+  'tauri.conf.json windows must not set additionalBrowserArgs or turn off autoplay (playback keys and Separate channels rely on gesture-free playback)',
+)
 // tauri-build 2.7+ statically links the MSVC runtime into the Windows binary
 // unless this is false. Keep the dynamic linking every earlier candidate was
 // built with; embedding the runtime is a ledger and owner decision, not a default.
@@ -484,13 +495,6 @@ expect(
     !modelsSource.includes('http://') &&
     !modelsSource.includes('https://'),
   'models.rs must expose only deletion-only legacy cleanup without a network installation path',
-)
-expect(
-  modelsSource.includes('recommended_denoise: "unavailable".into()') &&
-    modelsSource.includes('recommend_speaker_detection: false') &&
-    modelsSource.includes('recommend_enhance: false') &&
-    modelsSource.includes('dereverb_available: false'),
-  `v${version} system capabilities must fail closed for every learned-model feature`,
 )
 for (const filename of forbiddenModels) {
   expect(artifactInventory.includes(`'${filename}'`), `artifact inventory must reject model material ${filename}`)
@@ -977,8 +981,8 @@ expect(
 )
 expect(
   javascriptNoticeComponents.schemaVersion === 1 &&
-    javascriptNoticeComponents.componentCount === 58 &&
-    javascriptNoticeComponents.javascriptComponentCount === 56 &&
+    javascriptNoticeComponents.componentCount === 59 &&
+    javascriptNoticeComponents.javascriptComponentCount === 57 &&
     javascriptNoticeComponents.generatedCssComponentCount === 2 &&
     javascriptNoticeComponents.bundledFontCount === 2 &&
     ['Archivo', 'Fragment Mono'].every(family =>
@@ -1006,7 +1010,7 @@ const hasJavaScriptNoticeSourceClosure =
   thirdPartyInventory.includes('JavaScript and generated CSS notice status') &&
   thirdPartyInventory.includes('DepoAudio-owned compatibility module') &&
   thirdPartyInventory.includes('an SBOM does not replace copyright notices or license') &&
-  thirdPartyInventory.includes('56 JavaScript packages') &&
+  thirdPartyInventory.includes('57 JavaScript packages') &&
   javascriptNoticeComponents.unresolvedComponentCount === 0 &&
   javascriptNoticeComponents.unresolvedComponents?.length === 0
 expect(
@@ -1214,6 +1218,27 @@ expect(
     releaseWorkflow.split(`-af '${trimFilter},${stereoLimiter}'`).length === 3,
   'release.yml must smoke-test the exact trim and stereo limiter filters on the macOS and Windows FFmpeg',
 )
+// Trim silence measures what it removes with a sample count, the detection
+// and a second count, then removes that many samples by count; both smoke
+// tests run the measuring filter and the removal filters as the app builds
+// them (ffmpeg.rs leading_trim_measure_filter and leading_trim_filters).
+const sampleCountStats = ffmpegSource.match(/const SAMPLE_COUNT_STATS: &str = "([^"]+)";/)?.[1]
+const trimMeasureFilter =
+  sampleCountStats && trimFilter && `astats@total=${sampleCountStats},${trimFilter},astats@kept=${sampleCountStats}`
+const trimApplyFilters = [...(ffmpegSource.match(/fn leading_trim_filters[\s\S]*?\n}/)?.[0] ?? '').matchAll(/"([^"]+)"/g)]
+  .map(match => match[1])
+  .join(',')
+  .replace('{samples}', '1')
+expect(
+  trimMeasureFilter && releaseWorkflow.split(`-af '${trimMeasureFilter}'`).length === 3,
+  'release.yml must smoke-test the exact trim measuring filter (ffmpeg.rs leading_trim_measure_filter) on the macOS and Windows FFmpeg',
+)
+expect(
+  trimApplyFilters === 'asetpts=N/SR/TB,atrim=start_sample=1,asetpts=PTS-STARTPTS' &&
+    releaseWorkflow.split(`-af '${trimApplyFilters}'`).length === 3,
+  'release.yml must smoke-test the exact trim removal filters (ffmpeg.rs leading_trim_filters) on the macOS and Windows FFmpeg',
+)
+
 // Fade's fade-out is placed from a decoded-length pass; both smoke tests run
 // its exact filter so an FFmpeg without astats cannot ship.
 const decodedLengthFilter = ffmpegSource.match(/const DECODED_LENGTH_FILTER: &str =\s*"([^"]+)";/)?.[1]

@@ -1,4 +1,4 @@
-import { sortRecordingChunks } from '../utils'
+import { ftrRecordingDate, ftrSessionKey, sortRecordingChunks } from '../utils'
 
 export function partitionQueuePaths(inputs = []) {
   const uniquePaths = [
@@ -105,6 +105,166 @@ export function audioTrackNotice(info) {
   return `This file has ${streams.length} audio tracks; converting track ${index + 1}${
     tags.length ? ` (${tags.join(', ')})` : ''
   }. The other ${others === 1 ? 'track is' : `${others} tracks are`} not converted.`
+}
+
+// FTR recordings (.trm/.ftr/.tll). `info.trm` is what reading the file found
+// (probe_audio_streams_cmd): whether the recorder closed it, its boundary
+// flags, whether it carries a signature, and its codec; `info.trmRefusal` is
+// why DepoAudio will not convert it. No answer means no notice.
+// The layout comes from the owner's interoperability notes, checked against a
+// sample made by the owner's rebuild tool, not against a recording made by FTR,
+// so the notices say what was (not) found, never that a file is missing.
+export const TRM_OPEN_ENDED_NOTICE =
+  "This recording's header says it was never closed (or is still recording); DepoAudio read the audio written so far."
+export const TRM_SIGNED_NOTICE =
+  'This recording carries a signature: signed (not verified). DepoAudio does not check signatures.'
+const boundaryMissing = (file, mark, files, side) =>
+  `The ${file} queued file of this recording has no ${mark}-boundary mark, so FTR would accept ${files} files ${side} it; if there are any, add them too.`
+export const TRM_START_BOUNDARY_MISSING = boundaryMissing('earliest', 'start', 'earlier', 'before')
+export const TRM_END_BOUNDARY_MISSING = boundaryMissing('latest', 'end', 'later', 'after')
+
+const TRM_PLAIN_CODECS = { mp2: 'MPEG audio layer 2', mp3: 'MP3', wma: 'Windows Media Audio' }
+
+// Places where DepoAudio's split put AAC frames that add no new sound in
+// every channel for rounds of frames missing mid-recording
+// (`silenceFilledGaps`), so later audio keeps its time; the export record
+// lists where (`source.trm.silenceFilled`). The filled stretch is not digital
+// silence: the decoder fades the sound before it out across it.
+export function trmSilenceFilledNotice(gaps) {
+  const count = Number(gaps)
+  if (!Number.isInteger(count) || count < 1) return ''
+  return `${count} damaged ${count === 1 ? 'section was' : 'sections were'} filled to keep the timing, adding no new sound (the sound just before each fades out across it); see the export record.`
+}
+
+// A file whose frames mark only the first stream (`streamMarking`
+// stream-0-only) is split by giving frames to the streams in turn, so a lost
+// or repeated frame cannot be seen there. Said only when DepoAudio's own
+// split is the route.
+export const TRM_UNMARKED_SPLIT_NOTICE =
+  "Only this recording's first stream marks its frames, so a missing or repeated frame would put every later frame in the wrong channel, unseen. See the export record."
+
+export function trmRecordingNotice(info) {
+  if (info?.trmRefusal) return String(info.trmRefusal)
+  const trm = info?.trm
+  if (!trm) return ''
+  const parts = []
+  if (trm.openEnded) parts.push(TRM_OPEN_ENDED_NOTICE)
+  const plain = TRM_PLAIN_CODECS[trm.audioCodec]
+  if (plain) parts.push(`This FTR recording holds ${plain} audio, which FFmpeg reads as ordinary audio.`)
+  if (trm.signature) parts.push(TRM_SIGNED_NOTICE)
+  const filled = trmSilenceFilledNotice(trm.silenceFilledGaps)
+  if (filled) parts.push(filled)
+  if (trm.streamMarking === 'stream-0-only' && trm.decodePath === 'deinterleaved') parts.push(TRM_UNMARKED_SPLIT_NOTICE)
+  return parts.join(' ')
+}
+
+const DAY_MS = 24 * 60 * 60 * 1000
+const dateMs = date => Date.UTC(Number(date.slice(0, 4)), Number(date.slice(4, 6)) - 1, Number(date.slice(6, 8)))
+
+// Queued chunks of one place (folder and location in the canonical FTR name),
+// split into runs of consecutive recording dates, so a session that runs past
+// midnight stays one group. Two sessions recorded at one place on the same
+// day (or on consecutive days) share a group, so one session's marks can hide
+// the other's missing end: this can under-report, never over-report.
+function trmSessionGroups(files) {
+  const places = new Map()
+  for (const file of files || []) {
+    const key = ftrSessionKey(file?.path)
+    if (key) places.set(key, [...(places.get(key) || []), file.path])
+  }
+  const groups = []
+  for (const paths of places.values()) {
+    let last
+    for (const path of paths.sort((x, y) => ftrRecordingDate(x).localeCompare(ftrRecordingDate(y)))) {
+      const day = dateMs(ftrRecordingDate(path))
+      // A new run when the date is more than a day after the last one.
+      if (!(day - last <= DAY_MS)) groups.push([])
+      groups[groups.length - 1].push(path)
+      last = day
+    }
+  }
+  return groups
+}
+
+// FTR's boundary flags: a start boundary means FTR joins no earlier file to
+// this one, an end boundary that it joins no later file. Within one place and
+// run of dates (see trmSessionGroups), queued files in recording order
+// (canonical names: by the FILETIME in the name) are cut into recordings at
+// those marks. A recording whose earliest queued file has no start boundary
+// could have earlier files, and one whose latest has no end boundary later
+// ones. Only once every file of the group has been read, so nothing is claimed
+// about a file that was not. The notice goes on the recording's earliest
+// queued file. Returns { [path]: notice }.
+export function trmSessionNotices(files, audioStreams) {
+  const notices = {}
+  for (const group of trmSessionGroups(files)) {
+    const paths = sortRecordingChunks(group)
+    const routes = paths.map(path => audioStreams?.[path]?.trm)
+    if (!routes.every(Boolean)) continue
+    let first = 0
+    routes.forEach((route, index) => {
+      // A recording ends at an end boundary, or where the next file starts one.
+      const next = routes[index + 1]
+      if (next && !next.startBoundary && !route.endBoundary) return
+      const parts = []
+      if (!routes[first].startBoundary) parts.push(TRM_START_BOUNDARY_MISSING)
+      if (!route.endBoundary) parts.push(TRM_END_BOUNDARY_MISSING)
+      if (parts.length > 0) notices[paths[first]] = parts.join(' ')
+      first = index + 1
+    })
+  }
+  return notices
+}
+
+// Byte counts in the queue's notices: exact below 1 KB, else one decimal.
+function formatUnreadBytes(bytes) {
+  if (bytes < 1024) return `${bytes} ${bytes === 1 ? 'byte' : 'bytes'}`
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
+  if (bytes < 1024 ** 3) return `${(bytes / 1024 ** 2).toFixed(1)} MB`
+  return `${(bytes / 1024 ** 3).toFixed(1)} GB`
+}
+
+// Why a recording session is not read, as the queue says it.
+function omittedSessionSentence({ number, reason, last }) {
+  const which = last ? `The last session (${number})` : `Session ${number}`
+  if (reason === 'zero-length-header') return `${which} could not be read: its header says 0 bytes.`
+  if (reason === 'no-complete-audio') return `${which} could not be read: it holds no complete audio yet.`
+  if (reason === 'empty') return `${which} holds no audio: its header says 0 bytes.`
+  return `${which} could not be read.`
+}
+
+// Plain notices for an SGMCA (Direct Audio) file, from probe_audio_streams_cmd:
+// how many recording sessions it holds (they are joined in file order), which
+// sessions and how many bytes are not read (a recording still growing, or one
+// that stopped mid-session), and whether it looked still recording or cut
+// short. The same facts go into the export record (source.sgmca.unreadBytes
+// and omittedSegments). No answer means no notice.
+export function recordingSessionNotice(info) {
+  const notices = []
+  const sessions = info?.recordingSessions
+  if (Number.isInteger(sessions) && sessions > 1) {
+    notices.push(
+      `This file holds ${sessions} recording sessions; they are joined in order (gaps between them are not kept).`,
+    )
+  }
+  const omitted = Array.isArray(info?.omittedSessions) ? info.omittedSessions : []
+  for (const session of omitted) notices.push(omittedSessionSentence(session))
+  const cutShort = info?.cutShortSession
+  if (Number.isInteger(cutShort)) {
+    notices.push(`The last session (${cutShort}) is shorter than its header says; only its complete pages are read.`)
+  }
+  const unread = info?.unreadBytes
+  if (Number.isInteger(unread) && unread > 0) {
+    const after =
+      omitted.some(session => session.last) || Number.isInteger(cutShort) ? 'after it' : 'at the end of the file'
+    notices.push(`${formatUnreadBytes(unread)} ${after} ${unread === 1 ? 'was' : 'were'} not read.`)
+  }
+  if (info?.stillRecording === true) {
+    notices.push(
+      'This file looks like it is still being recorded, or it was cut short; only its complete audio is converted.',
+    )
+  }
+  return notices.join(' ')
 }
 
 // HH:MM:SS for a queue notice.

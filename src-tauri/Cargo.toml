@@ -1,6 +1,6 @@
 [package]
 name = "depo-audio"
-version = "1.1.0"
+version = "1.2.0"
 edition = "2021"
 rust-version = "1.90"
 license = "MIT"
@@ -36,13 +36,20 @@ dirs-next = "2.0"
 # Audio containers and non-learned signal processing
 hound = "3.5"
 
-# Auto-update via GitHub Releases — desktop only (these plugins don't build for mobile)
+# Desktop only (these plugins don't build for mobile): auto-update via GitHub
+# Releases, and system-wide Player keys (off until the person turns them on)
 [target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
 tauri-plugin-updater = "2"
 tauri-plugin-process = "2"
+tauri-plugin-global-shortcut = "2"
 
 [target.'cfg(target_os = "windows")'.dependencies]
-windows-sys = { version = "0.61", features = ["Win32_System_SystemInformation"] }
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Time"] }
+
+# The local UTC offset for SGMCA segment start times (src/clock.rs);
+# already in the Tauri build graph.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
 
 [dev-dependencies]
 # Tests parse RFC 3339 strings and build fixed instants; the app itself only

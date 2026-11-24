@@ -44,6 +44,9 @@
   --color-gold-hi: hsl(var(--gold-hi));
   --color-success: hsl(var(--success));
   --color-warning: hsl(var(--warning));
+  /* Ink 2 (sys.text.secondary). --sub, --text2 and --muted-foreground all
+     resolve to it in both themes; this is the short name for utilities. */
+  --color-ink-2: hsl(var(--text2));
 
   /* The world is square (depo-stack/DESIGN.md Shapes): every radius follows
      the token, which is the canonical radius.none. rounded-full stays only for
@@ -131,6 +134,13 @@
   font-stretch: var(--ds-type-label-width);
   line-height: var(--ds-type-label-leading);
 }
+/* Tabular record numbers only (line numbers, times, track index, CH n,
+   sizes): the label size (the 12px floor) at regular weight. Not a new step
+   in the scale, and prose is never set in it. */
+@utility type-min {
+  font-size: var(--ds-type-label-size);
+  line-height: var(--ds-type-small-leading);
+}
 @utility type-wordmark {
   font-size: var(--ds-type-wordmark-size);
   font-weight: var(--ds-type-wordmark-weight);
@@ -180,6 +190,75 @@
   #root {
     height: 100%;
     overflow: hidden;
+  }
+}
+
+/* ── Player and Convert (v1.2 restyle) ─────────────────────────────────────
+   Astryx's layout language on DepoStack tokens: square, flat, ruled. Space
+   groups before boxes do; one 1px hairline separates regions; controls are
+   bounded in ink 2 (--input); status is a 3px rule plus a glyph plus words. */
+@layer components {
+  /* A pane or section head: title in the start lane, actions in the end lane,
+     on one 40px line. */
+  .pane-head {
+    display: flex;
+    min-height: 2.5rem;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.5rem;
+    padding-inline: 1rem;
+  }
+  /* A muted status message: a 3px rule in the status color, never a tint.
+     With a glyph it is also `flex items-start gap-2`. */
+  .notice {
+    border-left: 3px solid hsl(var(--warning));
+    padding: 0.5rem 0.75rem;
+    font-size: var(--ds-type-small-size);
+    line-height: var(--ds-type-small-leading);
+    color: hsl(var(--foreground));
+  }
+  .notice-error {
+    border-left-color: hsl(var(--destructive));
+    color: hsl(var(--destructive));
+  }
+  /* A selectable tile (presets, output mode, format). Pressed: an ink frame
+     two lines thick on the quiet fill, with the check glyph. */
+  .choice {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 0.25rem;
+    border: 1px solid hsl(var(--input));
+    background: hsl(var(--card));
+    padding: 0.5rem 0.75rem;
+    text-align: left;
+    cursor: pointer;
+    transition: background-color 150ms;
+  }
+  .choice:hover {
+    background: hsl(var(--secondary) / 0.5);
+  }
+  .choice[aria-pressed='true'] {
+    border-color: hsl(var(--foreground));
+    box-shadow: inset 0 0 0 1px hsl(var(--foreground));
+    background: hsl(var(--secondary));
+  }
+  /* A Convert section: a ruled zone in the column, never a box. */
+  .zone {
+    display: flex;
+    flex-direction: column;
+    gap: 0.75rem;
+    border-top: 1px solid hsl(var(--border));
+    padding-top: 1rem;
+  }
+  .zone-head {
+    display: flex;
+    min-height: 2rem;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.5rem 0.75rem;
   }
 }
 
@@ -456,6 +535,11 @@
   outline: none;
 }
 
+/* Rows inside scrolling lists take the ring inset as well. */
+.inset-focus:focus-visible {
+  outline-offset: calc(-1 * var(--ds-focus-width));
+}
+
 /* A single app-wide fallback covers Tailwind utilities, Radix transitions,
    progress loops, and native smooth scrolling without component opt-ins. */
 @media (prefers-reduced-motion: reduce) {
@@ -669,4 +753,57 @@
   .library-file-time {
     order: 11;
   }
+}
+
+/* Player listening-mix sliders (ListeningMix.jsx) and the Convert channel mix.
+   The native unfilled track is about 2:1 against the light card, under WCAG
+   1.4.11's 3:1, so the track is drawn here: a 1px ink-2 border (well over 3:1
+   on the card in both themes), filled in ink 2 up to the value (--mix-fill,
+   set by the component), so it never outweighs the gold action in dark. The
+   thumb is a hollow square, card filled with a 2px ink frame, so it stands
+   apart from the fill at any value. Disabled: dashed track, no fill, ink-2
+   thumb frame, matching the other unavailable controls. */
+.mix-range {
+  appearance: none;
+  -webkit-appearance: none;
+  background: transparent;
+}
+.mix-range::-webkit-slider-runnable-track {
+  height: 8px;
+  border: 1px solid hsl(var(--sub));
+  background: linear-gradient(to right, hsl(var(--sub)) var(--mix-fill, 0%), hsl(var(--card)) 0);
+}
+.mix-range::-moz-range-track {
+  height: 6px;
+  border: 1px solid hsl(var(--sub));
+  background: linear-gradient(to right, hsl(var(--sub)) var(--mix-fill, 0%), hsl(var(--card)) 0);
+}
+.mix-range::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 18px;
+  height: 18px;
+  margin-top: -6px;
+  border: 2px solid hsl(var(--foreground));
+  background: hsl(var(--card));
+}
+.mix-range::-moz-range-thumb {
+  width: 14px;
+  height: 14px;
+  border: 2px solid hsl(var(--foreground));
+  background: hsl(var(--card));
+}
+.mix-range:disabled::-webkit-slider-runnable-track {
+  border-style: dashed;
+  background: hsl(var(--card));
+}
+.mix-range:disabled::-moz-range-track {
+  border-style: dashed;
+  background: hsl(var(--card));
+}
+.mix-range:disabled::-webkit-slider-thumb {
+  border-color: hsl(var(--sub));
+}
+.mix-range:disabled::-moz-range-thumb {
+  border-color: hsl(var(--sub));
 }

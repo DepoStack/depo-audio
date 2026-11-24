@@ -218,14 +218,10 @@ export default function useConversion() {
                   fade,
                   fadeDur,
                   hpf,
-                  // The release boundary is enforced at the final IPC payload
-                  // as well as in preferences and controls.
-                  denoise: false,
-                  denoiseQuality: 'fast',
+                  // No learned-model field is sent: the backend defaults them
+                  // to off and refuses any job that turns one on.
                   autoLevel,
                   declip,
-                  enhance: false,
-                  dereverb: false,
                   hpfCutoff: hpfCutoff ?? 80,
                   normalizeLufs: normalizeLufs ?? -16,
                   normalizeTp: normalizeTp ?? -1.5,

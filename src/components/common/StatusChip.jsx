@@ -9,6 +9,7 @@ export default function StatusChip({ status }) {
     done: ['done', 'Done', CircleCheck],
     error: ['error', 'Failed', CircleX],
     cancelled: ['warning', 'Cancelled', Ban],
+    rejected: ['error', 'Remove first', CircleX],
   }
   const [variant, label, Icon] = map[status] || map.waiting
 

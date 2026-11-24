@@ -1,21 +1,41 @@
 import { describe, expect, it } from 'vitest'
 import {
+  KEEPS_RATE_NOTE,
   LEGACY_PRESETS,
   NOT_TESTED_NOTE,
   OPUS_CATALYST_NOTE,
+  OPUS_RATE_NOTE,
   PRESETS,
+  PRESET_FIELDS,
+  PROCESSING_OPTIONS,
   STENOGRAPH_ASSOCIATE_AUDIO,
   STENOGRAPH_SINGLE_CHANNEL,
   STENOGRAPH_SOURCES,
   describeSettings,
+  processingInUse,
+  processingSummary,
   settingsMatchPreset,
 } from '../presets'
 
 const byId = id => PRESETS.find(p => p.id === id)
 const BANNED = /certified|court-ready|admissible|accurate|\bfinal\b|seamless|AI-powered|guaranteed/i
 
-// Build the settings object the Convert tab passes to describeSettings.
-const current = (settings, extra = {}) => ({ mp3Bitrate: 192, ...settings, ...extra })
+// The out-of-box settings (usePreferences): everything off.
+const DEFAULTS = {
+  mode: 'stereo',
+  format: 'wav',
+  rate: '48000',
+  mp3Bitrate: 192,
+  normalize: false,
+  trim: false,
+  fade: false,
+  fadeDur: 0.5,
+  hpf: false,
+  autoLevel: false,
+  declip: false,
+}
+const current = (extra = {}) => ({ ...DEFAULTS, ...extra })
+const PROCESSING_KEYS = ['normalize', 'trim', 'fade', 'fadeDur', 'hpf', 'autoLevel', 'declip', 'rate']
 
 describe('destination-named presets', () => {
   it('names each preset for where the file is going and states its basis', () => {
@@ -23,7 +43,6 @@ describe('destination-named presets', () => {
       'For CATalyst audio sync (WAV)',
       'For other or older CAT software (WAV)',
       'Send to scopist — small (MP3 192k)',
-      'Phone recording cleanup (WAV + high-pass)',
       'One file per microphone (WAV)',
       'Archive — lossless (FLAC)',
       'Smallest file (Opus)',
@@ -35,7 +54,6 @@ describe('destination-named presets', () => {
       // No version or destination claim in a name: those live in the basis.
       expect(p.name, p.id).not.toMatch(/\d{2} or (?:newer|older)/)
     }
-    // Every source the presets cite is linked under the picker by its title.
     const cited = new Set(PRESETS.map(p => p.source).filter(Boolean))
     expect(STENOGRAPH_SOURCES.map(source => source.url).sort()).toEqual([...cited].sort())
     expect(STENOGRAPH_SOURCES.map(source => source.title)).toEqual(['Associate Audio File', 'Single Channel Audio'])
@@ -58,88 +76,155 @@ describe('destination-named presets', () => {
     const opus = PRESETS.filter(p => p.settings.format === 'opus')
     expect(opus.map(p => p.id)).toEqual(['small-opus'])
     expect(opus[0].name).toBe('Smallest file (Opus)')
-    expect(opus[0].basis).toBe(OPUS_CATALYST_NOTE)
+    expect(opus[0].basis).toBe(`${OPUS_CATALYST_NOTE} ${OPUS_RATE_NOTE}`)
     expect(opus[0].source).toBe(STENOGRAPH_SINGLE_CHANNEL)
     expect(OPUS_CATALYST_NOTE).toMatch(/Opus plays only in CATalyst 20 or newer.*Older versions cannot play it/)
-    // The playback version is not stretched to cover audio association.
     expect(OPUS_CATALYST_NOTE).not.toMatch(/associat\w* (?:needs|requires) CATalyst 20/)
   })
 
-  it('describes the phone preset as the high-pass and normalization it really turns on', () => {
-    const phone = byId('phone-wav')
-    expect(phone.settings).toMatchObject({ format: 'wav', hpf: true, normalize: true, declip: false })
-    expect(`${phone.name} ${phone.desc} ${phone.basis}`).not.toMatch(/speech-band|band-pass|lowpass|low-pass/i)
-    expect(phone.desc).toMatch(/high-pass filter/)
-    expect(phone.desc).toMatch(/No other filtering/)
+  it('sets only the format, channel mode and MP3 bitrate the destination needs', () => {
+    for (const p of PRESETS) {
+      expect(
+        Object.keys(p.settings).every(key => PRESET_FIELDS.includes(key)),
+        p.id,
+      ).toBe(true)
+      for (const key of PROCESSING_KEYS) expect(p.settings, p.id).not.toHaveProperty(key)
+    }
+    expect(byId('catalyst-wav').settings).toEqual({ mode: 'stereo', format: 'wav' })
+    expect(byId('other-cat-wav').settings).toEqual({ mode: 'stereo', format: 'wav' })
+    expect(byId('scopist-mp3').settings).toEqual({ mode: 'stereo', format: 'mp3', mp3Bitrate: 192 })
+    expect(byId('split-wav').settings).toEqual({ mode: 'split', format: 'wav' })
+    expect(byId('archive-flac').settings).toEqual({ mode: 'keep', format: 'flac' })
+    expect(byId('small-opus').settings).toEqual({ mode: 'stereo', format: 'opus' })
   })
 
-  it('keeps the start of the audio in place for every preset', () => {
-    for (const p of PRESETS) expect(p.settings, p.id).toMatchObject({ trim: false, fade: false })
+  it('says in each basis line what it does with the sample rate', () => {
+    for (const p of PRESETS) {
+      const rateNote = p.settings.format === 'opus' ? OPUS_RATE_NOTE : KEEPS_RATE_NOTE
+      expect(p.basis.endsWith(rateNote), p.id).toBe(true)
+    }
   })
 
-  it('sets the formats the names promise', () => {
-    expect(byId('catalyst-wav').settings).toMatchObject({ format: 'wav', mode: 'stereo' })
-    expect(byId('other-cat-wav').settings).toMatchObject({
-      format: 'wav',
-      normalize: false,
-      hpf: false,
-      autoLevel: false,
-    })
-    expect(byId('scopist-mp3').settings).toMatchObject({ format: 'mp3', mp3Bitrate: 192 })
-    expect(byId('archive-flac').settings).toMatchObject({ format: 'flac', mode: 'keep', normalize: false, hpf: false })
-    expect(byId('split-wav').settings).toMatchObject({ format: 'wav', mode: 'split' })
+  it('claims no processing in any preset copy', () => {
+    const copy = PRESETS.map(p => `${p.name} ${p.desc} ${p.basis}`).join(' ')
+    expect(copy).not.toMatch(/normaliz|high-pass|balanced|loudness|cleanup|filter/i)
+  })
+})
+
+describe('processing options', () => {
+  it('lists each option once with a one-line reason that says what it changes', () => {
+    expect(PROCESSING_OPTIONS.map(option => option.id)).toEqual([
+      'autoLevel',
+      'declip',
+      'hpf',
+      'normalize',
+      'trim',
+      'fade',
+    ])
+    for (const option of PROCESSING_OPTIONS) {
+      expect(option.reason, option.id).toMatch(/^[^\n]+;[^\n]+\.$/)
+      expect(option.reason, option.id).not.toMatch(BANNED)
+    }
+    expect(PROCESSING_OPTIONS.find(option => option.id === 'normalize').reason).toBe(
+      'Makes quiet recordings louder; changes levels.',
+    )
+    expect(PROCESSING_OPTIONS.find(option => option.id === 'trim').reason).toMatch(/export record says/)
+  })
+
+  it('says "No processing" for the out-of-box settings and lists what the person turned on', () => {
+    expect(processingInUse(DEFAULTS)).toEqual([])
+    expect(processingSummary(DEFAULTS)).toBe('No processing')
+    expect(processingSummary(current({ normalize: true, hpf: true }))).toBe(
+      'Processing on: High-Pass Filter, Normalize Volume',
+    )
+    // Options that do nothing in this mode are not listed.
+    expect(processingInUse(current({ mode: 'keep', autoLevel: true }))).toEqual([])
+    expect(processingInUse(current({ mode: 'split', trim: true }))).toEqual([])
+    expect(processingInUse(current({ mode: 'stereo', trim: true }))).toEqual(['Trim Leading Silence'])
   })
 })
 
 describe('matching the current settings', () => {
-  it('matches each preset to its own settings and to no other', () => {
+  it('matches each preset to its own settings', () => {
     for (const p of PRESETS) {
       const state = describeSettings(current(p.settings))
       expect(state.kind, p.id).toBe('preset')
-      expect(state.preset.id).toBe(p.id)
+      expect(
+        state.matches.map(match => match.id),
+        p.id,
+      ).toContain(p.id)
     }
+    // The two WAV destinations share a format, and both are named.
+    expect(describeSettings(DEFAULTS).matches.map(p => p.id)).toEqual(['catalyst-wav', 'other-cat-wav'])
   })
 
-  it('ignores settings that have no effect on the output', () => {
+  it('ignores the sample rate and processing, which no preset sets', () => {
     const wav = byId('catalyst-wav').settings
-    expect(settingsMatchPreset(current(wav, { fadeDur: 2 }), wav)).toBe(true)
-    expect(settingsMatchPreset(current(wav, { mp3Bitrate: 320 }), wav)).toBe(true)
-    const opus = byId('small-opus').settings
-    expect(settingsMatchPreset(current(opus, { rate: '22050' }), opus)).toBe(true)
+    expect(settingsMatchPreset(current({ ...wav, rate: '22050' }), wav)).toBe(true)
+    expect(settingsMatchPreset(current({ ...wav, normalize: true }), wav)).toBe(true)
+    expect(settingsMatchPreset(current({ ...wav, mp3Bitrate: 320 }), wav)).toBe(true)
     const mp3 = byId('scopist-mp3').settings
-    expect(settingsMatchPreset(current(mp3, { mp3Bitrate: 320 }), mp3)).toBe(false)
+    expect(settingsMatchPreset(current({ ...mp3, mp3Bitrate: 320 }), mp3)).toBe(false)
   })
 
-  it('shows Custom when one setting differs', () => {
-    const state = describeSettings(current(byId('catalyst-wav').settings, { declip: true }))
-    expect(state).toEqual({ kind: 'custom', legacy: null, closest: null })
+  it('shows Custom when processing is on, naming the preset whose format it has', () => {
+    const state = describeSettings(current({ declip: true }))
+    expect(state.kind).toBe('custom')
+    expect(state.matches.map(p => p.id)).toEqual(['catalyst-wav', 'other-cat-wav'])
+    expect(state.processing).toEqual(['Fix Clipped Audio'])
+    expect(state.legacy).toBeNull()
+  })
+
+  it('shows Custom when no preset has the format', () => {
+    for (const extra of [{ format: 'm4a' }, { mode: 'keep', format: 'wav' }, { format: 'mp3', mp3Bitrate: 128 }]) {
+      const state = describeSettings(current(extra))
+      expect(state.kind).toBe('custom')
+      expect(state.matches).toEqual([])
+    }
   })
 })
 
-describe('settings saved under the earlier presets', () => {
-  it('lands Courtroom and Archive users on the matching new preset unchanged', () => {
-    const courtroom = LEGACY_PRESETS.find(p => p.id === 'courtroom')
-    const archive = LEGACY_PRESETS.find(p => p.id === 'archive')
-    expect(describeSettings(current(courtroom.settings)).preset.id).toBe('split-wav')
-    expect(describeSettings(current(archive.settings)).preset.id).toBe('archive-flac')
-  })
-
-  it('keeps Deposition, Phone Recording and Quick Share settings as Custom and names the closest new preset', () => {
-    const expected = { deposition: 'scopist-mp3', phone: 'phone-wav', quick: 'small-opus' }
-    for (const [legacyId, closestId] of Object.entries(expected)) {
-      const legacy = LEGACY_PRESETS.find(p => p.id === legacyId)
+describe('settings saved by earlier versions', () => {
+  // Saved settings are what a person had when they last used the app. The
+  // picker describes them; nothing here or in the Convert tab rewrites them.
+  it('keeps processing that earlier presets turned on, and says so', () => {
+    for (const legacy of LEGACY_PRESETS) {
       const saved = current(legacy.settings)
       const before = structuredClone(saved)
       const state = describeSettings(saved)
-      expect(state.kind, legacyId).toBe('custom')
-      expect(state.legacy.id).toBe(legacyId)
-      expect(state.closest.id).toBe(closestId)
-      // Describing never changes the saved settings.
-      expect(saved).toEqual(before)
+      expect(saved, legacy.id).toEqual(before)
+      expect(state.legacy?.id, legacy.id).toBe(legacy.id)
+      expect(state.processing, legacy.id).toEqual(processingInUse(saved))
+      if (state.processing.length > 0) {
+        expect(state.kind, legacy.id).toBe('custom')
+      }
     }
   })
 
-  it('points every earlier preset at a preset that exists', () => {
-    for (const legacy of LEGACY_PRESETS) expect(byId(legacy.closest), legacy.id).toBeDefined()
+  it('describes the 1.0.x Deposition settings as custom, with every option still on', () => {
+    const deposition = LEGACY_PRESETS.find(p => p.id === 'deposition')
+    const state = describeSettings(current(deposition.settings))
+    expect(state.kind).toBe('custom')
+    expect(state.matches.map(p => p.id)).toEqual(['scopist-mp3'])
+    expect(state.processing).toEqual([
+      'Balance Microphone Levels',
+      'High-Pass Filter',
+      'Normalize Volume',
+      'Trim Leading Silence',
+      'Fade In / Out',
+    ])
+  })
+
+  it('describes saved settings that match no preset or earlier preset as plain custom', () => {
+    const state = describeSettings(current({ format: 'm4a', normalize: true, autoLevel: true }))
+    expect(state).toMatchObject({ kind: 'custom', matches: [], legacy: null })
+    expect(state.processing).toEqual(['Balance Microphone Levels', 'Normalize Volume'])
+  })
+
+  it('keeps the 1.0.x Archive settings, which had no processing, as that format', () => {
+    const archive = LEGACY_PRESETS.find(p => p.id === 'archive')
+    const state = describeSettings(current(archive.settings))
+    expect(state.kind).toBe('preset')
+    expect(state.preset.id).toBe('archive-flac')
   })
 })
