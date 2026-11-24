@@ -505,6 +505,8 @@ pub struct AppState {
     pub active_conversions: std::sync::atomic::AtomicUsize,
     /// Deduplicated, cancellable waveform requests and their bounded LRU.
     pub waveform: crate::waveform::WaveformState,
+    /// The one merge or sync detection that may run, and its cancel flag.
+    pub(crate) merge: crate::merge::MergeSlot,
 }
 
 impl Default for AppState {
@@ -520,6 +522,7 @@ impl Default for AppState {
             library_asset_commit: Mutex::new(()),
             active_conversions: std::sync::atomic::AtomicUsize::new(0),
             waveform: crate::waveform::WaveformState::default(),
+            merge: crate::merge::MergeSlot::default(),
         }
     }
 }

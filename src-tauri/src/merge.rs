@@ -7,20 +7,19 @@ use tauri::AppHandle;
 
 use crate::ffmpeg::{probe_duration_cancellable, sidecar_output_cancellable};
 use crate::helpers::{ffmpeg_bin_name, AudioFeed};
+use crate::merge_engine::{self, AlignedSource, MergeStrategy, SampleReader, MAX_MERGE_DURATION_SECS};
 use crate::safety::TempFile;
 
 const MAX_MERGE_SOURCES: usize = 4;
+/// The output formats a merge writes. The Merge screen offers exactly the
+/// formats in `src/mergeFormats.json`; a test keeps the two lists equal.
+const MERGE_FORMATS: &[&str] = &["wav", "mp3", "flac", "opus", "m4a"];
 const MAX_MERGE_SOURCE_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 const MAX_MERGE_TOTAL_SOURCE_BYTES: u64 = 4 * 1024 * 1024 * 1024;
-/// The current merge strategies hold all decoded sources plus an output
-/// timeline (and, for mix-all, a one-byte-per-sample overlap counter). At nine
-/// bytes per bounded sample in the worst case, 56 million keeps peak working
-/// memory below roughly 512 MiB.
-const MAX_TOTAL_DECODED_SAMPLES: u64 = 56_000_000;
-const MAX_MERGE_DURATION_SECS: u32 = 30 * 60;
+/// The merge itself decodes and mixes at this rate; the output rate is the
+/// encoder's job.
+const MERGE_SAMPLE_RATE: u32 = 48_000;
 const SYNC_SAMPLE_RATE: u32 = 8_000;
-const SYNC_WINDOW_SECS: usize = 10;
-const SYNC_SEARCH_SECS: usize = 60;
 const SYNC_DECODE_SECS: u32 = 75;
 const MERGE_DECODE_TIMEOUT_SECS: u64 = 20 * 60;
 const MERGE_ENCODE_TIMEOUT_SECS: u64 = 20 * 60;
@@ -59,18 +58,93 @@ impl MergeCancel {
     }
 }
 
+/// Returned when a second merge or sync detection starts while one runs.
+pub(crate) const MERGE_BUSY_MESSAGE: &str = "A merge is already running. Wait for it to finish or cancel it.";
+
+/// The one merge or sync detection that may run at a time, holding its
+/// cancel flag so `merge_cancel_cmd` can reach it.
+#[derive(Debug, Default)]
+pub(crate) struct MergeSlot(std::sync::Mutex<Option<MergeCancel>>);
+
+/// A running merge's claim on the slot; dropping it frees the slot.
+pub(crate) struct MergeRun<'a> {
+    slot: &'a MergeSlot,
+    pub(crate) cancel: MergeCancel,
+}
+
+impl MergeSlot {
+    pub(crate) fn start(&self) -> Result<MergeRun<'_>, String> {
+        let mut current = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        if current.is_some() {
+            return Err(MERGE_BUSY_MESSAGE.into());
+        }
+        let cancel = MergeCancel::default();
+        *current = Some(cancel.clone());
+        Ok(MergeRun { slot: self, cancel })
+    }
+
+    /// Cancel the running merge or sync detection. False when none runs.
+    pub(crate) fn cancel(&self) -> bool {
+        let current = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        match current.as_ref() {
+            Some(cancel) => {
+                cancel.cancel();
+                true
+            }
+            None => false,
+        }
+    }
+}
+
+impl Drop for MergeRun<'_> {
+    fn drop(&mut self) {
+        *self.slot.0.lock().unwrap_or_else(|e| e.into_inner()) = None;
+    }
+}
+
+/// Where a merge has got to, for the `merge:progress` event: the stage and
+/// the whole job's percentage.
+#[derive(Debug, serde::Serialize, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct MergeProgress {
+    pub(crate) stage: &'static str,
+    pub(crate) percent: u8,
+}
+
+/// Receives progress; called from the async task and the blocking worker.
+pub(crate) type ProgressFn = Arc<dyn Fn(MergeProgress) + Send + Sync>;
+
+/// Each stage's share of the bar: it starts at the first percentage and
+/// ends where the next begins. Merging is most of the work.
+const STAGE_PREPARING: (&str, u8) = ("preparing", 0);
+const STAGE_MATCHING: (&str, u8) = ("matching", 5);
+const STAGE_DECODING: (&str, u8) = ("decoding", 15);
+const STAGE_MERGING: (&str, u8) = ("merging", 35);
+const STAGE_ENCODING: (&str, u8) = ("encoding", 90);
+
+fn report(progress: &ProgressFn, (stage, percent): (&'static str, u8)) {
+    progress(MergeProgress { stage, percent });
+}
+
+/// Merging progress as a share of its band, 35 to 90.
+fn merging_percent(done: u64, total: u64) -> u8 {
+    let span = (STAGE_ENCODING.1 - STAGE_MERGING.1) as u64;
+    let within = (done.min(total) * span).checked_div(total).unwrap_or(span);
+    STAGE_MERGING.1 + within as u8
+}
+
 // ── Multi-source audio merge ────────────────────────────────────────────────
 //
 // Combines multiple recordings of the same event into one clean output.
 // Typical use: court reporter mic + backup recorder + phone-in participant.
 //
 // Pipeline:
-//   1. Decode all inputs to same sample rate (48kHz mono WAV)
-//   2. Auto-detect timing offset via cross-correlation
-//   3. Align tracks to a common timeline
-//   4. Score quality per segment using RMS energy (speech clarity proxy)
-//   5. Build output by selecting the cleanest source per segment
-//   6. Crossfade at transition points for smooth blending
+//   1. Probe every source and refuse one over 30 minutes, by name
+//   2. Find each source's offset from the first by cross-correlation
+//   3. Decode every source to a temporary 48 kHz mono WAV
+//   4. Stream the aligned sources through merge_engine block by block,
+//      averaging them (Mix all) or taking the loudest per 500 ms segment
+//      with a 50 ms crossfade (Loudest source), into one temporary WAV
+//   5. Encode that WAV to the chosen format and rate
 
 /// Configuration for a merge job.
 #[derive(Debug, serde::Serialize, serde::Deserialize, Clone)]
@@ -82,21 +156,23 @@ pub struct MergeJob {
     pub out_dir: String,
     /// Output filename (without extension).
     pub out_name: String,
-    /// Output format: wav, mp3, flac, opus.
+    /// Output format: one of `MERGE_FORMATS`.
     pub format: String,
     /// Sample rate for output.
     pub rate: String,
-    /// Merge strategy: "best_quality" or "mix_all".
+    /// Merge strategy: "mix_all" or "loudest" ("best_quality", the earlier
+    /// name for loudest, is still accepted).
     pub strategy: String,
 }
 
+#[derive(Debug)]
 struct ValidatedMergeJob {
     sources: Vec<PathBuf>,
     out_dir: PathBuf,
     out_name: String,
     format: String,
     rate: String,
-    strategy: String,
+    strategy: MergeStrategy,
 }
 
 fn validate_source(path: &str) -> Result<(PathBuf, u64), String> {
@@ -123,19 +199,26 @@ fn validate_output_name(name: &str) -> Result<String, String> {
     }
 }
 
+fn parse_strategy(key: &str) -> Result<MergeStrategy, String> {
+    match key {
+        "mix_all" => Ok(MergeStrategy::MixAll),
+        // `best_quality` is the name 1.1 and earlier builds sent.
+        "loudest" | "best_quality" => Ok(MergeStrategy::Loudest),
+        _ => Err("Unsupported merge strategy".into()),
+    }
+}
+
 fn validate_merge_job(job: &MergeJob) -> Result<ValidatedMergeJob, String> {
     if !(2..=MAX_MERGE_SOURCES).contains(&job.sources.len()) {
         return Err(format!("Merge requires 2 to {MAX_MERGE_SOURCES} source files"));
     }
-    if !matches!(job.format.as_str(), "wav" | "mp3" | "flac" | "opus") {
+    if !MERGE_FORMATS.contains(&job.format.as_str()) {
         return Err("Unsupported merge output format".into());
     }
     if !matches!(job.rate.as_str(), "44100" | "48000") {
         return Err("Merge sample rate must be 44100 or 48000 Hz".into());
     }
-    if !matches!(job.strategy.as_str(), "best_quality" | "mix_all") {
-        return Err("Unsupported merge strategy".into());
-    }
+    let strategy = parse_strategy(&job.strategy)?;
 
     let mut sources = Vec::with_capacity(job.sources.len());
     let mut seen = HashSet::with_capacity(job.sources.len());
@@ -173,7 +256,7 @@ fn validate_merge_job(job: &MergeJob) -> Result<ValidatedMergeJob, String> {
         out_name: validate_output_name(&job.out_name)?,
         format: job.format.clone(),
         rate: job.rate.clone(),
-        strategy: job.strategy.clone(),
+        strategy,
     })
 }
 
@@ -262,142 +345,29 @@ async fn detect_sync_paths(
     let samples_a = read_wav_samples(&tmp_a, max_sync_samples)?;
     let samples_b = read_wav_samples(&tmp_b, max_sync_samples)?;
 
-    tauri::async_runtime::spawn_blocking(move || detect_sync_samples(&samples_a, &samples_b, SYNC_SAMPLE_RATE as usize))
-        .await
-        .map_err(|e| format!("Sync analysis task failed: {e}"))?
-}
-
-fn detect_sync_samples(samples_a: &[f32], samples_b: &[f32], sample_rate: usize) -> Result<SyncResult, String> {
-    if samples_a.is_empty() || samples_b.is_empty() {
-        return Err("One or both files are empty".into());
-    }
-
-    let search_len = (SYNC_WINDOW_SECS * sample_rate)
-        .min(samples_a.len())
-        .min(samples_b.len());
-    let max_offset = SYNC_SEARCH_SECS * sample_rate;
-
-    let segment_a = &samples_a[..search_len];
-
-    let mut best_corr = 0.0f64;
-    let mut best_offset = 0i64;
-
-    // Coarse search: 100 ms steps. Sampling every fourth point bounds CPU
-    // without changing the time-offset search range.
-    let coarse_stride = (sample_rate / 10).max(1);
-    let search_range = max_offset.min(samples_b.len());
-
-    let neg_range = -(search_range as i64);
-    let pos_range = search_range as i64;
-    let mut coarse_offset = neg_range;
-    while coarse_offset < pos_range {
-        let offset = coarse_offset;
-        coarse_offset += coarse_stride as i64;
-        let corr = cross_correlate_step(segment_a, samples_b, offset, search_len, 4);
-        if corr > best_corr {
-            best_corr = corr;
-            best_offset = offset;
-        }
-    }
-
-    // Fine search: 1 ms steps around the best coarse offset.
-    let fine_start = best_offset - coarse_stride as i64;
-    let fine_end = best_offset + coarse_stride as i64;
-    let fine_stride = (sample_rate / 1000).max(1);
-    for offset in (fine_start..=fine_end).step_by(fine_stride) {
-        let corr = cross_correlate_step(segment_a, samples_b, offset, search_len, 4);
-        if corr > best_corr {
-            best_corr = corr;
-            best_offset = offset;
-        }
-    }
-
-    // Resolve the final 1 ms neighborhood at full sample precision.
-    let sample_start = best_offset - fine_stride as i64;
-    let sample_end = best_offset + fine_stride as i64;
-    for offset in sample_start..=sample_end {
-        let corr = cross_correlate(segment_a, samples_b, offset, search_len);
-        if corr > best_corr {
-            best_corr = corr;
-            best_offset = offset;
-        }
-    }
-
-    // cross_correlate matches a[i] against b[i + offset], so a positive
-    // best_offset means B's content occurs *earlier* than A's. Negate to get
-    // the documented semantics: positive = source B starts later.
-    let offset_seconds = -(best_offset as f64) / sample_rate as f64;
-
-    // Confidence from normalized cross-correlation: corr / (|a| * |b|), with
-    // |b| measured over the overlapping window at the best offset.
-    // energy_a must be measured over the SAME overlapping window as the
-    // correlation (and energy_b). Using the full segment inflates the
-    // denominator when the offset is large (small overlap), pushing genuine
-    // matches below the is_same_event threshold.
-    let energy_a: f64 = (0..search_len)
-        .filter_map(|i| {
-            let idx = i as i64 + best_offset;
-            if idx >= 0 && (idx as usize) < samples_b.len() {
-                let v = segment_a[i] as f64;
-                Some(v * v)
-            } else {
-                None
-            }
-        })
-        .sum();
-    let energy_b: f64 = (0..search_len)
-        .filter_map(|i| {
-            let idx = i as i64 + best_offset;
-            if idx >= 0 && (idx as usize) < samples_b.len() {
-                let v = samples_b[idx as usize] as f64;
-                Some(v * v)
-            } else {
-                None
-            }
-        })
-        .sum();
-    let confidence = if energy_a > 0.0 && energy_b > 0.0 {
-        (best_corr / (energy_a.sqrt() * energy_b.sqrt())).clamp(0.0, 1.0)
-    } else {
-        0.0
-    };
-
-    // Same-event threshold. Confidence is now a true normalized cross-
-    // correlation of raw waveforms from different microphones, which sits
-    // well below the old saturated values even for genuine matches — 0.15
-    // separates matched recordings (~0.2+) from unrelated audio (~0.05).
-    let is_same_event = confidence > 0.15;
-
-    Ok(SyncResult {
-        offset_seconds,
-        confidence,
-        is_same_event,
+    let found = tauri::async_runtime::spawn_blocking(move || {
+        merge_engine::detect_sync_samples(&samples_a, &samples_b, SYNC_SAMPLE_RATE as usize)
     })
-}
-
-/// Cross-correlate segment_a with samples_b at the given offset.
-fn cross_correlate(segment_a: &[f32], samples_b: &[f32], offset: i64, len: usize) -> f64 {
-    cross_correlate_step(segment_a, samples_b, offset, len, 1)
-}
-
-fn cross_correlate_step(segment_a: &[f32], samples_b: &[f32], offset: i64, len: usize, step: usize) -> f64 {
-    let mut sum = 0.0f64;
-    let len = len.min(segment_a.len());
-    for i in (0..len).step_by(step.max(1)) {
-        let a = segment_a[i];
-        let b_idx = i as i64 + offset;
-        if b_idx >= 0 && (b_idx as usize) < samples_b.len() {
-            sum += a as f64 * samples_b[b_idx as usize] as f64;
-        }
-    }
-    sum.abs()
+    .await
+    .map_err(|e| format!("Sync analysis task failed: {e}"))??;
+    Ok(SyncResult {
+        offset_seconds: found.offset_seconds,
+        confidence: found.confidence,
+        is_same_event: found.is_same_event,
+    })
 }
 
 // ── Merge execution ─────────────────────────────────────────────────────────
 
 /// Merge multiple audio files into one synchronized output.
-pub(crate) async fn merge_audio(app: &AppHandle, job: &MergeJob, cancel: &MergeCancel) -> Result<MergeResult, String> {
+pub(crate) async fn merge_audio(
+    app: &AppHandle,
+    job: &MergeJob,
+    cancel: &MergeCancel,
+    progress: ProgressFn,
+) -> Result<MergeResult, String> {
     let job = validate_merge_job(job)?;
+    report(&progress, STAGE_PREPARING);
     // Each feed (and any temporary file it owns) lives until every
     // probe/decode finishes.
     let mut feeds = Vec::with_capacity(job.sources.len());
@@ -406,27 +376,15 @@ pub(crate) async fn merge_audio(app: &AppHandle, job: &MergeJob, cancel: &MergeC
     }
 
     // Probe before decoding so a very long compressed source cannot fill the
-    // temp directory or exhaust memory before the decoded-size limit is seen.
-    let mut estimated_samples = 0f64;
-    for source in &feeds {
+    // temp directory before its length is known.
+    for (source, path) in feeds.iter().zip(&job.sources) {
         let duration = probe_duration_cancellable(app, source, Some(&|| cancel.is_cancelled())).await;
         cancel.check()?;
-        let duration = duration
-            .filter(|duration| duration.is_finite() && *duration > 0.0)
-            .ok_or_else(|| "Cannot determine merge source duration".to_string())?;
-        if duration > MAX_MERGE_DURATION_SECS as f64 {
-            return Err(format!(
-                "Each merge source is limited to {} minutes",
-                MAX_MERGE_DURATION_SECS / 60
-            ));
-        }
-        estimated_samples += duration * 48_000.0;
-        if estimated_samples > MAX_TOTAL_DECODED_SAMPLES as f64 {
-            return Err("Combined decoded audio is too long for the bounded in-memory merge engine".into());
-        }
+        merge_engine::check_source_duration(&crate::helpers::basename(&path.to_string_lossy()), duration)?;
     }
 
     // Step 1: Detect sync offsets relative to the first source
+    report(&progress, STAGE_MATCHING);
     let mut offsets = vec![0.0f64]; // First source is reference (offset = 0)
     for i in 1..feeds.len() {
         let (reference, rest) = feeds.split_at_mut(1);
@@ -441,96 +399,59 @@ pub(crate) async fn merge_audio(app: &AppHandle, job: &MergeJob, cancel: &MergeC
     }
 
     // Step 2: Decode all sources to 48kHz mono
+    report(&progress, STAGE_DECODING);
     let mut decoded_files = Vec::new();
     for src in &mut feeds {
-        let tmp = decode_to_mono(app, src, 48_000, MAX_MERGE_DURATION_SECS + 1, cancel).await?;
+        let tmp = decode_to_mono(app, src, MERGE_SAMPLE_RATE, MAX_MERGE_DURATION_SECS + 1, cancel).await?;
         decoded_files.push(tmp);
     }
+    drop(feeds);
 
-    // Step 3: Validate aggregate decoded allocation before reading any source.
-    let mut decoded_sample_count = 0u64;
-    for file in &decoded_files {
-        decoded_sample_count = decoded_sample_count
-            .checked_add(wav_sample_count(file)?)
-            .ok_or_else(|| "Decoded merge size overflow".to_string())?;
-        if decoded_sample_count > MAX_TOTAL_DECODED_SAMPLES {
-            return Err("Combined decoded audio exceeds the merge memory limit".into());
-        }
-    }
-    let decoded_paths: Vec<PathBuf> = decoded_files.iter().map(|file| file.path.clone()).collect();
-    let all_samples = tauri::async_runtime::spawn_blocking(move || {
-        decoded_paths
-            .iter()
-            .map(|path| read_wav_samples(path, MAX_TOTAL_DECODED_SAMPLES as usize))
-            .collect::<Result<Vec<_>, _>>()
-    })
-    .await
-    .map_err(|e| format!("Decoded audio read task failed: {e}"))??;
-    drop(decoded_files);
-    cancel.check()?;
-
-    // Step 4: Align to common timeline
-    let sample_rate = 48_000usize;
+    // Step 3: Place each source on a common timeline, the earliest at zero.
+    let rate = MERGE_SAMPLE_RATE as f64;
     let min_offset = offsets.iter().cloned().fold(f64::INFINITY, f64::min);
-    let adjusted_offsets: Vec<i64> = offsets
-        .iter()
-        .map(|&o| ((o - min_offset) * sample_rate as f64) as i64)
-        .collect();
-
-    // Find total duration (longest aligned track)
-    let total_samples = all_samples
-        .iter()
-        .enumerate()
-        .map(|(i, samples)| {
-            usize::try_from(adjusted_offsets[i])
-                .ok()
-                .and_then(|offset| samples.len().checked_add(offset))
-                .ok_or_else(|| "Aligned merge timeline is too large".to_string())
-        })
-        .collect::<Result<Vec<_>, _>>()?
-        .into_iter()
-        .max()
-        .unwrap_or(0);
-    if total_samples == 0 || total_samples as u64 > MAX_TOTAL_DECODED_SAMPLES {
-        return Err("Aligned merge timeline exceeds the merge memory limit".into());
+    let mut sources = Vec::with_capacity(decoded_files.len());
+    for (file, &offset) in decoded_files.iter().zip(&offsets) {
+        let reader = WavSampleReader::open(&file.path)?;
+        let len = reader.len;
+        sources.push(AlignedSource::new(
+            reader,
+            ((offset - min_offset) * rate).round() as u64,
+            len,
+        ));
+    }
+    let total_samples = merge_engine::timeline_len(&sources);
+    if total_samples == 0 {
+        return Err("The merge sources decoded to no audio".into());
+    }
+    if total_samples > merge_engine::max_timeline_samples(MERGE_SAMPLE_RATE) {
+        return Err("The aligned recordings run longer than a merge can write".into());
     }
 
-    // Step 5: Build and write the intermediate on a blocking worker. The
-    // merged Vec is dropped there before encoding starts.
+    // Step 4: Stream the merge into an intermediate WAV on a blocking worker.
+    report(&progress, STAGE_MERGING);
     let tmp_wav = crate::workdir::new_temp_path("depoaudio_merged_", "wav")?;
     let tmp_wav_path = tmp_wav.path.clone();
-    let strategy = job.strategy.clone();
-    let duration = tauri::async_runtime::spawn_blocking(move || -> Result<f64, String> {
-        let merged = match strategy.as_str() {
-            "mix_all" => mix_all_strategy(&all_samples, &adjusted_offsets, total_samples),
-            "best_quality" => best_quality_strategy(&all_samples, &adjusted_offsets, total_samples, sample_rate),
-            _ => return Err("Unsupported merge strategy".into()),
-        };
-        write_wav(&tmp_wav_path, &merged, 48_000)?;
-        Ok(merged.len() as f64 / 48_000.0)
+    let strategy = job.strategy;
+    let worker_cancel = cancel.clone();
+    let worker_progress = progress.clone();
+    let written = tauri::async_runtime::spawn_blocking(move || {
+        stream_to_wav(strategy, &mut sources, &tmp_wav_path, &worker_cancel, &worker_progress)
     })
     .await
     .map_err(|e| format!("Merge processing task failed: {e}"))??;
+    drop(decoded_files);
     cancel.check()?;
+    let duration = written as f64 / rate;
 
-    // Step 6: Reserve the destination atomically, then encode with a bounded
+    // Step 5: Encode.
+    report(&progress, STAGE_ENCODING);
+    // Reserve the destination atomically, then encode with a bounded
     // child-process runner. No concurrent merge can claim or delete this path.
     let ext = crate::helpers::output_ext(&job.format);
     let mut reserved = reserve_output(&job.out_dir, &job.out_name, ext)?;
     let out_path = reserved.path.clone();
-    let out_codec = crate::helpers::output_args(&job.format, &job.rate, 192);
-    let mut args: Vec<String> = vec![
-        "-nostdin".into(),
-        "-hide_banner".into(),
-        "-loglevel".into(),
-        "error".into(),
-        "-protocol_whitelist".into(),
-        "file".into(),
-        "-i".into(),
-        tmp_wav.to_string_lossy().to_string(),
-    ];
-    args.extend(out_codec);
-    args.extend(["-y".into(), out_path.to_string_lossy().to_string()]);
+    let args = encode_args(&tmp_wav.path, &job.format, &job.rate, &out_path);
     let output = sidecar_output_cancellable(
         app,
         ffmpeg_bin_name(),
@@ -553,6 +474,10 @@ pub(crate) async fn merge_audio(app: &AppHandle, job: &MergeJob, cancel: &MergeC
         return Err("Merged output is empty".into());
     }
     reserved.keep = true;
+    progress(MergeProgress {
+        stage: "done",
+        percent: 100,
+    });
 
     Ok(MergeResult {
         output_path: out_path.to_string_lossy().to_string(),
@@ -563,130 +488,6 @@ pub(crate) async fn merge_audio(app: &AppHandle, job: &MergeJob, cancel: &MergeC
         sync_offsets: offsets,
         warning: None,
     })
-}
-
-// ── Merge strategies ────────────────────────────────────────────────────────
-
-/// Mix all sources together with equal weight (simple average).
-fn mix_all_strategy(sources: &[Vec<f32>], offsets: &[i64], total_samples: usize) -> Vec<f32> {
-    let mut output = vec![0.0f32; total_samples];
-    // Source count is capped at four, so one byte per sample is sufficient and
-    // avoids another four-byte timeline-sized allocation.
-    let mut counts = vec![0u8; total_samples];
-
-    for (src_idx, samples) in sources.iter().enumerate() {
-        let offset = offsets[src_idx];
-        for (i, &s) in samples.iter().enumerate() {
-            let out_idx = i as i64 + offset;
-            if out_idx >= 0 && (out_idx as usize) < total_samples {
-                output[out_idx as usize] += s;
-                counts[out_idx as usize] += 1;
-            }
-        }
-    }
-
-    // Average where multiple sources overlap
-    for i in 0..total_samples {
-        if counts[i] > 1 {
-            output[i] /= counts[i] as f32;
-        }
-    }
-
-    output
-}
-
-/// Select the highest quality segment from available sources.
-/// Uses RMS energy in speech-likely regions as a quality proxy.
-fn best_quality_strategy(sources: &[Vec<f32>], offsets: &[i64], total_samples: usize, sample_rate: usize) -> Vec<f32> {
-    let mut output = vec![0.0f32; total_samples];
-
-    // Process in 500ms segments
-    let segment_size = sample_rate / 2;
-    let crossfade_len = sample_rate / 20; // 50ms crossfade
-
-    let mut pos = 0usize;
-    let mut prev_best: Option<usize> = None;
-
-    while pos < total_samples {
-        let end = (pos + segment_size).min(total_samples);
-
-        // Find the best source for this segment (highest RMS)
-        let mut best_src = 0;
-        let mut best_rms = 0.0f64;
-
-        for (src_idx, samples) in sources.iter().enumerate() {
-            let offset = offsets[src_idx];
-            let mut rms_sum = 0.0f64;
-            let mut count = 0usize;
-
-            for out_idx in pos..end {
-                let src_idx_sample = out_idx as i64 - offset;
-                if src_idx_sample >= 0 && (src_idx_sample as usize) < samples.len() {
-                    let s = samples[src_idx_sample as usize] as f64;
-                    rms_sum += s * s;
-                    count += 1;
-                }
-            }
-
-            let rms = if count > 0 {
-                (rms_sum / count as f64).sqrt()
-            } else {
-                0.0
-            };
-            if rms > best_rms {
-                best_rms = rms;
-                best_src = src_idx;
-            }
-        }
-
-        // Copy best source to output
-        let offset = offsets[best_src];
-        for (j, out) in output[pos..end].iter_mut().enumerate() {
-            let src_idx_sample = (pos + j) as i64 - offset;
-            if src_idx_sample >= 0 && (src_idx_sample as usize) < sources[best_src].len() {
-                *out = sources[best_src][src_idx_sample as usize];
-            }
-        }
-
-        // Apply crossfade if source changed
-        if let Some(prev) = prev_best {
-            if prev != best_src && pos > 0 {
-                let fade_start = pos.saturating_sub(crossfade_len / 2);
-                let fade_end = (pos + crossfade_len / 2).min(total_samples);
-                let fade_len = fade_end - fade_start;
-
-                for j in 0..fade_len {
-                    let t = j as f32 / fade_len as f32;
-                    let prev_offset = offsets[prev];
-                    let prev_idx = (fade_start + j) as i64 - prev_offset;
-                    let prev_sample = if prev_idx >= 0 && (prev_idx as usize) < sources[prev].len() {
-                        sources[prev][prev_idx as usize]
-                    } else {
-                        0.0
-                    };
-
-                    // Fetch the NEW source directly for the whole window: in
-                    // the first half output[] still holds the previous source,
-                    // so blending against output would make the ramp a no-op
-                    // until the midpoint and leave a half-amplitude step.
-                    let new_offset = offsets[best_src];
-                    let new_idx = (fade_start + j) as i64 - new_offset;
-                    let new_sample = if new_idx >= 0 && (new_idx as usize) < sources[best_src].len() {
-                        sources[best_src][new_idx as usize]
-                    } else {
-                        0.0
-                    };
-
-                    output[fade_start + j] = prev_sample * (1.0 - t) + new_sample * t;
-                }
-            }
-        }
-
-        prev_best = Some(best_src);
-        pos += segment_size;
-    }
-
-    output
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
@@ -728,7 +529,28 @@ async fn decode_feed_to_mono(
 ) -> Result<TempFile, String> {
     cancel.check()?;
     let tmp = crate::workdir::new_temp_path("depoaudio_merge_", "wav")?;
+    let args = decode_args(feed, rate, max_secs, &tmp);
 
+    let output = sidecar_output_cancellable(
+        app,
+        ffmpeg_bin_name(),
+        args,
+        MERGE_DECODE_TIMEOUT_SECS,
+        Some(&|| cancel.is_cancelled()),
+    )
+    .await;
+    cancel.check()?;
+    let output = output.ok_or_else(|| "Merge decoder timed out or could not start".to_string())?;
+    if !output.success {
+        return Err("Failed to decode audio for merge".into());
+    }
+
+    Ok(tmp)
+}
+
+/// FFmpeg arguments that decode `feed` to a mono float WAV at `rate`, at
+/// most `max_secs` long.
+fn decode_args(feed: &AudioFeed, rate: u32, max_secs: u32, output: &Path) -> Vec<String> {
     let mut args: Vec<String> = vec![
         "-nostdin".into(),
         "-hide_banner".into(),
@@ -751,41 +573,49 @@ async fn decode_feed_to_mono(
         "-acodec".into(),
         "pcm_f32le".into(),
         "-y".into(),
-        tmp.to_string_lossy().to_string(),
+        output.to_string_lossy().to_string(),
     ]);
-
-    let output = sidecar_output_cancellable(
-        app,
-        ffmpeg_bin_name(),
-        args,
-        MERGE_DECODE_TIMEOUT_SECS,
-        Some(&|| cancel.is_cancelled()),
-    )
-    .await;
-    cancel.check()?;
-    let output = output.ok_or_else(|| "Merge decoder timed out or could not start".to_string())?;
-    if !output.success {
-        return Err("Failed to decode audio for merge".into());
-    }
-
-    Ok(tmp)
+    args
 }
 
-fn wav_sample_count(path: &Path) -> Result<u64, String> {
+fn open_float_wav(path: &Path) -> Result<hound::WavReader<std::io::BufReader<std::fs::File>>, String> {
     let reader = hound::WavReader::open(path).map_err(|e| format!("WAV read error: {}", e))?;
     let spec = reader.spec();
     if spec.channels != 1 || spec.bits_per_sample != 32 || spec.sample_format != hound::SampleFormat::Float {
         return Err("Decoded merge audio has an unexpected WAV layout".into());
     }
-    Ok(reader.duration() as u64)
+    Ok(reader)
+}
+
+/// Reads one decoded source front to back for the merge engine.
+struct WavSampleReader {
+    reader: hound::WavReader<std::io::BufReader<std::fs::File>>,
+    len: u64,
+}
+
+impl WavSampleReader {
+    fn open(path: &Path) -> Result<Self, String> {
+        let reader = open_float_wav(path)?;
+        let len = reader.duration() as u64;
+        Ok(Self { reader, len })
+    }
+}
+
+impl SampleReader for WavSampleReader {
+    fn read_exact_into(&mut self, out: &mut [f32]) -> Result<(), String> {
+        let mut samples = self.reader.samples::<f32>();
+        for slot in out.iter_mut() {
+            *slot = samples
+                .next()
+                .ok_or_else(|| "Decoded merge audio ended early".to_string())?
+                .map_err(|e| format!("WAV sample decode error: {e}"))?;
+        }
+        Ok(())
+    }
 }
 
 fn read_wav_samples(path: &Path, max_samples: usize) -> Result<Vec<f32>, String> {
-    let reader = hound::WavReader::open(path).map_err(|e| format!("WAV read error: {}", e))?;
-    let spec = reader.spec();
-    if spec.channels != 1 || spec.bits_per_sample != 32 || spec.sample_format != hound::SampleFormat::Float {
-        return Err("Decoded merge audio has an unexpected WAV layout".into());
-    }
+    let reader = open_float_wav(path)?;
     let count = reader.duration() as usize;
     if count > max_samples {
         return Err("Decoded merge audio exceeds the sample limit".into());
@@ -796,19 +626,72 @@ fn read_wav_samples(path: &Path, max_samples: usize) -> Result<Vec<f32>, String>
         .map_err(|e| format!("WAV sample decode error: {e}"))
 }
 
-fn write_wav(path: &Path, samples: &[f32], rate: u32) -> Result<(), String> {
+/// Run the engine over the aligned sources into a float WAV at `path`,
+/// reporting progress as the percentage changes and stopping between blocks
+/// on a cancel. A stopped merge leaves `path` for its owner to remove.
+fn stream_to_wav<R: SampleReader>(
+    strategy: MergeStrategy,
+    sources: &mut [AlignedSource<R>],
+    path: &Path,
+    cancel: &MergeCancel,
+    progress: &ProgressFn,
+) -> Result<u64, String> {
+    let mut writer = wav_writer(path, MERGE_SAMPLE_RATE)?;
+    let mut sink = |block: &[f32]| {
+        for &sample in block {
+            writer.write_sample(sample).map_err(|e| format!("Write error: {e}"))?;
+        }
+        Ok(())
+    };
+    let mut last = STAGE_MERGING.1;
+    let mut tick = |done: u64, total: u64| {
+        cancel.check()?;
+        let percent = merging_percent(done, total);
+        if percent != last {
+            last = percent;
+            progress(MergeProgress {
+                stage: STAGE_MERGING.0,
+                percent,
+            });
+        }
+        Ok(())
+    };
+    let written = merge_engine::merge_stream(strategy, sources, MERGE_SAMPLE_RATE as usize, &mut sink, &mut tick)?;
+    writer.finalize().map_err(|e| format!("Finalize error: {e}"))?;
+    Ok(written)
+}
+
+/// FFmpeg arguments that encode the intermediate WAV to the chosen output,
+/// with the converter's own codec settings for each format.
+fn encode_args(input: &Path, format: &str, rate: &str, output: &Path) -> Vec<String> {
+    let mut args: Vec<String> = vec![
+        "-nostdin".into(),
+        "-hide_banner".into(),
+        "-loglevel".into(),
+        "error".into(),
+        "-protocol_whitelist".into(),
+        "file".into(),
+        "-i".into(),
+        input.to_string_lossy().to_string(),
+        // The intermediate is a one-channel float WAV whose header names the
+        // channel front-left, not mono. Without this, LAME writes it as
+        // stereo and FFmpeg's AAC encoder refuses the layout.
+        "-ac".into(),
+        "1".into(),
+    ];
+    args.extend(crate::helpers::output_args(format, rate, 192));
+    args.extend(["-y".into(), output.to_string_lossy().to_string()]);
+    args
+}
+
+fn wav_writer(path: &Path, rate: u32) -> Result<hound::WavWriter<std::io::BufWriter<std::fs::File>>, String> {
     let spec = hound::WavSpec {
         channels: 1,
         sample_rate: rate,
         bits_per_sample: 32,
         sample_format: hound::SampleFormat::Float,
     };
-    let mut writer = hound::WavWriter::create(path, spec).map_err(|e| format!("WAV write error: {}", e))?;
-    for &s in samples {
-        writer.write_sample(s).map_err(|e| format!("Write error: {}", e))?;
-    }
-    writer.finalize().map_err(|e| format!("Finalize error: {}", e))?;
-    Ok(())
+    hound::WavWriter::create(path, spec).map_err(|e| format!("WAV write error: {}", e))
 }
 
 struct ReservedOutput {
@@ -840,26 +723,148 @@ mod tests {
     }
 
     #[test]
-    fn cross_correlate_offset_sign_convention() {
-        // Construct B containing A's content delayed by 100 samples:
-        // b[i + 100] = a[i], i.e. recorder B started 100 samples EARLIER.
-        let mut a = vec![0.0f32; 400];
-        a[10] = 1.0;
-        a[50] = -0.5;
-        a[200] = 0.8;
-        let mut b = vec![0.0f32; 600];
-        for (i, &v) in a.iter().enumerate() {
-            b[i + 100] = v;
-        }
+    fn decoded_wavs_stream_through_the_engine_into_a_wav() {
+        // Two decoded sources as the merge writes them, the second placed
+        // three samples later: the engine reads them in blocks and the
+        // intermediate WAV holds their average where both play.
+        let dir = test_dir("engine_wav");
+        std::fs::create_dir_all(&dir).unwrap();
+        let write = |name: &str, samples: &[f32]| {
+            let path = dir.join(name);
+            let mut writer = wav_writer(&path, MERGE_SAMPLE_RATE).unwrap();
+            for &s in samples {
+                writer.write_sample(s).unwrap();
+            }
+            writer.finalize().unwrap();
+            path
+        };
+        let a = write("a.wav", &[1.0; 8]);
+        let b = write("b.wav", &[3.0; 8]);
+        let mut sources = vec![
+            AlignedSource::new(WavSampleReader::open(&a).unwrap(), 0, 8),
+            AlignedSource::new(WavSampleReader::open(&b).unwrap(), 3, 8),
+        ];
+        let out = dir.join("merged.wav");
+        let mut writer = wav_writer(&out, MERGE_SAMPLE_RATE).unwrap();
+        let mut sink = |block: &[f32]| {
+            block
+                .iter()
+                .try_for_each(|&s| writer.write_sample(s).map_err(|e| e.to_string()))
+        };
+        let written = merge_engine::merge_stream(
+            MergeStrategy::MixAll,
+            &mut sources,
+            MERGE_SAMPLE_RATE as usize,
+            &mut sink,
+            &mut |_, _| Ok(()),
+        )
+        .unwrap();
+        writer.finalize().unwrap();
+        assert_eq!(written, 11);
+        let merged = read_wav_samples(&out, 100).unwrap();
+        assert_eq!(merged, vec![1.0, 1.0, 1.0, 2.0, 2.0, 2.0, 2.0, 2.0, 3.0, 3.0, 3.0]);
+        let _ = std::fs::remove_dir_all(dir);
+    }
 
-        // The correlation peak must be at offset = +100 (a[i] vs b[i + offset]),
-        // which detect_sync negates so that positive offset_seconds means
-        // "source B starts later".
-        let at_plus = cross_correlate(&a, &b, 100, a.len());
-        let at_zero = cross_correlate(&a, &b, 0, a.len());
-        let at_minus = cross_correlate(&a, &b, -100, a.len());
-        assert!(at_plus > at_zero, "peak should be at +100, not 0");
-        assert!(at_plus > at_minus, "peak should be at +100, not -100");
+    #[test]
+    fn strategy_keys_are_mix_all_and_loudest_with_the_old_name_kept() {
+        assert_eq!(parse_strategy("mix_all").unwrap(), MergeStrategy::MixAll);
+        assert_eq!(parse_strategy("loudest").unwrap(), MergeStrategy::Loudest);
+        assert_eq!(parse_strategy("best_quality").unwrap(), MergeStrategy::Loudest);
+        for unknown in ["", "best", "Loudest", "mix all"] {
+            assert!(parse_strategy(unknown).is_err(), "accepted {unknown:?}");
+        }
+    }
+
+    #[test]
+    fn the_screen_and_the_job_offer_the_same_formats() {
+        let screen: Vec<String> = serde_json::from_str(include_str!("../../src/mergeFormats.json")).unwrap();
+        assert_eq!(screen, MERGE_FORMATS, "src/mergeFormats.json and MERGE_FORMATS differ");
+    }
+
+    /// FFmpeg and ffprobe from PATH (CI installs them); without them the
+    /// test is skipped, unless DEPOAUDIO_REQUIRE_FFMPEG_TESTS=1.
+    fn system_ffmpeg_available() -> bool {
+        let found = std::process::Command::new("ffmpeg").arg("-version").output().is_ok()
+            && std::process::Command::new("ffprobe").arg("-version").output().is_ok();
+        if !found {
+            assert!(
+                std::env::var_os("DEPOAUDIO_REQUIRE_FFMPEG_TESTS").is_none_or(|value| value != "1"),
+                "DEPOAUDIO_REQUIRE_FFMPEG_TESTS=1, but ffmpeg/ffprobe is not on PATH"
+            );
+            eprintln!("skipping: ffmpeg/ffprobe not on PATH");
+        }
+        found
+    }
+
+    #[test]
+    fn every_offered_format_encodes_at_the_right_length_and_rate() {
+        if !system_ffmpeg_available() {
+            return;
+        }
+        let dir = test_dir("formats");
+        std::fs::create_dir_all(&dir).unwrap();
+        // Two seconds of a synthetic 440 Hz tone, as the merge's intermediate.
+        let input = dir.join("intermediate.wav");
+        let mut writer = wav_writer(&input, MERGE_SAMPLE_RATE).unwrap();
+        for i in 0..2 * MERGE_SAMPLE_RATE {
+            let t = i as f32 / MERGE_SAMPLE_RATE as f32;
+            writer
+                .write_sample(0.3 * (std::f32::consts::TAU * 440.0 * t).sin())
+                .unwrap();
+        }
+        writer.finalize().unwrap();
+
+        for &format in MERGE_FORMATS {
+            let output = dir.join(format!("merged{}", crate::helpers::output_ext(format)));
+            let run = std::process::Command::new("ffmpeg")
+                .args(encode_args(&input, format, "48000", &output))
+                .output()
+                .unwrap();
+            assert!(
+                run.status.success(),
+                "{format}: {}",
+                String::from_utf8_lossy(&run.stderr)
+            );
+            let probe = std::process::Command::new("ffprobe")
+                .args([
+                    "-v",
+                    "error",
+                    "-show_entries",
+                    "stream=sample_rate,channels:format=duration",
+                    "-of",
+                    "default=noprint_wrappers=1",
+                ])
+                .arg(&output)
+                .output()
+                .unwrap();
+            let text = String::from_utf8_lossy(&probe.stdout);
+            let field = |key: &str| {
+                text.lines()
+                    .find_map(|line| line.strip_prefix(&format!("{key}=")))
+                    .unwrap_or_else(|| panic!("{format}: no {key} in {text}"))
+                    .to_string()
+            };
+            assert_eq!(field("sample_rate"), "48000", "{format}");
+            assert_eq!(field("channels"), "1", "{format}");
+            let duration: f64 = field("duration").parse().unwrap();
+            assert!((duration - 2.0).abs() < 0.06, "{format}: {duration} s");
+        }
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_short_decoded_wav_is_an_error_not_silence() {
+        let dir = test_dir("engine_short");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("short.wav");
+        let mut writer = wav_writer(&path, MERGE_SAMPLE_RATE).unwrap();
+        writer.write_sample(0.5f32).unwrap();
+        writer.finalize().unwrap();
+        let mut reader = WavSampleReader::open(&path).unwrap();
+        let mut out = [0.0f32; 2];
+        assert!(reader.read_exact_into(&mut out).is_err());
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]
@@ -892,8 +897,111 @@ mod tests {
             rate: "48000".into(),
             strategy: "mix_all".into(),
         };
-        assert!(validate_merge_job(&job).is_err());
+        assert!(validate_merge_job(&job).unwrap_err().contains("twice"));
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn each_bad_job_is_refused_with_its_own_message() {
+        let dir = test_dir("refusals");
+        std::fs::create_dir_all(&dir).unwrap();
+        let make = |name: &str, len: u64| {
+            let path = dir.join(name);
+            // Sparse where the file system allows, so no gigabytes are written.
+            std::fs::File::create(&path).unwrap().set_len(len).unwrap();
+            path.to_string_lossy().to_string()
+        };
+        let small: Vec<String> = (0..5).map(|i| make(&format!("small{i}.wav"), 64)).collect();
+        let job = |sources: Vec<String>, out_name: &str| MergeJob {
+            sources,
+            out_dir: String::new(),
+            out_name: out_name.into(),
+            format: "wav".into(),
+            rate: "48000".into(),
+            strategy: "loudest".into(),
+        };
+        let refusal = |job: MergeJob| validate_merge_job(&job).expect_err("refused");
+
+        let counts = "Merge requires 2 to 4 source files";
+        assert_eq!(refusal(job(small[..1].to_vec(), "merged")), counts);
+        assert_eq!(refusal(job(small.clone(), "merged")), counts);
+        assert!(refusal(job(vec![small[0].clone(), small[0].clone()], "merged")).contains("twice"));
+        assert!(refusal(job(small[..2].to_vec(), "../outside")).starts_with("Output name"));
+
+        let huge = make("huge.wav", MAX_MERGE_SOURCE_BYTES + 1);
+        assert!(refusal(job(vec![small[0].clone(), huge], "merged")).contains("too large"));
+
+        let big: Vec<String> = (0..3)
+            .map(|i| make(&format!("big{i}.wav"), 3 * MAX_MERGE_SOURCE_BYTES / 4))
+            .collect();
+        assert!(refusal(job(big, "merged")).starts_with("Combined merge sources exceed"));
+
+        assert!(validate_merge_job(&job(small[..4].to_vec(), "merged")).is_ok());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn one_merge_runs_at_a_time_and_cancel_reaches_it() {
+        let slot = MergeSlot::default();
+        assert!(!slot.cancel(), "nothing to cancel yet");
+        let run = slot.start().unwrap();
+        assert_eq!(slot.start().err().unwrap(), MERGE_BUSY_MESSAGE);
+        assert!(slot.cancel());
+        assert!(run.cancel.is_cancelled());
+        drop(run);
+        assert!(!slot.cancel(), "the slot is free once the run ends");
+        let again = slot.start().unwrap();
+        assert!(!again.cancel.is_cancelled(), "a new run starts uncancelled");
+    }
+
+    /// A decoded source of one repeated value, for stream tests.
+    struct Constant(f32);
+
+    impl SampleReader for Constant {
+        fn read_exact_into(&mut self, out: &mut [f32]) -> Result<(), String> {
+            out.fill(self.0);
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn a_cancel_mid_merge_stops_it_and_leaves_no_intermediate() {
+        let cancel = MergeCancel::default();
+        let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let record = seen.clone();
+        let flag = cancel.clone();
+        let progress: ProgressFn = Arc::new(move |update: MergeProgress| {
+            record.lock().unwrap().push(update.percent);
+            if update.percent >= 60 {
+                flag.cancel();
+            }
+        });
+        let len = 60 * MERGE_SAMPLE_RATE as u64;
+        let mut sources = vec![
+            AlignedSource::new(Constant(0.25), 0, len),
+            AlignedSource::new(Constant(0.5), MERGE_SAMPLE_RATE as u64, len),
+        ];
+        let tmp = crate::workdir::new_temp_path("depoaudio_merged_", "wav").unwrap();
+        let path = tmp.path.clone();
+        let error = stream_to_wav(MergeStrategy::MixAll, &mut sources, &path, &cancel, &progress).unwrap_err();
+        assert_eq!(error, MERGE_CANCELLED_MESSAGE);
+        let percents = seen.lock().unwrap().clone();
+        assert!(percents.windows(2).all(|pair| pair[0] < pair[1]), "{percents:?}");
+        assert!(percents
+            .iter()
+            .all(|p| (STAGE_MERGING.1..=STAGE_ENCODING.1).contains(p)));
+        assert!(*percents.last().unwrap() < STAGE_ENCODING.1, "stopped before the end");
+        drop(tmp);
+        assert!(!path.exists(), "the intermediate goes with its guard");
+    }
+
+    #[test]
+    fn merging_progress_fills_its_band() {
+        assert_eq!(merging_percent(0, 100), STAGE_MERGING.1);
+        assert_eq!(merging_percent(100, 100), STAGE_ENCODING.1);
+        assert_eq!(merging_percent(150, 100), STAGE_ENCODING.1);
+        assert_eq!(merging_percent(0, 0), STAGE_ENCODING.1);
+        assert!(merging_percent(50, 100) > STAGE_MERGING.1);
     }
 
     #[test]
@@ -979,6 +1087,173 @@ mod tests {
             "no temporary file is left"
         );
         assert_eq!(std::fs::read(&source).unwrap(), bytes, "the source is only read");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// FFmpeg and ffprobe for the two-recording smoke test: the bundled
+    /// sidecars when the release build sets DEPOAUDIO_MERGE_SMOKE_FFMPEG and
+    /// DEPOAUDIO_MERGE_SMOKE_FFPROBE, otherwise the ones on PATH.
+    fn smoke_tools() -> Option<(String, String)> {
+        let ffmpeg = std::env::var("DEPOAUDIO_MERGE_SMOKE_FFMPEG").ok();
+        let ffprobe = std::env::var("DEPOAUDIO_MERGE_SMOKE_FFPROBE").ok();
+        match (ffmpeg, ffprobe) {
+            (Some(ffmpeg), Some(ffprobe)) => Some((ffmpeg, ffprobe)),
+            (None, None) => system_ffmpeg_available().then(|| ("ffmpeg".to_string(), "ffprobe".to_string())),
+            _ => panic!("set both DEPOAUDIO_MERGE_SMOKE_FFMPEG and DEPOAUDIO_MERGE_SMOKE_FFPROBE"),
+        }
+    }
+
+    /// A speech-like event: bursts of filtered noise 80 to 300 ms long with
+    /// short gaps, from a fixed seed, so two "microphones" share its shape.
+    fn speech_like_event(secs: f64, rate: usize) -> Vec<f32> {
+        let mut seed: u64 = 0x2545_F491_4F6C_DD1D;
+        let mut next = move || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            (seed >> 11) as f64 / (1u64 << 53) as f64
+        };
+        let total = (secs * rate as f64) as usize;
+        let mut out = Vec::with_capacity(total);
+        let mut low = 0.0f64;
+        while out.len() < total {
+            let burst = ((0.08 + 0.22 * next()) * rate as f64) as usize;
+            let gap = ((0.03 + 0.12 * next()) * rate as f64) as usize;
+            let level = 0.2 + 0.5 * next();
+            for _ in 0..burst {
+                low = 0.7 * low + 0.3 * (next() * 2.0 - 1.0);
+                out.push((level * low) as f32);
+            }
+            out.extend(std::iter::repeat_n(0.0, gap));
+        }
+        out.truncate(total);
+        out
+    }
+
+    fn run_tool(tool: &str, args: &[String]) -> String {
+        let run = std::process::Command::new(tool).args(args).output().unwrap();
+        assert!(
+            run.status.success(),
+            "{tool} {args:?}: {}",
+            String::from_utf8_lossy(&run.stderr)
+        );
+        String::from_utf8_lossy(&run.stdout).into_owned()
+    }
+
+    fn probed_duration(ffprobe: &str, path: &Path) -> f64 {
+        let args = [
+            "-v",
+            "error",
+            "-show_entries",
+            "format=duration",
+            "-of",
+            "default=noprint_wrappers=1:nokey=1",
+        ]
+        .iter()
+        .map(|arg| arg.to_string())
+        .chain([path.to_string_lossy().into_owned()])
+        .collect::<Vec<_>>();
+        run_tool(ffprobe, &args).trim().parse().unwrap()
+    }
+
+    /// The release smoke for Merge: two recordings of one event, the second
+    /// starting 1.25 s later, go through the same FFmpeg arguments, sync,
+    /// engine and encoder as a merge in the app, and the offset and output
+    /// length come out as made.
+    #[test]
+    fn two_recordings_merge_at_a_known_offset_through_ffmpeg() {
+        let Some((ffmpeg, ffprobe)) = smoke_tools() else {
+            return;
+        };
+        let rate = MERGE_SAMPLE_RATE as usize;
+        let dir = test_dir("smoke");
+        std::fs::create_dir_all(&dir).unwrap();
+
+        // The reference mic hears 0 to 10 s of the event; the second, quieter
+        // recorder hears 1.25 to 11.25 s.
+        let offset_secs = 1.25;
+        let event = speech_like_event(11.25, rate);
+        let start_b = (offset_secs * rate as f64) as usize;
+        let tracks = [
+            ("reference", event[..10 * rate].to_vec(), "flac"),
+            (
+                "backup",
+                event[start_b..start_b + 10 * rate].iter().map(|v| v * 0.6).collect(),
+                "m4a",
+            ),
+        ];
+        let mut sources = Vec::new();
+        for (name, samples, format) in tracks {
+            let wav = dir.join(format!("{name}.wav"));
+            let mut writer = wav_writer(&wav, MERGE_SAMPLE_RATE).unwrap();
+            for sample in samples {
+                writer.write_sample(sample).unwrap();
+            }
+            writer.finalize().unwrap();
+            let encoded = dir.join(format!("{name}{}", crate::helpers::output_ext(format)));
+            run_tool(&ffmpeg, &encode_args(&wav, format, "48000", &encoded));
+            let duration = probed_duration(&ffprobe, &encoded);
+            merge_engine::check_source_duration(name, Some(duration)).unwrap();
+            sources.push(AudioFeed::plain(encoded));
+        }
+
+        let decode = |feed: &AudioFeed, rate: u32, secs: u32, label: &str| {
+            let out = dir.join(format!("{label}.wav"));
+            run_tool(&ffmpeg, &decode_args(feed, rate, secs, &out));
+            out
+        };
+        let max_sync = SYNC_SAMPLE_RATE as usize * SYNC_DECODE_SECS as usize + 1;
+        let sync_a = read_wav_samples(
+            &decode(&sources[0], SYNC_SAMPLE_RATE, SYNC_DECODE_SECS, "sync_a"),
+            max_sync,
+        )
+        .unwrap();
+        let sync_b = read_wav_samples(
+            &decode(&sources[1], SYNC_SAMPLE_RATE, SYNC_DECODE_SECS, "sync_b"),
+            max_sync,
+        )
+        .unwrap();
+        let sync = merge_engine::detect_sync_samples(&sync_a, &sync_b, SYNC_SAMPLE_RATE as usize).unwrap();
+        assert!(sync.is_same_event, "confidence {}", sync.confidence);
+        assert!(
+            (sync.offset_seconds - offset_secs).abs() < 0.005,
+            "offset {} s, made {offset_secs} s",
+            sync.offset_seconds
+        );
+
+        let mut aligned = Vec::new();
+        for (i, (feed, offset)) in sources.iter().zip([0.0, sync.offset_seconds]).enumerate() {
+            let decoded = decode(
+                feed,
+                MERGE_SAMPLE_RATE,
+                MAX_MERGE_DURATION_SECS + 1,
+                &format!("decoded_{i}"),
+            );
+            let reader = WavSampleReader::open(&decoded).unwrap();
+            let len = reader.len;
+            aligned.push(AlignedSource::new(reader, (offset * rate as f64) as u64, len));
+        }
+        let merged = dir.join("merged_intermediate.wav");
+        let progress: ProgressFn = Arc::new(|_: MergeProgress| {});
+        let written = stream_to_wav(
+            MergeStrategy::Loudest,
+            &mut aligned,
+            &merged,
+            &MergeCancel::default(),
+            &progress,
+        )
+        .unwrap();
+        let expected = offset_secs + 10.0;
+        let written_secs = written as f64 / rate as f64;
+        assert!((written_secs - expected).abs() < 0.03, "merged {written_secs} s");
+
+        let output = dir.join("merged.wav");
+        run_tool(&ffmpeg, &encode_args(&merged, "wav", "48000", &output));
+        let duration = probed_duration(&ffprobe, &output);
+        assert!(
+            (duration - expected).abs() < 0.06,
+            "output {duration} s, expected {expected} s"
+        );
         let _ = std::fs::remove_dir_all(dir);
     }
 }

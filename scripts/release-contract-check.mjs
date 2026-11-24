@@ -56,6 +56,7 @@ const rustLicenseReport = read('src-tauri/resources/third-party/rust/THIRD-PARTY
 const sbomNormalizer = read('scripts/normalize-release-sbom.mjs')
 const cargoAboutNormalizer = read('scripts/normalize-cargo-about-report.mjs')
 const appConstants = read('src/constants.js')
+const appJsx = read('src/App.jsx')
 const settingsPanel = read('src/components/SettingsPanel.jsx')
 const installerLicense = read('src-tauri/installer/license.rtf')
 const tauriLib = read('src-tauri/src/lib.rs')
@@ -1075,15 +1076,20 @@ expect(
   tauriLib.includes('if updater_config_is_valid(updater_config)'),
   'desktop startup must not register the updater without a valid plugin configuration',
 )
-// DA-06: Merge is hidden in the interface, so its backend commands stay off
-// the IPC surface until the owner decides to ship it (audit open question 3).
-// Re-registering them is a deliberate product change, not a refactor.
+// DA-06: Merge's commands are on the IPC surface exactly when its tab is in
+// the sidebar. Registering them while the tab is hidden, or showing the tab
+// without them, is a product change the contract has to see.
 const invokeHandlerList = tauriLib.match(/generate_handler!\[([\s\S]*?)\]/)?.[1] ?? ''
 expect(invokeHandlerList.includes('commands::health_check'), 'lib.rs invoke_handler list could not be read')
-for (const hiddenCommand of ['merge_audio_cmd', 'detect_sync_cmd']) {
+const appNav = appJsx.match(/const NAV = \[([\s\S]*?)\n\]/)?.[1] ?? ''
+expect(appNav.includes("id: 'convert'"), 'App.jsx NAV list could not be read')
+const mergeTabShown = appNav.includes("id: 'merge'")
+for (const mergeCommand of ['detect_sync_cmd', 'merge_audio_cmd', 'merge_cancel_cmd']) {
   expect(
-    !invokeHandlerList.includes(hiddenCommand),
-    `hidden Merge command ${hiddenCommand} must not be registered over IPC while Merge is hidden`,
+    invokeHandlerList.includes(`commands::${mergeCommand}`) === mergeTabShown,
+    mergeTabShown
+      ? `the Merge tab is shown, so ${mergeCommand} must be registered in lib.rs invoke_handler`
+      : `the Merge tab is hidden, so ${mergeCommand} must not be registered over IPC`,
   )
 }
 expect(

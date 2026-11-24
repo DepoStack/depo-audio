@@ -18,7 +18,11 @@ const budgets = {
   // budget sums every emitted .js file, so lazy-loading would only move bytes
   // between chunks. No duplicate libraries were found, and lucide icons are
   // imported one by one.
-  javascript: 621 * 1024,
+  //
+  // Raised to 642 KiB when Merge returned to the sidebar for v1.2.0 (#231):
+  // the Merge tab's chunk took the measured total to 628.7 KiB, and 642 is
+  // ceil(628.7 * 1.02), the same 2% headroom.
+  javascript: 642 * 1024,
   // Raised from 64 KiB with the DepoStack brand foundation: the bundled
   // Archivo/Fragment Mono @font-face rules with their size-adjusted fallbacks
   // (src/styles/fonts.css) and the type-role utilities add ~2 KiB over main

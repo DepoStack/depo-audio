@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, useCallback, lazy, Suspense } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import { openUrl } from '@tauri-apps/plugin-opener'
-import { Sun, Moon, Monitor, Settings, AudioLines, Play, FolderOpen, X } from 'lucide-react'
+import { Sun, Moon, Monitor, Settings, AudioLines, Play, FolderOpen, GitMerge, X } from 'lucide-react'
 import { DEPOSTACK_URL } from './constants'
 import { rememberEngineInfo } from './lib/diagnostics'
 import { shouldIgnoreNavigationShortcut } from './lib/utils'
@@ -29,10 +29,10 @@ import { ConfirmDialog } from './components/ui/confirm-dialog'
 
 const LibraryTab = lazy(() => import('./components/Library/LibraryTab'))
 const PlayerTab = lazy(() => import('./components/Player/PlayerTab'))
-// Merge is hidden for v1 — MergeTab.jsx is retained, and its backend commands
-// (detect_sync_cmd, merge_audio_cmd) are not registered over IPC. Bringing it
-// back is an owner decision: re-register both in src-tauri/src/lib.rs, update
-// the release contract, then re-add the nav entry and TabsContent below.
+// Merge's commands (detect_sync_cmd, merge_audio_cmd, merge_cancel_cmd) are
+// registered in src-tauri/src/lib.rs exactly while this tab is in NAV; the
+// release contract (DA-06) checks the two together.
+const MergeTab = lazy(() => import('./components/Merge/MergeTab'))
 const SettingsPanel = lazy(() => import('./components/SettingsPanel'))
 
 const themeIcons = {
@@ -46,10 +46,13 @@ const NAV = [
   { id: 'convert', label: 'Convert', Icon: AudioLines },
   { id: 'player', label: 'Player', Icon: Play },
   { id: 'library', label: 'Library', Icon: FolderOpen },
+  { id: 'merge', label: 'Merge', Icon: GitMerge },
 ]
 
 export default function App() {
   const [tab, setTab] = useState('convert')
+  const [mergeOpened, setMergeOpened] = useState(false)
+  if (tab === 'merge' && !mergeOpened) setMergeOpened(true)
 
   // Custom hooks
   const prefs = usePreferencesContext()
@@ -497,6 +500,15 @@ export default function App() {
                   onReload={loadLibrary}
                   onReexport={handleQueueFromLibrary}
                 />
+              </Suspense>
+            </TabsContent>
+
+            {/* Once opened, Merge stays mounted (hidden when another tab is
+                showing) so a running merge keeps its progress, Cancel and
+                result when the person looks at another tab. */}
+            <TabsContent value="merge" forceMount={mergeOpened || undefined} className="data-[state=inactive]:hidden">
+              <Suspense fallback={<WorkspaceLoading label="Loading Merge workspace" />}>
+                <MergeTab />
               </Suspense>
             </TabsContent>
           </>

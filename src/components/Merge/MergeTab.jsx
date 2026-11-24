@@ -1,29 +1,117 @@
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { invoke } from '@tauri-apps/api/core'
+import { listen } from '@tauri-apps/api/event'
 import { open } from '@tauri-apps/plugin-dialog'
 import { Loader2, X } from 'lucide-react'
 import { cn } from '../../lib/utils'
 import { FORMATS_OUT, CH_COLORS } from '../../constants'
-import { fmtSize, fmtTime, sortRecordingChunks } from '../../utils'
+import MERGE_FORMATS from '../../mergeFormats.json'
+import { basename, fmtSize, fmtTime, sortRecordingChunks } from '../../utils'
 import { Button } from '../ui/button'
 import { Card, CardHeader, CardTitle, CardContent } from '../ui/card'
 import { Input } from '../ui/input'
 import { Label } from '../ui/label'
 import { Badge } from '../ui/badge'
 
+/** The job takes 2 to 4 recordings, each up to 30 minutes (merge_engine.rs). */
+export const MAX_MERGE_SOURCES = 4
+export const MAX_MERGE_MINUTES = 30
+const MERGE_CANCELLED = 'Merge cancelled'
+const STAGE_LABELS = {
+  preparing: 'Reading',
+  matching: 'Matching',
+  decoding: 'Decoding',
+  merging: 'Merging',
+  encoding: 'Saving',
+  done: 'Saving',
+}
+
+/** Message for a recording over the length limit, naming it. */
+export function overLengthMessage(name) {
+  return `"${name}" is longer than ${MAX_MERGE_MINUTES} minutes. Each recording can be up to ${MAX_MERGE_MINUTES} minutes.`
+}
+
+/**
+ * Add picked paths to the list: skips any already in it and stops at the
+ * four-source limit. Returns the new list, the sources added, and a notice
+ * for what was left out.
+ */
+export function addMergeSources(current, paths) {
+  const known = new Set(current.map(s => s.path))
+  const added = []
+  const duplicates = []
+  let overLimit = 0
+  for (const path of paths) {
+    if (known.has(path)) {
+      duplicates.push(basename(path))
+    } else if (current.length + added.length >= MAX_MERGE_SOURCES) {
+      overLimit += 1
+    } else {
+      known.add(path)
+      added.push({ path, name: basename(path) })
+    }
+  }
+  const notices = []
+  if (duplicates.length) {
+    notices.push(`${duplicates.join(', ')} ${duplicates.length === 1 ? 'is' : 'are'} already in the list.`)
+  }
+  if (overLimit) {
+    notices.push(
+      `Merge takes up to ${MAX_MERGE_SOURCES} recordings, so ${overLimit} more ${overLimit === 1 ? 'was' : 'were'} not added.`,
+    )
+  }
+  return { sources: [...current, ...added], added, notice: notices.join(' ') }
+}
+
 export default function MergeTab() {
   const [sources, setSources] = useState([])
-  // Merge output goes next to the first source; sample rate is fixed at 48kHz
-  const outDir = ''
+  // Next to the reference recording unless a folder is chosen; the merge
+  // itself runs at 48 kHz.
+  const [outDir, setOutDir] = useState('')
   const rate = '48000'
   const [outName, setOutName] = useState('')
   const [format, setFormat] = useState('wav')
-  const [strategy, setStrategy] = useState('best_quality')
+  const [strategy, setStrategy] = useState('loudest')
   const [syncing, setSyncing] = useState(false)
   const [merging, setMerging] = useState(false)
+  const [cancelling, setCancelling] = useState(false)
+  const [progress, setProgress] = useState(null)
   const [syncResults, setSyncResults] = useState([])
   const [result, setResult] = useState(null)
   const [error, setError] = useState('')
+  const [notice, setNotice] = useState('')
+  const mounted = useRef(true)
+  // A Cancel pressed between two sync checks, or before the merge reaches
+  // the app, has no running job to stop yet; these let the next step see it.
+  const cancelRequested = useRef(false)
+  const running = useRef(false)
+  useEffect(() => {
+    mounted.current = true
+    return () => {
+      mounted.current = false
+    }
+  }, [])
+
+  const tooLong = sources.filter(s => s.durationSecs > MAX_MERGE_MINUTES * 60)
+  const atLimit = sources.length >= MAX_MERGE_SOURCES
+  const busy = syncing || merging
+
+  // Each recording's length, read before Start so one over the limit is
+  // named here rather than refused after decoding has begun. A length that
+  // can't be read is left for the merge itself to check.
+  const checkLengths = async added => {
+    for (const source of added) {
+      let durationSecs = null
+      try {
+        const info = await invoke('probe_audio_streams_cmd', { path: source.path })
+        durationSecs = info?.durationSecs ?? null
+      } catch {
+        durationSecs = null
+      }
+      if (!mounted.current) return
+      setSources(prev => prev.map(s => (s.path === source.path ? { ...s, durationSecs } : s)))
+    }
+  }
 
   const browseFiles = async () => {
     try {
@@ -56,19 +144,25 @@ export default function MergeTab() {
         ],
       })
       if (selected) {
-        const paths = Array.isArray(selected) ? selected : [selected]
-        const newSources = paths.map(p => {
-          const path = typeof p === 'string' ? p : p.path
-          return { path, name: path.split('/').pop().split('\\').pop() }
-        })
+        const paths = (Array.isArray(selected) ? selected : [selected]).map(p => (typeof p === 'string' ? p : p.path))
+        const next = addMergeSources(sources, paths)
         // Order FTR session chunks chronologically ACROSS batches: source
         // order is load-bearing here — sources[0] becomes the sync Reference,
         // so a second "Add Files" must not leave a later chunk in front.
         // (Mixed/non-chunk source sets keep their order.)
-        setSources(prev => sortRecordingChunks([...prev, ...newSources], s => s.path))
+        // Lengths read while the picker was open are kept.
+        setSources(prev => {
+          const known = new Map(prev.map(s => [s.path, s]))
+          return sortRecordingChunks(
+            next.sources.map(s => known.get(s.path) ?? s),
+            s => s.path,
+          )
+        })
+        setNotice(next.notice)
         setSyncResults([]) // sync is stale once the source set changes
         setResult(null)
         setError('')
+        checkLengths(next.added)
       }
     } catch (error) {
       setError(`Could not open the audio picker: ${String(error)}`)
@@ -79,49 +173,114 @@ export default function MergeTab() {
     setSources(prev => prev.filter((_, i) => i !== idx))
     setSyncResults([])
     setResult(null)
+    setNotice('')
+    setError('')
+  }
+
+  const chooseFolder = async () => {
+    try {
+      const folder = await open({ directory: true, multiple: false })
+      if (typeof folder === 'string') setOutDir(folder)
+    } catch (error) {
+      setError(`Could not open the folder picker: ${String(error)}`)
+    }
+  }
+
+  const cancel = async () => {
+    cancelRequested.current = true
+    setCancelling(true)
+    try {
+      // Until the job holds its slot there is nothing to stop; keep asking
+      // while it is still on its way, and the next step checks the flag too.
+      for (let tries = 0; tries < 50 && running.current; tries++) {
+        if (await invoke('merge_cancel_cmd')) return
+        await new Promise(resolve => setTimeout(resolve, 100))
+      }
+    } catch (e) {
+      setError(String(e))
+      setCancelling(false)
+    }
+  }
+
+  const stopIfCancelled = () => {
+    if (cancelRequested.current) throw new Error(MERGE_CANCELLED)
+  }
+
+  // "Merge cancelled" is the answer to Cancel, not an error.
+  const showFailure = e => {
+    const message = String(e)
+    if (message.includes(MERGE_CANCELLED)) {
+      setNotice('Cancelled. Nothing was saved.')
+    } else {
+      setError(message)
+    }
   }
 
   const handleSync = async () => {
-    if (sources.length < 2) return
+    if (sources.length < 2 || busy) return
     setSyncing(true)
+    setCancelling(false)
     setError('')
+    setNotice('')
+    cancelRequested.current = false
+    running.current = true
     try {
       const results = []
       for (let i = 1; i < sources.length; i++) {
+        stopIfCancelled()
         const sync = await invoke('detect_sync_cmd', {
           sourceA: sources[0].path,
           sourceB: sources[i].path,
         })
         results.push(sync)
       }
+      stopIfCancelled()
       setSyncResults(results)
     } catch (e) {
-      setError(String(e))
+      showFailure(e)
+    } finally {
+      running.current = false
     }
     setSyncing(false)
+    setCancelling(false)
   }
 
   const handleMerge = async () => {
-    if (sources.length < 2 || merging) return
+    if (sources.length < 2 || busy || tooLong.length) return
     setMerging(true)
+    setCancelling(false)
     setError('')
+    setNotice('')
     setResult(null)
+    setProgress({ stage: 'preparing', percent: 0 })
+    cancelRequested.current = false
+    running.current = true
+    let unlisten = null
     try {
+      unlisten = await listen('merge:progress', ({ payload }) => {
+        if (mounted.current) setProgress(payload)
+      })
+      stopIfCancelled()
       const res = await invoke('merge_audio_cmd', {
         job: {
           sources: sources.map(s => s.path),
           outDir,
           outName: outName || 'merged',
           format,
-          rate: format === 'opus' ? '48000' : rate,
+          rate,
           strategy,
         },
       })
       setResult(res)
     } catch (e) {
-      setError(String(e))
+      showFailure(e)
+    } finally {
+      running.current = false
+      if (unlisten) unlisten()
     }
     setMerging(false)
+    setCancelling(false)
+    setProgress(null)
   }
 
   return (
@@ -132,7 +291,7 @@ export default function MergeTab() {
           <Card>
             <CardHeader>
               <CardTitle>Recordings to merge</CardTitle>
-              <Button size="sm" onClick={browseFiles}>
+              <Button size="sm" onClick={browseFiles} disabled={atLimit || busy}>
                 Add Files
               </Button>
             </CardHeader>
@@ -155,13 +314,13 @@ export default function MergeTab() {
                   Add two or more recordings of the same event
                 </p>
                 <p className="type-small text-[hsl(var(--sub))] mb-5">
-                  Reporter mic, backup recorder, phone — any combination works.
+                  Two to four recordings, each up to 30 minutes: reporter mic, backup recorder, phone.
                 </p>
                 <div className="flex items-start justify-center gap-6 text-left">
                   {[
-                    ['1', 'Add recordings', 'Two or more captures of the same proceeding'],
+                    ['1', 'Add recordings', 'Two to four captures of the same proceeding'],
                     ['2', 'Auto-sync', 'DepoAudio aligns them by sound, no timestamps needed'],
-                    ['3', 'One clean file', 'The clearest source wins at every moment'],
+                    ['3', 'One file', 'The loudest source at each moment, or all of them mixed'],
                   ].map(([n, title, desc]) => (
                     <div key={n} className="flex items-start gap-2 max-w-[180px]">
                       <span className="w-5 h-5 rounded-full border border-foreground text-foreground type-label flex items-center justify-center shrink-0 mt-0.5">
@@ -179,7 +338,7 @@ export default function MergeTab() {
               <div className="p-2">
                 {sources.map((s, i) => (
                   <div
-                    key={i}
+                    key={s.path}
                     className="group flex items-center gap-2.5 px-3 py-2 rounded-md transition-colors hover:bg-secondary/50"
                   >
                     <span className="w-2 h-2 rounded-full shrink-0" style={{ background: CH_COLORS[i % 4] }} />
@@ -189,6 +348,16 @@ export default function MergeTab() {
                     <span className="flex-1 type-small text-foreground truncate min-w-0" title={s.path}>
                       {s.name}
                     </span>
+                    {s.durationSecs > 0 && (
+                      <span
+                        className={cn(
+                          'tabular-nums text-[12px]',
+                          s.durationSecs > MAX_MERGE_MINUTES * 60 ? 'text-destructive' : 'text-[hsl(var(--sub))]',
+                        )}
+                      >
+                        {fmtTime(s.durationSecs)}
+                      </span>
+                    )}
                     {syncResults[i - 1] && i > 0 && (
                       <Badge variant={syncResults[i - 1].isSameEvent ? 'done' : 'error'}>
                         {syncResults[i - 1].isSameEvent
@@ -197,17 +366,39 @@ export default function MergeTab() {
                       </Badge>
                     )}
                     <button
-                      className="text-[hsl(var(--sub))] opacity-0 group-hover:opacity-100 transition-opacity hover:text-destructive shrink-0"
-                      aria-label="Remove source"
+                      className="text-[hsl(var(--sub))] opacity-0 group-hover:opacity-100 focus-visible:opacity-100 transition-opacity hover:text-destructive shrink-0"
+                      aria-label={`Remove ${s.name}`}
+                      disabled={busy}
                       onClick={() => removeSource(i)}
                     >
                       <X size={9} />
                     </button>
                   </div>
                 ))}
+                {atLimit && (
+                  <p className="px-3 pt-1 type-small text-[hsl(var(--sub))]">
+                    Four recordings is the most one merge takes.
+                  </p>
+                )}
               </div>
             )}
           </Card>
+
+          {tooLong.map(s => (
+            <p
+              key={s.path}
+              role="alert"
+              className="px-3 py-2 border-l-[3px] border-l-destructive border border-destructive/20 rounded-md type-small text-destructive"
+            >
+              {overLengthMessage(s.name)}
+            </p>
+          ))}
+
+          {notice && (
+            <p role="status" className="px-3 py-2 border border-border rounded-md type-small text-foreground">
+              {notice}
+            </p>
+          )}
 
           {/* ── Merge Options ────────────────────────────── */}
           {sources.length >= 2 && (
@@ -222,15 +413,16 @@ export default function MergeTab() {
                     <input
                       type="radio"
                       name="strategy"
-                      value="best_quality"
-                      checked={strategy === 'best_quality'}
-                      onChange={() => setStrategy('best_quality')}
+                      value="loudest"
+                      checked={strategy === 'loudest'}
+                      onChange={() => setStrategy('loudest')}
                       className="mt-0.5 accent-primary"
                     />
                     <div className="flex flex-col">
-                      <span className="type-label text-foreground">Best quality</span>
+                      <span className="type-label text-foreground">Loudest source</span>
                       <span className="type-small text-[hsl(var(--sub))]">
-                        Picks the clearest source for each moment — fills gaps automatically
+                        Uses whichever recording is loudest for each half second, with a short crossfade when it
+                        switches
                       </span>
                     </div>
                   </label>
@@ -244,23 +436,23 @@ export default function MergeTab() {
                       className="mt-0.5 accent-primary"
                     />
                     <div className="flex flex-col">
-                      <span className="type-label text-foreground">Mix all together</span>
+                      <span className="type-label text-foreground">Mix all</span>
                       <span className="type-small text-[hsl(var(--sub))]">
-                        Blends all sources equally — louder but keeps everything
+                        Averages every recording that is playing at each moment
                       </span>
                     </div>
                   </label>
                 </div>
 
-                <div className="flex items-end gap-3 pt-3 border-t border-border/40 mt-3">
-                  <div className="flex-1">
+                <div className="flex flex-wrap items-end gap-3 pt-3 border-t border-border/40 mt-3">
+                  <div className="flex-1 min-w-[160px]">
                     <Label className="mb-1.5 block">Output name</Label>
                     <Input value={outName} placeholder="merged" onChange={e => setOutName(e.target.value)} />
                   </div>
                   <div>
                     <Label className="mb-1.5 block">Format</Label>
                     <div className="flex gap-0.5 bg-secondary rounded-md p-0.5">
-                      {FORMATS_OUT.filter(f => f.id !== 'sgmca').map(f => (
+                      {FORMATS_OUT.filter(f => MERGE_FORMATS.includes(f.id)).map(f => (
                         <button
                           key={f.id}
                           title={f.desc}
@@ -278,6 +470,20 @@ export default function MergeTab() {
                       ))}
                     </div>
                   </div>
+                </div>
+
+                <div className="flex items-center gap-3 pt-3 mt-3 border-t border-border/40">
+                  <span className="flex-1 type-small text-[hsl(var(--sub))] truncate min-w-0" title={outDir || ''}>
+                    Saves to {outDir ? basename(outDir) : 'the folder of the reference recording'}
+                  </span>
+                  {outDir && (
+                    <Button size="sm" variant="ghost" onClick={() => setOutDir('')} disabled={busy}>
+                      Use reference folder
+                    </Button>
+                  )}
+                  <Button size="sm" onClick={chooseFolder} disabled={busy}>
+                    Choose folder
+                  </Button>
                 </div>
               </CardContent>
             </Card>
@@ -328,10 +534,24 @@ export default function MergeTab() {
               Detecting sync…
             </span>
           )}
-          {merging && (
-            <span className="flex items-center gap-1.5 px-2.5 py-1 bg-[hsl(var(--blue)/0.1)] text-[hsl(var(--blue))] text-[12px] tabular-nums">
-              <span className="w-1.5 h-1.5 rounded-full bg-[hsl(var(--blue))] animate-dot-pulse" />
-              Merging…
+          {merging && progress && (
+            <span
+              role="status"
+              className="flex items-center gap-2 px-2.5 py-1 bg-[hsl(var(--blue)/0.1)] text-[hsl(var(--blue))] text-[12px] tabular-nums"
+            >
+              <span>
+                {STAGE_LABELS[progress.stage] ?? 'Merging'} {progress.percent}%
+              </span>
+              <span
+                className="w-28 h-1 rounded-full bg-[hsl(var(--blue)/0.2)] overflow-hidden"
+                role="progressbar"
+                aria-label="Merge progress"
+                aria-valuemin={0}
+                aria-valuemax={100}
+                aria-valuenow={progress.percent}
+              >
+                <span className="block h-full bg-[hsl(var(--blue))]" style={{ width: `${progress.percent}%` }} />
+              </span>
             </span>
           )}
           {result && !merging && (
@@ -341,6 +561,11 @@ export default function MergeTab() {
           )}
         </div>
         <div className="flex gap-2">
+          {busy && (
+            <Button size="sm" variant="ghost" onClick={cancel} disabled={cancelling}>
+              {cancelling ? 'Cancelling…' : 'Cancel'}
+            </Button>
+          )}
           {sources.length >= 2 && !merging && (
             <Button size="sm" onClick={handleSync} disabled={syncing}>
               {syncing ? (
@@ -353,7 +578,7 @@ export default function MergeTab() {
               )}
             </Button>
           )}
-          <Button variant="primary" onClick={handleMerge} disabled={merging || sources.length < 2}>
+          <Button variant="primary" onClick={handleMerge} disabled={busy || sources.length < 2 || tooLong.length > 0}>
             {merging ? (
               <>
                 <Loader2 className="h-3.5 w-3.5 animate-spin" />
