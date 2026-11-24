@@ -152,8 +152,9 @@ Segment start times come from, in this order:
 3. otherwise the time of conversion, in this computer's local time (`conversion-time`). This is
    not when the recording was made, and the export record says so.
 
-Leading-silence trim moves the first sample by an amount FFmpeg does not report. On a source with
-one recording session the output is then one segment dated at conversion time, and the note says
+Leading-silence trim moves the first sample later by a measured number of samples, which the
+export record holds as `processing.leadingTrim`. When it removes any samples from a source with
+one recording session, the SGMCA output is one segment dated at conversion time, and the note says
 so. On an SGMCA source with **more than one** session, trim is **refused** before anything is
 converted, for every output format: the sessions' boundaries and start times could no longer be
 placed in the output, and a note that they were dropped would still leave a record that cannot
@@ -188,7 +189,7 @@ the source's last sample, which FFmpeg 6.1 and 8.0 both write
 (`a_wav_source_keeps_its_partial_last_opus_frame_in_sgmca_and_a_lost_one_fails`, 95 001 samples:
 98 whole 20 ms frames and 921 samples). A stream that ended early fails, for example "It holds
 94080 samples (48 kHz) where the source holds 95001: 921 fewer, so audio would have been dropped
-from the recording." Only after leading-silence trim, whose effect FFmpeg does not report, is the
+from the recording." Only after a leading-silence trim that removed samples is the
 count not checked.
 
 A filter that **delays** the audio keeps the count and so needs its own check. FFmpeg's

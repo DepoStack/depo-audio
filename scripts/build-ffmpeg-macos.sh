@@ -175,7 +175,7 @@ build_arch() {
       echo "ERROR: $arch FFmpeg lacks encoder $encoder" >&2; exit 1;
     }
   done
-  for filter in adeclip highpass volume loudnorm afade silenceremove alimiter asplit pan aresample ebur128 amerge aformat astats; do
+  for filter in adeclip highpass volume loudnorm afade silenceremove alimiter asplit pan aresample ebur128 amerge aformat astats atrim asetpts; do
     grep -Eq "[[:space:]]${filter}[[:space:]]" <<<"$filters" || {
       echo "ERROR: $arch FFmpeg lacks filter $filter" >&2; exit 1;
     }
