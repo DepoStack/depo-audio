@@ -414,7 +414,11 @@ pub(crate) async fn merge_audio(
     for (file, &offset) in decoded_files.iter().zip(&offsets) {
         let reader = WavSampleReader::open(&file.path)?;
         let len = reader.len;
-        sources.push(AlignedSource::new(reader, ((offset - min_offset) * rate) as u64, len));
+        sources.push(AlignedSource::new(
+            reader,
+            ((offset - min_offset) * rate).round() as u64,
+            len,
+        ));
     }
     let total_samples = merge_engine::timeline_len(&sources);
     if total_samples == 0 {
@@ -911,7 +915,7 @@ mod tests {
             rate: "48000".into(),
             strategy: "loudest".into(),
         };
-        let refusal = |job: MergeJob| validate_merge_job(&job).err().expect("refused");
+        let refusal = |job: MergeJob| validate_merge_job(&job).expect_err("refused");
 
         let counts = "Merge requires 2 to 4 source files";
         assert_eq!(refusal(job(small[..1].to_vec(), "merged")), counts);

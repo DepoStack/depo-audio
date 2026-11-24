@@ -113,4 +113,29 @@ describe('MergeTab', () => {
     expect(await screen.findByText('Cancelled. Nothing was saved.')).toBeInTheDocument()
     expect(screen.queryByRole('progressbar')).not.toBeInTheDocument()
   })
+
+  it('stops between sync checks when Cancel comes before the next one starts', async () => {
+    let finishFirst = null
+    invoke.mockImplementation((command, args) => {
+      if (command === 'probe_audio_streams_cmd') return Promise.resolve({ durationSecs: 60 })
+      if (command === 'detect_sync_cmd') {
+        return new Promise(resolve => {
+          finishFirst = () => resolve({ offsetSeconds: 0.5, confidence: 0.9, isSameEvent: true })
+        })
+      }
+      // Between two checks no job holds the slot, so there is nothing to stop.
+      if (command === 'merge_cancel_cmd') return Promise.resolve(false)
+      return Promise.resolve(null)
+    })
+    render(<MergeTab />)
+    await addFiles(['/a.wav', '/b.wav', '/c.wav'])
+    fireEvent.click(await screen.findByRole('button', { name: 'Check Sync' }))
+    await waitFor(() => expect(finishFirst).not.toBeNull())
+
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+    await act(async () => finishFirst())
+
+    expect(await screen.findByText('Cancelled. Nothing was saved.')).toBeInTheDocument()
+    expect(invoke.mock.calls.filter(([command]) => command === 'detect_sync_cmd')).toHaveLength(1)
+  })
 })

@@ -84,9 +84,10 @@ pub(crate) fn timeline_len<R: SampleReader>(sources: &[AlignedSource<R>]) -> u64
 }
 
 /// The longest timeline the job will write: a full-length source shifted by
-/// the widest sync offset, plus a second of slack.
+/// the widest spread of sync offsets (one source up to a minute before the
+/// reference, another up to a minute after), plus a second of slack.
 pub(crate) fn max_timeline_samples(sample_rate: u32) -> u64 {
-    (MAX_MERGE_DURATION_SECS as u64 + SYNC_SEARCH_SECS as u64 + 1) * sample_rate as u64
+    (MAX_MERGE_DURATION_SECS as u64 + 2 * SYNC_SEARCH_SECS as u64 + 1) * sample_rate as u64
 }
 
 /// Refuse a source whose probed length is unknown or over the limit, naming
@@ -177,6 +178,7 @@ fn loudest_stream<R: SampleReader>(
     let mut cur_out: Vec<f32> = Vec::with_capacity(segment);
     let mut prev_pos = 0u64;
     let mut prev_best: Option<usize> = None;
+    let mut ranges = vec![0..0; count];
 
     let mut pos = 0u64;
     while pos < total {
@@ -187,6 +189,7 @@ fn loudest_stream<R: SampleReader>(
         let mut best_rms = 0.0f64;
         for (idx, source) in sources.iter_mut().enumerate() {
             let range = source.read_block(pos, &mut cur_blocks[idx][..n])?;
+            ranges[idx] = range.clone();
             let covered = range.len();
             let mut sum = 0.0f64;
             for &s in &cur_blocks[idx][range] {
@@ -204,6 +207,7 @@ fn loudest_stream<R: SampleReader>(
             }
         }
 
+        fill_uncovered(&mut cur_blocks, &ranges, n);
         cur_out.clear();
         cur_out.extend_from_slice(&cur_blocks[best][..n]);
 
@@ -244,6 +248,29 @@ fn loudest_stream<R: SampleReader>(
     }
     tick(total, total)?;
     Ok(total)
+}
+
+/// Where a source has no audio in the block (it starts late or ends early
+/// inside the segment), use the average of the sources that do. A source
+/// that wins a segment it only partly covers, or one faded to or from at its
+/// edge, then never puts silence over another recording's audio.
+fn fill_uncovered(blocks: &mut [Vec<f32>], ranges: &[Range<usize>], n: usize) {
+    for idx in 0..blocks.len() {
+        if ranges[idx] == (0..n) {
+            continue;
+        }
+        for k in (0..n).filter(|k| !ranges[idx].contains(k)) {
+            let mut sum = 0.0f32;
+            let mut covering = 0usize;
+            for (other, range) in ranges.iter().enumerate() {
+                if other != idx && range.contains(&k) {
+                    sum += blocks[other][k];
+                    covering += 1;
+                }
+            }
+            blocks[idx][k] = if covering > 0 { sum / covering as f32 } else { 0.0 };
+        }
+    }
 }
 
 // ── Sync detection ──────────────────────────────────────────────────────────
@@ -575,12 +602,27 @@ mod tests {
                     best_src = src_idx;
                 }
             }
-            let offset = offsets[best_src];
+            // A source's sample at a timeline position, or where it has none,
+            // the average of the sources that do (silence when none does).
+            let raw = |src: usize, at: usize| {
+                let i = at as i64 - offsets[src];
+                (i >= 0 && (i as usize) < sources[src].len()).then(|| sources[src][i as usize])
+            };
+            let filled = |src: usize, at: usize| {
+                raw(src, at).unwrap_or_else(|| {
+                    let others: Vec<f32> = (0..sources.len())
+                        .filter(|&other| other != src)
+                        .filter_map(|other| raw(other, at))
+                        .collect();
+                    if others.is_empty() {
+                        0.0
+                    } else {
+                        others.iter().sum::<f32>() / others.len() as f32
+                    }
+                })
+            };
             for (j, out) in output[pos..end].iter_mut().enumerate() {
-                let i = (pos + j) as i64 - offset;
-                if i >= 0 && (i as usize) < sources[best_src].len() {
-                    *out = sources[best_src][i as usize];
-                }
+                *out = filled(best_src, pos + j);
             }
             if let Some(prev) = prev_best {
                 if prev != best_src && pos > 0 {
@@ -589,15 +631,8 @@ mod tests {
                     let fade_len = fade_end - fade_start;
                     for j in 0..fade_len {
                         let t = j as f32 / fade_len as f32;
-                        let at = |src: usize| {
-                            let i = (fade_start + j) as i64 - offsets[src];
-                            if i >= 0 && (i as usize) < sources[src].len() {
-                                sources[src][i as usize]
-                            } else {
-                                0.0
-                            }
-                        };
-                        output[fade_start + j] = at(prev) * (1.0 - t) + at(best_src) * t;
+                        let at = fade_start + j;
+                        output[at] = filled(prev, at) * (1.0 - t) + filled(best_src, at) * t;
                     }
                 }
             }
@@ -695,6 +730,23 @@ mod tests {
         let edge = segment;
         assert_ne!(got[edge], sources[0][edge]);
         assert_ne!(got[edge], sources[1][edge]);
+    }
+
+    #[test]
+    fn a_recording_that_starts_inside_a_segment_never_silences_another() {
+        // The backup starts 360 samples into the first half-second segment
+        // with a loud 40-sample burst, so it wins that segment. The reference
+        // mic's speech before the backup starts must still be in the output.
+        let rate = 800;
+        let reference = vec![0.1f32; 1200];
+        let mut backup = vec![0.05f32; 840];
+        backup[..40].fill(0.5);
+        let got = run(MergeStrategy::Loudest, &[reference, backup], &[0, 360], rate, None);
+        assert!(
+            got[..360].iter().all(|&s| s == 0.1),
+            "reference audio kept before the backup starts"
+        );
+        assert_eq!(got[370], 0.5, "the winning backup's own audio where it has some");
     }
 
     #[test]

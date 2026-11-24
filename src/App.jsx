@@ -51,6 +51,8 @@ const NAV = [
 
 export default function App() {
   const [tab, setTab] = useState('convert')
+  const [mergeOpened, setMergeOpened] = useState(false)
+  if (tab === 'merge' && !mergeOpened) setMergeOpened(true)
 
   // Custom hooks
   const prefs = usePreferencesContext()
@@ -501,7 +503,10 @@ export default function App() {
               </Suspense>
             </TabsContent>
 
-            <TabsContent value="merge">
+            {/* Once opened, Merge stays mounted (hidden when another tab is
+                showing) so a running merge keeps its progress, Cancel and
+                result when the person looks at another tab. */}
+            <TabsContent value="merge" forceMount={mergeOpened || undefined} className="data-[state=inactive]:hidden">
               <Suspense fallback={<WorkspaceLoading label="Loading Merge workspace" />}>
                 <MergeTab />
               </Suspense>

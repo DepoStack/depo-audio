@@ -81,6 +81,10 @@ export default function MergeTab() {
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
   const mounted = useRef(true)
+  // A Cancel pressed between two sync checks, or before the merge reaches
+  // the app, has no running job to stop yet; these let the next step see it.
+  const cancelRequested = useRef(false)
+  const running = useRef(false)
   useEffect(() => {
     mounted.current = true
     return () => {
@@ -146,7 +150,14 @@ export default function MergeTab() {
         // order is load-bearing here — sources[0] becomes the sync Reference,
         // so a second "Add Files" must not leave a later chunk in front.
         // (Mixed/non-chunk source sets keep their order.)
-        setSources(sortRecordingChunks(next.sources, s => s.path))
+        // Lengths read while the picker was open are kept.
+        setSources(prev => {
+          const known = new Map(prev.map(s => [s.path, s]))
+          return sortRecordingChunks(
+            next.sources.map(s => known.get(s.path) ?? s),
+            s => s.path,
+          )
+        })
         setNotice(next.notice)
         setSyncResults([]) // sync is stale once the source set changes
         setResult(null)
@@ -163,6 +174,7 @@ export default function MergeTab() {
     setSyncResults([])
     setResult(null)
     setNotice('')
+    setError('')
   }
 
   const chooseFolder = async () => {
@@ -175,13 +187,23 @@ export default function MergeTab() {
   }
 
   const cancel = async () => {
+    cancelRequested.current = true
     setCancelling(true)
     try {
-      await invoke('merge_cancel_cmd')
+      // Until the job holds its slot there is nothing to stop; keep asking
+      // while it is still on its way, and the next step checks the flag too.
+      for (let tries = 0; tries < 50 && running.current; tries++) {
+        if (await invoke('merge_cancel_cmd')) return
+        await new Promise(resolve => setTimeout(resolve, 100))
+      }
     } catch (e) {
       setError(String(e))
       setCancelling(false)
     }
+  }
+
+  const stopIfCancelled = () => {
+    if (cancelRequested.current) throw new Error(MERGE_CANCELLED)
   }
 
   // "Merge cancelled" is the answer to Cancel, not an error.
@@ -200,18 +222,24 @@ export default function MergeTab() {
     setCancelling(false)
     setError('')
     setNotice('')
+    cancelRequested.current = false
+    running.current = true
     try {
       const results = []
       for (let i = 1; i < sources.length; i++) {
+        stopIfCancelled()
         const sync = await invoke('detect_sync_cmd', {
           sourceA: sources[0].path,
           sourceB: sources[i].path,
         })
         results.push(sync)
       }
+      stopIfCancelled()
       setSyncResults(results)
     } catch (e) {
       showFailure(e)
+    } finally {
+      running.current = false
     }
     setSyncing(false)
     setCancelling(false)
@@ -225,11 +253,14 @@ export default function MergeTab() {
     setNotice('')
     setResult(null)
     setProgress({ stage: 'preparing', percent: 0 })
+    cancelRequested.current = false
+    running.current = true
     let unlisten = null
     try {
       unlisten = await listen('merge:progress', ({ payload }) => {
         if (mounted.current) setProgress(payload)
       })
+      stopIfCancelled()
       const res = await invoke('merge_audio_cmd', {
         job: {
           sources: sources.map(s => s.path),
@@ -244,6 +275,7 @@ export default function MergeTab() {
     } catch (e) {
       showFailure(e)
     } finally {
+      running.current = false
       if (unlisten) unlisten()
     }
     setMerging(false)
