@@ -27,6 +27,10 @@
     --ds-type-label-weight: 600;
     --ds-type-label-width: 96%;
     --ds-type-label-leading: 1.25;
+    --ds-type-min-size: 0.75rem;
+    --ds-type-min-weight: 400;
+    --ds-type-min-width: 100%;
+    --ds-type-min-leading: 1.45;
     --ds-type-button-size: 0.875rem;
     --ds-type-button-weight: 700;
     --ds-type-button-width: 90%;

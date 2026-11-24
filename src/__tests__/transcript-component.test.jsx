@@ -382,13 +382,14 @@ describe('Transcript proofing', () => {
     expect(screen.getByRole('button', { name: 'Timing and sync' })).toHaveAttribute('aria-expanded', 'true')
   })
 
-  it('sets the line text as body copy with a readable measure, and the gutter as labels', async () => {
+  it('sets the line text as body copy with a readable measure, and the times as record numbers', async () => {
     renderPanel()
     await importText(SRT)
     const row = (await screen.findAllByRole('option'))[0]
-    expect(row).toHaveClass('text-[14px]')
+    // Body copy (14px) is inherited: the row sets no smaller type role.
+    expect(row.className).not.toMatch(/type-(small|label|min)|text-\[/)
     expect(within(row).getByText('Good morning.')).toHaveClass('max-w-[80ch]')
-    expect(within(row).getByText('0:00:01')).toHaveClass('text-[12px]')
+    expect(within(row).getByText('0:00:01')).toHaveClass('type-min')
   })
 
   it('in a pane, shows each flag note in full in a growing field, with a visible remove button', async () => {
