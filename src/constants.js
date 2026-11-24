@@ -10,7 +10,12 @@ export const FORMATS_OUT = [
   { id: 'flac', label: 'FLAC', desc: 'Lossless compressed — archival' },
   { id: 'opus', label: 'Opus', desc: '64 kbps VBR — voice optimized, smallest' },
   { id: 'm4a', label: 'M4A', desc: '128 kbps AAC — Apple devices' },
-  { id: 'sgmca', label: 'SGMCA', desc: 'Case CATalyst Direct Audio — Opus, one stream per channel, 48 kHz' },
+  {
+    id: 'sgmca',
+    label: 'SGMCA',
+    desc: 'Case CATalyst Direct Audio — Opus, one stream per channel, 48 kHz',
+    preview: 'Preview: tested with synthetic files only',
+  },
 ]
 
 // Keep Original to these formats is refused for a source with more than two
@@ -71,21 +76,24 @@ export const FORMAT_ROWS = [
     ext: '.mpg  .mpeg  .vob',
     vendor: 'MPEG / DVD video — audio track extracted',
     ch: 'any',
-    status: 'supported',
+    status: 'experimental',
+    note: 'Tested with synthetic files only',
     group: 'standard',
   },
   {
     ext: '.ts  .mts  .m2ts',
     vendor: 'MPEG-TS / AVCHD video — audio track extracted',
     ch: 'any',
-    status: 'supported',
+    status: 'experimental',
+    note: 'Tested with synthetic files only',
     group: 'standard',
   },
   {
     ext: '.wmv  .asf',
     vendor: 'Windows Media video — audio track extracted',
     ch: 'any',
-    status: 'supported',
+    status: 'experimental',
+    note: 'Tested with synthetic files only',
     group: 'standard',
   },
   // Court reporting formats — require conversion

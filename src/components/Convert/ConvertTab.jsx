@@ -821,6 +821,9 @@ export default function ConvertTab({
                   >
                     <span className="text-[13px] font-bold text-foreground">{f.label}</span>
                     <span className="type-small text-[hsl(var(--text2))] leading-tight">{f.desc}</span>
+                    {f.preview && (
+                      <span className="type-small font-semibold text-warning leading-tight">{f.preview}</span>
+                    )}
                     {formatOut === f.id && (
                       <span aria-hidden="true" className="absolute top-1.5 right-2 text-foreground type-small">
                         <Check aria-hidden="true" className="h-3.5 w-3.5" strokeWidth={2.2} />

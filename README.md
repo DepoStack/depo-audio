@@ -130,7 +130,7 @@ Status words: **Available** (in this release), **Preview** (works, but tested wi
 | **DCR**                                       | Liberty / BIS Digital      | Preview      |
 | **WAV, MP3, FLAC, M4A, OGG, Opus, WMA, AIF**  | Standard                   | Available    |
 | **Video (MP4, MOV, MKV, AVI, WebM)**          | Audio track extracted      | Available    |
-| **Video (MPG, VOB, TS, MTS, M2TS, WMV, ASF)** | Audio track extracted      | Available    |
+| **Video (MPG, VOB, TS, MTS, M2TS, WMV, ASF)** | Audio track extracted      | Preview      |
 | **Learned-model (AI) cleanup and analysis**   | —                          | Planned (v2) |
 
 **Closed formats: export to WAV first.** DepoAudio recognizes these files but does not open them. When you add one, it names the software to export it with.

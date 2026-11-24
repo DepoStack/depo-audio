@@ -117,7 +117,8 @@ class of advisories.
 
 The superseded private v1.0.3 candidate was built from the earlier lockfile,
 so it still contains every package named above. Neither v1.0.3 nor v1.1.0 was
-published, and their private drafts are deleted. v1.2.0 is built from `main`
+published; deleting their private drafts is confirmed in the v1.2.0 release
+gate. v1.2.0 is built from `main`
 with this lockfile (later moved to `cookie` 0.18.3 for a new advisory against
 0.18.2) and no advisory exception. The owner's sign-off is pending in the
 `rust-advisory-exception-acceptance` blocker in

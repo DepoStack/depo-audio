@@ -155,7 +155,7 @@ pub struct ConvertJob {
     pub hpf: bool,
     pub case_name: Option<String>,
     // Retired learned-model fields remain on the wire so old preferences and
-    // queued jobs deserialize safely. v1.0.3 forces them false and rejects a
+    // queued jobs deserialize safely. DepoAudio forces them false and rejects a
     // request that attempts to enable one.
     #[serde(default)]
     pub denoise: bool,

@@ -1,4 +1,4 @@
-//! Liberty / BIS Digital `.dcr` court recordings (experimental).
+//! Liberty / BIS Digital `.dcr` court recordings (Preview; internal status "experimental").
 //!
 //! Layout source: owner-supplied interoperability notes; not yet confirmed
 //! against a recorded file. The tests build synthetic files, and two
