@@ -10,12 +10,9 @@ mod ffmpeg;
 mod helpers;
 mod localdata;
 mod manifest;
-// Merge is hidden in the interface and its commands are not registered over
-// IPC (DA-06). The module stays compiled and tested so it can return if the
-// owner decides to ship Merge; nothing in the app can reach it today.
-#[allow(dead_code)]
+// Merge's commands are registered exactly when its tab is in the sidebar
+// (release contract DA-06).
 mod merge;
-#[allow(dead_code)]
 mod merge_engine;
 mod models;
 mod persistence;
@@ -147,6 +144,9 @@ pub fn run() {
             commands::begin_conversion_batch_cmd,
             commands::cancel_conversion_cmd,
             commands::convert,
+            commands::detect_sync_cmd,
+            commands::merge_audio_cmd,
+            commands::merge_cancel_cmd,
             commands::show_in_folder,
             commands::library_get,
             commands::library_rename_case,

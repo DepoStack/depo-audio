@@ -58,6 +58,84 @@ impl MergeCancel {
     }
 }
 
+/// Returned when a second merge or sync detection starts while one runs.
+pub(crate) const MERGE_BUSY_MESSAGE: &str = "A merge is already running. Wait for it to finish or cancel it.";
+
+/// The one merge or sync detection that may run at a time, holding its
+/// cancel flag so `merge_cancel_cmd` can reach it.
+#[derive(Debug, Default)]
+pub(crate) struct MergeSlot(std::sync::Mutex<Option<MergeCancel>>);
+
+/// A running merge's claim on the slot; dropping it frees the slot.
+pub(crate) struct MergeRun<'a> {
+    slot: &'a MergeSlot,
+    pub(crate) cancel: MergeCancel,
+}
+
+impl MergeSlot {
+    pub(crate) fn start(&self) -> Result<MergeRun<'_>, String> {
+        let mut current = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        if current.is_some() {
+            return Err(MERGE_BUSY_MESSAGE.into());
+        }
+        let cancel = MergeCancel::default();
+        *current = Some(cancel.clone());
+        Ok(MergeRun { slot: self, cancel })
+    }
+
+    /// Cancel the running merge or sync detection. False when none runs.
+    pub(crate) fn cancel(&self) -> bool {
+        let current = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        match current.as_ref() {
+            Some(cancel) => {
+                cancel.cancel();
+                true
+            }
+            None => false,
+        }
+    }
+}
+
+impl Drop for MergeRun<'_> {
+    fn drop(&mut self) {
+        *self.slot.0.lock().unwrap_or_else(|e| e.into_inner()) = None;
+    }
+}
+
+/// Where a merge has got to, for the `merge:progress` event: the stage and
+/// the whole job's percentage.
+#[derive(Debug, serde::Serialize, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct MergeProgress {
+    pub(crate) stage: &'static str,
+    pub(crate) percent: u8,
+}
+
+/// Receives progress; called from the async task and the blocking worker.
+pub(crate) type ProgressFn = Arc<dyn Fn(MergeProgress) + Send + Sync>;
+
+/// Each stage's share of the bar: it starts at the first percentage and
+/// ends where the next begins. Merging is most of the work.
+const STAGE_PREPARING: (&str, u8) = ("preparing", 0);
+const STAGE_MATCHING: (&str, u8) = ("matching", 5);
+const STAGE_DECODING: (&str, u8) = ("decoding", 15);
+const STAGE_MERGING: (&str, u8) = ("merging", 35);
+const STAGE_ENCODING: (&str, u8) = ("encoding", 90);
+
+fn report(progress: &ProgressFn, (stage, percent): (&'static str, u8)) {
+    progress(MergeProgress { stage, percent });
+}
+
+/// Merging progress as a share of its band, 35 to 90.
+fn merging_percent(done: u64, total: u64) -> u8 {
+    let span = (STAGE_ENCODING.1 - STAGE_MERGING.1) as u64;
+    let within = if total == 0 {
+        span
+    } else {
+        done.min(total) * span / total
+    };
+    STAGE_MERGING.1 + within as u8
+}
+
 // ── Multi-source audio merge ────────────────────────────────────────────────
 //
 // Combines multiple recordings of the same event into one clean output.
@@ -285,8 +363,14 @@ async fn detect_sync_paths(
 // ── Merge execution ─────────────────────────────────────────────────────────
 
 /// Merge multiple audio files into one synchronized output.
-pub(crate) async fn merge_audio(app: &AppHandle, job: &MergeJob, cancel: &MergeCancel) -> Result<MergeResult, String> {
+pub(crate) async fn merge_audio(
+    app: &AppHandle,
+    job: &MergeJob,
+    cancel: &MergeCancel,
+    progress: ProgressFn,
+) -> Result<MergeResult, String> {
     let job = validate_merge_job(job)?;
+    report(&progress, STAGE_PREPARING);
     // Each feed (and any temporary file it owns) lives until every
     // probe/decode finishes.
     let mut feeds = Vec::with_capacity(job.sources.len());
@@ -303,6 +387,7 @@ pub(crate) async fn merge_audio(app: &AppHandle, job: &MergeJob, cancel: &MergeC
     }
 
     // Step 1: Detect sync offsets relative to the first source
+    report(&progress, STAGE_MATCHING);
     let mut offsets = vec![0.0f64]; // First source is reference (offset = 0)
     for i in 1..feeds.len() {
         let (reference, rest) = feeds.split_at_mut(1);
@@ -317,6 +402,7 @@ pub(crate) async fn merge_audio(app: &AppHandle, job: &MergeJob, cancel: &MergeC
     }
 
     // Step 2: Decode all sources to 48kHz mono
+    report(&progress, STAGE_DECODING);
     let mut decoded_files = Vec::new();
     for src in &mut feeds {
         let tmp = decode_to_mono(app, src, MERGE_SAMPLE_RATE, MAX_MERGE_DURATION_SECS + 1, cancel).await?;
@@ -342,23 +428,14 @@ pub(crate) async fn merge_audio(app: &AppHandle, job: &MergeJob, cancel: &MergeC
     }
 
     // Step 4: Stream the merge into an intermediate WAV on a blocking worker.
+    report(&progress, STAGE_MERGING);
     let tmp_wav = crate::workdir::new_temp_path("depoaudio_merged_", "wav")?;
     let tmp_wav_path = tmp_wav.path.clone();
     let strategy = job.strategy;
     let worker_cancel = cancel.clone();
-    let written = tauri::async_runtime::spawn_blocking(move || -> Result<u64, String> {
-        let mut writer = wav_writer(&tmp_wav_path, MERGE_SAMPLE_RATE)?;
-        let mut sink = |block: &[f32]| {
-            for &sample in block {
-                writer.write_sample(sample).map_err(|e| format!("Write error: {e}"))?;
-            }
-            Ok(())
-        };
-        let mut tick = |_done: u64, _total: u64| worker_cancel.check();
-        let written =
-            merge_engine::merge_stream(strategy, &mut sources, MERGE_SAMPLE_RATE as usize, &mut sink, &mut tick)?;
-        writer.finalize().map_err(|e| format!("Finalize error: {e}"))?;
-        Ok(written)
+    let worker_progress = progress.clone();
+    let written = tauri::async_runtime::spawn_blocking(move || {
+        stream_to_wav(strategy, &mut sources, &tmp_wav_path, &worker_cancel, &worker_progress)
     })
     .await
     .map_err(|e| format!("Merge processing task failed: {e}"))??;
@@ -367,6 +444,7 @@ pub(crate) async fn merge_audio(app: &AppHandle, job: &MergeJob, cancel: &MergeC
     let duration = written as f64 / rate;
 
     // Step 5: Encode.
+    report(&progress, STAGE_ENCODING);
     // Reserve the destination atomically, then encode with a bounded
     // child-process runner. No concurrent merge can claim or delete this path.
     let ext = crate::helpers::output_ext(&job.format);
@@ -395,6 +473,10 @@ pub(crate) async fn merge_audio(app: &AppHandle, job: &MergeJob, cancel: &MergeC
         return Err("Merged output is empty".into());
     }
     reserved.keep = true;
+    progress(MergeProgress {
+        stage: "done",
+        percent: 100,
+    });
 
     Ok(MergeResult {
         output_path: out_path.to_string_lossy().to_string(),
@@ -535,6 +617,41 @@ fn read_wav_samples(path: &Path, max_samples: usize) -> Result<Vec<f32>, String>
         .into_samples::<f32>()
         .collect::<Result<Vec<_>, _>>()
         .map_err(|e| format!("WAV sample decode error: {e}"))
+}
+
+/// Run the engine over the aligned sources into a float WAV at `path`,
+/// reporting progress as the percentage changes and stopping between blocks
+/// on a cancel. A stopped merge leaves `path` for its owner to remove.
+fn stream_to_wav<R: SampleReader>(
+    strategy: MergeStrategy,
+    sources: &mut [AlignedSource<R>],
+    path: &Path,
+    cancel: &MergeCancel,
+    progress: &ProgressFn,
+) -> Result<u64, String> {
+    let mut writer = wav_writer(path, MERGE_SAMPLE_RATE)?;
+    let mut sink = |block: &[f32]| {
+        for &sample in block {
+            writer.write_sample(sample).map_err(|e| format!("Write error: {e}"))?;
+        }
+        Ok(())
+    };
+    let mut last = STAGE_MERGING.1;
+    let mut tick = |done: u64, total: u64| {
+        cancel.check()?;
+        let percent = merging_percent(done, total);
+        if percent != last {
+            last = percent;
+            progress(MergeProgress {
+                stage: STAGE_MERGING.0,
+                percent,
+            });
+        }
+        Ok(())
+    };
+    let written = merge_engine::merge_stream(strategy, sources, MERGE_SAMPLE_RATE as usize, &mut sink, &mut tick)?;
+    writer.finalize().map_err(|e| format!("Finalize error: {e}"))?;
+    Ok(written)
 }
 
 /// FFmpeg arguments that encode the intermediate WAV to the chosen output,
@@ -768,8 +885,111 @@ mod tests {
             rate: "48000".into(),
             strategy: "mix_all".into(),
         };
-        assert!(validate_merge_job(&job).is_err());
+        assert!(validate_merge_job(&job).unwrap_err().contains("twice"));
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn each_bad_job_is_refused_with_its_own_message() {
+        let dir = test_dir("refusals");
+        std::fs::create_dir_all(&dir).unwrap();
+        let make = |name: &str, len: u64| {
+            let path = dir.join(name);
+            // Sparse where the file system allows, so no gigabytes are written.
+            std::fs::File::create(&path).unwrap().set_len(len).unwrap();
+            path.to_string_lossy().to_string()
+        };
+        let small: Vec<String> = (0..5).map(|i| make(&format!("small{i}.wav"), 64)).collect();
+        let job = |sources: Vec<String>, out_name: &str| MergeJob {
+            sources,
+            out_dir: String::new(),
+            out_name: out_name.into(),
+            format: "wav".into(),
+            rate: "48000".into(),
+            strategy: "loudest".into(),
+        };
+        let refusal = |job: MergeJob| validate_merge_job(&job).err().expect("refused");
+
+        let counts = "Merge requires 2 to 4 source files";
+        assert_eq!(refusal(job(small[..1].to_vec(), "merged")), counts);
+        assert_eq!(refusal(job(small.clone(), "merged")), counts);
+        assert!(refusal(job(vec![small[0].clone(), small[0].clone()], "merged")).contains("twice"));
+        assert!(refusal(job(small[..2].to_vec(), "../outside")).starts_with("Output name"));
+
+        let huge = make("huge.wav", MAX_MERGE_SOURCE_BYTES + 1);
+        assert!(refusal(job(vec![small[0].clone(), huge], "merged")).contains("too large"));
+
+        let big: Vec<String> = (0..3)
+            .map(|i| make(&format!("big{i}.wav"), 3 * MAX_MERGE_SOURCE_BYTES / 4))
+            .collect();
+        assert!(refusal(job(big, "merged")).starts_with("Combined merge sources exceed"));
+
+        assert!(validate_merge_job(&job(small[..4].to_vec(), "merged")).is_ok());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn one_merge_runs_at_a_time_and_cancel_reaches_it() {
+        let slot = MergeSlot::default();
+        assert!(!slot.cancel(), "nothing to cancel yet");
+        let run = slot.start().unwrap();
+        assert_eq!(slot.start().err().unwrap(), MERGE_BUSY_MESSAGE);
+        assert!(slot.cancel());
+        assert!(run.cancel.is_cancelled());
+        drop(run);
+        assert!(!slot.cancel(), "the slot is free once the run ends");
+        let again = slot.start().unwrap();
+        assert!(!again.cancel.is_cancelled(), "a new run starts uncancelled");
+    }
+
+    /// A decoded source of one repeated value, for stream tests.
+    struct Constant(f32);
+
+    impl SampleReader for Constant {
+        fn read_exact_into(&mut self, out: &mut [f32]) -> Result<(), String> {
+            out.fill(self.0);
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn a_cancel_mid_merge_stops_it_and_leaves_no_intermediate() {
+        let cancel = MergeCancel::default();
+        let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let record = seen.clone();
+        let flag = cancel.clone();
+        let progress: ProgressFn = Arc::new(move |update: MergeProgress| {
+            record.lock().unwrap().push(update.percent);
+            if update.percent >= 60 {
+                flag.cancel();
+            }
+        });
+        let len = 60 * MERGE_SAMPLE_RATE as u64;
+        let mut sources = vec![
+            AlignedSource::new(Constant(0.25), 0, len),
+            AlignedSource::new(Constant(0.5), MERGE_SAMPLE_RATE as u64, len),
+        ];
+        let tmp = crate::workdir::new_temp_path("depoaudio_merged_", "wav").unwrap();
+        let path = tmp.path.clone();
+        let error = stream_to_wav(MergeStrategy::MixAll, &mut sources, &path, &cancel, &progress).unwrap_err();
+        assert_eq!(error, MERGE_CANCELLED_MESSAGE);
+        let percents = seen.lock().unwrap().clone();
+        assert!(percents.windows(2).all(|pair| pair[0] < pair[1]), "{percents:?}");
+        assert!(percents
+            .iter()
+            .all(|p| (STAGE_MERGING.1..=STAGE_ENCODING.1).contains(p)));
+        assert!(*percents.last().unwrap() < STAGE_ENCODING.1, "stopped before the end");
+        drop(tmp);
+        assert!(!path.exists(), "the intermediate goes with its guard");
+    }
+
+    #[test]
+    fn merging_progress_fills_its_band() {
+        assert_eq!(merging_percent(0, 100), STAGE_MERGING.1);
+        assert_eq!(merging_percent(100, 100), STAGE_ENCODING.1);
+        assert_eq!(merging_percent(150, 100), STAGE_ENCODING.1);
+        assert_eq!(merging_percent(0, 0), STAGE_ENCODING.1);
+        assert!(merging_percent(50, 100) > STAGE_MERGING.1);
     }
 
     #[test]

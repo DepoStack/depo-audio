@@ -375,6 +375,44 @@ pub async fn convert(app: AppHandle, state: State<'_, AppState>, job: ConvertJob
     Ok(())
 }
 
+// ── Merge commands ────────────────────────────────────────────────────────────
+
+/// Find how far `source_b` is from `source_a`. One merge or sync detection
+/// runs at a time; `merge_cancel_cmd` stops it.
+#[tauri::command]
+pub async fn detect_sync_cmd(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    source_a: String,
+    source_b: String,
+) -> Result<crate::merge::SyncResult, String> {
+    let run = state.merge.start()?;
+    crate::merge::detect_sync(&app, &source_a, &source_b, &run.cancel).await
+}
+
+/// Merge 2 to 4 recordings of one event, emitting `merge:progress` as it
+/// goes. A cancelled merge returns "Merge cancelled" and leaves no output.
+#[tauri::command]
+pub async fn merge_audio_cmd(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    job: crate::merge::MergeJob,
+) -> Result<crate::merge::MergeResult, String> {
+    let run = state.merge.start()?;
+    let emitter = app.clone();
+    let progress: crate::merge::ProgressFn = std::sync::Arc::new(move |update| {
+        // Progress is best effort; the result is what the screen relies on.
+        let _ = emitter.emit("merge:progress", update);
+    });
+    crate::merge::merge_audio(&app, &job, &run.cancel, progress).await
+}
+
+/// Cancel the running merge or sync detection. False when none was running.
+#[tauri::command]
+pub fn merge_cancel_cmd(state: State<'_, AppState>) -> bool {
+    state.merge.cancel()
+}
+
 // ── Library commands ──────────────────────────────────────────────────────────
 
 #[tauri::command]
