@@ -753,6 +753,7 @@ version = "1.1.0"
 dependencies = [
  "dirs-next",
  "hound",
+ "libc",
  "regex",
  "serde",
  "serde_json",

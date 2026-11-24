@@ -10,7 +10,7 @@ export const FORMATS_OUT = [
   { id: 'flac', label: 'FLAC', desc: 'Lossless compressed — archival' },
   { id: 'opus', label: 'Opus', desc: '64 kbps VBR — voice optimized, smallest' },
   { id: 'm4a', label: 'M4A', desc: '128 kbps AAC — Apple devices' },
-  { id: 'sgmca', label: 'SGMCA', desc: 'Case CATalyst Direct Audio — Opus, one stream per channel, 16 kHz' },
+  { id: 'sgmca', label: 'SGMCA', desc: 'Case CATalyst Direct Audio — Opus, one stream per channel, 48 kHz' },
 ]
 
 // Keep Original to these formats is refused for a source with more than two
@@ -22,7 +22,7 @@ export const KEEP_STEREO_ONLY_NOTE =
   'Keep Original to this format works only for mono and stereo recordings. A recording with more channels is not converted, because this format would fold channels together or filter one as a bass channel. To keep every channel, choose WAV, FLAC or SGMCA, or use Split Channels.'
 
 // Output formats whose sample rate is fixed by the format itself.
-export const FIXED_OUTPUT_RATES = { opus: '48000', sgmca: '16000' }
+export const FIXED_OUTPUT_RATES = { opus: '48000', sgmca: '48000' }
 
 /// The sample rate a conversion to `format` will really use.
 export function effectiveOutputRate(format, rate) {
