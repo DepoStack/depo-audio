@@ -250,35 +250,28 @@ function requireDistributionNotices(files, platform) {
 
   const ffmpegRoot = 'third-party/ffmpeg/'
   const hasSource = paths.some(item => item.includes(ffmpegRoot) && path.posix.basename(item) === 'source.txt')
-  if (platform === 'windows') {
-    const hasLicense = paths.some(item => item.includes(ffmpegRoot) && path.posix.basename(item) === 'license.txt')
-    const hasConfiguration = paths.some(
-      item => item.includes(ffmpegRoot) && path.posix.basename(item) === 'build-configuration.txt',
-    )
-    if (!hasLicense || !hasConfiguration || !hasSource) {
-      throw new Error(
-        `Missing FFmpeg distribution material (license=${hasLicense}, configuration=${hasConfiguration}, source=${hasSource})`,
-      )
-    }
-    return
-  }
-
-  const required = [
+  // Both platforms build FFmpeg from the same pinned LGPL sources and carry
+  // the same license texts; each adds its own build record. Windows also links
+  // the MinGW-w64 runtime and libgcc statically, so their terms ship with it.
+  const sharedNotices = [
     'ffmpeg-license.md',
     'ffmpeg-copying.lgplv2.1',
     'ffmpeg-copying.lgplv3',
     'lame-copying',
     'lame-license',
     'opus-copying',
-    'build-configuration-arm64.txt',
-    'build-configuration-x86_64.txt',
     'build-toolchain.txt',
   ]
+  const required =
+    platform === 'windows'
+      ? [...sharedNotices, 'build-configuration.txt', 'mingw-w64-copyright.txt', 'gcc-mingw-w64-copyright.txt']
+      : [...sharedNotices, 'build-configuration-arm64.txt', 'build-configuration-x86_64.txt']
   const missing = required.filter(
     expected => !paths.some(item => item.includes(ffmpegRoot) && path.posix.basename(item) === expected),
   )
   if (!hasSource || missing.length > 0) {
-    throw new Error(`Missing macOS FFmpeg distribution material (source=${hasSource}, missing=${missing.join(',')})`)
+    const label = platform === 'windows' ? 'Missing FFmpeg distribution material' : 'Missing macOS FFmpeg distribution material'
+    throw new Error(`${label} (source=${hasSource}, missing=${missing.join(',')})`)
   }
 }
 
@@ -370,7 +363,18 @@ async function writeNotices(root, platform) {
   await writeFile(path.join(ffmpegRoot, 'SOURCE.txt'), 'source\n')
   const names =
     platform === 'windows'
-      ? ['LICENSE.txt', 'BUILD-CONFIGURATION.txt']
+      ? [
+          'FFmpeg-LICENSE.md',
+          'FFmpeg-COPYING.LGPLv2.1',
+          'FFmpeg-COPYING.LGPLv3',
+          'LAME-COPYING',
+          'LAME-LICENSE',
+          'Opus-COPYING',
+          'BUILD-CONFIGURATION.txt',
+          'BUILD-TOOLCHAIN.txt',
+          'MinGW-w64-COPYRIGHT.txt',
+          'GCC-MinGW-w64-COPYRIGHT.txt',
+        ]
       : [
           'FFmpeg-LICENSE.md',
           'FFmpeg-COPYING.LGPLv2.1',

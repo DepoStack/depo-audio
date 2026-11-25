@@ -1,0 +1,81 @@
+name: Windows FFmpeg
+
+# Builds the Windows x64 ffmpeg.exe and ffprobe.exe from the same pinned
+# LGPL FFmpeg, LAME and Opus sources as the macOS sidecars. The release
+# workflow calls this before its platform builds. A pull request that changes
+# the build runs it too, and then runs the programs on Windows.
+
+on:
+  workflow_call:
+  pull_request:
+    paths:
+      - scripts/build-ffmpeg-windows.sh
+      - scripts/check-ffmpeg-windows.ps1
+      - .github/workflows/ffmpeg-windows.yml
+
+permissions:
+  contents: read
+
+env:
+  # Keep these identical to the source pins in release.yml; the release
+  # contract checks that they match.
+  FFMPEG_SOURCE_URL: 'https://ffmpeg.org/releases/ffmpeg-7.1.5.tar.xz'
+  FFMPEG_SOURCE_SIZE: '11050340'
+  FFMPEG_SOURCE_SHA256: 'de668509caf9e35e3cd162473441fdb29538c6d96ed080292b3cf9e6fc5d558f'
+  LAME_SOURCE_URL: 'https://downloads.sourceforge.net/project/lame/lame/3.100/lame-3.100.tar.gz'
+  LAME_SOURCE_SIZE: '1524133'
+  LAME_SOURCE_SHA256: 'ddfe36cab873794038ae2c1210557ad34857a4b6bdc515785d1da9e175b1da1e'
+  OPUS_SOURCE_URL: 'https://downloads.xiph.org/releases/opus/opus-1.6.1.tar.gz'
+  OPUS_SOURCE_SIZE: '10472813'
+  OPUS_SOURCE_SHA256: '6ffcb593207be92584df15b32466ed64bbec99109f007c82205f0194572411a1'
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # win32 thread model: FFmpeg uses native Windows threads and no
+      # libwinpthread is linked. The script records the exact versions.
+      - name: Install the MinGW-w64 cross toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            gcc-mingw-w64-x86-64-win32 binutils-mingw-w64-x86-64 nasm pkg-config make
+
+      - name: Build Windows FFmpeg sidecars from source
+        env:
+          OUTPUT_DIR: ${{ runner.temp }}/depoaudio-ffmpeg-windows
+        run: bash scripts/build-ffmpeg-windows.sh
+
+      - name: Keep the Windows sidecars for the release builds
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ffmpeg-windows-${{ github.sha }}
+          path: ${{ runner.temp }}/depoaudio-ffmpeg-windows
+          if-no-files-found: error
+          retention-days: 7
+
+  # On a pull request only: run the programs on Windows. Release builds run
+  # the same check in the Windows leg before the sidecars enter an installer.
+  check:
+    if: github.event_name == 'pull_request'
+    needs: build
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Download the Windows sidecars
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: ffmpeg-windows-${{ github.sha }}
+          path: ${{ runner.temp }}/depoaudio-ffmpeg-windows
+
+      - name: Run and gate the Windows sidecars
+        shell: pwsh
+        run: |
+          $root = Join-Path $env:RUNNER_TEMP 'depoaudio-ffmpeg-windows'
+          & ./scripts/check-ffmpeg-windows.ps1 `
+            -FFmpeg (Join-Path $root 'binaries/ffmpeg-x86_64-pc-windows-msvc.exe') `
+            -FFprobe (Join-Path $root 'binaries/ffprobe-x86_64-pc-windows-msvc.exe') `
+            -BuildConfiguration (Join-Path $root 'notices/BUILD-CONFIGURATION.txt')
