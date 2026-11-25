@@ -132,7 +132,8 @@
         "Windows candidate built on github-hosted (windows_runner input of run 45561632081).",
         "Windows job steps passed: Download FFmpeg (Windows x64) from asset 496767001, Verify FFmpeg sidecars, the .dm and DCR decoder checks, Smoke-test packaged native payloads and NSIS startup. The MSI and NSIS inventories carry the same ffmpeg.exe sha256:60e85f0ffa77ad8cb1f323fbfb509a19b8347e3ae95d61e5b7eaa27b4cf6590c and ffprobe.exe sha256:2850a0b3f9dac8dde351c52f6bfa192a5428792e7521f5812335ccfed70080fa.",
         "Not covered: corresponding-source delivery for the BtbN binaries (owner decision).",
-        "CI evidence only, recorded 2026-11-25 by Claude from the run and the draft assets; not yet reviewed by a named person, so this blocker stays open."
+        "CI evidence only, recorded 2026-11-25 by Claude from the run and the draft assets; not yet reviewed by a named person, so this blocker stays open.",
+        "Owner decision 2026-11-25 (Andrew Mayes, release owner): replace the BtbN Windows binaries with ffmpeg.exe and ffprobe.exe built in CI from the same hash-pinned FFmpeg 7.1.5, LAME 3.100 and Opus 1.6.1 sources as macOS, and ship those sources in the release's third-party source archive. Draft 457735527 (BtbN payload) is superseded once that build lands; a new private draft is needed."
       ]
     },
     {
