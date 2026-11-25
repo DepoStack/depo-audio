@@ -42,8 +42,12 @@ if ($installMode.silent -ne $true) {
 # change the install mode.
 $releaseConfigPath = Join-Path $repoRoot 'src-tauri\tauri.release.conf.json'
 if (Test-Path -LiteralPath $releaseConfigPath -PathType Leaf) {
-  $releaseWindows = (Get-Content -LiteralPath $releaseConfigPath -Raw | ConvertFrom-Json).bundle.windows
-  if ($releaseWindows -and ($releaseWindows.PSObject.Properties.Name -contains 'webviewInstallMode')) {
+  # The overlay has bundle.windows only when Windows signing is on. Under
+  # StrictMode a missing property throws, so look each one up by name.
+  $releaseConfig = Get-Content -LiteralPath $releaseConfigPath -Raw | ConvertFrom-Json
+  $releaseBundle = $releaseConfig.PSObject.Properties['bundle']
+  $releaseWindows = if ($releaseBundle) { $releaseBundle.Value.PSObject.Properties['windows'] } else { $null }
+  if ($releaseWindows -and $releaseWindows.Value.PSObject.Properties['webviewInstallMode']) {
     throw 'tauri.release.conf.json must not override the WebView2 install mode'
   }
 }
