@@ -151,7 +151,8 @@
         "https://github.com/DepoStack/depo-audio/actions/runs/45561632081/job/139027159513",
         "WEBVIEW2-EVIDENCE-windows.json records MicrosoftEdgeWebView2RuntimeInstallerX64.exe sha256:47bc51387aff95c1275ce38cfbbb5fbab99b43b33214049877bbcdbcc7a970d5 with a valid Microsoft signature; the NSIS inventory lists $TEMP/MicrosoftEdgeWebView2RuntimeInstaller.exe at the same sha256.",
         "Not covered: the MSI Binary table extraction (the MSI inventory does not list the embedded runtime) and the Microsoft redistribution terms (owner decision).",
-        "CI evidence only, recorded 2026-11-25 by Claude from the run and the draft assets; not yet reviewed by a named person, so this blocker stays open."
+        "CI evidence only, recorded 2026-11-25 by Claude from the run and the draft assets; not yet reviewed by a named person, so this blocker stays open.",
+        "Owner decision 2026-11-25 (Andrew Mayes, release owner): do not embed the WebView2 offline installer. Switch the Windows installers to Tauri's downloadBootstrapper mode so no Microsoft runtime bytes are redistributed; a PC without WebView2 downloads it from Microsoft during install. This replaces the offline-installer evidence and the redistribution-terms review; the evidence script and release contract change with it, and draft 457735527 is superseded."
       ]
     },
     {
