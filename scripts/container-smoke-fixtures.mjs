@@ -153,8 +153,8 @@ export function buildToneWav(sampleRate = SAMPLE_RATE) {
 // ── DigitalCAT .dm ──────────────────────────────────────────────────────────
 
 // Decoders the WAVs read from .dm files need, for the formats SoundSync
-// offers besides plain PCM. build-ffmpeg-macos.sh and the Windows release
-// step gate on the same list.
+// offers besides plain PCM. build-ffmpeg-macos.sh, build-ffmpeg-windows.sh
+// and the Windows release step gate on the same list.
 export const DM_DECODERS = ['gsm_ms', 'adpcm_ima_wav', 'adpcm_ms', 'pcm_alaw', 'pcm_mulaw']
 const DM_SAMPLE_RATE = 11_025
 // Block 1 of every fixture is marked recorded over (stamp 0) and must be
@@ -652,6 +652,14 @@ async function selfTest() {
   const ffmpegBuild = await readFile(path.join(repository, 'scripts/build-ffmpeg-macos.sh'), 'utf8')
   for (const decoder of DM_DECODERS) {
     assert.match(ffmpegBuild, new RegExp(`for decoder in [^\\n]*\\b${decoder}\\b`, 'u'), `macOS gate lists ${decoder}`)
+  }
+  const windowsFfmpegBuild = await readFile(path.join(repository, 'scripts/build-ffmpeg-windows.sh'), 'utf8')
+  for (const decoder of DM_DECODERS) {
+    assert.match(
+      windowsFfmpegBuild,
+      new RegExp(`for decoder in [^\\n]*\\b${decoder}\\b`, 'u'),
+      `Windows gate lists ${decoder}`,
+    )
   }
   const dmSource = await readFile(path.join(repository, 'src-tauri/src/dm.rs'), 'utf8')
   assert.ok(dmSource.includes('const EXPECTED_HEADER_SIZE: u32 = 8;'), 'dm.rs still reads header size 8')

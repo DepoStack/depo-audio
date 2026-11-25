@@ -120,12 +120,12 @@
       "status": "open",
       "version": "1.2.0",
       "reviewedDate": "2026-11-24",
-      "description": "Windows FFmpeg payload match is CI evidence; compliant corresponding-source delivery for the BtbN binaries is an owner/legal determination. The Windows leg now builds on the self-hosted runner by default (#211), so the run must say which runner built the candidate.",
+      "description": "Windows ffmpeg.exe and ffprobe.exe are now cross-compiled from the same pinned LGPL FFmpeg, LAME and Opus sources as macOS (#247). Needs fresh v1.2.0 candidate evidence and the owner's legal review of the notices and source archive.",
       "evidenceNeeded": [
-        "Extract the v1.2.0 MSI and NSIS payloads and match the packaged ffmpeg.exe and ffprobe.exe to the reviewed BtbN LGPL build (asset 496767001, ffmpeg-N-125875-g5d4d3bdc61-win64-lgpl.zip).",
-        "Record which runner built the Windows candidate (self-hosted or github-hosted) from the release run's windows_runner input.",
-        "Establish compliant corresponding-source delivery and preserve the exact license, configuration, source reference and required notices for the distributed Windows binaries (owner decision).",
-        "Add the v1.2.0 release run URL and the exact log lines relied on to evidenceRefs (empty until the v1.2.0 candidate is built)."
+        "Extract the v1.2.0 MSI and NSIS payloads and match the packaged ffmpeg.exe and ffprobe.exe to the hashes in that run's SHA256SUMS-ffmpeg-windows.txt.",
+        "Confirm the third-party source archive carries build-ffmpeg-windows.sh, notices/windows/SOURCE.txt and notices/windows/BUILD-CONFIGURATION.txt for the same FFmpeg, LAME and Opus sources.",
+        "Owner legal review of the Windows notices (FFmpeg LGPL, LAME, Opus, MinGW-w64 and the GCC runtime library exception) and of the corresponding-source delivery.",
+        "Add the v1.2.0 release run URL and the exact log lines relied on to evidenceRefs."
       ],
       "evidenceRefs": [
         "https://github.com/DepoStack/depo-audio/actions/runs/45561632081/job/139027159513",
@@ -141,11 +141,11 @@
       "status": "open",
       "version": "1.2.0",
       "reviewedDate": "2026-11-24",
-      "description": "The workflow records only build-input evidence (finalInstallerEmbeddingVerified=false). Needs fresh v1.2.0 extraction evidence.",
+      "description": "The installers download Microsoft's WebView2 bootstrapper at install time and carry no Microsoft binaries (#247, owner decision 2026-11-25). Needs fresh v1.2.0 evidence that neither installer carries one and that the download works on Windows 10.",
       "evidenceNeeded": [
-        "On Windows, extract the v1.2.0 MSI Binary table and NSIS payload, match both embedded WebView2 installers to the SHA-256 recorded in WEBVIEW2-EVIDENCE-windows.json, and retain the extraction evidence.",
-        "Review and record the exact Microsoft redistribution terms that apply to the embedded runtime (owner decision).",
-        "Add the v1.2.0 release run URL and the exact log lines relied on to evidenceRefs (empty until the v1.2.0 candidate is built)."
+        "From the v1.2.0 run, retain WEBVIEW2-EVIDENCE-windows.json showing microsoftBinariesRedistributed false, no WebView2 file in either extracted payload or the MSI Binary table, and the MSI bootstrapper download action.",
+        "Install on a clean Windows 10 machine without WebView2 and confirm the installer downloads it and DepoAudio opens.",
+        "Add the v1.2.0 release run URL and the exact log lines relied on to evidenceRefs."
       ],
       "evidenceRefs": [
         "https://github.com/DepoStack/depo-audio/actions/runs/45561632081/job/139027159513",

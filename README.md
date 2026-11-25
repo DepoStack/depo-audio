@@ -43,6 +43,23 @@ DepoAudio handles the audio side of a deposition or hearing, end to end:
 
 > Code signing, notarization and signed updater artifacts are enabled only when their credentials are configured. v1.2.0 is planned to ship unsigned, so macOS and Windows will warn the first time you open it, and it has no in-app updates: install each new version over the old one. Check each published release's notes for its signing and update state before installing.
 
+### Opening an unsigned build
+
+Download DepoAudio only from this repository's Releases page. Because the build is unsigned, your computer can't confirm who made it, so it asks you once.
+
+**macOS**
+
+1. Open the `.dmg` and drag DepoAudio into Applications.
+2. Open DepoAudio. When macOS says it can't check the app, click **Done** (or **OK**).
+3. Open **System Settings → Privacy & Security**, scroll to **Security**, and click **Open Anyway** next to the DepoAudio message.
+4. Click **Open Anyway** again and enter your Mac password. After this, DepoAudio opens normally.
+
+**Windows**
+
+1. If your browser says the file isn't commonly downloaded, choose **Keep** (in Edge: **…** then **Keep**).
+2. Run the `.msi` or `-setup.exe`. When **Windows protected your PC** appears, click **More info**, then **Run anyway**.
+3. On Windows 10 without WebView2, the installer downloads it from Microsoft, so stay online while it installs.
+
 ---
 
 ## How it works

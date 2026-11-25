@@ -1,11 +1,19 @@
 [CmdletBinding()]
 param(
   [Parameter(Mandatory = $true)]
-  [string]$OutputPath,
-
-  [Parameter(Mandatory = $true)]
-  [string]$SignatureReportPath
+  [string]$OutputPath
 )
+
+# DepoAudio's Windows installers do not carry Microsoft's WebView2 runtime or
+# its installer. tauri.conf.json selects the download bootstrapper: on a
+# machine without WebView2 (Windows 11 includes it), the installer downloads
+# Microsoft's bootstrapper from Microsoft at install time and runs it.
+#
+# This script fails the release unless the bundled configuration selects that
+# mode and neither installer carries a WebView2 installer: not as a file in
+# the extracted MSI or NSIS payload, and not as a row in the MSI Binary table
+# (where Tauri's WiX template puts an embedded or offline installer). It runs
+# after scripts/windows-packaged-smoke.ps1 has extracted both installers.
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
@@ -15,166 +23,114 @@ $tauriCliPackagePath = Join-Path $repoRoot 'node_modules\@tauri-apps\cli\package
 if (-not (Test-Path -LiteralPath $tauriCliPackagePath -PathType Leaf)) {
   throw 'The npm-ci-installed Tauri CLI package is unavailable for WebView2 evidence verification'
 }
-$tauriCliPackage = Get-Content -LiteralPath $tauriCliPackagePath -Raw | ConvertFrom-Json
-$tauriCliVersion = $tauriCliPackage.version
+$tauriCliVersion = (Get-Content -LiteralPath $tauriCliPackagePath -Raw | ConvertFrom-Json).version
+# Tauri's installer templates decide where a WebView2 installer would sit and
+# how the bootstrapper is fetched. Review them again before changing the CLI.
 if ($tauriCliVersion -ne '2.12.4') {
-  throw "WebView2 evidence paths must be reviewed for the locked Tauri CLI; expected 2.12.4, found $tauriCliVersion"
+  throw "WebView2 evidence must be reviewed for the locked Tauri CLI; expected 2.12.4, found $tauriCliVersion"
 }
 
-# tauri-bundler 2.10.4 deletes and recreates target/release/wix/x64, then puts
-# the x64 offline installer at wix/x64/x64/<resolved-guid>/<resolved-filename>.
-# It separately caches the NSIS input at %LOCALAPPDATA%/tauri/x64 using the same
-# moving Microsoft fwlink resolution. These paths come from the exact source
-# used by @tauri-apps/cli 2.12.4 (re-reviewed against 2.9.4 on 2026-11-12: the
-# WebView2 download, cache and GUID-path code is unchanged); this script
-# intentionally fails if they drift.
-$wixDownloadRoot = Join-Path $repoRoot 'src-tauri\target\release\wix\x64\x64'
-if (-not (Test-Path -LiteralPath $wixDownloadRoot -PathType Container)) {
-  throw "Tauri WiX WebView2 download directory is missing: $wixDownloadRoot"
+$tauriConfig = Get-Content -LiteralPath (Join-Path $repoRoot 'src-tauri\tauri.conf.json') -Raw | ConvertFrom-Json
+$installMode = $tauriConfig.bundle.windows.webviewInstallMode
+if ($installMode.type -ne 'downloadBootstrapper') {
+  throw "tauri.conf.json must select the WebView2 download bootstrapper; found '$($installMode.type)'"
 }
-
-$wixCandidates = @(Get-ChildItem -LiteralPath $wixDownloadRoot -Recurse -File)
-if ($wixCandidates.Count -ne 1) {
-  throw "Expected exactly one Tauri WiX WebView2 build input; found $($wixCandidates.Count)"
+if ($installMode.silent -ne $true) {
+  throw 'tauri.conf.json must run the WebView2 bootstrapper silently'
 }
-$wixInput = $wixCandidates[0]
-$cacheIdentity = [IO.Path]::GetRelativePath($wixDownloadRoot, $wixInput.FullName)
-$identityParts = @($cacheIdentity -split '[\\/]')
-$invalidIdentityParts = @($identityParts | Where-Object { $_ -in @('', '.', '..') })
-if ($identityParts.Count -ne 2 -or $invalidIdentityParts.Count -gt 0) {
-  throw "Unexpected Tauri WebView2 cache identity: $cacheIdentity"
-}
-if ([IO.Path]::GetExtension($identityParts[1]) -ne '.exe') {
-  throw "Tauri WebView2 build input is not an executable: $($identityParts[1])"
-}
-
-if (-not $env:LOCALAPPDATA) {
-  throw 'LOCALAPPDATA is unavailable; cannot resolve the Tauri NSIS cache'
-}
-$nsisInputPath = Join-Path (Join-Path $env:LOCALAPPDATA 'tauri\x64') $cacheIdentity
-if (-not (Test-Path -LiteralPath $nsisInputPath -PathType Leaf)) {
-  throw "NSIS did not reuse the same resolved WebView2 cache identity as WiX: $cacheIdentity"
-}
-$nsisInput = Get-Item -LiteralPath $nsisInputPath
-
-function Get-VerifiedMicrosoftSignature {
-  param([Parameter(Mandatory = $true)][IO.FileInfo]$File)
-
-  $signature = Get-AuthenticodeSignature -LiteralPath $File.FullName
-  if ($signature.Status.ToString() -ne 'Valid') {
-    throw "WebView2 Authenticode signature is not valid for $($File.Name): $($signature.Status)"
-  }
-  if (-not $signature.SignerCertificate) {
-    throw "WebView2 Authenticode signature has no signer certificate for $($File.Name)"
-  }
-  $subject = $signature.SignerCertificate.Subject
-  if ($subject -notmatch '(?i)(^|,\s*)(CN|O)=Microsoft Corporation(,|$)') {
-    throw "WebView2 Authenticode signer is not Microsoft Corporation: $subject"
-  }
-
-  [ordered]@{
-    status = $signature.Status.ToString()
-    statusMessage = $signature.StatusMessage
-    signerSubject = $subject
-    signerIssuer = $signature.SignerCertificate.Issuer
-    signerThumbprint = $signature.SignerCertificate.Thumbprint
-    signerNotBefore = $signature.SignerCertificate.NotBefore.ToUniversalTime().ToString('o')
-    signerNotAfter = $signature.SignerCertificate.NotAfter.ToUniversalTime().ToString('o')
-    timestampSignerSubject = if ($signature.TimeStamperCertificate) { $signature.TimeStamperCertificate.Subject } else { $null }
-    timestampSignerThumbprint = if ($signature.TimeStamperCertificate) { $signature.TimeStamperCertificate.Thumbprint } else { $null }
+# The release build passes tauri.release.conf.json as an overlay. It must not
+# change the install mode.
+$releaseConfigPath = Join-Path $repoRoot 'src-tauri\tauri.release.conf.json'
+if (Test-Path -LiteralPath $releaseConfigPath -PathType Leaf) {
+  $releaseWindows = (Get-Content -LiteralPath $releaseConfigPath -Raw | ConvertFrom-Json).bundle.windows
+  if ($releaseWindows -and ($releaseWindows.PSObject.Properties.Name -contains 'webviewInstallMode')) {
+    throw 'tauri.release.conf.json must not override the WebView2 install mode'
   }
 }
 
-$wixHash = (Get-FileHash -LiteralPath $wixInput.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
-$nsisHash = (Get-FileHash -LiteralPath $nsisInput.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
-if ($wixInput.Length -le 0 -or $nsisInput.Length -le 0) {
-  throw 'WebView2 build input is empty'
-}
-if ($wixInput.Length -ne $nsisInput.Length -or $wixHash -ne $nsisHash) {
-  throw 'WiX and NSIS resolved different WebView2 offline-installer bytes'
+$bundleRoot = Join-Path $repoRoot 'src-tauri\target\release\bundle'
+$msi = @(Get-ChildItem -LiteralPath (Join-Path $bundleRoot 'msi') -Filter '*.msi' -File)
+$nsis = @(Get-ChildItem -LiteralPath (Join-Path $bundleRoot 'nsis') -Filter '*.exe' -File)
+if ($msi.Count -ne 1 -or $nsis.Count -ne 1) {
+  throw "Expected exactly one MSI and one NSIS installer; found $($msi.Count) and $($nsis.Count)"
 }
 
-$wixSignature = Get-VerifiedMicrosoftSignature -File $wixInput
-$nsisSignature = Get-VerifiedMicrosoftSignature -File $nsisInput
-$version = $wixInput.VersionInfo
-if (-not $version.FileVersion) {
-  throw 'WebView2 offline installer has no file version metadata'
+$webviewName = '(?i)webview2|edgewebview'
+$payloads = [ordered]@{
+  msi = Join-Path $env:RUNNER_TEMP 'depoaudio-msi-smoke'
+  nsis = Join-Path $env:RUNNER_TEMP 'depoaudio-nsis-audit'
+}
+$payloadEvidence = [ordered]@{}
+foreach ($kind in $payloads.Keys) {
+  $root = $payloads[$kind]
+  if (-not (Test-Path -LiteralPath $root -PathType Container)) {
+    throw "The extracted $kind payload is unavailable: $root"
+  }
+  $files = @(Get-ChildItem -LiteralPath $root -Recurse -File)
+  if ($files.Count -eq 0) { throw "The extracted $kind payload is empty" }
+  $found = @($files | Where-Object { $_.Name -match $webviewName })
+  if ($found.Count -gt 0) {
+    throw "The $kind installer carries a WebView2 installer: $(($found | ForEach-Object Name) -join ', ')"
+  }
+  $payloadEvidence[$kind] = [ordered]@{ filesScanned = $files.Count; webviewInstallerFiles = 0 }
 }
 
-$signTool = Get-Command signtool.exe -ErrorAction SilentlyContinue
-if (-not $signTool) {
-  $windowsKits = Join-Path ${env:ProgramFiles(x86)} 'Windows Kits\10\bin'
-  $signTool = Get-ChildItem -LiteralPath $windowsKits -Recurse -Filter signtool.exe -File -ErrorAction SilentlyContinue |
-    Where-Object FullName -Match '[\\/]x64[\\/]signtool\.exe$' |
-    Sort-Object FullName -Descending |
-    Select-Object -First 1
+function Invoke-Com($Target, [string]$Member, [string]$Kind, [object[]]$Arguments) {
+  return $Target.GetType().InvokeMember($Member, $Kind, $null, $Target, $Arguments)
 }
-if (-not $signTool) {
-  throw 'signtool.exe is unavailable on the Windows release runner'
-}
-$signToolPath = if ($signTool -is [System.Management.Automation.ApplicationInfo]) {
-  $signTool.Source
-} else {
-  $signTool.FullName
-}
-# Current Microsoft WebView2 offline installers carry a publicly trusted
-# Microsoft primary signature and an additional internal EdgeBuild signature.
-# `/all` fails on that internal self-signed chain even when the primary
-# Authenticode signature is valid. Verify the primary signature under the
-# Windows Authenticode policy; Get-VerifiedMicrosoftSignature above separately
-# requires a valid Microsoft signer and records its certificate identity.
-$signatureReport = @(& $signToolPath verify /pa /v $wixInput.FullName 2>&1)
-$signToolExitCode = $LASTEXITCODE
-$sanitizedSignatureReport = $signatureReport | ForEach-Object {
-  $_.ToString().Replace($wixInput.FullName, '<WEBVIEW2_OFFLINE_INSTALLER>')
-}
-if ($signToolExitCode -ne 0) {
-  $sanitizedSignatureReport | ForEach-Object { Write-Host $_ }
-  throw 'signtool primary-signature verification failed for the WebView2 offline installer'
-}
-$signatureReportParent = Split-Path -Parent $SignatureReportPath
-if ($signatureReportParent) { New-Item -ItemType Directory -Force -Path $signatureReportParent | Out-Null }
-[IO.File]::WriteAllLines($SignatureReportPath, $sanitizedSignatureReport, [Text.UTF8Encoding]::new($false))
 
-$cacheIdentityPortable = $cacheIdentity.Replace('\', '/')
+function Get-MsiRows([string]$MsiPath, [string]$Query, [int[]]$StringColumns, [int]$SizeColumn) {
+  $installer = New-Object -ComObject WindowsInstaller.Installer
+  $database = Invoke-Com $installer 'OpenDatabase' 'InvokeMethod' @($MsiPath, 0)
+  $view = Invoke-Com $database 'OpenView' 'InvokeMethod' @($Query)
+  [void](Invoke-Com $view 'Execute' 'InvokeMethod' @())
+  $rows = [Collections.Generic.List[object]]::new()
+  while ($true) {
+    $record = Invoke-Com $view 'Fetch' 'InvokeMethod' @()
+    if ($null -eq $record) { break }
+    $row = [ordered]@{}
+    foreach ($column in $StringColumns) {
+      $row["column$column"] = [string](Invoke-Com $record 'StringData' 'GetProperty' @($column))
+    }
+    if ($SizeColumn -gt 0) {
+      $row['size'] = [int64](Invoke-Com $record 'DataSize' 'GetProperty' @($SizeColumn))
+    }
+    $rows.Add([pscustomobject]$row)
+  }
+  [void](Invoke-Com $view 'Close' 'InvokeMethod' @())
+  return $rows
+}
+
+$binaryRows = @(Get-MsiRows $msi[0].FullName 'SELECT `Name`, `Data` FROM `Binary`' @(1) 2)
+$embedded = @($binaryRows | Where-Object { $_.column1 -match $webviewName })
+if ($embedded.Count -gt 0) {
+  throw "The MSI Binary table carries a WebView2 installer: $(($embedded | ForEach-Object column1) -join ', ')"
+}
+$customActions = @(Get-MsiRows $msi[0].FullName 'SELECT `Action`, `Target` FROM `CustomAction`' @(1, 2) 0)
+$downloadAction = @($customActions | Where-Object { $_.column2 -match '(?i)go\.microsoft\.com/fwlink' })
+# Without this step a Windows 10 machine lacking WebView2 would get no runtime.
+if ($downloadAction.Count -eq 0) {
+  throw 'The MSI has no custom action that downloads the WebView2 bootstrapper from Microsoft'
+}
+
 $evidence = [ordered]@{
-  schemaVersion = 1
-  evidenceScope = 'tauri-build-inputs'
-  finalInstallerEmbeddingVerified = $false
-  sourceCommit = if ($env:GITHUB_SHA) { $env:GITHUB_SHA } else { $null }
-  releaseTag = if ($env:RELEASE_TAG) { $env:RELEASE_TAG } else { $null }
-  architecture = 'x64'
+  schemaVersion = 2
   tauriCliVersion = $tauriCliVersion
-  tauriBundlerSourceTag = 'tauri-bundler-v2.10.4'
-  sourceFwlink = 'https://go.microsoft.com/fwlink/?linkid=2124701'
-  resolvedDownloadUrl = "https://msedge.sf.dl.delivery.mp.microsoft.com/filestreamingservice/files/$cacheIdentityPortable"
-  resolvedCacheIdentity = $cacheIdentityPortable
-  artifact = [ordered]@{
-    filename = $wixInput.Name
-    bytes = $wixInput.Length
-    sha256 = $wixHash
-    fileVersion = $version.FileVersion
-    productVersion = $version.ProductVersion
-    productName = $version.ProductName
-    companyName = $version.CompanyName
-    originalFilename = $version.OriginalFilename
-    signature = $wixSignature
+  webviewInstallMode = [ordered]@{ type = $installMode.type; silent = $installMode.silent }
+  microsoftBinariesRedistributed = $false
+  installers = [ordered]@{
+    msi = [ordered]@{ name = $msi[0].Name; size = $msi[0].Length }
+    nsis = [ordered]@{ name = $nsis[0].Name; size = $nsis[0].Length }
   }
-  wixBuildInput = [ordered]@{
-    cacheIdentity = $cacheIdentityPortable
-    signature = $wixSignature
-  }
-  nsisBuildInput = [ordered]@{
-    cacheIdentity = $cacheIdentityPortable
-    signature = $nsisSignature
-  }
-  byteIdenticalAcrossBundlers = $true
-  signatureVerificationReport = [IO.Path]::GetFileName($SignatureReportPath)
-  remainingManualGate = 'Extract the final MSI Binary table and NSIS payload, match this SHA-256, and review the exact Microsoft redistribution terms.'
+  extractedPayloads = $payloadEvidence
+  msiBinaryTable = @($binaryRows | ForEach-Object { [ordered]@{ name = $_.column1; size = $_.size } })
+  # Tauri's WiX template fetches the bootstrapper in this custom action. A
+  # reviewer still confirms the download on a clean Windows 10 install.
+  msiBootstrapperDownloadActions = @($downloadAction | ForEach-Object column1)
 }
 
 $outputParent = Split-Path -Parent $OutputPath
 if ($outputParent) { New-Item -ItemType Directory -Force -Path $outputParent | Out-Null }
 $evidence | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $OutputPath -Encoding utf8NoBOM
-Write-Host "Verified Microsoft-signed, byte-identical WebView2 build inputs: $($wixInput.Name) ($($wixInput.Length) bytes)"
-Write-Host "WebView2 build-input evidence: $OutputPath"
+Get-Content -LiteralPath $OutputPath
+Write-Host "WebView2 install-mode and payload evidence: $OutputPath"

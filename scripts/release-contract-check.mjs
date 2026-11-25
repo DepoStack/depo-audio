@@ -42,6 +42,9 @@ const conversionSource = read('src-tauri/src/conversion.rs')
 const ffmpegSource = read('src-tauri/src/ffmpeg.rs')
 const webviewEvidence = read('scripts/windows-webview2-evidence.ps1')
 const macFfmpegBuild = read('scripts/build-ffmpeg-macos.sh')
+const windowsFfmpegBuild = read('scripts/build-ffmpeg-windows.sh')
+const windowsFfmpegCheck = read('scripts/check-ffmpeg-windows.ps1')
+const windowsFfmpegWorkflow = read('.github/workflows/ffmpeg-windows.yml')
 const macPackagedSmoke = read('scripts/macos-packaged-smoke.sh')
 const windowsPackagedSmoke = read('scripts/windows-packaged-smoke.ps1')
 const setupDev = read('scripts/setup-dev.sh')
@@ -916,17 +919,22 @@ expect(
   'both bundled FFmpeg builds must keep the decoders and the amerge filter the DCR reader needs',
 )
 expect(
-  releaseWorkflow.includes('scripts/windows-webview2-evidence.ps1') &&
+  tauriConfig.bundle?.windows?.webviewInstallMode?.type === 'downloadBootstrapper' &&
+    tauriConfig.bundle?.windows?.webviewInstallMode?.silent === true &&
+    releaseWorkflow.includes('scripts/windows-webview2-evidence.ps1') &&
     releaseWorkflow.includes('WEBVIEW2-EVIDENCE-windows.json') &&
-    releaseWorkflow.includes('WEBVIEW2-SIGNATURE-windows.txt') &&
+    !releaseWorkflow.includes('WEBVIEW2-SIGNATURE-windows.txt') &&
+    !publicationHelper.includes('WEBVIEW2-SIGNATURE-windows.txt') &&
+    releaseWorkflow.indexOf('./scripts/windows-packaged-smoke.ps1') >= 0 &&
+    releaseWorkflow.indexOf('./scripts/windows-packaged-smoke.ps1') <
+      releaseWorkflow.indexOf('& ./scripts/windows-webview2-evidence.ps1') &&
     webviewEvidence.includes(`$tauriCliVersion -ne '${lockedTauriCliVersion}'`) &&
-    webviewEvidence.includes('Get-AuthenticodeSignature') &&
-    webviewEvidence.includes('$wixHash -ne $nsisHash') &&
-    webviewEvidence.includes('& $signToolPath verify /pa /v') &&
-    !webviewEvidence.includes('& $signToolPath verify /pa /all /v') &&
-    webviewEvidence.includes('primary-signature verification failed') &&
-    webviewEvidence.includes('finalInstallerEmbeddingVerified = $false'),
-  'Windows releases must verify and retain exact Microsoft-signed, byte-identical WebView2 build-input evidence without overstating final extraction',
+    webviewEvidence.includes("$installMode.type -ne 'downloadBootstrapper'") &&
+    webviewEvidence.includes('SELECT `Name`, `Data` FROM `Binary`') &&
+    webviewEvidence.includes('carries a WebView2 installer') &&
+    webviewEvidence.includes('has no custom action that downloads the WebView2 bootstrapper') &&
+    webviewEvidence.includes('microsoftBinariesRedistributed = $false'),
+  'Windows installers must download WebView2 at install time and the release must prove neither installer carries a WebView2 installer',
 )
 expect(
   bundleResources.includes('resources/third-party/rust') &&
@@ -956,7 +964,7 @@ expect(
     releaseWorkflow.includes('--no-build-deps') &&
     releaseWorkflow.includes('npm sbom') &&
     releaseWorkflow.includes('SHA256SUMS-dependency-evidence.txt') &&
-    releaseWorkflow.includes('needs: [prepare, dependency-evidence]') &&
+    releaseWorkflow.includes('needs: [prepare, dependency-evidence, windows-ffmpeg]') &&
     releaseWorkflow.includes('needs: [prepare, release, dependency-evidence]') &&
     releaseWorkflow.includes('needs: [prepare, release, publish-dependency-evidence]') &&
     releaseWorkflow.includes('actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9') &&
@@ -1018,11 +1026,34 @@ expect(
   hasJavaScriptNoticeSourceClosure,
   'resolved JavaScript notice evidence must document emitted-byte removal and contain zero unresolved components',
 )
+const sourcePinLines = releaseWorkflow
+  .split('\n')
+  .filter(line => /^ {2}(FFMPEG|LAME|OPUS)_SOURCE_(URL|SIZE|SHA256): /.test(line))
 expect(
-  releaseWorkflow.includes("FFMPEG_WIN_ID: '496767001'") &&
-    releaseWorkflow.includes("FFMPEG_WIN_SHA256: '5d65df0c0ca5346d82df8ade9c2e12db45d1f978f18ff908b42f03f5223dfc90'") &&
-    releaseWorkflow.includes('ffmpeg-N-125875-g5d4d3bdc61-win64-lgpl.zip'),
-  'release.yml must use the reviewed Windows LGPL FFmpeg archive',
+  sourcePinLines.length === 9 &&
+    sourcePinLines.every(line => windowsFfmpegWorkflow.split('\n').includes(line)) &&
+    !/BtbN|FFMPEG_WIN_/.test(releaseWorkflow) &&
+    releaseWorkflow.includes('uses: ./.github/workflows/ffmpeg-windows.yml') &&
+    releaseWorkflow.includes('ffmpeg-windows-${{ github.sha }}') &&
+    releaseWorkflow.includes('& ./scripts/check-ffmpeg-windows.ps1') &&
+    windowsFfmpegWorkflow.includes('bash scripts/build-ffmpeg-windows.sh') &&
+    windowsFfmpegWorkflow.includes('gcc-mingw-w64-x86-64-win32') &&
+    windowsFfmpegBuild.includes('--disable-gpl') &&
+    windowsFfmpegBuild.includes('--disable-nonfree') &&
+    windowsFfmpegBuild.includes('--disable-autodetect') &&
+    windowsFfmpegBuild.includes('--enable-parser=ftr') &&
+    windowsFfmpegBuild.includes('#define CONFIG_GPL 0') &&
+    windowsFfmpegBuild.includes('#define CONFIG_NONFREE 0') &&
+    windowsFfmpegBuild.includes('imports a non-system DLL') &&
+    windowsFfmpegBuild.includes('for decoder in ftr libopus aac flac pcm_s16le') &&
+    windowsFfmpegBuild.includes('pcm_alaw pcm_mulaw pcm_u8 pcm_s24le pcm_s32le adpcm_ima_wav gsm_ms mp3float') &&
+    windowsFfmpegBuild.includes('for encoder in libmp3lame libopus aac flac pcm_s16le') &&
+    windowsFfmpegBuild.includes('ebur128 amerge') &&
+    windowsFfmpegBuild.includes('GCC RUNTIME LIBRARY EXCEPTION') &&
+    windowsFfmpegCheck.includes('reports a different configuration than the build recorded') &&
+    releaseWorkflow.includes('build-ffmpeg-windows.sh \\') &&
+    releaseWorkflow.includes('notices/windows/SOURCE.txt'),
+  'Windows FFmpeg must be built from the same pinned LGPL sources as macOS, gated at build and run time, and carried in the corresponding-source archive',
 )
 expect(
   releaseWorkflow.includes(
@@ -1142,13 +1173,14 @@ const releaseGateEvidenceBindings = {
     macPackagedSmoke.includes('smoke_app "$dmg_app" \'DMG\'') &&
     macPackagedSmoke.includes('smoke_app "$archive_app" \'Archive\''),
   'windows-ffmpeg-source-and-notices':
-    thirdPartyInventory.includes('establish corresponding-source delivery') &&
+    thirdPartyInventory.includes('cross-compiled on Ubuntu 24.04 by `scripts/build-ffmpeg-windows.sh`') &&
+    releaseWorkflow.includes('notices/windows/SOURCE.txt') &&
     releaseWorkflow.includes('resources/third-party/ffmpeg') &&
     windowsPackagedSmoke.includes("-Filter 'ffmpeg.exe'") &&
     windowsPackagedSmoke.includes("-Filter 'ffprobe.exe'"),
   'webview2-final-installer-evidence':
-    webviewEvidence.includes('finalInstallerEmbeddingVerified = $false') &&
-    releaseCandidate.includes('extracting the MSI Binary table and NSIS payload'),
+    webviewEvidence.includes('microsoftBinariesRedistributed = $false') &&
+    releaseCandidate.includes('## WebView2: downloaded at install, not redistributed'),
   'synthetic-ftr-packaged-decode':
     ftrSmokeFixture.includes('FTR_AVI_TAG = 0x4180') &&
     releaseCandidate.includes('Generated synthetic FTR decode fixture') &&
