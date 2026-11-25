@@ -44,7 +44,10 @@
         "Record the release owner's decision on the public models-v1 release: keep it as immutable compatibility history for v1.0.2, restrict it, or withdraw it (with what that means for v1.0.2 installs that still offer downloads).",
         "If the decision changes or removes models-v1, list the follow-up repository changes (restore-models.yml, the release-contract assertions that read it, THIRD_PARTY_LICENSES.md) and whether they block v1.2.0."
       ],
-      "evidenceRefs": []
+      "evidenceRefs": [
+        "Owner decision 2026-11-25 (Andrew Mayes, release owner): withdraw the public models-v1 release (id 354629817) by turning it back into a private draft, keeping its nine files privately. v1.0.2 bundles seven of the nine; its two download-only models (dnsmos_sig_bak_ovr.onnx, speaker_embed.onnx) then fail with an HTTP error in the app.",
+        "Not yet done: this session cannot edit releases (GitHub refused with HTTP 403), so the owner runs 'gh release edit models-v1 --repo DepoStack/depo-audio --draft'. Read back 2026-11-25: the release is still public. restore-models.yml, its release-contract assertions and THIRD_PARTY_LICENSES.md wording follow once it is hidden; none blocks v1.2.0."
+      ]
     },
     {
       "id": "format-reader-interoperability-rights",
