@@ -41,7 +41,7 @@ DepoAudio handles the audio side of a deposition or hearing, end to end:
 
 **[Get the latest release](../../releases/latest)**
 
-> Code signing, notarization and signed updater artifacts are enabled only when their credentials are configured. v1.2.0 is planned to ship unsigned, so macOS and Windows will warn the first time you open it. Check each published release's notes for its signing and update state before installing.
+> Code signing, notarization and signed updater artifacts are enabled only when their credentials are configured. v1.2.0 is planned to ship unsigned, so macOS and Windows will warn the first time you open it, and it has no in-app updates: install each new version over the old one. Check each published release's notes for its signing and update state before installing.
 
 ---
 

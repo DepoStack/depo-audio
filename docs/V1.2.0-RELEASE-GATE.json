@@ -8,7 +8,7 @@
     "releaseId": 457735527,
     "sourceCommit": "5c24da8b35f05fa388a52a6175724c7ea9e34690",
     "assetManifestSha256": null,
-    "updater": "undecided",
+    "updater": "unavailable",
     "updaterPublicKey": null,
     "publicationDate": null,
     "approvedBy": null,
@@ -44,7 +44,10 @@
         "Record the release owner's decision on the public models-v1 release: keep it as immutable compatibility history for v1.0.2, restrict it, or withdraw it (with what that means for v1.0.2 installs that still offer downloads).",
         "If the decision changes or removes models-v1, list the follow-up repository changes (restore-models.yml, the release-contract assertions that read it, THIRD_PARTY_LICENSES.md) and whether they block v1.2.0."
       ],
-      "evidenceRefs": []
+      "evidenceRefs": [
+        "Owner decision 2026-11-25 (Andrew Mayes, release owner): withdraw the public models-v1 release (id 354629817) by turning it back into a private draft, keeping its nine files privately. v1.0.2 bundles seven of the nine; its two download-only models (dnsmos_sig_bak_ovr.onnx, speaker_embed.onnx) then fail with an HTTP error in the app.",
+        "Not yet done: this session cannot edit releases (GitHub refused with HTTP 403), so the owner runs 'gh release edit models-v1 --repo DepoStack/depo-audio --draft'. Read back 2026-11-25: the release is still public. restore-models.yml, its release-contract assertions and THIRD_PARTY_LICENSES.md wording follow once it is hidden; none blocks v1.2.0."
+      ]
     },
     {
       "id": "format-reader-interoperability-rights",
@@ -129,7 +132,8 @@
         "Windows candidate built on github-hosted (windows_runner input of run 45561632081).",
         "Windows job steps passed: Download FFmpeg (Windows x64) from asset 496767001, Verify FFmpeg sidecars, the .dm and DCR decoder checks, Smoke-test packaged native payloads and NSIS startup. The MSI and NSIS inventories carry the same ffmpeg.exe sha256:60e85f0ffa77ad8cb1f323fbfb509a19b8347e3ae95d61e5b7eaa27b4cf6590c and ffprobe.exe sha256:2850a0b3f9dac8dde351c52f6bfa192a5428792e7521f5812335ccfed70080fa.",
         "Not covered: corresponding-source delivery for the BtbN binaries (owner decision).",
-        "CI evidence only, recorded 2026-11-25 by Claude from the run and the draft assets; not yet reviewed by a named person, so this blocker stays open."
+        "CI evidence only, recorded 2026-11-25 by Claude from the run and the draft assets; not yet reviewed by a named person, so this blocker stays open.",
+        "Owner decision 2026-11-25 (Andrew Mayes, release owner): replace the BtbN Windows binaries with ffmpeg.exe and ffprobe.exe built in CI from the same hash-pinned FFmpeg 7.1.5, LAME 3.100 and Opus 1.6.1 sources as macOS, and ship those sources in the release's third-party source archive. Draft 457735527 (BtbN payload) is superseded once that build lands; a new private draft is needed."
       ]
     },
     {
@@ -147,7 +151,8 @@
         "https://github.com/DepoStack/depo-audio/actions/runs/45561632081/job/139027159513",
         "WEBVIEW2-EVIDENCE-windows.json records MicrosoftEdgeWebView2RuntimeInstallerX64.exe sha256:47bc51387aff95c1275ce38cfbbb5fbab99b43b33214049877bbcdbcc7a970d5 with a valid Microsoft signature; the NSIS inventory lists $TEMP/MicrosoftEdgeWebView2RuntimeInstaller.exe at the same sha256.",
         "Not covered: the MSI Binary table extraction (the MSI inventory does not list the embedded runtime) and the Microsoft redistribution terms (owner decision).",
-        "CI evidence only, recorded 2026-11-25 by Claude from the run and the draft assets; not yet reviewed by a named person, so this blocker stays open."
+        "CI evidence only, recorded 2026-11-25 by Claude from the run and the draft assets; not yet reviewed by a named person, so this blocker stays open.",
+        "Owner decision 2026-11-25 (Andrew Mayes, release owner): do not embed the WebView2 offline installer. Switch the Windows installers to Tauri's downloadBootstrapper mode so no Microsoft runtime bytes are redistributed; a PC without WebView2 downloads it from Microsoft during install. This replaces the offline-installer evidence and the redistribution-terms review; the evidence script and release contract change with it, and draft 457735527 is superseded."
       ]
     },
     {
@@ -195,7 +200,11 @@
         "Verify Authenticode, Apple signing, notarization, Gatekeeper, SmartScreen on the downloaded v1.2.0 assets, or record an explicit owner publication decision for each unavailable protection (expected: all unavailable for v1.2.0).",
         "Confirm the README and release notes tell users the installers are unsigned and how to open them, without claiming any platform protection."
       ],
-      "evidenceRefs": []
+      "evidenceRefs": [
+        "Owner publication decision 2026-11-25 (Andrew Mayes, release owner): v1.2.0 ships unsigned. Authenticode, Apple Developer ID signing, notarization, Gatekeeper approval and SmartScreen reputation are all unavailable for this release; users are told the installers are unsigned and how to open them.",
+        "Run https://github.com/DepoStack/depo-audio/actions/runs/45561632081 built the current draft unsigned (ad-hoc macOS signature, unsigned Windows installers). The rebuild that follows the Windows FFmpeg and WebView2 changes must show the same 'Detect signing configuration' notices.",
+        "Still open: README and release notes must give the steps to open an unsigned build on each platform."
+      ]
     },
     {
       "id": "updater-keys-or-unavailable",
@@ -209,7 +218,13 @@
         "If the secrets were absent: confirm the draft has no .sig asset and no latest.json, set candidate.updater to 'unavailable' with updaterPublicKey null, and keep the README saying in-app updates are unavailable for this release.",
         "Add the v1.2.0 release run URL and the exact log lines relied on to evidenceRefs (empty until the v1.2.0 candidate is built)."
       ],
-      "evidenceRefs": []
+      "evidenceRefs": [
+        "Owner decision 2026-11-25 (Andrew Mayes, release owner): v1.2.0 ships with in-app updates unavailable; no updater signing secrets are set and the private draft is not rebuilt.",
+        "https://github.com/DepoStack/depo-audio/actions/runs/45561632081/job/139027159367 (macOS, 2026-11-25T06:49:22Z): '::notice::Updater signing secrets absent — building without signed auto-update artifacts (updater stays dormant).' and updater=false.",
+        "https://github.com/DepoStack/depo-audio/actions/runs/45561632081/job/139027159513 (Windows, 2026-11-25T06:58:37Z): the same 'Updater signing secrets absent' notice.",
+        "Private draft 457735527 at 5c24da8 lists 24 assets with no .sig file and no latest.json (read back through the releases API 2026-11-25).",
+        "README and the v1.2.0 changelog say 1.2.0 has no in-app updates and 1.0.2 users install it over 1.0.2 by hand."
+      ]
     },
     {
       "id": "rust-advisory-exception-acceptance",
@@ -221,7 +236,10 @@
         "Release owner sign-off that the v1.0.3 and v1.1.0 candidates are superseded and that v1.2.0 is built from main with no advisory exception.",
         "At publication time, rerun cargo deny check advisories against the exact v1.2.0 candidate source commit and retain the result; any advisory without a recorded owner acceptance blocks publication."
       ],
-      "evidenceRefs": []
+      "evidenceRefs": [
+        "Owner sign-off 2026-11-25 (Andrew Mayes, release owner): the v1.0.3 and v1.1.0 candidates are superseded, and v1.2.0 is built from main at 5c24da8 with no advisory exception (deny.toml advisories ignore = []).",
+        "Still open: rerun cargo deny check advisories against 5c24da8 at publication time and retain the result."
+      ]
     },
     {
       "id": "codec-patent-review",
@@ -246,7 +264,10 @@
         "Decide whether reproducing both OFL texts in the bundled third-party notices meets the OFL condition that the copyright notice and licence accompany each copy, or whether the About screen should also link to them.",
         "Record the release owner's licence and distribution-ledger decision for bundling the fonts."
       ],
-      "evidenceRefs": []
+      "evidenceRefs": [
+        "Owner decision 2026-11-25 (Andrew Mayes, release owner): reproducing the Archivo and Fragment Mono copyright lines and OFL 1.1 texts in the bundled third-party notices (COMPONENTS.json 0347acee..., THIRD-PARTY-NOTICES.html 5049186d... in run 45561632081) meets the OFL condition; no About-screen link is added. Bundling both fonts is accepted for the distribution ledger.",
+        "Still open: confirm the exact upstream source and copyright notice of each subset woff2 copied from depo-stack public/fonts against its bundled OFL text."
+      ]
     },
     {
       "id": "release-publication-environment-and-tag-ruleset",
