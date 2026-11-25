@@ -8,7 +8,7 @@
     "releaseId": 457735527,
     "sourceCommit": "5c24da8b35f05fa388a52a6175724c7ea9e34690",
     "assetManifestSha256": null,
-    "updater": "undecided",
+    "updater": "unavailable",
     "updaterPublicKey": null,
     "publicationDate": null,
     "approvedBy": null,
@@ -209,7 +209,13 @@
         "If the secrets were absent: confirm the draft has no .sig asset and no latest.json, set candidate.updater to 'unavailable' with updaterPublicKey null, and keep the README saying in-app updates are unavailable for this release.",
         "Add the v1.2.0 release run URL and the exact log lines relied on to evidenceRefs (empty until the v1.2.0 candidate is built)."
       ],
-      "evidenceRefs": []
+      "evidenceRefs": [
+        "Owner decision 2026-11-25 (Andrew Mayes, release owner): v1.2.0 ships with in-app updates unavailable; no updater signing secrets are set and the private draft is not rebuilt.",
+        "https://github.com/DepoStack/depo-audio/actions/runs/45561632081/job/139027159367 (macOS, 2026-11-25T06:49:22Z): '::notice::Updater signing secrets absent — building without signed auto-update artifacts (updater stays dormant).' and updater=false.",
+        "https://github.com/DepoStack/depo-audio/actions/runs/45561632081/job/139027159513 (Windows, 2026-11-25T06:58:37Z): the same 'Updater signing secrets absent' notice.",
+        "Private draft 457735527 at 5c24da8 lists 24 assets with no .sig file and no latest.json (read back through the releases API 2026-11-25).",
+        "README and the v1.2.0 changelog say 1.2.0 has no in-app updates and 1.0.2 users install it over 1.0.2 by hand."
+      ]
     },
     {
       "id": "rust-advisory-exception-acceptance",
