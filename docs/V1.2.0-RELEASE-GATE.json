@@ -26,7 +26,13 @@
         "On an installed v1.2.0 app, confirm legacy app-data model files left by v1.0.2 are never loaded, are listed only in Settings -> Model files for deletion, and are removed by Clear all DepoAudio data.",
         "Add the v1.2.0 release run URL and the exact log lines relied on to evidenceRefs (empty until the v1.2.0 candidate is built)."
       ],
-      "evidenceRefs": []
+      "evidenceRefs": [
+        "https://github.com/DepoStack/depo-audio/actions/runs/45561632081",
+        "The four v1.2.0 inventories are bound to source commit 5c24da8b35f05fa388a52a6175724c7ea9e34690: macos-dmg and macos-app-archive are byte-identical at sha256:bbc43a37abc18183a15cde5cc95e4c4423c44e702e9e809bd91d13487b68787a, windows-msi sha256:1e4d5884aba7579aba47487f3871adfdd30ac7cfd65f1491e2b5fffa916eb6bd, windows-nsis sha256:2c2aabd73248e4ba106c6aeec512d2d8047c612571aa8ecea8fb87ed7cebeb56.",
+        "models:check printed \"Model distribution contract verified\" in prepare and again before packaging on macOS and Windows; none of the four inventories lists an .onnx, ONNX Runtime or model path.",
+        "Not covered: the installed-app check of legacy v1.0.2 model files.",
+        "CI evidence only, recorded 2026-11-25 by Claude from the run and the draft assets; not yet reviewed by a named person, so this blocker stays open."
+      ]
     },
     {
       "id": "models-v1-distribution-decision",
@@ -79,7 +85,13 @@
         "Confirm the emitted graph maps react-remove-scroll-bar imports to the DepoAudio compatibility module and distributes no bytes from react-remove-scroll-bar@2.3.8, and that the Tauri, tslib, Tailwind CSS and tailwindcss-animate notices are preserved.",
         "Add the v1.2.0 release run URL and the exact log lines relied on to evidenceRefs (empty until the v1.2.0 candidate is built)."
       ],
-      "evidenceRefs": []
+      "evidenceRefs": [
+        "https://github.com/DepoStack/depo-audio/actions/runs/45561632081",
+        "generate-javascript-notices.mjs --strict --check printed \"JavaScript notices are current (59 components; 0 unresolved)\" in prepare and dependency-evidence.",
+        "All four inventories carry COMPONENTS.json sha256:0347aceefaaf5c1a896ed031d2c68957d198bd0b61d9d44f6760b25d055647d1 and THIRD-PARTY-NOTICES.html sha256:5049186d7bd56d37dcb4f7fb8a65fabfcf8b8635aaf4899cff076d95ee3afcf3, matching the draft assets DepoAudio_1.2.0_javascript-components.json and DepoAudio_1.2.0_javascript-third-party-notices.html.",
+        "The component registry lists react-remove-scroll but no react-remove-scroll-bar entry, and keeps the @tauri-apps, tslib, tailwindcss and tailwindcss-animate notices.",
+        "CI evidence only, recorded 2026-11-25 by Claude from the run and the draft assets; not yet reviewed by a named person, so this blocker stays open."
+      ]
     },
     {
       "id": "macos-ffmpeg-rc2-evidence",
@@ -92,7 +104,13 @@
         "Extract both downloadable macOS containers (DMG and app archive) and verify byte-identical macOS inventories, matching source, configuration, toolchain, license and checksum evidence, and DepoAudio_1.2.0_third-party-source.tar.gz.",
         "Add the v1.2.0 release run URL and the exact log lines relied on to evidenceRefs (empty until the v1.2.0 candidate is built)."
       ],
-      "evidenceRefs": []
+      "evidenceRefs": [
+        "https://github.com/DepoStack/depo-audio/actions/runs/45561632081/job/139027159367",
+        "macOS job steps passed: Build universal FFmpeg sidecars, Verify FFmpeg sidecars, Smoke-test native FTR decoding and released encoders, Smoke-test legacy video container audio extraction, Smoke-test a two-recording Merge with the bundled sidecars, Smoke-test downloadable macOS containers.",
+        "The four v1.2.0 inventories are bound to source commit 5c24da8b35f05fa388a52a6175724c7ea9e34690: macos-dmg and macos-app-archive are byte-identical at sha256:bbc43a37abc18183a15cde5cc95e4c4423c44e702e9e809bd91d13487b68787a, windows-msi sha256:1e4d5884aba7579aba47487f3871adfdd30ac7cfd65f1491e2b5fffa916eb6bd, windows-nsis sha256:2c2aabd73248e4ba106c6aeec512d2d8047c612571aa8ecea8fb87ed7cebeb56.",
+        "SHA256SUMS-third-party-source.txt: DepoAudio_1.2.0_third-party-source.tar.gz sha256:71760f8c3a315e354e88f766eb726df2a1b622f388aa3bc0308bff015118ca07.",
+        "CI evidence only, recorded 2026-11-25 by Claude from the run and the draft assets; not yet reviewed by a named person, so this blocker stays open."
+      ]
     },
     {
       "id": "windows-ffmpeg-source-and-notices",
@@ -106,7 +124,13 @@
         "Establish compliant corresponding-source delivery and preserve the exact license, configuration, source reference and required notices for the distributed Windows binaries (owner decision).",
         "Add the v1.2.0 release run URL and the exact log lines relied on to evidenceRefs (empty until the v1.2.0 candidate is built)."
       ],
-      "evidenceRefs": []
+      "evidenceRefs": [
+        "https://github.com/DepoStack/depo-audio/actions/runs/45561632081/job/139027159513",
+        "Windows candidate built on github-hosted (windows_runner input of run 45561632081).",
+        "Windows job steps passed: Download FFmpeg (Windows x64) from asset 496767001, Verify FFmpeg sidecars, the .dm and DCR decoder checks, Smoke-test packaged native payloads and NSIS startup. The MSI and NSIS inventories carry the same ffmpeg.exe sha256:60e85f0ffa77ad8cb1f323fbfb509a19b8347e3ae95d61e5b7eaa27b4cf6590c and ffprobe.exe sha256:2850a0b3f9dac8dde351c52f6bfa192a5428792e7521f5812335ccfed70080fa.",
+        "Not covered: corresponding-source delivery for the BtbN binaries (owner decision).",
+        "CI evidence only, recorded 2026-11-25 by Claude from the run and the draft assets; not yet reviewed by a named person, so this blocker stays open."
+      ]
     },
     {
       "id": "webview2-final-installer-evidence",
@@ -119,7 +143,12 @@
         "Review and record the exact Microsoft redistribution terms that apply to the embedded runtime (owner decision).",
         "Add the v1.2.0 release run URL and the exact log lines relied on to evidenceRefs (empty until the v1.2.0 candidate is built)."
       ],
-      "evidenceRefs": []
+      "evidenceRefs": [
+        "https://github.com/DepoStack/depo-audio/actions/runs/45561632081/job/139027159513",
+        "WEBVIEW2-EVIDENCE-windows.json records MicrosoftEdgeWebView2RuntimeInstallerX64.exe sha256:47bc51387aff95c1275ce38cfbbb5fbab99b43b33214049877bbcdbcc7a970d5 with a valid Microsoft signature; the NSIS inventory lists $TEMP/MicrosoftEdgeWebView2RuntimeInstaller.exe at the same sha256.",
+        "Not covered: the MSI Binary table extraction (the MSI inventory does not list the embedded runtime) and the Microsoft redistribution terms (owner decision).",
+        "CI evidence only, recorded 2026-11-25 by Claude from the run and the draft assets; not yet reviewed by a named person, so this blocker stays open."
+      ]
     },
     {
       "id": "synthetic-ftr-packaged-decode",
@@ -132,7 +161,13 @@
         "Confirm from the four v1.2.0 inventories that the generated fixtures and every derived smoke-test output are absent from all installers, release assets and retained public artifacts.",
         "Add the v1.2.0 release run URL and the exact log lines relied on to evidenceRefs (empty until the v1.2.0 candidate is built)."
       ],
-      "evidenceRefs": []
+      "evidenceRefs": [
+        "https://github.com/DepoStack/depo-audio/actions/runs/45561632081/job/139027159367",
+        "https://github.com/DepoStack/depo-audio/actions/runs/45561632081/job/139027159513",
+        "Both release jobs passed Generate synthetic FTR decode fixture, Smoke-test native FTR decoding and released encoders, the legacy video container smoke tests and the fixture removal steps; Windows also passed the .dm decoder check.",
+        "None of the four inventories lists a .trm, .ftr, ftr-smoke, fixture or decoded-output path.",
+        "CI evidence only, recorded 2026-11-25 by Claude from the run and the draft assets; not yet reviewed by a named person, so this blocker stays open."
+      ]
     },
     {
       "id": "packaged-install-and-upgrade-validation",
