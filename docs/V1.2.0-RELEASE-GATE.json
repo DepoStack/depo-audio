@@ -200,7 +200,11 @@
         "Verify Authenticode, Apple signing, notarization, Gatekeeper, SmartScreen on the downloaded v1.2.0 assets, or record an explicit owner publication decision for each unavailable protection (expected: all unavailable for v1.2.0).",
         "Confirm the README and release notes tell users the installers are unsigned and how to open them, without claiming any platform protection."
       ],
-      "evidenceRefs": []
+      "evidenceRefs": [
+        "Owner publication decision 2026-11-25 (Andrew Mayes, release owner): v1.2.0 ships unsigned. Authenticode, Apple Developer ID signing, notarization, Gatekeeper approval and SmartScreen reputation are all unavailable for this release; users are told the installers are unsigned and how to open them.",
+        "Run https://github.com/DepoStack/depo-audio/actions/runs/45561632081 built the current draft unsigned (ad-hoc macOS signature, unsigned Windows installers). The rebuild that follows the Windows FFmpeg and WebView2 changes must show the same 'Detect signing configuration' notices.",
+        "Still open: README and release notes must give the steps to open an unsigned build on each platform."
+      ]
     },
     {
       "id": "updater-keys-or-unavailable",
