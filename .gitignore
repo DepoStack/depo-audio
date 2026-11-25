@@ -24,8 +24,29 @@ Thumbs.db
 *.swo
 *~
 
-# Claude Code
-.claude/
+# Claude Code: local settings and notes stay out; only the shared skills below are tracked
+.claude/*
+!.claude/skills/
+.claude/skills/*
+!.claude/skills/codebase-design/
+!.claude/skills/diagnosing-bugs/
+!.claude/skills/domain-modeling/
+!.claude/skills/grill-with-docs/
+!.claude/skills/grilling/
+!.claude/skills/handoff/
+!.claude/skills/implement/
+!.claude/skills/improve-codebase-architecture/
+!.claude/skills/prototype/
+!.claude/skills/research/
+!.claude/skills/retro/
+!.claude/skills/setup-matt-pocock-skills/
+!.claude/skills/tdd/
+!.claude/skills/to-spec/
+!.claude/skills/to-tickets/
+!.claude/skills/triage/
+!.claude/skills/wayfinder/
+!.claude/skills/wizard/
+!.claude/skills/writing-for-agents/
 
 # Local CI evidence (scripts/ci-local.sh)
 /.ci-evidence/

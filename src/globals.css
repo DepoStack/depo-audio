@@ -3,6 +3,10 @@
 @import './styles/tokens.css';
 /* Bundled Archivo and Fragment Mono (public/fonts) */
 @import './styles/fonts.css';
+/* Agent skill and setup docs are not app content; keep their words out of
+   Tailwind's automatic class scan so they add no CSS. */
+@source not '../.claude';
+@source not '../docs/agents';
 
 @plugin 'tailwindcss-animate';
 
