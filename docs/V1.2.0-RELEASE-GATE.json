@@ -125,7 +125,11 @@
         "Add the v1.2.0 release run URL and the exact log lines relied on to evidenceRefs."
       ],
       "evidenceRefs": [
-        "Superseded: run 45561632081 built the earlier draft with BtbN's Windows FFmpeg and an embedded WebView2 runtime. #247 replaced both, so that run's evidence no longer applies to the 1.2.0 candidate."
+        "https://github.com/DepoStack/depo-audio/actions/runs/45561632081/job/139027159513",
+        "Windows candidate built on github-hosted (windows_runner input of run 45561632081).",
+        "Windows job steps passed: Download FFmpeg (Windows x64) from asset 496767001, Verify FFmpeg sidecars, the .dm and DCR decoder checks, Smoke-test packaged native payloads and NSIS startup. The MSI and NSIS inventories carry the same ffmpeg.exe sha256:60e85f0ffa77ad8cb1f323fbfb509a19b8347e3ae95d61e5b7eaa27b4cf6590c and ffprobe.exe sha256:2850a0b3f9dac8dde351c52f6bfa192a5428792e7521f5812335ccfed70080fa.",
+        "Not covered: corresponding-source delivery for the BtbN binaries (owner decision).",
+        "CI evidence only, recorded 2026-11-25 by Claude from the run and the draft assets; not yet reviewed by a named person, so this blocker stays open."
       ]
     },
     {
@@ -140,7 +144,10 @@
         "Add the v1.2.0 release run URL and the exact log lines relied on to evidenceRefs."
       ],
       "evidenceRefs": [
-        "Superseded: run 45561632081 built the earlier draft with BtbN's Windows FFmpeg and an embedded WebView2 runtime. #247 replaced both, so that run's evidence no longer applies to the 1.2.0 candidate."
+        "https://github.com/DepoStack/depo-audio/actions/runs/45561632081/job/139027159513",
+        "WEBVIEW2-EVIDENCE-windows.json records MicrosoftEdgeWebView2RuntimeInstallerX64.exe sha256:47bc51387aff95c1275ce38cfbbb5fbab99b43b33214049877bbcdbcc7a970d5 with a valid Microsoft signature; the NSIS inventory lists $TEMP/MicrosoftEdgeWebView2RuntimeInstaller.exe at the same sha256.",
+        "Not covered: the MSI Binary table extraction (the MSI inventory does not list the embedded runtime) and the Microsoft redistribution terms (owner decision).",
+        "CI evidence only, recorded 2026-11-25 by Claude from the run and the draft assets; not yet reviewed by a named person, so this blocker stays open."
       ]
     },
     {
