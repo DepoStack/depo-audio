@@ -919,17 +919,20 @@ expect(
   'both bundled FFmpeg builds must keep the decoders and the amerge filter the DCR reader needs',
 )
 expect(
-  releaseWorkflow.includes('scripts/windows-webview2-evidence.ps1') &&
+  tauriConfig.bundle?.windows?.webviewInstallMode?.type === 'downloadBootstrapper' &&
+    tauriConfig.bundle?.windows?.webviewInstallMode?.silent === true &&
+    releaseWorkflow.includes('scripts/windows-webview2-evidence.ps1') &&
     releaseWorkflow.includes('WEBVIEW2-EVIDENCE-windows.json') &&
-    releaseWorkflow.includes('WEBVIEW2-SIGNATURE-windows.txt') &&
+    !releaseWorkflow.includes('WEBVIEW2-SIGNATURE-windows.txt') &&
+    !publicationHelper.includes('WEBVIEW2-SIGNATURE-windows.txt') &&
+    releaseWorkflow.indexOf('./scripts/windows-packaged-smoke.ps1') <
+      releaseWorkflow.indexOf('& ./scripts/windows-webview2-evidence.ps1') &&
     webviewEvidence.includes(`$tauriCliVersion -ne '${lockedTauriCliVersion}'`) &&
-    webviewEvidence.includes('Get-AuthenticodeSignature') &&
-    webviewEvidence.includes('$wixHash -ne $nsisHash') &&
-    webviewEvidence.includes('& $signToolPath verify /pa /v') &&
-    !webviewEvidence.includes('& $signToolPath verify /pa /all /v') &&
-    webviewEvidence.includes('primary-signature verification failed') &&
-    webviewEvidence.includes('finalInstallerEmbeddingVerified = $false'),
-  'Windows releases must verify and retain exact Microsoft-signed, byte-identical WebView2 build-input evidence without overstating final extraction',
+    webviewEvidence.includes("$installMode.type -ne 'downloadBootstrapper'") &&
+    webviewEvidence.includes('SELECT `Name`, `Data` FROM `Binary`') &&
+    webviewEvidence.includes('carries a WebView2 installer') &&
+    webviewEvidence.includes('microsoftBinariesRedistributed = $false'),
+  'Windows installers must download WebView2 at install time and the release must prove neither installer carries a WebView2 installer',
 )
 expect(
   bundleResources.includes('resources/third-party/rust') &&
@@ -1174,8 +1177,8 @@ const releaseGateEvidenceBindings = {
     windowsPackagedSmoke.includes("-Filter 'ffmpeg.exe'") &&
     windowsPackagedSmoke.includes("-Filter 'ffprobe.exe'"),
   'webview2-final-installer-evidence':
-    webviewEvidence.includes('finalInstallerEmbeddingVerified = $false') &&
-    releaseCandidate.includes('extracting the MSI Binary table and NSIS payload'),
+    webviewEvidence.includes('microsoftBinariesRedistributed = $false') &&
+    releaseCandidate.includes('## WebView2: downloaded at install, not redistributed'),
   'synthetic-ftr-packaged-decode':
     ftrSmokeFixture.includes('FTR_AVI_TAG = 0x4180') &&
     releaseCandidate.includes('Generated synthetic FTR decode fixture') &&

@@ -296,7 +296,6 @@ function requiredReleaseEvidence(version) {
     'RELEASE-INVENTORY-windows-msi.json',
     'RELEASE-INVENTORY-windows-nsis.json',
     'WEBVIEW2-EVIDENCE-windows.json',
-    'WEBVIEW2-SIGNATURE-windows.txt',
     `DepoAudio_${version}_third-party-source.tar.gz`,
     `DepoAudio_${version}_rust-third-party-licenses.html`,
     `DepoAudio_${version}_javascript-third-party-notices.html`,

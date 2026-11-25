@@ -933,16 +933,6 @@ jobs:
             throw 'Windows signing certificate remained in the user store after packaging'
           }
 
-      - name: Verify WebView2 offline-installer build inputs (Windows)
-        if: runner.os == 'Windows'
-        shell: pwsh
-        env:
-          RELEASE_TAG: ${{ inputs.tag }}
-        run: |
-          & ./scripts/windows-webview2-evidence.ps1 `
-            -OutputPath (Join-Path $env:RUNNER_TEMP 'WEBVIEW2-EVIDENCE-windows.json') `
-            -SignatureReportPath (Join-Path $env:RUNNER_TEMP 'WEBVIEW2-SIGNATURE-windows.txt')
-
       # The component checks above do not exercise Tauri's embedded plugin
       # configuration. Launch the exact bundled application before the workflow
       # can finish so a setup panic is visible before anyone publishes the draft.
@@ -1004,6 +994,16 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: ./scripts/windows-packaged-smoke.ps1
+
+      # The installers download WebView2 from Microsoft at install time, only
+      # when it is missing. Prove neither installer carries a WebView2
+      # installer, now that the smoke test above has extracted both.
+      - name: Verify the installers carry no WebView2 installer (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          & ./scripts/windows-webview2-evidence.ps1 `
+            -OutputPath (Join-Path $env:RUNNER_TEMP 'WEBVIEW2-EVIDENCE-windows.json')
 
       - name: Publish macOS inventory and checksum evidence to the draft
         if: runner.os == 'macOS'
@@ -1185,12 +1185,8 @@ jobs:
           [IO.File]::WriteAllLines($manifest, $lines, [Text.UTF8Encoding]::new($false))
           Get-Content -LiteralPath $manifest
           $webviewEvidence = Join-Path $env:RUNNER_TEMP 'WEBVIEW2-EVIDENCE-windows.json'
-          $webviewSignature = Join-Path $env:RUNNER_TEMP 'WEBVIEW2-SIGNATURE-windows.txt'
           if (-not (Test-Path -LiteralPath $webviewEvidence -PathType Leaf)) {
-            throw 'WebView2 build-input evidence is missing'
-          }
-          if (-not (Test-Path -LiteralPath $webviewSignature -PathType Leaf)) {
-            throw 'WebView2 signature verification report is missing'
+            throw 'WebView2 install-mode evidence is missing'
           }
           $signatureArtifacts = @(Get-ChildItem -LiteralPath $bundleRoot -Recurse -Filter '*.sig' -File | Sort-Object FullName)
           $uploadArguments = @(
@@ -1201,7 +1197,7 @@ jobs:
             '--commit', $env:GITHUB_SHA
             '--'
           ) + @($artifacts.FullName) + @($signatureArtifacts.FullName) + @(
-            $manifest, $msiInventory, $nsisInventory, $webviewEvidence, $webviewSignature
+            $manifest, $msiInventory, $nsisInventory, $webviewEvidence
           )
           & node @uploadArguments
           if ($LASTEXITCODE -ne 0) { throw 'Windows draft asset upload failed' }
@@ -1481,8 +1477,7 @@ jobs:
             RELEASE-INVENTORY-macos-app-archive.json \
             RELEASE-INVENTORY-windows-msi.json \
             RELEASE-INVENTORY-windows-nsis.json \
-            WEBVIEW2-EVIDENCE-windows.json \
-            WEBVIEW2-SIGNATURE-windows.txt
+            WEBVIEW2-EVIDENCE-windows.json
           do
             require_exact "$required" "$required"
           done
