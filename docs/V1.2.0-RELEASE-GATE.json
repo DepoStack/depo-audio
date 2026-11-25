@@ -230,7 +230,10 @@
         "Release owner sign-off that the v1.0.3 and v1.1.0 candidates are superseded and that v1.2.0 is built from main with no advisory exception.",
         "At publication time, rerun cargo deny check advisories against the exact v1.2.0 candidate source commit and retain the result; any advisory without a recorded owner acceptance blocks publication."
       ],
-      "evidenceRefs": []
+      "evidenceRefs": [
+        "Owner sign-off 2026-11-25 (Andrew Mayes, release owner): the v1.0.3 and v1.1.0 candidates are superseded, and v1.2.0 is built from main at 5c24da8 with no advisory exception (deny.toml advisories ignore = []).",
+        "Still open: rerun cargo deny check advisories against 5c24da8 at publication time and retain the result."
+      ]
     },
     {
       "id": "codec-patent-review",
