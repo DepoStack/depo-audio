@@ -5,8 +5,8 @@
   "status": "NO-GO",
   "candidate": {
     "tag": "v1.2.0",
-    "releaseId": 456393254,
-    "sourceCommit": "52fcd3c76f9ba2fc06cd807de917befcdf7ad4cb",
+    "releaseId": 457735527,
+    "sourceCommit": "5c24da8b35f05fa388a52a6175724c7ea9e34690",
     "assetManifestSha256": null,
     "updater": "undecided",
     "updaterPublicKey": null,
