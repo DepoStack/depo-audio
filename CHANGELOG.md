@@ -10,6 +10,12 @@ DepoAudio 1.2.0 is the first release since 1.0.2. It includes everything that wa
 
 A short summary for court reporters, scopists and agencies. The detailed entries follow.
 
+**Installing**
+
+- This release is unsigned and has no in-app updates. Install each new version over the old one.
+- macOS: open DepoAudio once, click **Done**, then go to **System Settings → Privacy & Security** and click **Open Anyway** next to the DepoAudio message. Enter your password to confirm.
+- Windows: if **Windows protected your PC** appears, click **More info**, then **Run anyway**. On Windows 10 without WebView2, the installer downloads it from Microsoft, so stay online while it installs.
+
 **Formats**
 
 - DepoAudio now reads DigitalCAT / SoundSync `.dm` and Liberty / BIS Digital `.dcr` recordings itself, splits FTR recordings that FFmpeg cannot read on its own (and keeps their start time), and reads and writes CATalyst's SGMCA Direct Audio files with every recording session. These four are **Preview**: they follow interoperability notes and have been tested with sample files made from those notes, not with recordings from the vendors' own software. Check the output before you rely on it.
