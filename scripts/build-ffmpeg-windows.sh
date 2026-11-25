@@ -166,6 +166,9 @@ test -n "$configuration" && test -n "$license" || { echo "ERROR: config.h has no
 ! grep -q -- '--enable-nonfree' <<<"$configuration" || { echo "ERROR: Windows FFmpeg enabled nonfree code" >&2; exit 1; }
 grep -qx '#define CONFIG_GPL 0' "$config_h" || { echo "ERROR: Windows FFmpeg config has GPL enabled" >&2; exit 1; }
 grep -qx '#define CONFIG_NONFREE 0' "$config_h" || { echo "ERROR: Windows FFmpeg config has nonfree enabled" >&2; exit 1; }
+# Native Windows threads; no libwinpthread is linked.
+grep -qx '#define HAVE_W32THREADS 1' "$config_h" || { echo "ERROR: Windows FFmpeg built without native Windows threads" >&2; exit 1; }
+grep -qx '#define HAVE_PTHREADS 0' "$config_h" || { echo "ERROR: Windows FFmpeg uses pthreads" >&2; exit 1; }
 ! grep -qi 'unredistributable' <<<"$license" || { echo "ERROR: Windows FFmpeg is unredistributable" >&2; exit 1; }
 case "$license" in
   'LGPL version 2.1 or later' | 'LGPL version 3 or later') : ;;

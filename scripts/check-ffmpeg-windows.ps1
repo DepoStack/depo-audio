@@ -32,12 +32,16 @@ foreach ($report in @($version, $probeVersion)) {
   if ($report -match '(?i)unredistributable') { throw 'Windows FFmpeg is unredistributable' }
 }
 
-# The programs must report exactly the configuration the Linux build recorded.
+# Both programs must report exactly the configuration the Linux build
+# recorded. -cne compares case-sensitively; PowerShell's -ne ignores case.
 $recorded = Get-Content -LiteralPath $BuildConfiguration -Raw
-$recordedConfiguration = ($recorded -split "`r?`n" | Where-Object { $_ -like 'configuration: *' } | Select-Object -First 1)
-$reportedConfiguration = ($version -split "`r?`n" | Where-Object { $_ -like 'configuration: *' } | Select-Object -First 1)
-if (-not $recordedConfiguration -or $recordedConfiguration -ne $reportedConfiguration) {
-  throw "ffmpeg.exe reports a different configuration than the build recorded:`n  recorded: $recordedConfiguration`n  reported: $reportedConfiguration"
+$recordedConfiguration = ($recorded -split "`r?`n" | Where-Object { $_ -clike 'configuration: *' } | Select-Object -First 1)
+if (-not $recordedConfiguration) { throw "The recorded build configuration has no configuration line: $BuildConfiguration" }
+foreach ($pair in @(@('ffmpeg.exe', $version), @('ffprobe.exe', $probeVersion))) {
+  $reportedConfiguration = ($pair[1] -split "`r?`n" | Where-Object { $_ -clike 'configuration: *' } | Select-Object -First 1)
+  if ($recordedConfiguration -cne $reportedConfiguration) {
+    throw "$($pair[0]) reports a different configuration than the build recorded:`n  recorded: $recordedConfiguration`n  reported: $reportedConfiguration"
+  }
 }
 
 $decoders = Invoke-Sidecar $FFmpeg @('-hide_banner', '-decoders')

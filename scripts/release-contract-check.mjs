@@ -925,12 +925,14 @@ expect(
     releaseWorkflow.includes('WEBVIEW2-EVIDENCE-windows.json') &&
     !releaseWorkflow.includes('WEBVIEW2-SIGNATURE-windows.txt') &&
     !publicationHelper.includes('WEBVIEW2-SIGNATURE-windows.txt') &&
+    releaseWorkflow.indexOf('./scripts/windows-packaged-smoke.ps1') >= 0 &&
     releaseWorkflow.indexOf('./scripts/windows-packaged-smoke.ps1') <
       releaseWorkflow.indexOf('& ./scripts/windows-webview2-evidence.ps1') &&
     webviewEvidence.includes(`$tauriCliVersion -ne '${lockedTauriCliVersion}'`) &&
     webviewEvidence.includes("$installMode.type -ne 'downloadBootstrapper'") &&
     webviewEvidence.includes('SELECT `Name`, `Data` FROM `Binary`') &&
     webviewEvidence.includes('carries a WebView2 installer') &&
+    webviewEvidence.includes('has no custom action that downloads the WebView2 bootstrapper') &&
     webviewEvidence.includes('microsoftBinariesRedistributed = $false'),
   'Windows installers must download WebView2 at install time and the release must prove neither installer carries a WebView2 installer',
 )

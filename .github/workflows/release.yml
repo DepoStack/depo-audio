@@ -342,12 +342,17 @@ jobs:
           $root = Join-Path $env:RUNNER_TEMP 'depoaudio-ffmpeg-windows'
           $manifest = Join-Path $root 'SHA256SUMS-ffmpeg-windows.txt'
           if (-not (Test-Path -LiteralPath $manifest -PathType Leaf)) { throw 'Windows FFmpeg manifest is missing' }
+          $listed = @()
           foreach ($line in Get-Content -LiteralPath $manifest) {
             if ($line -notmatch '^([0-9a-f]{64})  (.+)$') { throw "Malformed Windows FFmpeg manifest line: $line" }
             $expected = $Matches[1]
+            $listed += $Matches[2]
             $file = Join-Path $root $Matches[2]
             $actual = (Get-FileHash -LiteralPath $file -Algorithm SHA256).Hash.ToLowerInvariant()
             if ($actual -ne $expected) { throw "Windows FFmpeg artifact hash mismatch: $($Matches[2])" }
+          }
+          foreach ($required in @('binaries/ffmpeg-x86_64-pc-windows-msvc.exe', 'binaries/ffprobe-x86_64-pc-windows-msvc.exe')) {
+            if ($listed -cnotcontains $required) { throw "Windows FFmpeg manifest does not list $required" }
           }
           $ffmpeg = Join-Path $root 'binaries/ffmpeg-x86_64-pc-windows-msvc.exe'
           $ffprobe = Join-Path $root 'binaries/ffprobe-x86_64-pc-windows-msvc.exe'

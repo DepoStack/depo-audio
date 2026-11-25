@@ -38,6 +38,15 @@ if ($installMode.type -ne 'downloadBootstrapper') {
 if ($installMode.silent -ne $true) {
   throw 'tauri.conf.json must run the WebView2 bootstrapper silently'
 }
+# The release build passes tauri.release.conf.json as an overlay. It must not
+# change the install mode.
+$releaseConfigPath = Join-Path $repoRoot 'src-tauri\tauri.release.conf.json'
+if (Test-Path -LiteralPath $releaseConfigPath -PathType Leaf) {
+  $releaseWindows = (Get-Content -LiteralPath $releaseConfigPath -Raw | ConvertFrom-Json).bundle.windows
+  if ($releaseWindows -and ($releaseWindows.PSObject.Properties.Name -contains 'webviewInstallMode')) {
+    throw 'tauri.release.conf.json must not override the WebView2 install mode'
+  }
+}
 
 $bundleRoot = Join-Path $repoRoot 'src-tauri\target\release\bundle'
 $msi = @(Get-ChildItem -LiteralPath (Join-Path $bundleRoot 'msi') -Filter '*.msi' -File)
@@ -99,6 +108,10 @@ if ($embedded.Count -gt 0) {
 }
 $customActions = @(Get-MsiRows $msi[0].FullName 'SELECT `Action`, `Target` FROM `CustomAction`' @(1, 2) 0)
 $downloadAction = @($customActions | Where-Object { $_.column2 -match '(?i)go\.microsoft\.com/fwlink' })
+# Without this step a Windows 10 machine lacking WebView2 would get no runtime.
+if ($downloadAction.Count -eq 0) {
+  throw 'The MSI has no custom action that downloads the WebView2 bootstrapper from Microsoft'
+}
 
 $evidence = [ordered]@{
   schemaVersion = 2
@@ -111,8 +124,8 @@ $evidence = [ordered]@{
   }
   extractedPayloads = $payloadEvidence
   msiBinaryTable = @($binaryRows | ForEach-Object { [ordered]@{ name = $_.column1; size = $_.size } })
-  # Recorded, not enforced: Tauri's WiX template fetches the bootstrapper in a
-  # custom action. A reviewer confirms it on a clean Windows 10 install.
+  # Tauri's WiX template fetches the bootstrapper in this custom action. A
+  # reviewer still confirms the download on a clean Windows 10 install.
   msiBootstrapperDownloadActions = @($downloadAction | ForEach-Object column1)
 }
 
