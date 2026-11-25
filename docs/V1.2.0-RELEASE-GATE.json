@@ -258,7 +258,10 @@
         "Decide whether reproducing both OFL texts in the bundled third-party notices meets the OFL condition that the copyright notice and licence accompany each copy, or whether the About screen should also link to them.",
         "Record the release owner's licence and distribution-ledger decision for bundling the fonts."
       ],
-      "evidenceRefs": []
+      "evidenceRefs": [
+        "Owner decision 2026-11-25 (Andrew Mayes, release owner): reproducing the Archivo and Fragment Mono copyright lines and OFL 1.1 texts in the bundled third-party notices (COMPONENTS.json 0347acee..., THIRD-PARTY-NOTICES.html 5049186d... in run 45561632081) meets the OFL condition; no About-screen link is added. Bundling both fonts is accepted for the distribution ledger.",
+        "Still open: confirm the exact upstream source and copyright notice of each subset woff2 copied from depo-stack public/fonts against its bundled OFL text."
+      ]
     },
     {
       "id": "release-publication-environment-and-tag-ruleset",
